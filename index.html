@@ -14921,6 +14921,31 @@ async function vincularConferente(demandaId, carga){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
+async function vincularConferentePorCarga(demandaId, carga, selectId){
+  const sel = document.getElementById(selectId);
+  if(!sel||!sel.value){ showToast('Selecione um conferente','warning'); return; }
+  const [confId, confNome] = sel.value.split('|');
+  if(!confId||!confNome){ showToast('Conferente inválido','warning'); return; }
+  try{
+    const jaVinculados = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id`) || [];
+    if(jaVinculados.length >= 2){ showToast('Máximo de 2 conferentes por carga','warning'); return; }
+    if(jaVinculados.find(a=>String(a.conferente_id)===String(confId))){ showToast(confNome+' já vinculado','warning'); return; }
+    await supaFetch('atribuicoes_armazem',{
+      method:'POST',
+      body:JSON.stringify({ demanda_id:demandaId, carga, conferente_id:confId, conferente_nome:confNome, status:'pendente', criado_em:new Date().toISOString() })
+    });
+    try{
+      const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
+      if(demDB&&demDB[0]&&demDB[0].status==='pendente'){
+        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
+        const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
+      }
+    }catch(e){}
+    showToast('✅ '+confNome+' vinculado à carga '+carga,'success');
+    await renderArmazem();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
 async function vincularConferentePorConf(confId, confNome, selectId){
   const sel = document.getElementById(selectId);
   if(!sel||!sel.value){ showToast('Selecione uma carga','warning'); return; }
@@ -15767,6 +15792,51 @@ async function renderArmazem(){
         </div>`;
       });
       html += `</div>`;
+    }
+
+    // ── Seção: cargas ativas sem conferente vinculado ──
+    const semConf = demandasAtivas.filter(d =>
+      d.carga && !atribs.find(a => a.carga === d.carga)
+    );
+    if(semConf.length){
+      const confOptsHtml = confCards.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
+      html += `
+      <div style="margin-top:20px;background:rgba(245,158,11,.04);border:1.5px solid rgba(245,158,11,.25);border-radius:14px;padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+          <span style="font-size:1.1rem">⚠️</span>
+          <span style="font-size:.88rem;font-weight:800;color:#d97706">Cargas sem conferente vinculado (${semConf.length})</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
+          ${semConf.map(d=>{
+            const st = armStatusGlobal[d.id]||'pendente';
+            const stCfg = ARM_STATUS[st]||ARM_STATUS.pendente;
+            const total = d.quantidade_pedidos||0;
+            const dataSaida = d.data_saida?new Date(d.data_saida).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}):'';
+            const selId = `sc-sel-${d.carga}`;
+            return `<div style="background:var(--bg-card);border:1px solid rgba(245,158,11,.2);border-left:3px solid #f59e0b;border-radius:10px;padding:12px 14px">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                  <span style="background:#f59e0b;color:#fff;font-size:.7rem;font-weight:800;padding:2px 8px;border-radius:12px">🚛 ${d.rota||'—'}</span>
+                  <span style="font-size:.82rem;font-weight:800;color:var(--text-primary)">Carga ${d.carga}</span>
+                  ${dataSaida?`<span style="font-size:.7rem;color:var(--text-muted)">📅 ${dataSaida}</span>`:''}
+                </div>
+                <span style="background:${stCfg.bg};color:${stCfg.color};font-size:.67rem;font-weight:700;padding:2px 8px;border-radius:10px">${stCfg.label}</span>
+              </div>
+              <div style="font-size:.73rem;color:var(--text-muted);margin-bottom:8px">
+                🚗 ${d.motorista||'—'} &nbsp;·&nbsp; ${total} pedidos
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <select id="${selId}" style="flex:1;min-width:150px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:6px 10px;font-size:.76rem;outline:none">
+                  <option value="">👷 Selecionar conferente...</option>
+                  ${confOptsHtml}
+                </select>
+                <button onclick="vincularConferentePorCarga('${d.id}',${d.carga},'${selId}')"
+                  style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;border-radius:7px;padding:6px 13px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap">🔗 Vincular</button>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
     }
 
     container.innerHTML = html || `<div style="text-align:center;padding:48px 20px;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:10px">📭</div><p>Nenhuma carga ativa no momento.</p></div>`;
