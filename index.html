@@ -12905,14 +12905,19 @@ async function abrirModalLancarAbs(){
   toggleFormOutroStatus(false);
   document.getElementById('abs-data-input').value = hoje;
 
-  // Carregar lista de pessoas
+  // Carregar lista de pessoas — sempre busca unidade atualizada do banco
   let undUsuario = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
-  if(!undUsuario && USUARIO_LOGADO?.id){
-    const _fresh = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade,und`);
-    if(_fresh?.[0]){ undUsuario = (_fresh[0].und || _fresh[0].unidade || '').trim(); if(undUsuario){ USUARIO_LOGADO.unidade = undUsuario; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); } }
+  if(USUARIO_LOGADO?.id){
+    try{
+      const _fresh = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
+      const _undFresh = (_fresh?.[0]?.unidade || '').trim();
+      if(_undFresh){ undUsuario = _undFresh; USUARIO_LOGADO.unidade = _undFresh; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
+    }catch(_){}
   }
+  console.log('[AbrirModalAbs] undUsuario =', undUsuario);
   let pessoas = [];
   try{
+    if(!undUsuario){ console.warn('[AbrirModalAbs] unidade vazia — buscando sem filtro'); }
     const urlMots = undUsuario
       ? `motoristas?select=nome&ativo=eq.true&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
       : 'motoristas?select=nome&ativo=eq.true&order=nome.asc';
@@ -12921,8 +12926,8 @@ async function abrirModalLancarAbs(){
       : 'ajudantes?select=nome&ativo=eq.true&order=nome.asc';
     const [mots, ajs] = await Promise.all([supaFetch(urlMots)||[], supaFetch(urlAjs)||[]]);
     const vistos = new Set();
-    [...mots,...ajs].forEach(p=>{ if(p.nome&&!vistos.has(p.nome)){ vistos.add(p.nome); pessoas.push(p); } });
-  }catch(e){}
+    [...(mots||[]),...(ajs||[])].forEach(p=>{ if(p.nome&&!vistos.has(p.nome)){ vistos.add(p.nome); pessoas.push(p); } });
+  }catch(e){ console.error('[AbrirModalAbs] erro ao carregar pessoas:', e); }
 
   // Carregar registros de hoje
   let registrosHoje = [];
@@ -17257,7 +17262,7 @@ async function iniciarApp(){
         tabela = 'usuarios';
       }
 
-      const atual = await supaFetch(`${tabela}?id=eq.${sessaoLocal.id}&select=perfil,ativo,status,unidade,und`);
+      const atual = await supaFetch(`${tabela}?id=eq.${sessaoLocal.id}&select=perfil,ativo,status,unidade`);
       const uAtual = atual?.[0];
 
       if(!uAtual){
@@ -17281,11 +17286,12 @@ async function iniciarApp(){
           await iniciarApp();
           return;
         }
-        // Atualizar unidade sempre que houver (corrige sessões antigas sem esse campo)
-        const undFresh = (uAtual.und || uAtual.unidade || '').trim();
-        if(undFresh && undFresh !== (USUARIO_LOGADO.unidade || USUARIO_LOGADO.und || '').trim()){
+        // Atualizar unidade sempre (corrige sessões antigas sem esse campo)
+        const undFresh = (uAtual.unidade || '').trim();
+        if(undFresh){
           USUARIO_LOGADO.unidade = undFresh;
           localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+          console.log('[Sessão] unidade atualizada:', undFresh);
         }
       }
     }
