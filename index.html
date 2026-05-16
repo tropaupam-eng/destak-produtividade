@@ -5735,7 +5735,18 @@ function populateSelects(){
       const sel=document.getElementById(p+'-'+f),cur=sel.value;
       while(sel.options.length>1)sel.remove(1);
       if(f==='mes')meses.forEach(m=>{const o=document.createElement('option');o.value=m;o.text=nomeMes(m);sel.appendChild(o);});
-      else getUniq(allEnrich,f==='und'?'und':f==='rire'?'rire':'rota').forEach(v=>{const o=document.createElement('option');o.value=v;o.text=v;sel.appendChild(o);});
+      else if(f==='und'){
+        // Unidades: somente as cadastradas em Cadastro > Unidades, formato "COD - NOME"
+        Object.entries(UNIDADES_MAP)
+          .filter(([,v])=>Boolean(v))
+          .sort((a,b)=>Number(a[0])-Number(b[0])||a[0].localeCompare(b[0]))
+          .forEach(([k,v])=>{
+            const fmt=k+' - '+v;
+            const o=document.createElement('option');
+            o.value=fmt; o.text=fmt; sel.appendChild(o);
+          });
+      }
+      else getUniq(allEnrich,f==='rire'?'rire':'rota').forEach(v=>{const o=document.createElement('option');o.value=v;o.text=v;sel.appendChild(o);});
       sel.value=cur;
     });
     const ms=document.getElementById(p+'-mes');
@@ -5760,7 +5771,10 @@ function getFiltered(prefix){
 
     // UND: usar und do registro ou buscar no mapa de cargas
     let rUnd = (r.und || _undMap[r.carga] || '').trim();
-    const passaUnd = !und || rUnd.toUpperCase() === und.trim().toUpperCase();
+    // Comparação flexível: "1 - CD" bate com "1 - CD" ou "CD" nos dados
+    const _undFiltro = und.trim().toUpperCase();
+    const _undNome   = _undFiltro.replace(/^\d+\s*-\s*/,''); // extrai só o nome
+    const passaUnd   = !und || rUnd.toUpperCase() === _undFiltro || rUnd.toUpperCase() === _undNome;
 
     const rRire = getRireFromRota(r.rota) || '';
     const passaRire = !rire || rRire === rire;
@@ -9369,28 +9383,17 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
           }
         }catch(e){ console.warn('Erro ao salvar base_data:', e.message); }
 
-        // Atualizar demanda com totais reais e avançar para fiscal
+        // Atualizar demanda com totais reais — NÃO avança status nem arm_status
+        // O fluxo correto é: Armazém confere → arm_status=carregado_ok → status=aguardando_nf → Fiscal
         if(demandaId){
-          const demAtual = (_demandasCache||[]).find(d=>d.id===demandaId);
-          const statusAntesFiscal = ['pendente','separacao','carregamento'];
-          const deveAvancar = demAtual && statusAntesFiscal.includes(demAtual.status);
           await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
             method:'PATCH',
             body: JSON.stringify({
               carga: cargaNum,
               quantidade_pedidos: totalPedidos,
-              valor_total: totalValor,
-              ...(deveAvancar ? {status:'aguardando_nf', ts_aguardando_nf:new Date().toISOString()} : {})
+              valor_total: totalValor
             })
           }).catch(e=>console.warn(e));
-          if(deveAvancar && demAtual){
-            const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>null);
-            let armStatus = cfg&&cfg[0]?cfg[0].valor||{}:{};
-            armStatus[demandaId] = 'carregado_ok';
-            if(cfg&&cfg[0]){
-              await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})}).catch(()=>{});
-            }
-          }
         }
 
         const tipoMsg = isPrecarga ? '📦 Pré-carga' : '📋 Planilha';
@@ -11788,7 +11791,7 @@ async function renderDashInterna(){
     // KPIs
     const totalCargas   = dem.length;
     const cargasAtivas  = dem.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
-    const totalPedidos  = bd.length || dem.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
+    const totalPedidos  = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size || dem.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
     const cargasConcl   = dem.filter(d=>['saiu','fim_viagem','concluido'].includes(d.status));
 
     // Atraso: data_saida < hoje e carga ainda não saiu
@@ -12569,10 +12572,17 @@ async function renderAbsenteismo(){
         pendCard.style.display = 'block';
         if(pendBadge) pendBadge.textContent = pendentesHoje.length;
         if(pendLista) pendLista.innerHTML = pendentesHoje.map(nome=>
-          `<button onclick="abrirModalLancarAbsFunc('${nome}')"
-            style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:7px;padding:5px 12px;font-size:.78rem;cursor:pointer;font-weight:600">
-            ${nome}
-          </button>`
+          `<span style="display:inline-flex;gap:4px;align-items:center;margin:2px 4px 2px 0">
+            <button onclick="lancarPresencaRapida('${nome.replace(/'/g,"\\'")}')"
+              style="background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;border-radius:7px;padding:5px 10px;font-size:.78rem;cursor:pointer;font-weight:600"
+              title="Lançar presença hoje diretamente">✅ Presença</button>
+            <button onclick="abrirModalLancarAbsFunc('${nome.replace(/'/g,"\\'")}','presente')"
+              style="background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;border-radius:7px;padding:5px 10px;font-size:.78rem;cursor:pointer;font-weight:600"
+              title="Abrir modal com nome e status presença pré-selecionados">📅 Lançar</button>
+            <button onclick="abrirModalLancarAbsFunc('${nome.replace(/'/g,"\\'")}')"
+              style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:7px;padding:5px 10px;font-size:.78rem;cursor:pointer;font-weight:600"
+              title="${nome} — outras opções">⋯ ${nome}</button>
+          </span>`
         ).join('');
       } else {
         pendCard.style.display = 'none';
@@ -12631,30 +12641,29 @@ async function renderAbsenteismo(){
 
       demandasMot.forEach(dem=>{
         const dtSaida = new Date(dem.data_saida + 'T00:00:00');
-        // Data de retorno: ts_fim_viagem ou hoje se ainda em viagem
         let dtRetorno;
         if(dem.ts_fim_viagem){
           dtRetorno = new Date(dem.ts_fim_viagem.split('T')[0] + 'T00:00:00');
         } else if(dem.status === 'saiu'){
-          dtRetorno = new Date(); // ainda em viagem — conta até hoje
-          dtRetorno.setHours(0,0,0,0);
-        } else {
-          return; // sem data de retorno e não está em viagem
-        }
-
+          dtRetorno = new Date(); dtRetorno.setHours(0,0,0,0);
+        } else { return; }
         if(dtRetorno < dtSaida) return;
 
-        // Contar dias corridos da viagem (mesma rota)
-        const diasViagem = Math.floor((dtRetorno - dtSaida) / 86400000) + 1;
-
-        // 1 folga a cada 7 dias corridos na mesma rota
-        totalFolgas += Math.floor(diasViagem / 7);
-
-        // +1 por domingo rodando e +1 por feriado rodando (na mesma rota)
+        // Montar array de dias da viagem
+        const diasArr = [];
         for(let dt = new Date(dtSaida); dt <= dtRetorno; dt.setDate(dt.getDate()+1)){
-          if(dt.getDay() === 0) totalFolgas++; // domingo
-          const ds = dt.toISOString().split('T')[0];
-          if(todosFeriados.has(ds)) totalFolgas++; // feriado
+          diasArr.push(dt.toISOString().split('T')[0]);
+        }
+
+        // Processar blocos completos de 7 dias
+        const blocos = Math.floor(diasArr.length / 7);
+        for(let b = 0; b < blocos; b++){
+          const bloco = diasArr.slice(b*7, b*7+7);
+          totalFolgas++; // 1 folga base pelo bloco
+          const temDomingo  = bloco.some(ds => new Date(ds+'T00:00:00').getDay() === 0);
+          const temFeriado  = bloco.some(ds => todosFeriados.has(ds));
+          if(temDomingo)  totalFolgas++;
+          if(temFeriado)  totalFolgas++;
         }
       });
 
@@ -12735,16 +12744,37 @@ async function renderAbsenteismo(){
   }catch(e){ container.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--text-muted)">Erro: ${e.message}</td></tr>`; }
 }
 
-async function abrirModalLancarAbsFunc(nome){
+async function abrirModalLancarAbsFunc(nome, statusInicial){
   await abrirModalLancarAbs();
   const sel = document.getElementById('abs-func-sel');
   if(sel) sel.value = nome;
+  if(statusInicial){
+    const selStatus = document.getElementById('abs-status-sel');
+    if(selStatus){ selStatus.value = statusInicial; toggleCamposFerias(); }
+  }
+}
+
+async function lancarPresencaRapida(nome){
+  try{
+    const hoje = new Date().toISOString().split('T')[0];
+    const mesAno = hoje.slice(0,7);
+    const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id`) || [];
+    if(ex.length){
+      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',fonte:'manual'})});
+    } else {
+      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
+    }
+    showToast('✅ '+nome+' — Presença lançada!','success');
+    await renderAbsenteismo();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 async function abrirModalLancarAbs(){
   // Popular select de funcionários — somente da unidade do usuário logado
   const sel = document.getElementById('abs-func-sel');
-  if(sel && sel.options.length <= 1){
+  if(sel){
+    // Sempre limpar e recarregar para garantir que sel.value = nome funcione
+    while(sel.options.length > 1) sel.remove(1);
     try{
       const undUsuario = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
       // Buscar motoristas e ajudantes ativos da mesma unidade
@@ -14840,7 +14870,7 @@ async function carregarDemandasArmazemAdm(){
   if(!container) return;
   try{
     const [demandas, conferentes, atrib, status] = await Promise.all([
-      supaFetch('demandas_rota?carga=not.is.null&quantidade_pedidos=gt.0&select=*&order=data_saida.desc'),
+      supaFetch('demandas_rota?carga=not.is.null&select=*&order=data_saida.desc'),
       supaFetch('conferentes?ativo=eq.true&select=*&order=nome.asc'),
       supaFetch('atribuicoes_armazem?select=*'),
       supaFetch('conferencia_pedidos?select=carga,status')
@@ -14912,9 +14942,6 @@ async function vincularConferente(demandaId, carga){
     // Verificar vínculos existentes
     const jaVinculados = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id,conferente_nome`) || [];
 
-    if(jaVinculados.length >= 2){
-      showToast('Máximo de 2 conferentes por carga','warning'); return;
-    }
     if(jaVinculados.find(a=>a.conferente_id===confId)){
       showToast(confNome+' já está vinculado a esta carga','warning'); return;
     }
@@ -14958,7 +14985,6 @@ async function vincularConferentePorCarga(demandaId, carga, selectId){
   if(!confId||!confNome){ showToast('Conferente inválido','warning'); return; }
   try{
     const jaVinculados = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id`) || [];
-    if(jaVinculados.length >= 2){ showToast('Máximo de 2 conferentes por carga','warning'); return; }
     if(jaVinculados.find(a=>String(a.conferente_id)===String(confId))){ showToast(confNome+' já vinculado','warning'); return; }
     await supaFetch('atribuicoes_armazem',{
       method:'POST',
@@ -14984,7 +15010,6 @@ async function vincularConferentePorConf(confId, confNome, selectId){
   if(!demandaId||!carga){ showToast('Carga inválida','warning'); return; }
   try{
     const jaVinculados = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id`) || [];
-    if(jaVinculados.length >= 2){ showToast('Máximo de 2 conferentes por carga','warning'); return; }
     if(jaVinculados.find(a=>String(a.conferente_id)===String(confId))){ showToast(confNome+' já vinculado a esta carga','warning'); return; }
     await supaFetch('atribuicoes_armazem',{
       method:'POST',
@@ -15067,6 +15092,7 @@ async function carregarPortalConferente(){
     demandas.forEach(d=>{ demMap[d.carga]=d; });
 
     // Status que ainda estão no armazém (conferência ativa)
+    // Ativo no portal do conferente até fiscal liberar
     const statusAtivos = ['pendente','separacao','carregamento','aguardando_nf'];
     // Filtrar só cargas com demanda ativa — as que já saíram não precisam de conferência
     const atribsAtivas = atribs.filter(a=>{
@@ -15668,10 +15694,11 @@ async function renderArmazem(){
 
   // Buscar dados
   let demandas=[], armStatusGlobal={}, conferentes=[], atribs=[], confStatus=[], separadores=[], fotos={};
-  const statusPosArmazem = ['aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
+  // Remove do armazém após fiscal liberar (aguardando_manifesto+). aguardando_nf ainda é etapa do armazém.
+  const statusPosArmazem = ['aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
   try{
     const [_dem, _cfg, _confs, _atribs, _confSt, _fotos] = await Promise.all([
-      supaFetch('demandas_rota?carga=not.is.null&quantidade_pedidos=gt.0&select=*&order=data_saida.desc'),
+      supaFetch('demandas_rota?carga=not.is.null&select=*&order=data_saida.desc'),
       supaFetch('configuracoes?chave=eq.arm_status&select=valor'),
       supaFetch('conferentes?ativo=eq.true&select=*&order=nome.asc'),
       supaFetch('atribuicoes_armazem?select=*'),
@@ -15733,12 +15760,11 @@ async function renderArmazem(){
         const minhasAtribs = atribs.filter(a=>String(a.conferente_id)===String(conf.id) && a.tipo!=='separador');
         const minhasCargasNums = minhasAtribs.map(a=>a.carga);
 
-        // Cargas que este conferente pode receber ainda (não vinculada, slot disponível)
+        // Cargas que este conferente pode receber ainda (qualquer ativa que ainda não esteja vinculada a ele)
         const cargasDisponiveis = demandasAtivas.filter(d=>{
           if(!d.carga) return false;
           if(minhasCargasNums.includes(d.carga)) return false;
-          const totalConfs = atribs.filter(x=>x.carga===d.carga && x.tipo!=='separador').length;
-          return totalConfs < 2;
+          return true;
         });
 
         const selId = `conf-sel-${conf.id}`;
@@ -16270,7 +16296,7 @@ async function salvarStatusArmazem(demandaId, status){
       }
     }
     // Atualizar KPIs
-    const demandas = (_demandasCache||[]).filter(d=>d.carga && d.quantidade_pedidos>0);
+    const demandas = (_demandasCache||[]).filter(d=>d.carga);
     const contStatus = {pendente:0, separacao:0, carregamento:0, carregado_ok:0};
     demandas.forEach(d=>{ const st = armStatus[d.id]||'pendente'; contStatus[st]=(contStatus[st]||0)+1; });
     const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
