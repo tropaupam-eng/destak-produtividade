@@ -18221,20 +18221,31 @@ function fecharPopupRotasDia(){
 
 function verificarRotasSemana(){
   const hoje = new Date();
+  const hojeStr = hoje.toISOString().slice(0,10);
   const datas = Array.from({length:7},(_,i)=>{
     const d = new Date(hoje); d.setDate(hoje.getDate()+i);
     return d.toISOString().slice(0,10);
   });
-  const rotasSemana = getAgendamentos().filter(a=>
-    datas.includes(a.data) && a.status !== 'realizado' && a.status !== 'atrasado'
-  );
+  const rotasSemana = getAgendamentos()
+    .filter(a => datas.includes(a.data) && a.status !== 'realizado' && a.status !== 'atrasado')
+    .sort((a,b) => a.data.localeCompare(b.data));
+
   if(!rotasSemana.length) return;
 
-  const fmtData = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'short'});
   const lista = document.getElementById('popup-rotas-lista');
   const sub   = document.getElementById('popup-rotas-sub');
   if(!lista) return;
-  if(sub) sub.textContent = `${rotasSemana.length} rota(s) na semana — lance ou registre o motivo do atraso`;
+  if(sub) sub.textContent = `${rotasSemana.length} rota(s) nos próximos 7 dias`;
+
+  // Label de data amigável
+  const fmtDiaLabel = dt => {
+    if(dt === hojeStr) return 'Hoje';
+    const amanha = new Date(hoje); amanha.setDate(hoje.getDate()+1);
+    if(dt === amanha.toISOString().slice(0,10)) return 'Amanhã';
+    return new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long'});
+  };
+  const fmtDataCompleta = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
+  const fmtDiaSemana = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long'});
 
   const MOTIVOS = [
     {key:'comercial',  label:'💰 Comercial',      desc:'Carga sem valor mínimo'},
@@ -18244,44 +18255,65 @@ function verificarRotasSemana(){
     {key:'outro',      label:'📝 Outro',            desc:'Motivo não listado'},
   ];
 
-  lista.innerHTML = rotasSemana.map(a=>`
-    <div id="popup-rota-${a.id}" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:8px;flex-wrap:wrap">
-        <div>
+  // Agrupar por data
+  const porDia = {};
+  rotasSemana.forEach(a=>{ if(!porDia[a.data]) porDia[a.data]=[]; porDia[a.data].push(a); });
+
+  let html = '';
+  Object.keys(porDia).sort().forEach(dt=>{
+    const isHoje = dt === hojeStr;
+    const label  = fmtDiaLabel(dt);
+    const dataCompleta = fmtDataCompleta(dt);
+    // Cabeçalho do dia
+    html += `
+      <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+        <div style="background:${isHoje?'#2563eb':'#64748b'};color:#fff;border-radius:9px;padding:5px 14px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:56px">
+          <span style="font-size:.65rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.04em">${label}</span>
+          <span style="font-size:1rem;font-weight:800;line-height:1.1">${new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')}</span>
+          <span style="font-size:.62rem;opacity:.8">${new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')}</span>
+        </div>
+        <div style="flex:1;border-top:1.5px solid ${isHoje?'rgba(37,99,235,.3)':'var(--border)'};margin-top:2px"></div>
+        <span style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">${dataCompleta}</span>
+      </div>`;
+
+    // Rotas do dia
+    porDia[dt].forEach(a=>{
+      html += `
+      <div id="popup-rota-${a.id}" style="background:var(--bg-card2);border:1px solid var(--border);border-left:3px solid ${isHoje?'#2563eb':'#94a3b8'};border-radius:10px;padding:12px 14px;margin-left:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">
           <div style="font-size:.95rem;font-weight:800;color:var(--text-primary)">🛣️ ${a.rota}</div>
-          ${a.obs?`<div style="font-size:.73rem;color:var(--text-muted);margin-top:2px">${a.obs}</div>`:''}
+          ${a.obs?`<div style="font-size:.72rem;color:var(--text-muted)">${a.obs}</div>`:''}
         </div>
-        <span style="background:rgba(37,99,235,.1);color:#2563eb;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap">
-          📅 ${fmtData(a.data)}
-        </span>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <button onclick="acaoRotaSemana('${a.id}','${a.rota}','${a.data}','lancar')"
-          style="grid-column:1/-1;background:rgba(5,150,105,.1);color:#059669;border:1.5px solid rgba(5,150,105,.3);border-radius:8px;padding:9px;font-size:.82rem;font-weight:700;cursor:pointer">
-          ➕ Lançar Rota — Criar Pré-Carga
-        </button>
-        <div style="grid-column:1/-1">
-          <div style="font-size:.72rem;color:var(--text-muted);font-weight:600;margin-bottom:5px">⏳ Registrar Atraso:</div>
-          <div style="display:flex;flex-wrap:wrap;gap:5px">
-            ${MOTIVOS.map(m=>`
-              <button onclick="acaoRotaSemana('${a.id}','${a.rota}','${a.data}','atraso','${m.key}')"
-                title="${m.desc}"
-                style="background:rgba(239,68,68,.07);color:#b91c1c;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:.73rem;font-weight:600;cursor:pointer">
-                ${m.label}
-              </button>`).join('')}
-          </div>
-          <div id="obs-outro-${a.id}" style="display:none;margin-top:6px;display:none">
-            <input type="text" id="inp-outro-${a.id}" placeholder="Descreva o motivo..."
-              style="width:100%;border:1px solid var(--border-med);border-radius:6px;padding:6px 10px;font-size:.78rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
-            <button onclick="confirmarOutro('${a.id}','${a.rota}','${a.data}')"
-              style="margin-top:4px;width:100%;background:#ef4444;color:#fff;border:none;border-radius:6px;padding:5px;font-size:.78rem;font-weight:700;cursor:pointer">
-              Confirmar Atraso
-            </button>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <button onclick="acaoRotaSemana('${a.id}','${a.rota}','${a.data}','lancar')"
+            style="width:100%;background:rgba(5,150,105,.1);color:#059669;border:1.5px solid rgba(5,150,105,.3);border-radius:8px;padding:9px;font-size:.82rem;font-weight:700;cursor:pointer">
+            ➕ Lançar Rota — Criar Pré-Carga
+          </button>
+          <div>
+            <div style="font-size:.71rem;color:var(--text-muted);font-weight:600;margin-bottom:5px">⏳ Registrar Atraso:</div>
+            <div style="display:flex;flex-wrap:wrap;gap:5px">
+              ${MOTIVOS.map(m=>`
+                <button onclick="acaoRotaSemana('${a.id}','${a.rota}','${a.data}','atraso','${m.key}')"
+                  title="${m.desc}"
+                  style="background:rgba(239,68,68,.07);color:#b91c1c;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:600;cursor:pointer">
+                  ${m.label}
+                </button>`).join('')}
+            </div>
+            <div id="obs-outro-${a.id}" style="display:none;margin-top:6px">
+              <input type="text" id="inp-outro-${a.id}" placeholder="Descreva o motivo..."
+                style="width:100%;border:1px solid var(--border-med);border-radius:6px;padding:6px 10px;font-size:.78rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
+              <button onclick="confirmarOutro('${a.id}','${a.rota}','${a.data}')"
+                style="margin-top:4px;width:100%;background:#ef4444;color:#fff;border:none;border-radius:6px;padding:5px;font-size:.78rem;font-weight:700;cursor:pointer">
+                Confirmar Atraso
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
-  `).join('');
+      </div>`;
+    });
+  });
+
+  lista.innerHTML = html;
   document.getElementById('popup-rotas-dia').style.display='flex';
 }
 
