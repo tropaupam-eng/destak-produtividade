@@ -18284,22 +18284,25 @@ async function renderAgendamentos(){
 function abrirPopupRotasExpedicao(){
   const hoje    = new Date();
   const hojeStr = hoje.toISOString().slice(0,10);
-  const datas   = Array.from({length:7},(_,i)=>{ const d=new Date(hoje); d.setDate(hoje.getDate()+i); return d.toISOString().slice(0,10); });
+  // TODOS os 7 dias da semana (inclusive sem rotas)
+  const datas = Array.from({length:7},(_,i)=>{ const d=new Date(hoje); d.setDate(hoje.getDate()+i); return d.toISOString().slice(0,10); });
 
-  // Inclui atrasadas e não-realizadas dos próximos 7 dias
-  const rotasSemana = getAgendamentos()
+  // Todas rotas da semana que ainda não foram realizadas
+  const agends = getAgendamentos();
+  const rotasSemana = agends
     .filter(a => datas.includes(a.data) && a.status !== 'realizado')
     .sort((a,b) => a.data.localeCompare(b.data));
 
-  if(!rotasSemana.length) return; // nada a mostrar
-
+  // Abre o popup mesmo sem rotas (mostrará dias vazios)
   const lista = document.getElementById('popup-rotas-lista');
   const sub   = document.getElementById('popup-rotas-sub');
   if(!lista) return;
 
   const hoje_ct  = rotasSemana.filter(a=>a.data===hojeStr).length;
   const total_ct = rotasSemana.length;
-  if(sub) sub.textContent = `${total_ct} rota(s) nos próximos 7 dias${hoje_ct?' — '+hoje_ct+' hoje':''}`;
+  if(sub) sub.textContent = total_ct
+    ? `${total_ct} rota(s) nos próximos 7 dias${hoje_ct?' — '+hoje_ct+' hoje':''}`
+    : 'Nenhuma rota agendada para os próximos 7 dias';
 
   // Helpers de data
   const fmtLabel = dt => {
@@ -18317,65 +18320,83 @@ function abrirPopupRotasExpedicao(){
     {key:'atraso_rota',label:'⏱️ Atraso',        desc:'Rota atrasada'},
     {key:'outro',      label:'📝 Outro',          desc:'Outro motivo'},
   ];
+  const CORES_MOT = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',outro:'#6b7280'};
 
   // Agrupar por data
   const porDia = {};
   rotasSemana.forEach(a=>{ if(!porDia[a.data]) porDia[a.data]=[]; porDia[a.data].push(a); });
 
   let html = '';
-  Object.keys(porDia).sort().forEach(dt=>{
-    const isHoje = dt === hojeStr;
-    const label  = fmtLabel(dt);
+
+  // Itera TODOS os 7 dias (não só os que têm rotas)
+  datas.forEach((dt, idx)=>{
+    const isHoje   = dt === hojeStr;
+    const label    = fmtLabel(dt);
+    const rotasDia = porDia[dt] || [];
 
     // — Cabeçalho do dia —
     html += `
-      <div style="display:flex;align-items:center;gap:10px;margin-top:${html?'8px':'0'}">
-        <div style="background:${isHoje?'#2563eb':'#475569'};color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:52px;text-align:center">
-          <span style="font-size:.6rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.03em">${label}</span>
-          <span style="font-size:1.1rem;font-weight:900;line-height:1.1">${new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')}</span>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:${idx>0?'10px':'0'}">
+        <div style="background:${isHoje?'#2563eb':'#334155'};color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">
+          <span style="font-size:.58rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.03em">${label}</span>
+          <span style="font-size:1.15rem;font-weight:900;line-height:1.15">${new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')}</span>
           <span style="font-size:.6rem;opacity:.8">${new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')}</span>
         </div>
-        <div style="flex:1;border-top:2px solid ${isHoje?'rgba(37,99,235,.4)':'var(--border)'}"></div>
-        <span style="font-size:.71rem;color:var(--text-muted);white-space:nowrap">${fmtData(dt)}</span>
+        <div style="flex:1;border-top:2px solid ${isHoje?'rgba(37,99,235,.5)':'rgba(255,255,255,.07)'}"></div>
+        <span style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">${fmtData(dt)}</span>
       </div>`;
 
+    if(!rotasDia.length){
+      // Dia sem rotas — mostrar placeholder
+      html += `<div style="margin-left:8px;padding:9px 14px;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.07);border-radius:8px">
+        <span style="font-size:.78rem;color:var(--text-muted)">Nenhuma rota agendada</span>
+      </div>`;
+      return;
+    }
+
     // — Cards das rotas do dia —
-    porDia[dt].forEach(a=>{
-      const isAtrasado = a.status==='atrasado';
-      const bordaEsq   = isHoje ? '#2563eb' : isAtrasado ? '#ef4444' : '#64748b';
+    rotasDia.forEach(a=>{
+      const temMotivo  = !!(a.motivo_atraso);
+      const corMotivo  = CORES_MOT[a.motivo_atraso] || '#6b7280';
+      const bordaEsq   = temMotivo ? corMotivo : (isHoje ? '#2563eb' : '#475569');
+
       html += `
       <div id="popup-rota-${a.id}" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid ${bordaEsq};border-radius:10px;padding:13px 15px;margin-left:8px">
 
-        <!-- Nome da rota + status -->
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;gap:8px;flex-wrap:wrap">
+        <!-- Cabeçalho da rota -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:8px;flex-wrap:wrap">
           <div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ ${a.rota}${a.obs?`&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— ${a.obs}</span>`:''}</div>
-          ${isAtrasado?`<span style="background:rgba(239,68,68,.12);color:#f87171;font-size:.7rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid rgba(239,68,68,.25)">⚠️ Atrasada</span>`:''}
-          ${isHoje&&!isAtrasado?`<span style="background:rgba(37,99,235,.12);color:#60a5fa;font-size:.7rem;font-weight:700;padding:2px 9px;border-radius:10px">🔵 Hoje</span>`:''}
+          <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+            ${isHoje&&!temMotivo?`<span style="background:rgba(37,99,235,.15);color:#60a5fa;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔵 Hoje</span>`:''}
+            ${temMotivo?`<span style="background:${corMotivo}22;color:${corMotivo};font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid ${corMotivo}44">📌 ${a.motivo_label||a.motivo_atraso}</span>`:''}
+          </div>
         </div>
 
-        <!-- AÇÃO PRINCIPAL: Lançar -->
+        <!-- AÇÃO PRINCIPAL: Criar Pré-Carga -->
         <button onclick="acaoRotaUnificada('${a.id}','${a.rota}','${dt}','lancar')"
-          style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:6px">
-          <span style="font-size:1rem">➕</span>
-          <span>Lançar Rota — Criar Pré-Carga</span>
+          style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:8px">
+          <span>➕</span><span>Criar Pré-Carga</span>
         </button>
 
-        <!-- REGISTRO DE PROBLEMA -->
-        <div style="font-size:.7rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Registrar Problema:</div>
+        <!-- MOTIVO DO ATRASO -->
+        <div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>
         <div style="display:flex;flex-wrap:wrap;gap:5px">
-          ${MOTIVOS.map(m=>`
-            <button onclick="acaoRotaUnificada('${a.id}','${a.rota}','${dt}','atraso','${m.key}')"
+          ${MOTIVOS.map(m=>{
+            const sel = a.motivo_atraso===m.key;
+            const cor = CORES_MOT[m.key]||'#6b7280';
+            return `<button onclick="acaoRotaUnificada('${a.id}','${a.rota}','${dt}','atraso','${m.key}')"
               title="${m.desc}"
-              style="background:rgba(239,68,68,.07);color:#fca5a5;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:600;cursor:pointer;white-space:nowrap">
+              style="background:${sel?cor+'33':'rgba(239,68,68,.06)'};color:${sel?cor:'#fca5a5'};border:${sel?'2px solid '+cor:'1px solid rgba(239,68,68,.2)'};border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:${sel?'800':'600'};cursor:pointer;white-space:nowrap">
               ${m.label}
-            </button>`).join('')}
+            </button>`;
+          }).join('')}
         </div>
         <div id="obs-outro-${a.id}" style="display:none;margin-top:7px">
           <input type="text" id="inp-outro-${a.id}" placeholder="Descreva o motivo..."
             style="width:100%;border:1px solid var(--border-med);border-radius:6px;padding:7px 10px;font-size:.78rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
           <button onclick="confirmarOutroUnificado('${a.id}','${a.rota}','${dt}')"
             style="margin-top:5px;width:100%;background:#ef4444;color:#fff;border:none;border-radius:6px;padding:7px;font-size:.78rem;font-weight:700;cursor:pointer">
-            Confirmar Atraso
+            Confirmar Motivo
           </button>
         </div>
       </div>`;
@@ -18386,19 +18407,19 @@ function abrirPopupRotasExpedicao(){
   document.getElementById('popup-rotas-dia').style.display='flex';
 }
 
-// Ação unificada do popup de rotas
+// ── Handler unificado de ações no popup de rotas ──────────────────────────
 async function acaoRotaUnificada(id, rota, data, tipo, motivo){
-  const card = document.getElementById('popup-rota-'+id);
-
   if(tipo==='lancar'){
+    // Criar pré-carga para o dia exato da rota
     try{
       const body = { rota, status:'pendente', data_saida:data, motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO', usuario_id:USUARIO_LOGADO?.id||null };
       await supaFetch('demandas_rota',{method:'POST',body:JSON.stringify(body)});
+      // Marcar agendamento como realizado — sai da lista
       const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
       if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao='lancar'; saveAgendamentos(arr); }
-      if(card) card.innerHTML=`<div style="padding:10px 0;display:flex;align-items:center;gap:8px"><span style="font-size:.88rem;font-weight:800;color:#34d399">✅ Pré-carga criada — ${rota}</span></div>`;
       showToast('✅ Pré-carga criada: '+rota,'success');
       carregarDemandas();
+      abrirPopupRotasExpedicao(); // atualiza o popup
     }catch(e){ showToast('Erro: '+e.message,'warning'); }
 
   } else if(tipo==='atraso'){
@@ -18408,13 +18429,17 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
       return;
     }
     const LABELS={comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',outro:'📝 Outro'};
-    const CORES={comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',outro:'#6b7280'};
+    // Grava o motivo mas a pendência PERMANECE no agendamento (status='atrasado' = pendente com motivo)
     const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
-    if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=LABELS[motivo]; arr[idx].acao='atraso'; saveAgendamentos(arr); }
-    const cor=CORES[motivo]||'#6b7280';
-    if(card){ card.style.borderLeftColor=cor; card.innerHTML=`<div style="padding:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:.9rem;font-weight:800;color:var(--text-primary)">🛣️ ${rota}</span><span style="background:rgba(239,68,68,.12);color:#f87171;padding:2px 9px;border-radius:6px;font-size:.75rem;font-weight:700;border:1px solid rgba(239,68,68,.25)">${LABELS[motivo]}</span><span style="color:var(--text-muted);font-size:.75rem">registrado</span></div>`; }
-    showToast('⚠️ Atraso registrado: '+rota,'warning');
-    renderDemandasCards();
+    if(idx>=0){
+      arr[idx].motivo_atraso = motivo;
+      arr[idx].motivo_label  = LABELS[motivo];
+      arr[idx].status        = 'atrasado'; // fica visível no popup E no card da demanda
+      saveAgendamentos(arr);
+    }
+    showToast('📌 Motivo registrado — rota permanece pendente','warning');
+    abrirPopupRotasExpedicao(); // re-renderiza o popup (card fica visível com motivo)
+    renderDemandasCards();      // atualiza badge nos cards da expedição
   }
 }
 
@@ -18422,10 +18447,9 @@ async function confirmarOutroUnificado(id, rota, data){
   const texto=(document.getElementById('inp-outro-'+id)?.value||'').trim();
   if(!texto){ showToast('Descreva o motivo','warning'); return; }
   const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
-  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; arr[idx].acao='atraso'; saveAgendamentos(arr); }
-  const card=document.getElementById('popup-rota-'+id);
-  if(card) card.innerHTML=`<div style="padding:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:.9rem;font-weight:800;color:var(--text-primary)">🛣️ ${rota}</span><span style="background:rgba(107,114,128,.12);color:#94a3b8;padding:2px 9px;border-radius:6px;font-size:.75rem;font-weight:700">📝 ${texto}</span><span style="color:var(--text-muted);font-size:.75rem">registrado</span></div>`;
-  showToast('⚠️ Motivo registrado','warning');
+  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; saveAgendamentos(arr); }
+  showToast('📌 Motivo registrado — rota permanece pendente','warning');
+  abrirPopupRotasExpedicao();
   renderDemandasCards();
 }
 
