@@ -2702,6 +2702,9 @@ textarea:focus{
       <div id="dash-int-countdown" style="display:none;align-items:center;gap:6px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:.78rem;color:var(--text-muted)">
         🔄 <span id="dash-int-countdown-val">5:00</span>
       </div>
+      <select id="dash-int-und" onchange="renderDashInterna()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none">
+        <option value="">Todas as unidades</option>
+      </select>
       <select id="dash-int-mes" onchange="renderDashInterna()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none"></select>
       <button onclick="renderDashInterna()" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.83rem;cursor:pointer;font-weight:700">🔄 Atualizar</button>
     </div>
@@ -4805,8 +4808,8 @@ textarea:focus{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '3.7.0';
-console.log('%c[DESTAK] index.html v3.7.0 carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
+const APP_VERSION = '3.7.1';
+console.log('%c[DESTAK] index.html v3.7.1 carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 (function(){
   try{
     const saved = localStorage.getItem('app_version');
@@ -12447,6 +12450,18 @@ async function renderDashInterna(){
   const fimMes = new Date(mesFiltro.split('-')[0], Number(mesFiltro.split('-')[1]), 0).toISOString().slice(0,10);
   const hoje = new Date().toISOString().slice(0,10);
 
+  // Preencher select de unidades (1x)
+  const selUnd = document.getElementById('dash-int-und');
+  if(selUnd && selUnd.options.length <= 1 && Object.keys(UNIDADES_MAP).length > 0){
+    const undsOrdenadas = Object.entries(UNIDADES_MAP).sort((a,b)=>a[1].localeCompare(b[1]));
+    undsOrdenadas.forEach(([cod, nome])=>{
+      const o = document.createElement('option');
+      o.value = cod; o.textContent = nome;
+      selUnd.appendChild(o);
+    });
+  }
+  const undFiltro = selUnd?.value || '';
+
   try{
     // 1. Buscar rotas RI diretamente do banco
     const todasRotas = await supaFetch('rotas?select=nome,tipo&ativo=eq.true') || [];
@@ -12457,13 +12472,28 @@ async function renderDashInterna(){
     }
     const rotaParam = rotasRI.join(',');
 
-    // 2. Buscar demandas RI do mês e base_data
-    const [demandas, baseDataSupa] = await Promise.all([
-      supaFetch(`demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&rota=in.(${rotaParam})&select=*&order=data_saida.asc`),
-      supaFetch(`base_data?mes_ano=eq.${mesFiltro}&rota=in.(${rotaParam})&select=carga,pedido,condutor`)
+    // 2. Buscar base_data (com filtro de unidade se selecionada)
+    // NOTA: Dashboard Interno conta apenas rotas RI — por isso o total de pedidos
+    // é menor que a aba Motoristas, que exibe RI + RE.
+    const undParam = undFiltro ? `&und=eq.${encodeURIComponent(undFiltro)}` : '';
+    const [baseDataSupa] = await Promise.all([
+      supaFetch(`base_data?mes_ano=eq.${mesFiltro}&rota=in.(${rotaParam})${undParam}&select=carga,pedido,condutor,semana_mes`)
     ]);
+    const bd = baseDataSupa||[];
+
+    // Cargas presentes no base_data filtrado (para filtrar demandas por unidade)
+    const cargasUnd = undFiltro ? new Set(bd.map(r=>String(r.carga)).filter(Boolean)) : null;
+
+    // Buscar demandas RI do mês — filtrar por cargas da unidade se necessário
+    let demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&rota=in.(${rotaParam})&select=*&order=data_saida.asc`;
+    if(cargasUnd && cargasUnd.size > 0){
+      demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&carga=in.(${[...cargasUnd].join(',')})&select=*&order=data_saida.asc`;
+    } else if(cargasUnd && cargasUnd.size === 0){
+      // Unidade sem cargas RI no mês
+      demQuery = null;
+    }
+    const demandas = demQuery ? (await supaFetch(demQuery)) : [];
     const dem = demandas||[];
-    const bd  = baseDataSupa||[];
 
     // 3. KPIs básicos
     const totalCargas   = dem.length;
@@ -12489,7 +12519,13 @@ async function renderDashInterna(){
     if(badge) badge.textContent = nEntrega ? `✅ ${nEntrega} pedidos com data de entrega` : 'Nenhuma planilha carregada';
 
     // Usar BASE_DATA local (tem data_pedido) para o OTIF
-    const bdLocal = BASE_DATA.filter(r => r.mes_ano === mesFiltro && rotasRI.includes(r.rota));
+    // Aplica filtro de unidade se selecionado
+    const bdLocal = BASE_DATA.filter(r => {
+      if(r.mes_ano !== mesFiltro) return false;
+      if(!rotasRI.includes(r.rota)) return false;
+      if(undFiltro && r.und !== undFiltro) return false;
+      return true;
+    });
     let otif24Tot=0, otif24Ok=0, otif32Tot=0, otif32Ok=0;
     const pedidosContados = new Set();
 
