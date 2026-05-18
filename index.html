@@ -5468,6 +5468,7 @@ async function syncBaseData(mesFiltro){
       } else {
         BASE_DATA = deduped;
       }
+      window._cargaMapCache = null;
 
       try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
       showToast(`✅ ${BASE_DATA.length.toLocaleString('pt-BR')} registros carregados do banco!`,'success');
@@ -5737,6 +5738,30 @@ async function filtrarSidebarPorPerfil(){
 }
 
 let BASE_DATA   = [];
+window._cargaMapCache = null;
+
+function buildCargaMapCache(){
+  const map = {};
+  BASE_DATA.forEach(r=>{
+    if(!r.carga) return;
+    const c = Math.round(Number(r.carga));
+    if(!map[c]) map[c]={pedidos:new Set(),pedidosSemOcorr:new Set(),pedidoValor:{},valor:0,rota:'',und:'',rire:'',placa:'',ajudante:''};
+    const k = String(r.pedido||'');
+    if(r.pedido && !map[c].pedidoValor.hasOwnProperty(k)){
+      const v = parseValorBR(r.valor);
+      map[c].pedidoValor[k] = v;
+      map[c].pedidos.add(k);
+      if(Number(r.ocorrencia||0)!==1){ map[c].pedidosSemOcorr.add(k); map[c].valor+=v; }
+    }
+    if(!map[c].rota && r.rota) map[c].rota=r.rota;
+    if(!map[c].und && r.und) map[c].und=r.und;
+    if(!map[c].rire && r.rire) map[c].rire=r.rire;
+    if(!map[c].placa && r.placa) map[c].placa=r.placa;
+    if(!map[c].ajudante && r.ajudante&&r.ajudante.trim()) map[c].ajudante=r.ajudante.trim();
+  });
+  window._cargaMapCache = map;
+}
+function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), window._cargaMapCache); }
 
 // Rotas RI/RE — definidas globalmente para uso em todo o sistema
 // Inclui nomes abreviados E completos; syncConfig() adiciona rotas do banco dinamicamente
@@ -6086,6 +6111,7 @@ async function onFileSelected(event) {
       return !chavesExistentes.has(Number(r.carga)+'_'+Number(r.pedido));
     });
     BASE_DATA = [...BASE_DATA, ...recordsNovos];
+    window._cargaMapCache = null;
 
     // Verificar integridade: garantir que und está preenchido nos registros novos
     BASE_DATA.forEach(r => {
@@ -6505,31 +6531,10 @@ function renderMot(){
   const f_rire = document.getElementById('m-rire').value.trim();
   const f_rota = document.getElementById('m-rota').value.trim();
 
-  // ── MAPA: carga → pedidos + valor (do BASE_DATA) ─────
-  // DEDUPLICAÇÃO: cada pedido conta 1 vez por carga — evita valores inflados
-  const cargaDados = {};
-  // Primeiro passo: mapear pedidos únicos por carga
-  BASE_DATA.forEach(r=>{
-    if(!r.pedido || !r.carga) return;
-    const c = Math.round(Number(r.carga));
-    const ped = String(r.pedido);
-    if(!cargaDados[c]) cargaDados[c] = {pedidos:new Set(), pedidosSemOcorr:new Set(), pedidoValor:{}, valor:0, ajudante:''};
-    const ocorr = Number(r.ocorrencia||0);
-    // Só registra o pedido e seu valor SE ainda não foi visto (dedup por carga+pedido)
-    if(!cargaDados[c].pedidoValor.hasOwnProperty(ped)){
-      const v = parseValorBR(r.valor);
-      cargaDados[c].pedidoValor[ped] = v;
-      cargaDados[c].pedidos.add(ped);
-      if(ocorr !== 1){
-        cargaDados[c].pedidosSemOcorr.add(ped);
-        cargaDados[c].valor += v; // só soma pedidos sem ocorrência no valor total
-      }
-    }
-    if(!cargaDados[c].ajudante && r.ajudante && r.ajudante.trim())
-      cargaDados[c].ajudante = r.ajudante.trim();
-  });
+  // ── MAPA: carga → pedidos + valor (do cache — não muta o cache compartilhado) ─────
+  const cargaDados = Object.assign({}, getCargaMap());
 
-  // Enriquecer cargaDados com dados das demandas (cargas externas sem BASE_DATA)
+  // Enriquecer com dados das demandas (cargas externas sem BASE_DATA)
   (_demandasCache||[]).forEach(d=>{
     if(!d.carga) return;
     const c = Math.round(Number(d.carga));
@@ -6688,11 +6693,25 @@ function renderVeic(){
   const fRire = document.getElementById('v-rire')?.value||'';
   const fRota = document.getElementById('v-rota')?.value||'';
 
-  // Mapa carga → placa (do BASE_DATA)
+  // Usar cache de mapa de cargas (construído 1× quando BASE_DATA muda)
+  const cargaDados = getCargaMap();
+
+  // Mapa carga → placa (do cache + demandas)
   const cargaPlaca = {};
-  BASE_DATA.forEach(r=>{
-    const c = Math.round(Number(r.carga));
-    if(r.placa && !cargaPlaca[c]) cargaPlaca[c] = r.placa;
+  Object.entries(cargaDados).forEach(([c,d])=>{ if(d.placa) cargaPlaca[Number(c)]=d.placa; });
+
+  // Enriquecer com dados das demandas (cargas externas sem BASE_DATA)
+  const _cargaDadosV = Object.assign({}, cargaDados);
+  (_demandasCache||[]).forEach(d=>{
+    if(!d.carga) return;
+    const c = Math.round(Number(d.carga));
+    if(!_cargaDadosV[c]) _cargaDadosV[c] = {pedidos:new Set(), pedidosSemOcorr:new Set(), pedidoValor:{}, valor:0, rota:d.rota||'', und:'', rire:'', placa:'', ajudante:''};
+    if(_cargaDadosV[c].pedidos.size===0 && d.quantidade_pedidos>0){
+      for(let i=0;i<d.quantidade_pedidos;i++){ _cargaDadosV[c].pedidos.add('dem_'+i); _cargaDadosV[c].pedidosSemOcorr.add('dem_'+i); }
+    }
+    if(_cargaDadosV[c].valor===0 && d.valor_total>0) _cargaDadosV[c].valor = d.valor_total;
+    if(!_cargaDadosV[c].rota && d.rota) _cargaDadosV[c].rota = d.rota;
+    if(d.veiculo && !cargaPlaca[c]) cargaPlaca[c] = d.veiculo;
   });
 
   // Construir mapa por placa — deduplicando pedidos por carga
@@ -6700,43 +6719,13 @@ function renderVeic(){
   let totalEnt = 0;
   let totalVal = 0;
 
-  // Agrupar BASE_DATA por carga com dedup de pedidos
-  const cargaDados = {};
-  BASE_DATA.forEach(r=>{
-    if(!r.carga||!r.pedido) return;
-    const c = Math.round(Number(r.carga));
-    if(!cargaDados[c]) cargaDados[c] = {pedidos:new Set(),valor:0,rota:r.rota||'',und:r.und||'',rire:r.rire||''};
-    const k = String(r.pedido);
-    if(!cargaDados[c].pedidos.has(k)){
-      cargaDados[c].pedidos.add(k);
-      cargaDados[c].valor += parseValorBR(r.valor);
-    }
-    if(!cargaDados[c].rota && r.rota) cargaDados[c].rota = r.rota;
-    if(!cargaDados[c].und && r.und) cargaDados[c].und = r.und;
-  });
-
-  // Enriquecer cargaDados com dados das demandas (para cargas externas sem BASE_DATA)
-  (_demandasCache||[]).forEach(d=>{
-    if(!d.carga) return;
-    const c = Math.round(Number(d.carga));
-    if(!cargaDados[c]) cargaDados[c] = {pedidos:new Set(), valor:0, rota:d.rota||'', und:'', rire:''};
-    // Se a demanda tem pedidos mas BASE_DATA não tem — usar quantidade_pedidos
-    if(cargaDados[c].pedidos.size===0 && d.quantidade_pedidos>0){
-      for(let i=0;i<d.quantidade_pedidos;i++) cargaDados[c].pedidos.add('dem_'+i);
-    }
-    if(cargaDados[c].valor===0 && d.valor_total>0) cargaDados[c].valor = d.valor_total;
-    if(!cargaDados[c].rota && d.rota) cargaDados[c].rota = d.rota;
-    // Placa da demanda
-    if(d.veiculo && !cargaPlaca[c]) cargaPlaca[c] = d.veiculo;
-  });
-
   // Para cada lançamento E demanda, pegar a placa e somar pedidos/valor
   const vistas = new Set();
 
   // Função para processar uma carga
   function processarCargaVeic(cargaNum, placa, rota, und, rire, mesAno){
     if(vistas.has(cargaNum)) return;
-    const dados = cargaDados[cargaNum];
+    const dados = _cargaDadosV[cargaNum];
     if(!dados || dados.pedidos.size===0) return;
     if(!placa) return;
     if((rota||'').toUpperCase() === 'RETIRA') return;
@@ -6758,7 +6747,7 @@ function renderVeic(){
   // 1. Lançamentos manuais
   lancamentos.forEach(l=>{
     const cNum = Math.round(Number(l.carga));
-    const dados = cargaDados[cNum];
+    const dados = _cargaDadosV[cNum];
     const rire = normRire(l.rire) || getRireFromRota(l.rota||dados?.rota||'');
     const und  = l.und || dados?.und || '';
     const rota = l.rota || dados?.rota || '';
@@ -6844,25 +6833,29 @@ async function lancar(){
     ts:new Date().toISOString()
   });
   pushLancamento(lancamentos[0]).catch(e=>console.warn('pushLanc:',e.message));
-  populateSelects();
-  renderMot();
-  renderVeic();
-  renderLanc();
-  renderGeral();
 
+  // Feedback imediato — limpa inputs e mostra toast antes dos renders pesados
   document.getElementById('l-carga').value='';
   document.getElementById('l-motorista').value='';
   document.getElementById('l-veiculo').value='';
   document.getElementById('l-rota-input').value='';
   const prev = document.getElementById('carga-preview');
   if(prev) prev.style.display='none';
-
   showToast(
     temNaBase
       ? '✅ Carga '+carga+' — '+qtdPedidos+' pedidos vinculados ao motorista!'
       : '⏳ Carga '+carga+' salva! Será atualizada quando a planilha for carregada.',
     temNaBase?'success':'warning'
   );
+
+  // Atualiza as telas no próximo frame (não bloqueia o clique)
+  requestAnimationFrame(()=>{
+    populateSelects();
+    renderMot();
+    renderVeic();
+    renderLanc();
+    renderGeral();
+  });
 }
 
 async function remover(carga){lancamentos=lancamentos.filter(l=>l.carga!==carga);salvarLanc();renderLanc();renderMot();renderVeic();}
@@ -7168,22 +7161,16 @@ function renderGeral(){
   }
 
   // Construir mapa de cargas lançadas com seus pedidos, rota e valor
+  const _gcm = getCargaMap();
   const cargasLanc = {};
   lancamentos.forEach(l => {
     if((l.motorista||'').toUpperCase()==='LOJA') return;
     const c = Number(l.carga);
-    const linhas = BASE_DATA.filter(x=>Math.round(Number(x.carga))===Math.round(c) && x.pedido);
-    const pedidos = [...new Set(linhas.map(x=>x.pedido))];
-    // Dedup pedidos no valor — evita inflação por duplicatas no BASE_DATA
-    const _gPv2=new Set();
-    const valBase = linhas.reduce((s,r)=>{const k=String(r.pedido);if(_gPv2.has(k))return s;_gPv2.add(k);return s+(r.valor||0);},0);
-    const valor   = valBase || (CARGA_MAP[c] ? CARGA_MAP[c].valor||0 : 0);
-    const rire    = normRire(l.rire) || getRireFromRota(l.rota);
-    cargasLanc[c] = {
-      rota: l.rota||'', rire,
-      qtd: pedidos.length||1,
-      valor, ts: l.ts
-    };
+    const dados = _gcm[Math.round(c)];
+    const qtd   = dados ? dados.pedidos.size : 0;
+    const valor = (dados ? dados.valor : 0) || (CARGA_MAP[c] ? CARGA_MAP[c].valor||0 : 0);
+    const rire  = normRire(l.rire) || getRireFromRota(l.rota);
+    cargasLanc[c] = {rota: l.rota||'', rire, qtd: qtd||1, valor, ts: l.ts};
   });
 
   // Totais gerais
@@ -7272,6 +7259,7 @@ function renderGeral(){
 function limparDadosBase(){
   if(!confirm('Limpar todos os dados da planilha? Os lançamentos serão mantidos.')) return;
   BASE_DATA = [];
+  window._cargaMapCache = null;
   CARGA_MAP = {};
   try {
     localStorage.removeItem('base_data_prod');
@@ -10325,6 +10313,7 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
         const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
         const filtrados  = novos.filter(r=>!chaveExist.has(Number(r.carga)+'_'+String(r.pedido)));
         BASE_DATA = [...BASE_DATA, ...filtrados];
+        window._cargaMapCache = null;
         try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
 
         // Enviar ao Supabase em lote
@@ -11055,6 +11044,7 @@ async function sincronizarTudo(){
             if(_sk.has(k)) return false;
             _sk.add(k); return true;
           });
+          window._cargaMapCache = null;
         }
       }catch(e){}
     }
@@ -18804,6 +18794,7 @@ const _ut=document.getElementById('update-time'); if(_ut) _ut.textContent='Atual
         chaves.add(k);
         return true;
       });
+      window._cargaMapCache = null;
       // Garantir und preenchido
       BASE_DATA.forEach(r => {
         if(!r.und) {
