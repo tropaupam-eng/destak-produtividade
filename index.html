@@ -761,6 +761,34 @@ body{
 .cl-ring{animation:spin 12s linear infinite;transform-origin:40px 40px}
 .loading-text{color:rgba(175,169,236,.9);margin-top:18px;font-size:.85rem;font-weight:600;letter-spacing:2px;text-transform:uppercase;animation:pulse-txt 1.4s ease-in-out infinite}
 
+/* ── SELECT BUSCÁVEL ─────────────────────────────── */
+.sb-wrap{position:relative;width:100%}
+.sb-trigger{width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px 13px;font-size:.9rem;background:#fff;color:#111;cursor:pointer;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;user-select:none;min-height:42px;gap:6px}
+.sb-trigger:hover{border-color:#93c5fd}
+.sb-trigger.open{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.1)}
+.sb-arrow{font-size:.7rem;color:#9ca3af;flex-shrink:0;transition:transform .2s}
+.sb-trigger.open .sb-arrow{transform:rotate(180deg)}
+.sb-val{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111}
+.sb-val.sb-available{color:#059669;font-weight:700}
+.sb-val.sb-occupied{color:#6b7280}
+.sb-val.sb-placeholder{color:#9ca3af}
+.sb-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.13);z-index:4000;overflow:hidden}
+.sb-wrap.open .sb-dropdown{display:block}
+.sb-search-box{padding:8px 10px;border-bottom:1px solid #f0f4f8}
+.sb-search-box input{width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:7px 10px;font-size:.85rem;outline:none;box-sizing:border-box}
+.sb-search-box input:focus{border-color:#3b82f6}
+.sb-list{max-height:220px;overflow-y:auto}
+.sb-item{padding:9px 14px;cursor:pointer;font-size:.88rem;display:flex;align-items:center;gap:7px;border-bottom:1px solid rgba(0,0,0,.04)}
+.sb-item:last-child{border-bottom:none}
+.sb-item:hover{background:#f0f9ff}
+.sb-item.sb-selected{background:rgba(37,99,235,.06);font-weight:600}
+.sb-item.sb-placeholder-opt{color:#9ca3af;font-style:italic}
+.sb-item.sb-available{color:#059669;font-weight:700}
+.sb-item.sb-available::before{content:'●';font-size:.55rem;flex-shrink:0;color:#059669}
+.sb-item.sb-occupied{color:#9ca3af}
+.sb-item.sb-occupied::before{content:'●';font-size:.55rem;flex-shrink:0;color:#ef4444}
+.sb-empty{padding:12px 14px;color:#9ca3af;font-size:.83rem;text-align:center;font-style:italic}
+
 /* ── TOAST (keep existing) ───────────────────────── */
 .toast{
   position:fixed;bottom:24px;right:24px;
@@ -8737,6 +8765,107 @@ async function salvarSenhaAdmin(){
 let MOTORISTAS_CACHE = [];
 let VEICULOS_CACHE   = [];
 let ROTAS_CAD_CACHE  = [];
+let _veiculosOcupados = new Set();
+
+async function atualizarVeiculosOcupados(){
+  try{
+    const ativos = await supaFetch('demandas_rota?select=veiculo&veiculo=not.is.null&status=not.in.(saiu,concluido,cancelado)');
+    _veiculosOcupados = new Set((ativos||[]).map(d=>d.veiculo).filter(Boolean));
+  }catch(e){ _veiculosOcupados = new Set(); }
+}
+
+function aplicarSelectBuscavel(selectId, opcoesConfig){
+  const sel = document.getElementById(selectId);
+  if(!sel) return;
+
+  // Se já foi aplicado, apenas re-renderiza a lista
+  if(sel.dataset.sbDone){
+    const wrap = sel.closest('.sb-wrap');
+    if(wrap){
+      const list = wrap.querySelector('.sb-list');
+      const searchInp = wrap.querySelector('.sb-search-box input');
+      if(list) _sbRenderList(sel, list, searchInp?searchInp.value:'', opcoesConfig);
+      const opt = sel.options[sel.selectedIndex];
+      const valEl = wrap.querySelector('.sb-val');
+      if(valEl && opt){ valEl.textContent = opt.text; _sbAplicarClasse(valEl, opt.value, opt.text, opcoesConfig); }
+    }
+    return;
+  }
+  sel.dataset.sbDone = '1';
+  sel.style.display = 'none';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'sb-wrap';
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+
+  const trigger = document.createElement('div');
+  trigger.className = 'sb-trigger';
+  trigger.innerHTML = '<span class="sb-val sb-placeholder">Selecione...</span><span class="sb-arrow">▾</span>';
+  wrap.insertBefore(trigger, sel);
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'sb-dropdown';
+  dropdown.innerHTML = '<div class="sb-search-box"><input type="text" placeholder="🔍 Buscar..." autocomplete="off"/></div><div class="sb-list"></div>';
+  wrap.appendChild(dropdown);
+
+  const searchInp = dropdown.querySelector('input');
+  const list = dropdown.querySelector('.sb-list');
+  const valEl = trigger.querySelector('.sb-val');
+
+  function renderList(termo){ _sbRenderList(sel, list, termo||'', opcoesConfig, valEl); }
+  function syncTrigger(){
+    const opt = sel.options[sel.selectedIndex];
+    if(opt){ valEl.textContent = opt.text; _sbAplicarClasse(valEl, opt.value, opt.text, opcoesConfig); }
+  }
+  function open(){
+    document.querySelectorAll('.sb-wrap.open').forEach(w=>{ w.classList.remove('open'); w.querySelector('.sb-trigger')&&w.querySelector('.sb-trigger').classList.remove('open'); });
+    wrap.classList.add('open'); trigger.classList.add('open');
+    searchInp.value=''; renderList('');
+    setTimeout(()=>searchInp.focus(), 30);
+  }
+  function close(){ wrap.classList.remove('open'); trigger.classList.remove('open'); }
+
+  trigger.addEventListener('click', e=>{ e.stopPropagation(); wrap.classList.contains('open')?close():open(); });
+  searchInp.addEventListener('input', ()=>renderList(searchInp.value));
+  searchInp.addEventListener('click', e=>e.stopPropagation());
+  document.addEventListener('click', e=>{ if(!wrap.contains(e.target)) close(); });
+
+  // Observer: atualiza display quando opções mudam
+  new MutationObserver(()=>{ syncTrigger(); renderList(searchInp.value); }).observe(sel, {childList:true});
+  syncTrigger();
+}
+
+function _sbAplicarClasse(el, value, text, cfg){
+  el.className = 'sb-val';
+  if(!value){ el.classList.add('sb-placeholder'); return; }
+  const cls = cfg&&cfg.getClass ? cfg.getClass(value, text) : '';
+  if(cls) el.classList.add(cls);
+}
+
+function _sbRenderList(sel, list, termo, cfg, valElRef){
+  const t = termo.toLowerCase();
+  list.innerHTML = '';
+  let found = 0;
+  Array.from(sel.options).forEach(opt=>{
+    if(t && !opt.text.toLowerCase().includes(t)) return;
+    found++;
+    const item = document.createElement('div');
+    const cls = !opt.value ? 'sb-placeholder-opt' : (cfg&&cfg.getClass ? cfg.getClass(opt.value, opt.text) : '');
+    item.className = 'sb-item'+(cls?' '+cls:'')+(opt.value===sel.value?' sb-selected':'');
+    item.textContent = opt.text;
+    item.addEventListener('click', e=>{
+      e.stopPropagation();
+      sel.value = opt.value;
+      if(valElRef){ valElRef.textContent = opt.text; _sbAplicarClasse(valElRef, opt.value, opt.text, cfg); }
+      const wrap = sel.closest('.sb-wrap');
+      if(wrap){ wrap.classList.remove('open'); wrap.querySelector('.sb-trigger')&&wrap.querySelector('.sb-trigger').classList.remove('open'); }
+      sel.dispatchEvent(new Event('change'));
+    });
+    list.appendChild(item);
+  });
+  if(!found) list.innerHTML = '<div class="sb-empty">Nenhum resultado encontrado</div>';
+}
 
 async function carregarMotoristas(){
   try{
@@ -8753,6 +8882,8 @@ async function carregarMotoristas(){
     // Popular datalist
     const dl = document.getElementById('list-motoristas');
     if(dl) dl.innerHTML = MOTORISTAS_CACHE.map(m=>`<option value="${m.nome}">`).join('');
+    // Aplicar select buscável
+    aplicarSelectBuscavel('exp-motorista');
   }catch(e){ MOTORISTAS_CACHE=[]; }
 }
 
@@ -8808,19 +8939,37 @@ async function salvarNovaRota(){
 
 async function carregarVeiculos(){
   try{
+    await atualizarVeiculosOcupados();
     const data = await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true');
     VEICULOS_CACHE = data||[];
+    // Ordenar: disponíveis primeiro, depois ocupados
+    VEICULOS_CACHE.sort((a,b)=>{
+      const aOcup = _veiculosOcupados.has(a.placa);
+      const bOcup = _veiculosOcupados.has(b.placa);
+      if(aOcup !== bOcup) return aOcup ? 1 : -1;
+      return a.placa.localeCompare(b.placa);
+    });
     // Popular select da expedição
     const sel = document.getElementById('exp-veiculo');
     if(sel){
       const cur = sel.value;
       sel.innerHTML = '<option value="">Selecione o veículo...</option>' +
-        VEICULOS_CACHE.map(v=>`<option value="${v.placa}">${v.placa}${v.tipo?' — '+v.tipo:''}</option>`).join('');
+        VEICULOS_CACHE.map(v=>{
+          const ocup = _veiculosOcupados.has(v.placa);
+          const label = ocup
+            ? `${v.placa}${v.tipo?' — '+v.tipo:''} (em uso)`
+            : `${v.placa}${v.tipo?' — '+v.tipo:''}`;
+          return `<option value="${v.placa}" data-ocup="${ocup}">${label}</option>`;
+        }).join('');
       if(cur) sel.value = cur;
     }
     const dl = document.getElementById('list-veiculos');
     if(dl) dl.innerHTML = VEICULOS_CACHE.map(v=>`<option value="${v.placa}">`).join('');
     popularVeiculosLanc();
+    // Aplicar select buscável com cores
+    aplicarSelectBuscavel('exp-veiculo', {
+      getClass: (placa)=> _veiculosOcupados.has(placa) ? 'sb-occupied' : 'sb-available'
+    });
   }catch(e){ VEICULOS_CACHE=[]; }
 }
 
@@ -9597,14 +9746,28 @@ async function abrirEditarDemanda(id){
     const mots = await supaFetch('motoristas?ativo=eq.true&select=nome&order=nome.asc') || [];
     mots.forEach(m=>{ const o=document.createElement('option'); o.value=m.nome; o.textContent=m.nome; if(m.nome===d.motorista) o.selected=true; selMot.appendChild(o); });
   }catch(e){}
+  aplicarSelectBuscavel('edit-dem-motorista');
 
-  // Popular veículos
+  // Popular veículos (com disponibilidade)
+  await atualizarVeiculosOcupados();
   const selVeic = document.getElementById('edit-dem-veiculo');
   selVeic.innerHTML = '<option value="">Selecione...</option>';
   try{
-    const veics = await supaFetch('veiculos?ativo=eq.true&select=placa&order=placa.asc') || [];
-    veics.forEach(v=>{ const o=document.createElement('option'); o.value=v.placa; o.textContent=v.placa; if(v.placa===d.veiculo) o.selected=true; selVeic.appendChild(o); });
+    // Disponíveis primeiro, depois ocupados
+    const veics = await supaFetch('veiculos?ativo=eq.true&select=placa,tipo&order=placa.asc') || [];
+    veics.sort((a,b)=>{ const aO=_veiculosOcupados.has(a.placa)&&a.placa!==d.veiculo; const bO=_veiculosOcupados.has(b.placa)&&b.placa!==d.veiculo; return aO!==bO?aO?1:-1:a.placa.localeCompare(b.placa); });
+    veics.forEach(v=>{
+      const ocup = _veiculosOcupados.has(v.placa) && v.placa !== d.veiculo;
+      const o=document.createElement('option');
+      o.value=v.placa;
+      o.textContent = ocup ? `${v.placa}${v.tipo?' — '+v.tipo:''} (em uso)` : `${v.placa}${v.tipo?' — '+v.tipo:''}`;
+      if(v.placa===d.veiculo) o.selected=true;
+      selVeic.appendChild(o);
+    });
   }catch(e){}
+  aplicarSelectBuscavel('edit-dem-veiculo', {
+    getClass: (placa)=> (_veiculosOcupados.has(placa) && placa!==d.veiculo) ? 'sb-occupied' : 'sb-available'
+  });
 
   // Popular rotas
   const selRota = document.getElementById('edit-dem-rota');
@@ -9613,6 +9776,7 @@ async function abrirEditarDemanda(id){
     const rotas = await supaFetch('rotas?ativo=eq.true&select=nome&order=nome.asc') || [];
     rotas.forEach(r=>{ const o=document.createElement('option'); o.value=r.nome; o.textContent=r.nome; if(r.nome===d.rota) o.selected=true; selRota.appendChild(o); });
   }catch(e){}
+  aplicarSelectBuscavel('edit-dem-rota');
 
   // Popular ajudantes
   const selAj = document.getElementById('edit-dem-ajudante');
@@ -9622,6 +9786,7 @@ async function abrirEditarDemanda(id){
       const ajs = await supaFetch('ajudantes?ativo=eq.true&status=eq.aprovado&select=nome&order=nome.asc') || [];
       ajs.forEach(a=>{ const o=document.createElement('option'); o.value=a.nome; o.textContent=a.nome; if(a.nome===d.ajudante) o.selected=true; selAj.appendChild(o); });
     }catch(e){}
+    aplicarSelectBuscavel('edit-dem-ajudante');
   }
 
   document.getElementById('modal-editar-demanda').style.display = 'flex';
