@@ -15694,9 +15694,35 @@ async function reabrirFiscal(carga, demandaId){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
-async function concluirFiscalPortal(carga){
-  if(!confirm('Confirmar conclusão do Fiscal para carga '+carga+'? A carga irá para Seguros e Caixa.')) return;
+// ── Valida se todos pedidos estão conferidos E têm NF antes de avançar ──
+async function _validarFiscalCompleto(carga){
   try{
+    const [total, confOK, nfsC] = await Promise.all([
+      supaFetch(`base_data?carga=eq.${carga}&select=pedido`),
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=eq.ok&select=pedido`),
+      supaFetch(`notas_fiscais?carga=eq.${carga}&select=pedido,tipo`)
+    ]);
+    const pedTotal = [...new Set((total||[]).map(p=>p.pedido))];
+    const pedOK    = [...new Set((confOK||[]).map(p=>p.pedido))];
+    const pedNF    = [...new Set((nfsC||[]).filter(n=>n.tipo==='nf').map(n=>n.pedido))];
+    const semConf  = pedTotal.filter(p=>!pedOK.includes(p));
+    const semNF    = pedTotal.filter(p=>!pedNF.includes(p));
+    return { ok: semConf.length===0 && semNF.length===0, semConf, semNF, total:pedTotal.length };
+  }catch(e){ return { ok:false, semConf:[], semNF:[], total:0, erro:e.message }; }
+}
+
+async function concluirFiscalPortal(carga){
+  try{
+    const v = await _validarFiscalCompleto(carga);
+    if(!v.ok){
+      let msg = 'Carga '+carga+' ainda tem pendências:';
+      if(v.semConf.length) msg += '\n❌ Sem conferência: pedido(s) '+v.semConf.join(', ');
+      if(v.semNF.length)   msg += '\n📋 Sem NF: pedido(s) '+v.semNF.join(', ');
+      msg += '\n\nDeseja enviar mesmo assim?';
+      if(!confirm(msg)) return;
+    } else {
+      if(!confirm('Confirmar conclusão do Fiscal para carga '+carga+'? A carga irá para Seguros e Caixa.')) return;
+    }
     const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`);
     const id = dem?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
@@ -17094,6 +17120,19 @@ async function carregarPaginaFiscal(){
     const podeUpload = ['fiscal_admin','fiscal_op','admin','adm_fiscal','opedor_fiscal'].includes(perfilUsuario);
     const podeAdmin  = ['fiscal_admin','admin','adm_fiscal','fiscal_op','opedor_fiscal'].includes(perfilUsuario);
 
+    // ── Formatadores de tempo para rastreamento por pedido ──
+    const _fT = ts => {
+      if(!ts) return '—';
+      const d = new Date(ts);
+      return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    };
+    const _dMin = (a,b) => {
+      if(!a||!b) return '';
+      const m = Math.round((new Date(b)-new Date(a))/60000);
+      if(m<0) return '';
+      return ' (+' + (m<60 ? m+'min' : Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')) + ')';
+    };
+
     container.innerHTML = cargas.map(carga=>{
       const dados   = cargasMap[carga];
       const dem     = dados.demanda;
@@ -17123,6 +17162,14 @@ async function carregarPaginaFiscal(){
             ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">❌ ${pedNOK} NOK</span>`:''}
             ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">⏳ ${pedPend} s/ conf.</span>`:''}
             <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
+            ${(()=>{
+              const confs = pedidos.map(p=>dados.confMap[p]?.conferido_em).filter(Boolean);
+              const nfTimes = nfsCarga.map(n=>n.criado_em).filter(Boolean);
+              const fc = confs.length ? confs.reduce((a,b)=>a<b?a:b) : null;
+              const ln = nfTimes.length ? nfTimes.reduce((a,b)=>a>b?a:b) : null;
+              if(!fc) return '';
+              return '<span style="font-size:.68rem;color:var(--text-muted);background:rgba(255,255,255,.06);padding:2px 8px;border-radius:4px">⏱ '+_fT(fc)+(ln?' → '+_fT(ln)+_dMin(fc,ln):'...')+'</span>';
+            })()}
           </div>
         </div>
         <div style="padding:14px 20px">
@@ -17171,6 +17218,18 @@ async function carregarPaginaFiscal(){
                   ${podeAdmin?`<button onclick="removerNFInline(${n.id||'null'},'${n.nome_arquivo}',${carga})" title="Remover" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:.85rem;padding:1px 4px">🗑</button>`:''}
                 </div>
               </div>`).join('')}
+              ${(()=>{
+                const cTs = conf?.conferido_em||null;
+                const nfTs = (nfsPed.filter(n=>n.tipo==='nf').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
+                const bTs  = (nfsPed.filter(n=>n.tipo==='boleto').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
+                if(!cTs&&!nfTs&&!bTs) return '';
+                let row = '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 8px;background:rgba(255,255,255,.04);border-radius:6px;font-size:.68rem;color:var(--text-muted);margin-bottom:5px">';
+                if(cTs) row += '<span title="Conferido pelo armazém">📦 conf. '+_fT(cTs)+'</span>';
+                if(nfTs) row += '<span title="NF emitida">📋 NF '+_fT(nfTs)+'<b style="color:#22c55e">'+_dMin(cTs,nfTs)+'</b></span>';
+                if(bTs)  row += '<span title="Boleto emitido">💰 Boleto '+_fT(bTs)+'<b style="color:#3b82f6">'+_dMin(cTs,bTs)+'</b></span>';
+                row += '</div>';
+                return row;
+              })()}
               ${podeTrabalhar?`<div style="margin-top:6px">
                 <div style="display:flex;gap:6px;flex-wrap:wrap">
                   <input type="file" id="nfi-${carga}-${ped}" accept=".pdf,.xml,.png,.jpg" multiple style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.75rem;flex:1;min-width:0"/>
@@ -17211,6 +17270,15 @@ async function _executarConclusaoFiscal(){
   const carga = _fiscalXmlCarga;
   const demandaId = _fiscalXmlDemandaId;
   try{
+    // Validar pedidos antes de avançar status
+    const v = await _validarFiscalCompleto(carga);
+    if(!v.ok){
+      let msg = 'Carga '+carga+' ainda tem pendências:';
+      if(v.semConf.length) msg += '\n❌ Sem conferência: pedido(s) '+v.semConf.join(', ');
+      if(v.semNF.length)   msg += '\n📋 Sem NF: pedido(s) '+v.semNF.join(', ');
+      msg += '\n\nDeseja enviar mesmo assim?';
+      if(!confirm(msg)) return;
+    }
     const id = demandaId || (await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`))?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto'})});
@@ -17269,6 +17337,7 @@ async function uploadNFInline(carga, pedido){
       })});
     }
     showToast(`✅ ${files.length} arquivo(s) enviado(s)!`,'success');
+    await notificarSeguros(carga);
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
