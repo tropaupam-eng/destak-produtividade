@@ -16809,136 +16809,201 @@ async function carregarPortalConferente(){
   const container = document.getElementById('conf-pedidos-container');
   if(!container||!USUARIO_LOGADO) return;
 
+  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+
+  // Label do mês no topbar
+  const mesAtual = new Date();
+  const mesStr   = mesAtual.toISOString().slice(0,7); // 2026-05
+  const mesNome  = mesAtual.toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  set('conf-mes-label', mesNome.charAt(0).toUpperCase()+mesNome.slice(1));
+
+  const myId   = USUARIO_LOGADO.id;
+  const myNome = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
+  const mesInicio = mesStr+'-01';
+
   try{
-    // Buscar atribuições deste conferente
-    const atribs = await supaFetch(`atribuicoes_armazem?conferente_id=eq.${USUARIO_LOGADO.id}&select=*`) || [];
-    if(!atribs.length){
-      container.innerHTML='<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga atribuída a você ainda.</p>';
-      return;
+    // ── Buscar tudo em paralelo ──────────────────────────────────
+    const [confMes, confRankAll, atribsMinha, demandasAtivas, atribsAll, cfgArr] = await Promise.all([
+      supaFetch(`conferencia_pedidos?conferente_id=eq.${myId}&conferido_em=gte.${mesInicio}&status=eq.ok&select=pedido,carga`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
+      supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.(pendente,separacao,carregamento,aguardando_nf)&carga=not.is.null&select=carga,rota,status,motorista,id&order=carga.desc`).catch(()=>[]),
+      supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status`).catch(()=>[]),
+      supaFetch(`configuracoes?chave=eq.config_bonus&select=valor`).catch(()=>[])
+    ]);
+
+    // Bônus por pedido: config_bonus.confer_por_pedido ou default R$0,20
+    const bonusPP = cfgArr?.[0]?.valor?.confer_por_pedido ?? 0.20;
+
+    // ── KPIs do mês ─────────────────────────────────────────────
+    const pedsMes      = (confMes||[]).length;
+    const bonusEstMes  = pedsMes * bonusPP;
+    const cargasConc   = (atribsMinha||[]).filter(a=>a.status==='concluido').length;
+
+    // ── Ranking ─────────────────────────────────────────────────
+    const rankMap = {};
+    (confRankAll||[]).forEach(c=>{
+      const n = (c.conferente_nome||'').toUpperCase().trim();
+      if(!n || n==='ADM') return;
+      rankMap[n] = (rankMap[n]||0)+1;
+    });
+    // Garantir que eu apareça mesmo com 0
+    if(!(myNome in rankMap) && pedsMes > 0) rankMap[myNome] = pedsMes;
+    const rankList = Object.entries(rankMap).sort((a,b)=>b[1]-a[1]);
+    const myPos    = rankList.findIndex(([n])=>n===myNome);
+    const myPosLbl = myPos>=0 ? '#'+(myPos+1) : (pedsMes>0?'#'+(rankList.length+1):'—');
+
+    // ── Atualizar KPIs ──────────────────────────────────────────
+    set('conf-kpi-total',  pedsMes);
+    set('conf-kpi-bonus',  'R$ '+bonusEstMes.toFixed(2).replace('.',','));
+    set('conf-kpi-rank',   myPosLbl);
+    set('conf-kpi-cargas', cargasConc);
+
+    // ── Cargas Disponíveis (lançar) ──────────────────────────────
+    const cargasMinha  = new Set((atribsMinha||[]).map(a=>a.carga));
+    const statusAtivos = ['pendente','separacao','carregamento'];
+    const cargasDisp   = (demandasAtivas||[]).filter(d=>d.carga && statusAtivos.includes(d.status) && !cargasMinha.has(d.carga));
+    const divDisp = document.getElementById('conf-disponiveis-container');
+    const dispCount = document.getElementById('conf-disp-count');
+    if(dispCount) dispCount.textContent = cargasDisp.length ? cargasDisp.length+' disponível(is)' : '';
+    if(divDisp){
+      if(cargasDisp.length){
+        const stLabel = {pendente:'⏳ Pendente',separacao:'📦 Em Separação',carregamento:'🚛 Em Carregamento'};
+        const stCor   = {pendente:'#6b7280',separacao:'#f59e0b',carregamento:'#3b82f6'};
+        divDisp.innerHTML = cargasDisp.map(d=>{
+          const jaConf = (atribsAll||[]).filter(a=>a.carga===d.carga && a.status!=='removido').map(a=>a.conferente_nome).filter(n=>(n||'').toUpperCase()!==myNome);
+          const cor = stCor[d.status]||'#6b7280';
+          return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${cor};border-radius:12px;padding:14px 18px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+            <div>
+              <div style="font-size:.92rem;font-weight:800;color:var(--text-primary)">🚛 Carga ${d.carga} — ${d.rota||'—'}</div>
+              <div style="font-size:.75rem;color:var(--text-secondary);margin-top:3px">🚗 ${d.motorista||'—'} &nbsp;•&nbsp; <span style="color:${cor};font-weight:700">${stLabel[d.status]||d.status}</span></div>
+              ${jaConf.length?`<div style="font-size:.7rem;color:var(--text-muted);margin-top:3px">👥 ${jaConf.join(', ')}</div>`:''}
+            </div>
+            <button onclick="pegarCargaConferente(${d.carga})"
+              style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:.83rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 4px 12px rgba(37,99,235,.3)">
+              📦 Lançar Carga
+            </button>
+          </div>`;
+        }).join('');
+      } else {
+        divDisp.innerHTML='<p style="text-align:center;padding:20px;color:var(--text-muted)">Nenhuma carga disponível no momento.</p>';
+      }
     }
 
-    // Buscar status das demandas dessas cargas
-    const cargasIds = atribs.map(a=>a.carga).filter(Boolean);
-    const demandas = cargasIds.length
-      ? await supaFetch(`demandas_rota?carga=in.(${cargasIds.join(',')})&select=carga,status,rota,motorista`) || []
-      : [];
+    // ── Ranking visual ───────────────────────────────────────────
+    const divRank = document.getElementById('conf-ranking-container');
+    if(divRank){
+      const medalhas=['🥇','🥈','🥉'];
+      if(rankList.length){
+        divRank.innerHTML=`<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+          ${rankList.map(([nome,count],i)=>{
+            const isMe = nome===myNome;
+            const bonus = (count*bonusPP).toFixed(2).replace('.',',');
+            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:11px 16px;border-bottom:1px solid var(--border);background:${isMe?'rgba(37,99,235,.1)':'transparent'}">
+              <div style="display:flex;align-items:center;gap:12px">
+                <span style="font-size:1rem;min-width:28px;text-align:center">${medalhas[i]||(i+1)+'º'}</span>
+                <span style="font-size:.85rem;font-weight:${isMe?800:500};color:${isMe?'#60a5fa':'var(--text-primary)'}">${nome}${isMe?' ← você':''}</span>
+              </div>
+              <div style="text-align:right">
+                <div style="font-size:.85rem;font-weight:700;color:var(--text-primary)">${count} pedidos</div>
+                <div style="font-size:.7rem;color:var(--green)">R$ ${bonus}</div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`;
+      } else {
+        divRank.innerHTML='<p style="text-align:center;padding:20px;color:var(--text-muted)">Nenhum dado de ranking ainda.</p>';
+      }
+    }
+
+    // ── Minhas Cargas Ativas ─────────────────────────────────────
     const demMap = {};
-    demandas.forEach(d=>{ demMap[d.carga]=d; });
+    (demandasAtivas||[]).forEach(d=>{ if(d.carga) demMap[d.carga]=d; });
 
-    // Status que ainda estão no armazém (conferência ativa)
-    // Ativo no portal do conferente até fiscal liberar
-    const statusAtivos = ['pendente','separacao','carregamento','aguardando_nf'];
-    // Filtrar só cargas com demanda ativa — as que já saíram não precisam de conferência
-    const atribsAtivas = atribs.filter(a=>{
+    const atribsAtivas = (atribsMinha||[]).filter(a=>{
       const dem = demMap[a.carga];
-      if(!dem) return true; // sem demanda: mostrar por precaução
-      return statusAtivos.includes(dem.status);
+      return dem && ['pendente','separacao','carregamento','aguardando_nf'].includes(dem.status);
     });
-
-    // Atualizar automaticamente atribuições de cargas que já passaram
-    const atribsConcluidas = atribs.filter(a=>{
-      const dem = demMap[a.carga];
-      return dem && !statusAtivos.includes(dem.status) && a.status === 'pendente';
-    });
-    for(const a of atribsConcluidas){
-      supaFetch(`atribuicoes_armazem?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})}).catch(()=>{});
-    }
 
     if(!atribsAtivas.length){
-      container.innerHTML='<p style="text-align:center;padding:40px;color:var(--text-muted)">Todas as suas cargas já foram expedidas. Aguardando novas atribuições.</p>';
+      set('conf-kpi-ok', 0);
+      set('conf-kpi-pend', 0);
+      container.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:8px">📭</div>Nenhuma carga ativa. Pegue uma carga acima!</div>';
       return;
     }
 
-    // Para cada atribuição ativa, buscar pedidos
-    const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
-    let htmlTotal = '';
+    // Buscar pedidos e conferências em lote
+    const idsAtivos = atribsAtivas.map(a=>a.carga);
+    const [pedidosBDAll, confMeus] = await Promise.all([
+      supaFetch(`base_data?carga=in.(${idsAtivos.join(',')})&select=carga,pedido,rota,valor&order=pedido.asc`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?carga=in.(${idsAtivos.join(',')})&conferente_id=eq.${myId}&select=*`).catch(()=>[])
+    ]);
+
+    const pedPorCarga = {};
+    (pedidosBDAll||[]).forEach(r=>{ if(!pedPorCarga[r.carga]) pedPorCarga[r.carga]=[]; pedPorCarga[r.carga].push(r); });
+    const confPorCarga = {};
+    (confMeus||[]).forEach(c=>{ if(!confPorCarga[c.carga]) confPorCarga[c.carga]={}; confPorCarga[c.carga][c.pedido]=c; });
+
     let totalPed=0, totalOk=0, totalNok=0;
+    let htmlTotal = '';
 
     for(const atr of atribsAtivas){
-      // Buscar pedidos desta carga já conferidos
-      const conferidos = await supaFetch(`conferencia_pedidos?carga=eq.${atr.carga}&conferente_id=eq.${USUARIO_LOGADO.id}&select=*`) || [];
-      const confMap = {};
-      conferidos.forEach(cx=>{ confMap[cx.pedido]=cx; });
+      const dem    = demMap[atr.carga]||{};
+      const confMap= confPorCarga[atr.carga]||{};
+      let pedidos  = (pedPorCarga[atr.carga]||[]);
 
-      // Buscar pedidos do Supabase (fonte principal — sempre atualizada)
-      const pedidosBD = await supaFetch(`base_data?carga=eq.${atr.carga}&select=pedido,rota,valor&order=pedido.asc`) || [];
-      // Combinar com BASE_DATA local e usar o mais completo
-      const pedidosLocal = BASE_DATA.filter(r=>Math.round(Number(r.carga))===Number(atr.carga) && r.pedido);
-      const todosPedMap = {};
-      // Supabase primeiro
-      pedidosBD.forEach(r=>{ todosPedMap[r.pedido]={pedido:r.pedido,rota:r.rota||'',valor:r.valor||0}; });
-      // Local por cima (mais completo se tiver mais dados)
-      pedidosLocal.forEach(r=>{ todosPedMap[r.pedido]={pedido:r.pedido,rota:r.rota||'',valor:r.valor||0}; });
-
-      let pedidos = Object.values(todosPedMap);
-
-      // Filtrar pelo início se definido
       if(atr.pedido_inicio){
         const sorted = pedidos.map(p=>p.pedido).sort((a,b)=>a-b);
-        const idxInicio = sorted.indexOf(Number(atr.pedido_inicio));
-        const pedidosAtrib = idxInicio>=0 ? sorted.slice(idxInicio) : sorted;
-        pedidos = pedidos.filter(p=>pedidosAtrib.includes(p.pedido));
+        const idx = sorted.indexOf(Number(atr.pedido_inicio));
+        const slice = idx>=0 ? sorted.slice(idx) : sorted;
+        pedidos = pedidos.filter(p=>slice.includes(p.pedido));
       }
-      const pedidosUnicos = pedidos.map(p=>p.pedido).sort((a,b)=>a-b);
 
-      totalPed += pedidosUnicos.length;
-      totalOk  += pedidosUnicos.filter(p=>confMap[p]?.status==='ok').length;
-      totalNok += pedidosUnicos.filter(p=>confMap[p]?.status==='nok').length;
+      const pUnicos   = [...new Set(pedidos.map(p=>p.pedido))].sort((a,b)=>a-b);
+      const okCount   = pUnicos.filter(p=>confMap[p]?.status==='ok').length;
+      const nokCount  = pUnicos.filter(p=>confMap[p]?.status==='nok').length;
+      const todosConf = pUnicos.length>0 && pUnicos.every(p=>confMap[p]?.status==='ok'||confMap[p]?.status==='nok');
+      const pct       = pUnicos.length ? Math.round(okCount/pUnicos.length*100) : 0;
 
-      // Status atual desta carga no armazém
-      let stArmazem = 'pendente';
-      try{
-        const cfg2 = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-        const armSt = cfg2&&cfg2[0]?cfg2[0].valor||{}:{};
-        const dem2 = (_demandasCache||[]).find(d=>Number(d.carga)===Number(atr.carga));
-        if(dem2) stArmazem = armSt[dem2.id]||'pendente';
-      }catch(e){}
+      totalPed += pUnicos.length;
+      totalOk  += okCount;
+      totalNok += nokCount;
 
-      const todosConferidos = pedidosUnicos.length > 0 &&
-        pedidosUnicos.every(p=>confMap[p]?.status==='ok'||confMap[p]?.status==='nok');
-
-      htmlTotal += `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;margin-bottom:20px;overflow:hidden">
-        <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(232,0,13,.05)">
+      htmlTotal += `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #2563eb;border-radius:14px;margin-bottom:18px;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(37,99,235,.05)">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <span style="font-weight:800;color:var(--text-primary)">🚛 Carga ${atr.carga}</span>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:.8rem;color:var(--text-secondary)">${pedidosUnicos.filter(p=>confMap[p]?.status==='ok').length}/${pedidosUnicos.length} conferidos</span>
-              ${todosConferidos && stArmazem !== 'carregado_ok' ? `
-              <button onclick="concluirCarregamentoConferente(${atr.carga})"
-                style="background:#059669;color:#fff;border:none;border-radius:7px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer">
-                ✅ Carregamento Concluído
-              </button>` : ''}
-              ${(()=>{
-                if(stArmazem!=='carregado_ok') return '';
-                const demAtual = (_demandasCache||[]).find(d=>Number(d.carga)===Number(atr.carga));
-                const stDem = demAtual?.status||'aguardando_nf';
-                const stMap = {aguardando_nf:'📋 Aguardando NF',aguardando_manifesto:'🛡️ Aguardando Manifesto',pronto_viagem:'✅ Pronto para Viagem',saiu:'🚛 Em Rota',concluido:'✅ Entregue'};
-                const clMap = {aguardando_nf:'#8b5cf6',aguardando_manifesto:'#7c3aed',pronto_viagem:'#059669',saiu:'#2563eb',concluido:'#059669'};
-                const lbl = stMap[stDem]||'✅ Carregado OK';
-                const cl  = clMap[stDem]||'#059669';
-                return '<span style="background:rgba(5,150,105,.1);color:'+cl+';font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px">'+lbl+'</span>';
-              })()}
+            <div>
+              <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">🚛 Carga ${atr.carga}</span>
+              <span style="margin-left:8px;font-size:.8rem;color:var(--text-secondary)">${dem.rota||'—'} • 🚗 ${dem.motorista||'—'}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:.8rem;color:var(--text-secondary)">${okCount}/${pUnicos.length} OK</span>
+              ${todosConf && dem.status!=='aguardando_nf'?`<button onclick="concluirCarregamentoConferente(${atr.carga})" style="background:#059669;color:#fff;border:none;border-radius:7px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer">✅ Concluir Carregamento</button>`:''}
+              ${dem.status==='aguardando_nf'?'<span style="background:rgba(5,150,105,.1);color:#059669;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px">📋 Carregado — Aguardando NF</span>':''}
             </div>
           </div>
+          <div style="margin-top:8px;background:rgba(255,255,255,.07);border-radius:3px;height:4px;overflow:hidden">
+            <div style="height:100%;background:#2563eb;width:${pct}%;transition:width .4s"></div>
+          </div>
         </div>
-        <div style="padding:14px 18px">
-          ${pedidosUnicos.map(ped=>{
+        <div style="padding:12px 18px">
+          ${pUnicos.map(ped=>{
             const pedData = pedidos.find(r=>r.pedido===ped)||{};
             const conf = confMap[ped];
             const st = conf?.status||'pendente';
-            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:9px;margin-bottom:6px;background:${st==='ok'?'rgba(5,150,105,.08)':st==='nok'?'rgba(239,68,68,.08)':'var(--bg-card2)'}">
+            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:9px;margin-bottom:5px;background:${st==='ok'?'rgba(5,150,105,.08)':st==='nok'?'rgba(239,68,68,.08)':'var(--bg-card2)'}">
               <div>
                 <div style="font-size:.85rem;font-weight:700;color:var(--text-primary)">Pedido ${ped}</div>
-                <div style="font-size:.75rem;color:var(--text-muted)">${pedData?.rota||'—'}</div>
-                ${conf?.observacao?`<div style="font-size:.72rem;color:#ef4444;margin-top:2px">⚠️ ${conf.observacao}</div>`:''}
+                <div style="font-size:.72rem;color:var(--text-muted)">${pedData.rota||dem.rota||'—'}</div>
+                ${conf?.observacao?`<div style="font-size:.7rem;color:#ef4444;margin-top:2px">⚠️ ${conf.observacao}</div>`:''}
               </div>
               <div style="display:flex;gap:6px;align-items:center">
                 ${st==='pendente'?`
-                  <input type="text" id="obs-${atr.carga}-${ped}" placeholder="Observação..." style="border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.75rem;width:130px;outline:none"/>
+                  <input type="text" id="obs-${atr.carga}-${ped}" placeholder="Obs..." style="border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.75rem;width:110px;outline:none;background:var(--bg-input);color:var(--text-primary)"/>
                   <button onclick="conferirPedidoPortal('${atr.carga}','${ped}','ok')" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:.75rem;cursor:pointer;font-weight:700">✅</button>
                   <button onclick="conferirPedidoPortal('${atr.carga}','${ped}','nok')" style="background:#ef4444;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:.75rem;cursor:pointer;font-weight:700">❌</button>
-                `:`<span style="font-size:.8rem;font-weight:700;color:${st==='ok'?'#059669':'#ef4444'}">${st==='ok'?'✅ OK':'❌ Não OK'}</span>
-                  <button onclick="resetarConferencia('${atr.carga}','${ped}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:.7rem;cursor:pointer">↩</button>`}
+                `:`<span style="font-size:.8rem;font-weight:700;color:${st==='ok'?'#059669':'#ef4444'}">${st==='ok'?'✅ OK':'❌ NOK'}</span>
+                   <button onclick="resetarConferencia('${atr.carga}','${ped}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:.7rem;cursor:pointer">↩</button>`}
               </div>
             </div>`;
           }).join('')}
@@ -16946,13 +17011,25 @@ async function carregarPortalConferente(){
       </div>`;
     }
 
-    document.getElementById('conf-kpi-cargas').textContent = atribs.length;
-    document.getElementById('conf-kpi-total').textContent = totalPed;
-    document.getElementById('conf-kpi-ok').textContent = totalOk;
-    document.getElementById('conf-kpi-pend').textContent = totalPed-totalOk-totalNok;
+    set('conf-kpi-ok',   totalOk);
+    set('conf-kpi-pend', totalPed-totalOk-totalNok);
     container.innerHTML = htmlTotal;
 
   }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; }
+}
+
+async function pegarCargaConferente(carga){
+  if(!USUARIO_LOGADO) return;
+  if(!confirm('Confirmar que você vai conferir a Carga '+carga+'?')) return;
+  try{
+    await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
+      carga:Number(carga), conferente_id:USUARIO_LOGADO.id,
+      conferente_nome:USUARIO_LOGADO.nome, status:'pendente',
+      criado_em:new Date().toISOString()
+    })});
+    showToast('✅ Carga '+carga+' lançada para você!','success');
+    await carregarPortalConferente();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 async function conferirPedidoPortal(carga, pedido, status){
@@ -20704,41 +20781,79 @@ function limparComercialRotas(){
 
 <!-- ══ PORTAL CONFERENTE ══ -->
 <div id="portal-conferente-wrapper" style="display:none;min-height:100vh;background:var(--bg-base)">
-  <div style="background:linear-gradient(135deg,#0D0D0D,#2563eb);padding:16px 24px;display:flex;justify-content:space-between;align-items:center">
+  <!-- Topbar -->
+  <div style="background:linear-gradient(135deg,#0d0d14,#1e3a8a);padding:16px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:20;box-shadow:0 2px 16px rgba(0,0,0,.4)">
     <div style="display:flex;align-items:center;gap:12px">
-      <span style="font-size:1.5rem">📦</span>
+      <div style="width:40px;height:40px;background:linear-gradient(135deg,#2563eb,#1d4ed8);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.2rem">📦</div>
       <div>
-        <div style="font-size:1rem;font-weight:800;color:#fff">Conferente</div>
-        <div id="conf-nome" style="font-size:.78rem;color:rgba(255,255,255,.7)">—</div>
+        <div style="font-size:1rem;font-weight:800;color:#fff">Portal do Conferente</div>
+        <div id="conf-nome" style="font-size:.75rem;color:rgba(255,255,255,.6)">—</div>
       </div>
     </div>
-    <button onclick="logout()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:7px 16px;cursor:pointer;font-size:.83rem">Sair</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="conf-mes-label" style="font-size:.72rem;color:rgba(255,255,255,.5)"></span>
+      <button onclick="carregarPortalConferente()" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);color:#fff;border-radius:8px;padding:6px 12px;font-size:.78rem;cursor:pointer">🔄</button>
+      <button onclick="logout()" style="background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.4);color:#fca5a5;border-radius:8px;padding:6px 14px;font-size:.78rem;cursor:pointer;font-weight:700">Sair</button>
+    </div>
   </div>
-  <div style="max-width:900px;margin:0 auto;padding:24px 16px">
 
-    <!-- KPIs conferente -->
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:24px">
-      <div class="kpi-card" style="border-top-color:var(--red)">
-        <div class="kpi-label">Total Cargas</div>
-        <div class="kpi-value" id="conf-kpi-cargas">—</div>
-      </div>
+  <div style="max-width:960px;margin:0 auto;padding:20px 16px 40px">
+
+    <!-- KPIs: 3+3 -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px">
       <div class="kpi-card" style="border-top-color:#3b82f6">
-        <div class="kpi-label">Total Pedidos</div>
+        <div class="kpi-label">📅 Pedidos no Mês</div>
         <div class="kpi-value" id="conf-kpi-total">—</div>
       </div>
-      <div class="kpi-card" style="border-top-color:var(--green)">
-        <div class="kpi-label">Separados OK</div>
-        <div class="kpi-value" id="conf-kpi-ok">—</div>
+      <div class="kpi-card" style="border-top-color:#22c55e">
+        <div class="kpi-label">💰 Bônus Estimado</div>
+        <div class="kpi-value" id="conf-kpi-bonus" style="font-size:1.25rem">—</div>
       </div>
       <div class="kpi-card" style="border-top-color:#f59e0b">
-        <div class="kpi-label">Pendentes</div>
+        <div class="kpi-label">🏆 Ranking</div>
+        <div class="kpi-value" id="conf-kpi-rank">—</div>
+      </div>
+      <div class="kpi-card" style="border-top-color:var(--red)">
+        <div class="kpi-label">✅ Cargas Concluídas</div>
+        <div class="kpi-value" id="conf-kpi-cargas">—</div>
+      </div>
+      <div class="kpi-card" style="border-top-color:#059669">
+        <div class="kpi-label">✅ Pedidos OK</div>
+        <div class="kpi-value" id="conf-kpi-ok">—</div>
+      </div>
+      <div class="kpi-card" style="border-top-color:#a855f7">
+        <div class="kpi-label">⏳ Pendentes</div>
         <div class="kpi-value" id="conf-kpi-pend">—</div>
       </div>
     </div>
 
-    <div id="conf-pedidos-container">
-      <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando seus pedidos...</p>
+    <!-- Cargas Disponíveis (Lançar) -->
+    <div style="margin-bottom:24px">
+      <h3 style="font-size:.92rem;font-weight:800;color:var(--text-primary);margin-bottom:12px;display:flex;align-items:center;gap:8px">
+        📋 Cargas Disponíveis para Conferência
+        <span id="conf-disp-count" style="font-size:.72rem;font-weight:600;background:rgba(37,99,235,.15);color:#60a5fa;padding:2px 8px;border-radius:10px"></span>
+      </h3>
+      <div id="conf-disponiveis-container">
+        <p style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</p>
+      </div>
     </div>
+
+    <!-- Minhas Cargas Ativas -->
+    <div style="margin-bottom:24px">
+      <h3 style="font-size:.92rem;font-weight:800;color:var(--text-primary);margin-bottom:12px">🚛 Minhas Cargas em Andamento</h3>
+      <div id="conf-pedidos-container">
+        <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando seus pedidos...</p>
+      </div>
+    </div>
+
+    <!-- Ranking do Mês -->
+    <div>
+      <h3 style="font-size:.92rem;font-weight:800;color:var(--text-primary);margin-bottom:12px">🏆 Ranking do Mês</h3>
+      <div id="conf-ranking-container">
+        <p style="text-align:center;padding:20px;color:var(--text-muted)">Carregando ranking...</p>
+      </div>
+    </div>
+
   </div>
 </div>
 
