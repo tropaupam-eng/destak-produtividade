@@ -5400,10 +5400,20 @@ async function syncLancamentos(){
       salvarLanc();
     }
     // Se falhar ou retornar vazio, manter os lançamentos já carregados
-  }catch(e){ 
+  }catch(e){
     console.warn('Sync lançamentos falhou, usando dados locais:', e.message);
     // Manter lancamentos já carregados pelo preloaded
   }
+}
+
+// ── DIVERGÊNCIAS ACEITAS (Supabase) ──────────────────────
+window._divAceitasCache = new Set();
+async function carregarDivergenciasAceitas(){
+  try{
+    if(!USUARIO_LOGADO?.id) return;
+    const rows = await supaFetch(`divergencias_aceitas?usuario_id=eq.${USUARIO_LOGADO.id}&select=carga`).catch(()=>[]);
+    window._divAceitasCache = new Set((rows||[]).map(r=>Number(r.carga)));
+  }catch(e){ console.warn('divAceitas:',e.message); }
 }
 
 async function pushLancamento(l){
@@ -6908,11 +6918,14 @@ function escolherMotoristaLanc(carga, motorista){
   lancamentos = lancamentos.filter(l=> Number(l.carga)!==carga || (l.motorista||'').trim().toUpperCase()===normEsc);
 
   // Marcar esta carga como divergência aceita para suprimir re-exibição
-  try{
-    const acc = new Set(JSON.parse(localStorage.getItem('diverg_aceitas')||'[]'));
-    acc.add(carga);
-    localStorage.setItem('diverg_aceitas', JSON.stringify([...acc]));
-  }catch(e){}
+  if(!window._divAceitasCache.has(carga)){
+    window._divAceitasCache.add(carga);
+    supaFetch('divergencias_aceitas',{method:'POST',body:JSON.stringify({
+      carga: Number(carga),
+      usuario_id: USUARIO_LOGADO?.id||null,
+      aceita_em: new Date().toISOString()
+    })}).catch(()=>{});
+  }
 
   salvarLanc(); renderLanc(); renderMot(); renderVeic(); detectarConflitos();
 }
@@ -6939,7 +6952,7 @@ function detectarConflitos() {
   });
 
   // Cargas com divergência já aceita pelo usuário
-  const divAceitas = new Set((() => { try{ return JSON.parse(localStorage.getItem('diverg_aceitas')||'[]'); }catch(e){return [];} })());
+  const divAceitas = window._divAceitasCache || new Set();
 
   // Verificar se BASE_DATA tem condutor diferente do lançado
   const cargasLancadas = {};
@@ -9306,6 +9319,8 @@ async function carregarDemandas(){
     // Expedição mostra apenas cargas NÃO concluídas (concluídas vão para Histórico)
     const data = await supaFetch('demandas_rota?status=not.in.(concluido,cancelado)&select=*&order=data_saida.desc&limit=200');
     _demandasCache = data||[];
+    // Carregar comercial_rotas do Supabase para badge na expedição
+    supaFetch('comercial_rotas?status=neq.resolvido&select=rota,data,motivo,status').then(cr=>{ window._comRotasCache = cr||[]; }).catch(()=>{});
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderFrotaStatus();
@@ -10007,8 +10022,7 @@ function renderDemandasCards(){
     outro:               { label:'📦 Atraso no Carregamento',   bg:'#fff7ed', color:'#c2410c', border:'rgba(249,115,22,.3)', cardBorder:'rgba(249,115,22,.4)', cardLeft:'#f97316' },
   };
   const agendAtrasados = getAgendamentos().filter(a=>a.status==='atrasado' && a.motivo_atraso);
-  const comRotasPend = JSON.parse(localStorage.getItem('comercial_rotas')||'[]')
-    .filter(r=>r.status!=='resolvido');
+  const comRotasPend = (window._comRotasCache||[]).filter(r=>r.status!=='resolvido');
 
   container.innerHTML = data.map(d=>{
     const s   = statusCfg[d.status] || {label:d.status,bg:'#f3f4f6',color:'#374151',bar:'#9ca3af'};
@@ -11142,6 +11156,7 @@ async function sincronizarTudo(){
 
     // 2. Lançamentos do Supabase → local
     await syncLancamentos();
+    carregarDivergenciasAceitas().catch(()=>{}); // cache de divergências aceitas
     migrarRotasSupabase(); // normaliza PETRO→Petrolina, JUA→Juazeiro (roda 1x)
 
     // 3. BASE_DATA do Supabase → local
@@ -12818,7 +12833,16 @@ function uploadDatasEntrega(event){
         mapa[ped] = dt;
         count++;
       });
-      localStorage.setItem(entregaKey, JSON.stringify(mapa));
+      // Salvar no Supabase (upsert por mes_ano + pedido)
+      const uid = USUARIO_LOGADO?.id||null;
+      const registros = Object.entries(mapa).map(([ped,dt])=>({
+        mes_ano: mesFiltro, pedido: ped, data_entrega: dt, usuario_id: uid
+      }));
+      supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
+        method:'POST',
+        prefer:'resolution=merge-duplicates,return=minimal',
+        body: JSON.stringify(registros)
+      }).catch(e=>console.warn('entrega_datas upload:',e.message));
       showToast(`✅ ${count} datas de entrega carregadas para ${mesFiltro}`,'success');
       renderDashInterna();
     }catch(err){ showToast('Erro ao ler planilha: '+err.message,'warning'); }
@@ -12827,12 +12851,14 @@ function uploadDatasEntrega(event){
   event.target.value = ''; // reset input
 }
 
-function limparDatasEntrega(){
+async function limparDatasEntrega(){
   const selMes = document.getElementById('dash-int-mes');
   const mesFiltro = selMes?.value || new Date().toISOString().slice(0,7);
-  localStorage.removeItem(`entrega_datas_${mesFiltro}`);
-  showToast('Datas de entrega removidas','success');
-  renderDashInterna();
+  try{
+    await supaFetch(`entrega_datas?mes_ano=eq.${mesFiltro}`,{method:'DELETE',prefer:'return=minimal'});
+    showToast('Datas de entrega removidas','success');
+    renderDashInterna();
+  }catch(e){ showToast('Erro ao remover: '+e.message,'warning'); }
 }
 
 // Dados extraídos da planilha DADOS PRODUTIVIDADE — Maio/2026 — rotas RI
@@ -13142,10 +13168,12 @@ async function renderDashInterna(){
     // Mapa carga → ts_saiu (timestamp de saída do veículo)
     const cargaSaiuMap = {};
     dem.forEach(d=>{ if(d.ts_saiu) cargaSaiuMap[String(d.carga)] = d.ts_saiu; });
-    // Datas de entrega carregadas via planilha (localStorage)
-    const entregaKey = `entrega_datas_${mesFiltro}`;
+    // Datas de entrega carregadas via planilha (Supabase)
     let entregaMap = {};
-    try{ entregaMap = JSON.parse(localStorage.getItem(entregaKey)||'{}'); }catch(e){}
+    try{
+      const edRows = await supaFetch(`entrega_datas?mes_ano=eq.${mesFiltro}&select=pedido,data_entrega`).catch(()=>[]);
+      (edRows||[]).forEach(r=>{ if(r.pedido&&r.data_entrega) entregaMap[r.pedido]=r.data_entrega; });
+    }catch(e){}
     const nEntrega = Object.keys(entregaMap).length;
     // Atualizar badge
     const badge = document.getElementById('dash-entrega-badge');
@@ -20408,10 +20436,15 @@ async function acaoRotaDia(id, rota, acao){
   } else if(acao==='valor'){
     try{
       await criarPreCarga('valor');
-      // Registrar no Comercial Rotas
-      const comRotas = JSON.parse(localStorage.getItem('comercial_rotas')||'[]');
-      comRotas.push({id:'com_'+Date.now(), rota, data:hoje, motivo:'Carga não atingiu o valor mínimo', status:'pendente', criado_em:new Date().toISOString()});
-      localStorage.setItem('comercial_rotas', JSON.stringify(comRotas));
+      // Registrar no Comercial Rotas (Supabase)
+      supaFetch('comercial_rotas',{method:'POST',body:JSON.stringify({
+        id:'com_'+Date.now(),
+        rota, data:hoje,
+        motivo:'Carga não atingiu o valor mínimo',
+        status:'pendente',
+        criado_em:new Date().toISOString(),
+        usuario_id: USUARIO_LOGADO?.id||null
+      })}).catch(()=>{});
       if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#d97706;font-weight:700">💰 Enviado ao Comercial — pré-carga criada</div>';
       showToast('💰 Rota enviada ao Comercial','success');
     }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -20656,12 +20689,19 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
     const labMap = {comercial:'Comercial',veiculo:'Sem Veículo',motorista:'Sem Motorista',atraso_rota:'Atraso de Rota'};
     if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; saveAgendamentos(arr); }
     if(motivo==='comercial'){
-      const comRotas = JSON.parse(localStorage.getItem('comercial_rotas')||'[]');
-      const jaExiste = comRotas.find(x=>x.rota===rota && x.data===data && x.status!=='resolvido');
-      if(!jaExiste){
-        comRotas.push({id:'com_'+Date.now(), rota, data, motivo:'Carga não atingiu o valor mínimo', status:'pendente', criado_em:new Date().toISOString()});
-        localStorage.setItem('comercial_rotas', JSON.stringify(comRotas));
-      }
+      // Verificar se já existe no Supabase antes de criar
+      supaFetch(`comercial_rotas?rota=eq.${encodeURIComponent(rota)}&data=eq.${data}&status=neq.resolvido&select=id&limit=1`)
+        .then(existing=>{
+          if(!existing||existing.length===0){
+            return supaFetch('comercial_rotas',{method:'POST',body:JSON.stringify({
+              id:'com_'+Date.now(), rota, data,
+              motivo:'Carga não atingiu o valor mínimo',
+              status:'pendente',
+              criado_em:new Date().toISOString(),
+              usuario_id: USUARIO_LOGADO?.id||null
+            })});
+          }
+        }).catch(()=>{});
     }
     if(card) card.innerHTML=`<div style="text-align:center;padding:12px;color:#b91c1c;font-weight:700">⏳ Atraso registrado — ${labMap[motivo]||motivo}</div>`;
     showToast('⏳ Atraso registrado: '+rota,'warning');
@@ -20683,34 +20723,33 @@ function confirmarOutro(id, rota, data){
 // COMERCIAL — ROTAS
 // ══════════════════════════════════════════════════════
 
-function renderComercialRotas(){
+async function renderComercialRotas(){
   const container = document.getElementById('comercial-rotas-lista');
   if(!container) return;
+  container.innerHTML='<div style="text-align:center;padding:24px;color:var(--text-muted)">⏳ Carregando...</div>';
 
-  // Fonte 1: comercial_rotas (registros diretos)
-  const comRotas = JSON.parse(localStorage.getItem('comercial_rotas')||'[]');
+  // Carregar do Supabase
+  let arr = [];
+  try{
+    arr = await supaFetch('comercial_rotas?select=*&order=criado_em.desc') || [];
+  }catch(e){ arr=[]; }
 
-  // Fonte 2: agendamentos com motivo_atraso='comercial' que ainda não estão em comRotas
+  // Também incluir agendamentos com motivo_atraso='comercial' não ainda registrados
   const agendComercial = getAgendamentos()
     .filter(a => a.motivo_atraso === 'comercial')
-    .filter(a => !comRotas.find(x => x.rota === a.rota && x.data === a.data));
-
-  // Migrar agendamentos para comercial_rotas (sincroniza as fontes)
+    .filter(a => !arr.find(x => x.rota === a.rota && x.data === a.data));
   if(agendComercial.length){
-    agendComercial.forEach(a=>{
-      comRotas.push({
-        id: 'agend_'+a.id,
-        rota: a.rota,
-        data: a.data,
-        motivo: 'Carga não atingiu o valor mínimo',
-        status: 'pendente',
-        criado_em: a.criado_em || a.data+'T00:00:00'
-      });
-    });
-    localStorage.setItem('comercial_rotas', JSON.stringify(comRotas));
+    const toInsert = agendComercial.map(a=>({
+      id:'agend_'+a.id, rota:a.rota, data:a.data,
+      motivo:'Carga não atingiu o valor mínimo', status:'pendente',
+      criado_em:a.criado_em||a.data+'T00:00:00',
+      usuario_id: USUARIO_LOGADO?.id||null
+    }));
+    // Salvar no Supabase e adicionar ao array local
+    supaFetch('comercial_rotas',{method:'POST',body:JSON.stringify(toInsert)}).catch(()=>{});
+    arr = [...arr, ...toInsert];
   }
 
-  const arr = comRotas.sort((a,b)=>b.criado_em>a.criado_em?1:-1);
   if(!arr.length){
     container.innerHTML='<div style="text-align:center;padding:48px;color:var(--text-muted)"><div style="font-size:2.5rem;margin-bottom:10px">📊</div><p>Nenhuma rota pendente no Comercial. As rotas com carga abaixo do valor mínimo aparecerão aqui.</p></div>';
     return;
@@ -20739,19 +20778,19 @@ function renderComercialRotas(){
     </tbody></table></div>`;
 }
 
-function resolverComercialRota(id){
-  const arr = JSON.parse(localStorage.getItem('comercial_rotas')||'[]');
-  const idx = arr.findIndex(r=>r.id===id);
-  if(idx>=0) arr[idx].status='resolvido';
-  localStorage.setItem('comercial_rotas', JSON.stringify(arr));
-  renderComercialRotas();
+async function resolverComercialRota(id){
+  try{
+    await supaFetch(`comercial_rotas?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({status:'resolvido'})});
+    renderComercialRotas();
+  }catch(e){ showToast('Erro ao resolver: '+e.message,'warning'); }
 }
 
-function limparComercialRotas(){
-  const arr = JSON.parse(localStorage.getItem('comercial_rotas')||'[]').filter(r=>r.status!=='resolvido');
-  localStorage.setItem('comercial_rotas', JSON.stringify(arr));
-  renderComercialRotas();
-  showToast('Rotas resolvidas removidas','success');
+async function limparComercialRotas(){
+  try{
+    await supaFetch(`comercial_rotas?status=eq.resolvido`,{method:'DELETE',prefer:'return=minimal'});
+    renderComercialRotas();
+    showToast('Rotas resolvidas removidas','success');
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 </script>
 
