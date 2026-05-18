@@ -11165,6 +11165,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const el = document.getElementById(id);
     if(el) el.addEventListener('change', renderMot);
   });
+  // Carregar agendamentos do banco em background (migra do localStorage se necessário)
+  loadAgendamentosFromDB().catch(()=>{});
   // Restaurar última página visitada
   const ultimaPag = localStorage.getItem('destak_pagina_atual') || 'motoristas';
   const tabEl = document.querySelector('.sidebar-item[data-page="'+ultimaPag+'"]');
@@ -19250,10 +19252,71 @@ document.addEventListener('click', function(e){
 // AGENDAMENTO DE ROTAS — controle mensal
 // ══════════════════════════════════════════════════════
 
+// ── Agendamentos: cache em memória + persistência Supabase ──────────────
+let _agendCache = null; // null = ainda não inicializado (fallback localStorage)
+
 function getAgendamentos(){
+  if(_agendCache !== null) return _agendCache;
   try{ return JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]'); }catch(e){ return []; }
 }
-function saveAgendamentos(arr){ localStorage.setItem('agendamentos_rotas', JSON.stringify(arr)); }
+
+function saveAgendamentos(arr){
+  const antigos = _agendCache !== null ? _agendCache : getAgendamentos();
+  const idsNovos = new Set(arr.map(a=>a.id));
+  const deletados = antigos.filter(a=>!idsNovos.has(a.id)).map(a=>a.id);
+  _agendCache = arr;
+  localStorage.setItem('agendamentos_rotas', JSON.stringify(arr));
+  _syncAgendSupabase(arr, deletados);
+}
+
+async function _syncAgendSupabase(arr, deletados=[]){
+  try{
+    if(deletados.length){
+      await supaFetch('agendamentos_rotas?id=in.('+deletados.join(',')+')', {method:'DELETE', prefer:'return=minimal'});
+    }
+    if(arr.length){
+      await supaFetch('agendamentos_rotas?on_conflict=id', {
+        method:'POST',
+        prefer:'resolution=merge-duplicates,return=minimal',
+        body: JSON.stringify(arr.map(a=>({
+          id: a.id,
+          rota: a.rota||'',
+          data: (a.data||new Date().toISOString().slice(0,10)),
+          obs: a.obs||null,
+          mes_ano: a.mes_ano||null,
+          status: a.status||'agendado',
+          criado_em: a.criado_em||new Date().toISOString(),
+          lancado: !!a.lancado,
+          motivo_atraso: a.motivo_atraso||null,
+          motivo_label: a.motivo_label||null,
+          acao: a.acao||null
+        })))
+      });
+    }
+  }catch(e){ console.warn('[Agend] Sync Supabase falhou:',e.message); }
+}
+
+async function loadAgendamentosFromDB(){
+  try{
+    const db = await supaFetch('agendamentos_rotas?select=*&order=data.asc');
+    if(db && db.length > 0){
+      _agendCache = db;
+      localStorage.setItem('agendamentos_rotas', JSON.stringify(db));
+      console.log('[Agend] '+db.length+' agendamentos carregados do banco');
+    } else {
+      const local = (()=>{try{return JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]');}catch(e){return[];}})();
+      _agendCache = local;
+      if(local.length > 0){
+        console.log('[Agend] Migrando '+local.length+' registros do localStorage para o banco...');
+        await _syncAgendSupabase(local);
+        console.log('[Agend] Migração concluída!');
+      }
+    }
+  }catch(e){
+    console.warn('[Agend] Banco indisponível, usando localStorage:',e.message);
+    try{_agendCache=JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]');}catch(e2){_agendCache=[];}
+  }
+}
 
 function setAgendMes(mes){
   document.getElementById('agend-mes-atual').value = mes;
@@ -19276,6 +19339,15 @@ function setAgendMes(mes){
 
 function initAgendMes(){
   const mes = new Date().toISOString().slice(0,7);
+  // Garantir que o cache está carregado antes de renderizar
+  if(_agendCache === null){
+    loadAgendamentosFromDB().then(()=>{
+      carregarCalendarioMaio2026();
+      setAgendMes(mes);
+      setTimeout(function(){ if(typeof verificarRotasSemMotivo==='function') verificarRotasSemMotivo(); }, 400);
+    });
+    return;
+  }
   carregarCalendarioMaio2026();
   setAgendMes(mes);
   // Verifica se há rotas sem motivo após pequeno delay (aguarda render)
