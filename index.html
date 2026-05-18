@@ -4248,6 +4248,23 @@ textarea:focus{
       </div>
     </div>
 
+    <!-- Lançar Carga -->
+    <div id="card-lancar-carga" style="background:linear-gradient(135deg,#1e293b,#1e3a5f);border:1px solid rgba(37,99,235,.3);border-radius:14px;padding:18px 20px;margin-bottom:20px;box-shadow:0 4px 16px rgba(37,99,235,.15)">
+      <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0 0 4px">🚛 Lançar Carga</h3>
+      <p style="font-size:.74rem;color:#64748b;margin:0 0 14px">Informe o número da carga em que você está ajudando para registrar sua participação e garantir sua bonificação.</p>
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <input type="number" id="lanc-carga-aj" placeholder="Nº da carga (ex: 13200)"
+          style="flex:1;background:#0f172a;border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:11px 14px;font-size:1rem;font-weight:700;color:#f0f0f8;outline:none"
+          oninput="this.style.borderColor=this.value?'#3b82f6':'rgba(255,255,255,.12)'"
+          onkeydown="if(event.key==='Enter') registrarParticipacaoCarga()"/>
+        <button onclick="registrarParticipacaoCarga()"
+          style="background:linear-gradient(135deg,#2563eb,#3b82f6);color:#fff;border:none;border-radius:10px;padding:11px 20px;font-size:.88rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 2px 10px rgba(37,99,235,.4)">
+          ✅ Confirmar
+        </button>
+      </div>
+      <div id="msg-lanc-aj" style="display:none;border-radius:8px;padding:10px 14px;margin-top:10px;font-size:.83rem;font-weight:600"></div>
+    </div>
+
     <!-- Histórico de pedidos por carga -->
     <div style="background:#1e293b;border:1px solid rgba(255,255,255,.07);border-radius:14px;overflow:hidden;margin-bottom:20px">
       <div style="padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.07)">
@@ -8229,7 +8246,7 @@ async function salvarPrimeiroAcessoAjudante(){
     document.getElementById('portal-ajudante-wrapper').style.display = 'block';
     document.getElementById('app-nome').textContent = USUARIO_LOGADO.nome;
     await carregarMinhasEntregas();
-    await carregarHistorico();
+    await carregarHistoricoAjudante();
     showToast('✅ Cadastro completo! Bem-vindo, '+USUARIO_LOGADO.nome.split(' ')[0]+'!', 'success');
   }catch(e){
     showErr('Erro ao salvar: '+e.message);
@@ -8427,6 +8444,8 @@ async function iniciarPortalAjudante(){
   if(AJUDANTE.status==='pendente'||(AJUDANTE.ativo===false&&AJUDANTE.status!=='aprovado')){
     const alerta = document.getElementById('alerta-pendente');
     if(alerta) alerta.style.display='block';
+    const cardLanc = document.getElementById('card-lancar-carga');
+    if(cardLanc) cardLanc.style.display='none';
     document.getElementById('kpi-ent').textContent='-';
     document.getElementById('kpi-val').textContent='-';
     document.getElementById('kpi-car').textContent='-';
@@ -8644,101 +8663,85 @@ async function alterarSenha(){
   }
 }
 
-// ── LANÇAR CARGA ─────────────────────────────────────
-async function lancarCarga(){
-  const carga   = parseInt(document.getElementById('lanc-carga').value);
-  const unidade = document.getElementById('lanc-unidade').value;
-  const msg     = document.getElementById('msg-lanc');
+// ── REGISTRAR PARTICIPAÇÃO NA CARGA ──────────────────
+async function registrarParticipacaoCarga(){
+  const inp  = document.getElementById('lanc-carga-aj');
+  const carga = parseInt(inp?.value);
+  const msg   = document.getElementById('msg-lanc-aj');
 
-  msg.style.display='none';
+  const showMsg = (txt, tipo) => {
+    const cores = {
+      erro:    'background:#fef2f2;border:1px solid #fecaca;color:#dc2626',
+      aviso:   'background:#fef3c7;border:1px solid #fcd34d;color:#92400e',
+      sucesso: 'background:#f0fdf4;border:1px solid #86efac;color:#166534'
+    };
+    msg.textContent = txt;
+    msg.style.cssText = (cores[tipo]||cores.erro)+';display:block;padding:10px 14px;border-radius:8px;font-size:.83rem;font-weight:600';
+  };
 
-  if(!carga||carga<=0){
-    msg.textContent='Digite o número da carga'; 
-    msg.style.cssText='display:block;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;margin-top:10px';
-    return;
-  }
-  if(!unidade){
-    msg.textContent='Selecione a unidade';
-    msg.style.cssText='display:block;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;margin-top:10px';
-    return;
-  }
+  if(!carga||carga<=0){ showMsg('Digite o número da carga.','erro'); return; }
+
+  const btn = document.querySelector('#card-lancar-carga button');
+  if(btn){ btn.textContent='⏳ Verificando...'; btn.disabled=true; }
 
   try{
-    // Verificar se a carga existe no sistema
-    const base = await supaFetch(`base_data?carga=eq.${carga}&limit=1&select=carga`);
-    if(!base||base.length===0){
-      msg.textContent='❌ Carga '+carga+' não encontrada no sistema. Verifique o número.';
-      msg.style.cssText='display:block;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;margin-top:10px';
-      return;
-    }
-
-    // Verificar se já lançou essa carga
-    const existente = await supaFetch(
-      `lancamentos_ajudante?ajudante_id=eq.${AJUDANTE.id}&carga=eq.${carga}&limit=1`
-    );
+    // 1. Verificar se já registrou esta carga
+    const existente = await supaFetch(`lancamentos_ajudante?ajudante_id=eq.${AJUDANTE.id}&carga=eq.${carga}&limit=1`);
     if(existente&&existente.length>0){
-      msg.textContent='⚠️ Você já lançou a carga '+carga;
-      msg.style.cssText='display:block;background:#fef3c7;border:1px solid #fcd34d;color:#92400e;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;margin-top:10px';
+      showMsg('⚠️ Você já registrou a carga '+carga+'.','aviso');
       return;
     }
 
-    // Salvar lançamento
-    await supaFetch('lancamentos_ajudante',{
-      method:'POST',
-      body: JSON.stringify({
-        ajudante_id: AJUDANTE.id,
-        carga, unidade, status:'pendente'
-      })
-    });
+    // 2. Buscar lançamento do motorista para esta carga
+    const lanc = await supaFetch(`lancamentos?carga=eq.${carga}&select=id,motorista,ajudante,rota`);
+    const lancamento = lanc&&lanc[0];
 
-    msg.textContent='✅ Carga '+carga+' lançada com sucesso!';
-    msg.style.cssText='display:block;background:#f0fdf4;border:1px solid #86efac;color:#166534;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;margin-top:10px';
-    document.getElementById('lanc-carga').value='';
-    document.getElementById('lanc-unidade').value='';
+    if(!lancamento){
+      // Carga não lançada pelo motorista ainda — verificar se existe em base_data
+      const base = await supaFetch(`base_data?carga=eq.${carga}&limit=1&select=carga`);
+      if(!base||base.length===0){
+        showMsg('❌ Carga '+carga+' não encontrada no sistema. Verifique o número.','erro');
+        return;
+      }
+      // Existe em base_data mas motorista ainda não lançou
+      await supaFetch('lancamentos_ajudante',{method:'POST',body:JSON.stringify({ajudante_id:AJUDANTE.id,carga,unidade:AJUDANTE.und||AJUDANTE.unidade||'',status:'pendente'})});
+      showMsg('📋 Carga '+carga+' registrada! Aguardando lançamento do motorista para contabilizar o bônus.','aviso');
+      inp.value='';
+      return;
+    }
 
-    // Recarregar entregas
-    setTimeout(()=>{ msg.style.display='none'; carregarMinhasEntregas(); }, 2000);
+    const nomeAj = (AJUDANTE.nome||'').trim().toUpperCase();
+
+    // 3. Verificar se outro ajudante já está vinculado
+    if(lancamento.ajudante && lancamento.ajudante.trim().toUpperCase() !== nomeAj){
+      showMsg('⚠️ A carga '+carga+' já tem outro ajudante vinculado: '+lancamento.ajudante+'.','aviso');
+      return;
+    }
+
+    // 4. Vincular ajudante ao lançamento (fonte do KPI)
+    await supaFetch(`lancamentos?id=eq.${lancamento.id}`,{method:'PATCH',body:JSON.stringify({ajudante:nomeAj})});
+
+    // 5. Registrar em lancamentos_ajudante para rastreamento
+    await supaFetch('lancamentos_ajudante',{method:'POST',body:JSON.stringify({ajudante_id:AJUDANTE.id,carga,unidade:AJUDANTE.und||AJUDANTE.unidade||'',status:'confirmado'})});
+
+    showMsg('✅ Carga '+carga+' vinculada! Motorista: '+(lancamento.motorista||'—')+'. Seu bônus já está sendo contabilizado.','sucesso');
+    inp.value='';
+
+    // Recarregar após 2s
+    setTimeout(async()=>{ msg.style.display='none'; await carregarMinhasEntregas(); }, 2000);
 
   }catch(e){
-    msg.textContent='Erro ao lançar: '+e.message;
-    msg.style.cssText='display:block;background:#fef2f2;color:#dc2626;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;margin-top:10px';
+    showMsg('Erro: '+e.message,'erro');
+  }finally{
+    if(btn){ btn.textContent='✅ Confirmar'; btn.disabled=false; }
   }
 }
 
-// ── HISTÓRICO DE PAGAMENTOS ───────────────────────────
-async function carregarHistorico(){
-  try{
-    const data = await supaFetch(
-      `pagamentos?ajudante_id=eq.${AJUDANTE.id}&select=*&order=mes_ano.desc`
-    );
+// ── LANÇAR CARGA (legado — mantido para compatibilidade) ─
+async function lancarCarga(){ return registrarParticipacaoCarga(); }
 
-    const tbody = document.getElementById('tbody-historico');
-    if(!data||data.length===0){
-      tbody.innerHTML='<tr><td colspan="5" class="no-data">Nenhum pagamento registrado ainda</td></tr>';
-      return;
-    }
-
-    const fmtMes = m => {
-      const meses = ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-      const [ano,mes] = m.split('-');
-      return meses[parseInt(mes)]+'/'+ano;
-    };
-
-    tbody.innerHTML = data.map(p=>{
-      const statusTag = p.status==='pago'
-        ? '<span class="tag ok">✅ Pago</span>'
-        : '<span class="tag" style="background:#fef3c7;color:#92400e">⏳ Pendente</span>';
-      return `<tr>
-        <td><strong>${fmtMes(p.mes_ano)}</strong></td>
-        <td style="text-align:center">${p.total_entregas||0}</td>
-        <td style="color:#2563eb;font-weight:700">R$ ${(p.valor_calculado||0).toFixed(2).replace('.',',')}</td>
-        <td style="color:#059669;font-weight:700">${p.status==='pago'?'R$ '+(p.valor_pago||0).toFixed(2).replace('.',','):'-'}</td>
-        <td>${statusTag}</td>
-      </tr>`;
-    }).join('');
-
-  }catch(e){ console.warn('Histórico erro:', e.message); }
-}
+// ── HISTÓRICO DE PAGAMENTOS (alias) ──────────────────
+async function carregarHistorico(){ return carregarHistoricoAjudante(); }
 
 function sairAjudante(){
   AJUDANTE=null;
