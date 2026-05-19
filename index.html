@@ -9023,17 +9023,29 @@ async function carregarKmMotorista(){
     (kmRegs||[]).forEach(r=>{ kmMap[String(r.carga)]=r; });
 
     // KPIs
-    let kmTotal=0, kmRE=0;
+    let kmTotal=0, kmRE=0, bonusKmRE=0;
     (kmRegs||[]).forEach(r=>{
       if(r.km_inicial!=null&&r.km_final!=null){
         const diff=r.km_final-r.km_inicial;
         kmTotal+=diff;
-        if(!_isRI(r)) kmRE+=diff;
+        if(!_isRI(r)){
+          kmRE+=diff;
+          const cfgR = getValorRota(r.rota||'');
+          bonusKmRE += diff * (cfgR.valorKm || 0.20);
+        }
       }
     });
     const setKpi=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
     setKpi('mot-kpi-km-total', kmTotal>0 ? kmTotal.toLocaleString('pt-BR')+' km' : '-');
-    setKpi('mot-kpi-km-re',   kmRE>0   ? kmRE.toLocaleString('pt-BR')+' km'   : '-');
+    const elKmRe = document.getElementById('mot-kpi-km-re');
+    if(elKmRe){
+      if(kmRE>0){
+        elKmRe.innerHTML = kmRE.toLocaleString('pt-BR')+' km'
+          +(bonusKmRE>0 ? `<br><span style="font-size:.75em;color:#fb923c;font-weight:700">R$ ${bonusKmRE.toFixed(2).replace('.',',')}</span>` : '');
+      } else {
+        elKmRe.textContent = '-';
+      }
+    }
 
     if(!cont) return;
     if(!cargas.length){ cont.innerHTML='<div style="text-align:center;padding:16px;color:#64748b;font-size:.82rem">Nenhuma carga encontrada este mês</div>'; return; }
@@ -9050,6 +9062,9 @@ async function carregarKmMotorista(){
       const temInicial = km&&km.km_inicial!=null;
       const temFinal   = km&&km.km_final!=null;
 
+      const kmBonusCard = !isRI && kmRodado != null
+        ? kmRodado * (getValorRota(l.rota||'').valorKm || 0.20)
+        : 0;
       return `<div style="background:rgba(13,148,136,.07);border:1px solid rgba(13,148,136,.18);border-radius:10px;padding:12px 14px;margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="display:flex;align-items:center;gap:8px">
@@ -9058,7 +9073,7 @@ async function carregarKmMotorista(){
             ${badge}
           </div>
           ${kmRodado!=null
-            ? `<span style="font-weight:800;color:#2dd4bf">${kmRodado.toLocaleString('pt-BR')} km${dur?' · '+dur:''}</span>`
+            ? `<div style="text-align:right"><span style="font-weight:800;color:#2dd4bf">${kmRodado.toLocaleString('pt-BR')} km${dur?' · '+dur:''}</span>${kmBonusCard>0?`<br><span style="font-size:.72rem;color:#fb923c;font-weight:700">R$ ${kmBonusCard.toFixed(2).replace('.',',')} bônus KM</span>`:''}</div>`
             : `<span style="font-size:.72rem;color:#f59e0b">⏳ ${temInicial?'Ag. KM Final':'Sem KM'}</span>`}
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;color:#64748b;margin-bottom:8px">
@@ -11700,12 +11715,18 @@ async function carregarPortalMotorista(){
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
     const cargasDoMes = [...new Set(lancs.map(l=>Math.round(Number(l.carga))).filter(Boolean))];
-    let bdMot = [];
-    if(cargasDoMes.length > 0){
-      bdMot = await supaFetch(
-        `base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`
-      ).catch(()=>[]) || [];
-    }
+    // Busca bdMot + km_cargas em paralelo
+    const [bdMot, kmCargasPortal] = await Promise.all([
+      cargasDoMes.length > 0
+        ? supaFetch(`base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`).catch(()=>[])
+        : Promise.resolve([]),
+      motId
+        ? supaFetch(`km_cargas?motorista_id=eq.${motId}&mes_ano=eq.${mesStr}&select=carga,km_inicial,km_final,rire,rota`).catch(()=>[])
+        : Promise.resolve([])
+    ]);
+    // Indexar KM por carga para usar no bônus RE
+    const kmPorCargaPortal = {};
+    (kmCargasPortal||[]).forEach(r => { kmPorCargaPortal[Math.round(Number(r.carga))] = r; });
 
     // Filtrar pedidos válidos (ocorrência != 1)
     const pedidosMes = bdMot.filter(r => {
@@ -11762,8 +11783,13 @@ async function carregarPortalMotorista(){
       const taxa  = isRE ? 0 : (temAj ? (cfg.motCom||0) : (cfg.motSem||0));
       const nPed  = pedPorCarga[c] ? pedPorCarga[c].size : 0;
       const bonus = taxa * nPed;
-      totalVal   += bonus;
-      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, ts:l.ts, isRE });
+      // Bônus KM para rotas RE: km_rodado × valor_km
+      const kmReg = kmPorCargaPortal[c];
+      const kmBonusRE = isRE && kmReg && kmReg.km_inicial != null && kmReg.km_final != null
+        ? (kmReg.km_final - kmReg.km_inicial) * (cfg.valorKm || 0.20)
+        : 0;
+      totalVal += bonus + kmBonusRE;
+      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, ts:l.ts, isRE });
     });
 
     setKpi('mot-kpi-ent-ri', pedidosRI.size || 0);
@@ -11873,8 +11899,11 @@ async function carregarPortalMotorista(){
           </td>
           <td style="padding:10px 14px;text-align:center;font-weight:700;color:#e2e8f0">${l.pedidos||0}</td>
           <td style="padding:10px 14px;font-weight:700">
-            ${l.isRE ? '<span style="color:#475569;font-size:.78rem">R.E. — sem bônus</span>'
-              : l.pedidos ? `<span style="color:#34d399">R$ ${l.bonus.toFixed(2).replace('.',',')}</span>` : '<span style="color:#475569">—</span>'}
+            ${l.isRE
+              ? (l.kmBonusRE > 0
+                ? `<span style="color:#fb923c;font-weight:700">R$ ${l.kmBonusRE.toFixed(2).replace('.',',')}</span><span style="color:#475569;font-size:.68rem;margin-left:4px">KM</span>`
+                : '<span style="color:#475569;font-size:.78rem">Ag. KM Final</span>')
+              : (l.pedidos ? `<span style="color:#34d399">R$ ${l.bonus.toFixed(2).replace('.',',')}</span>` : '<span style="color:#475569">—</span>')}
           </td>
           <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${l.ts?new Date(l.ts).toLocaleDateString('pt-BR'):'-'}</td>
         </tr>`).join('')
