@@ -3774,6 +3774,10 @@ textarea:focus{
           <label>Ajudante (R$)</label>
           <input type="number" id="cad-rota-ajudante" placeholder="0,00" step="0.01" style="width:110px"/>
         </div>
+        <div class="cad-field" id="cad-rota-km-field">
+          <label>R$/KM — RE</label>
+          <input type="number" id="cad-rota-valor-km" placeholder="0,20" step="0.01" value="0.20" style="width:100px"/>
+        </div>
         <button class="cad-btn-add" onclick="cadAdicionarRota()">➕ Adicionar</button>
       </div>
       <div id="msg-cad-rota" class="cad-msg" style="display:none"></div>
@@ -4455,6 +4459,11 @@ textarea:focus{
           <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Ajudante (R$)</label>
           <input type="number" id="er-ajudante" step="0.01" min="0" placeholder="0,00"
             style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#ea580c;text-transform:uppercase;display:block;margin-bottom:5px">🛣️ R$/KM — RE</label>
+          <input type="number" id="er-valor-km" step="0.01" min="0" placeholder="0,20"
+            style="width:100%;border:1.5px solid rgba(234,88,12,.4);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
         </div>
       </div>
       <div id="er-msg" style="display:none;padding:9px 13px;border-radius:8px;font-size:.84rem;font-weight:600"></div>
@@ -5900,7 +5909,7 @@ async function syncConfig(){
   }catch(e){ console.warn('Config sync erro:',e.message); }
   // Carregar valores por rota do banco (mot_sem_aj, mot_com_aj, val_ajudante)
   try{
-    const rotas = await supaFetch('rotas?select=nome,tipo,valor_padrao,mot_sem_aj,mot_com_aj,val_ajudante&ativo=eq.true');
+    const rotas = await supaFetch('rotas?select=nome,tipo,valor_padrao,mot_sem_aj,mot_com_aj,val_ajudante,valor_km&ativo=eq.true');
     if(rotas && rotas.length){
       if(!CONFIG.rotas) CONFIG.rotas = {};
       rotas.forEach(r=>{
@@ -5908,7 +5917,7 @@ async function syncConfig(){
         const isRI = r.tipo==='RI' || r.tipo==='R.I.' || ROTAS_RI.has(nome);
         // Popular ROTAS_RI dinamicamente a partir do banco
         if(isRI) ROTAS_RI.add(nome);
-        // Motorista só recebe em R.I. — em R.E. apenas ajudante recebe
+        // Motorista só recebe em R.I. — em R.E. recebe por KM
         const motSemVal = isRI ? (r.mot_sem_aj||0) : 0;
         const motComVal = isRI ? (r.mot_com_aj||0) : 0;
         CONFIG.rotas[nome] = {
@@ -5917,6 +5926,7 @@ async function syncConfig(){
           mot:    motSemVal,
           ajud:   r.val_ajudante || 0,
           val_ajudante: r.val_ajudante || 0,
+          valorKm: r.valor_km || 0.20,
           meta:   r.valor_padrao || 0,
           tipo:   r.tipo || 'RE',
           ri:     isRI
@@ -7819,25 +7829,26 @@ function getValorRota(rota){
   if(cfgRota){
     const isRI = cfgRota.ri !== undefined ? cfgRota.ri : rotasRI.has(r);
     if(!isRI){
-      // Rota externa: motorista NÃO recebe — apenas ajudante
-      return { motSem:0, motCom:0, ajud: cfgRota.ajud ?? cfgRota.val_ajudante ?? 0, ri:false };
+      // Rota externa: motorista NÃO recebe por pedido — recebe por KM
+      return { motSem:0, motCom:0, ajud: cfgRota.ajud ?? cfgRota.val_ajudante ?? 0, valorKm: cfgRota.valorKm ?? 0.20, ri:false };
     }
     return {
       motSem: cfgRota.motSem ?? cfgRota.mot ?? 0,
       motCom: cfgRota.motCom ?? 0,
       ajud:   cfgRota.ajud   ?? cfgRota.val_ajudante ?? 0,
+      valorKm: cfgRota.valorKm ?? 0,
       ri: true
     };
   }
 
   // Rota não cadastrada: verificar se é interna pelo nome
   if(rotasRI.has(r)){
-    return CONFIG.rotas['CEASA'] || { motSem:1.00, motCom:0.50, ajud:0.50, ri:true };
+    return CONFIG.rotas['CEASA'] || { motSem:1.00, motCom:0.50, ajud:0.50, valorKm:0, ri:true };
   }
 
-  // Rota externa não cadastrada: motorista não recebe, só ajudante
+  // Rota externa não cadastrada: motorista recebe por KM, ajudante por pedido
   const cfgRE = CONFIG.rotas['RE'] || {};
-  return { motSem:0, motCom:0, ajud: cfgRE.ajud ?? 0.75, ri:false };
+  return { motSem:0, motCom:0, ajud: cfgRE.ajud ?? 0.75, valorKm: cfgRE.valorKm ?? 0.20, ri:false };
 }
 
 
@@ -12958,6 +12969,7 @@ async function cadCarregarRotas(){
             ${r.valor_padrao>0?`<span style="color:#059669;font-weight:700;font-size:.72rem;margin-left:4px">Meta: R$${Number(r.valor_padrao).toLocaleString('pt-BR')}</span>`:''}
             ${r.mot_sem_aj>0?`<span style="color:#2563eb;font-size:.71rem;margin-left:2px">Mot: R$${Number(r.mot_sem_aj).toFixed(2)}</span>`:''}
             ${r.val_ajudante>0?`<span style="color:#7c3aed;font-size:.71rem;margin-left:2px">Aj: R$${Number(r.val_ajudante).toFixed(2)}</span>`:''}
+            ${r.tipo==='RE'&&r.valor_km>0?`<span style="color:#ea580c;font-size:.71rem;margin-left:2px">🛣️ R$${Number(r.valor_km).toFixed(2)}/km</span>`:''}
           </div>
         </div>
         <div style="display:flex;gap:5px">
@@ -12977,24 +12989,24 @@ async function cadAdicionarRota(){
   const motSem   = parseFloat(document.getElementById('cad-rota-mot-sem')?.value)||0;
   const motCom   = parseFloat(document.getElementById('cad-rota-mot-com')?.value)||0;
   const ajudante = parseFloat(document.getElementById('cad-rota-ajudante')?.value)||0;
+  const valorKm  = parseFloat(document.getElementById('cad-rota-valor-km')?.value)||0.20;
   if(!nome){ showCadMsg('msg-cad-rota','Informe o nome da rota',false); return; }
   try{
+    const payload = { tipo, valor_padrao:valor, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajudante, valor_km:valorKm, ativo:true };
     // Verificar se já existe — atualizar em vez de inserir
     const ex = await supaFetch(`rotas?nome=eq.${encodeURIComponent(nome)}&select=id`)||[];
     if(ex.length){
-      await supaFetch(`rotas?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({
-        tipo, valor_padrao:valor, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajudante, ativo:true
-      })});
+      await supaFetch(`rotas?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify(payload)});
       showCadMsg('msg-cad-rota',`✅ ${nome} atualizada!`);
       showToast(`✅ Rota ${nome} atualizada!`,'success');
       await cadCarregarRotas();
       await syncConfig();
       return;
     }
-    await supaFetch('rotas',{method:'POST',body:JSON.stringify({nome,tipo,valor_padrao:valor,mot_sem_aj:motSem,mot_com_aj:motCom,val_ajudante:ajudante,ativo:true})});
+    await supaFetch('rotas',{method:'POST',body:JSON.stringify({nome,...payload})});
     document.getElementById('cad-rota-nome').value='';
     document.getElementById('cad-rota-valor').value='';
-    ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+    ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante','cad-rota-valor-km'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
     showCadMsg('msg-cad-rota','✅ Rota adicionada!');
     showToast('✅ Rota '+nome+' cadastrada!','success');
     await cadCarregarRotas();
@@ -13003,13 +13015,14 @@ async function cadAdicionarRota(){
 
 
 async function salvarRota(id){
-  const meta   = parseFloat(document.getElementById(`rota-meta-${id}`)?.value)||0;
-  const motSem = parseFloat(document.getElementById(`rota-motsem-${id}`)?.value)||0;
-  const motCom = parseFloat(document.getElementById(`rota-motcom-${id}`)?.value)||0;
-  const ajud   = parseFloat(document.getElementById(`rota-ajud-${id}`)?.value)||0;
+  const meta    = parseFloat(document.getElementById(`rota-meta-${id}`)?.value)||0;
+  const motSem  = parseFloat(document.getElementById(`rota-motsem-${id}`)?.value)||0;
+  const motCom  = parseFloat(document.getElementById(`rota-motcom-${id}`)?.value)||0;
+  const ajud    = parseFloat(document.getElementById(`rota-ajud-${id}`)?.value)||0;
+  const valorKm = parseFloat(document.getElementById(`rota-km-${id}`)?.value)||0.20;
   try{
     await supaFetch(`rotas?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({
-      valor_padrao:meta, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajud
+      valor_padrao:meta, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajud, valor_km:valorKm
     })});
     showToast('✅ Rota atualizada!','success');
     // Destacar linha salva
@@ -13037,6 +13050,7 @@ function abrirEditarRota(rota){
   document.getElementById('er-mot-sem').value   = rota.mot_sem_aj  > 0 ? rota.mot_sem_aj   : '';
   document.getElementById('er-mot-com').value   = rota.mot_com_aj  > 0 ? rota.mot_com_aj   : '';
   document.getElementById('er-ajudante').value  = rota.val_ajudante> 0 ? rota.val_ajudante  : '';
+  document.getElementById('er-valor-km').value  = rota.valor_km    > 0 ? rota.valor_km      : '0.20';
   const msg = document.getElementById('er-msg');
   if(msg){ msg.style.display='none'; msg.textContent=''; }
   const modal = document.getElementById('modal-editar-rota');
@@ -13051,6 +13065,7 @@ async function salvarEditarRota(){
   const motSem   = parseFloat(document.getElementById('er-mot-sem').value) || 0;
   const motCom   = parseFloat(document.getElementById('er-mot-com').value) || 0;
   const ajudante = parseFloat(document.getElementById('er-ajudante').value)|| 0;
+  const valorKm  = parseFloat(document.getElementById('er-valor-km').value) || 0.20;
   const msg      = document.getElementById('er-msg');
 
   function erMsg(txt, ok=true){
@@ -13073,7 +13088,7 @@ async function salvarEditarRota(){
     }
     await supaFetch(`rotas?id=eq.${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ nome, tipo, valor_padrao: meta, mot_sem_aj: motSem, mot_com_aj: motCom, val_ajudante: ajudante })
+      body: JSON.stringify({ nome, tipo, valor_padrao: meta, mot_sem_aj: motSem, mot_com_aj: motCom, val_ajudante: ajudante, valor_km: valorKm })
     });
     erMsg('✅ Rota salva com sucesso!');
     showToast('✅ Rota '+nome+' atualizada!','success');
