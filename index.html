@@ -14052,13 +14052,13 @@ async function renderDashInterna(){
     let baseDataSupa;
     if(undFiltro && cargasUndLanc.size > 0){
       baseDataSupa = await supaFetch(
-        `base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=carga,pedido,condutor,semana_mes,rire,rota,und&limit=20000`
+        `base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido&limit=20000`
       ) || [];
     } else if(undFiltro && cargasUndLanc.size === 0){
       baseDataSupa = []; // unidade não tem cargas no período
     } else {
       baseDataSupa = await supaFetch(
-        `base_data?mes_ano=eq.${mesFiltro}&select=carga,pedido,condutor,semana_mes,rire,rota,und&limit=20000`
+        `base_data?mes_ano=eq.${mesFiltro}&select=carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido&limit=20000`
       ) || [];
     }
 
@@ -14101,36 +14101,30 @@ async function renderDashInterna(){
     const emAtraso = dem.filter(d=>d.data_saida < hoje && !['saiu','fim_viagem','concluido','cancelado'].includes(d.status));
     const pedidosEmAtraso = emAtraso.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
 
-    // 5. OTIF 24h e 32h — usa data_pedido da BASE_DATA local + ts_saiu da demanda
-    // Mapa carga → ts_saiu (timestamp de saída do veículo)
+    // 5. OTIF — data_pedido → ts_saiu (data de saída do veículo)
+    // Quando a planilha de entregas for carregada com datas corretas, trocar ts_saiu por data_entrega
+    // Mapa carga → ts_saiu
     const cargaSaiuMap = {};
     dem.forEach(d=>{ if(d.ts_saiu) cargaSaiuMap[String(d.carga)] = d.ts_saiu; });
-    // Datas de entrega carregadas via planilha (Supabase)
+
+    // Badge: informa se há planilha de entregas carregada (futuro uso)
     let entregaMap = {};
     try{
       const edRows = await supaFetch(`entrega_datas?mes_ano=eq.${mesFiltro}&select=pedido,data_entrega`).catch(()=>[]);
       (edRows||[]).forEach(r=>{ if(r.pedido&&r.data_entrega) entregaMap[r.pedido]=r.data_entrega; });
     }catch(e){}
     const nEntrega = Object.keys(entregaMap).length;
-    // Atualizar badge
     const badge = document.getElementById('dash-entrega-badge');
-    if(badge) badge.textContent = nEntrega ? `✅ ${nEntrega} pedidos com data de entrega` : 'Nenhuma planilha carregada';
+    if(badge) badge.textContent = nEntrega
+      ? `📅 ${nEntrega} pedidos com data de entrega carregada`
+      : '⏱ OTIF calculado pela data de saída do veículo';
 
-    // Usar BASE_DATA local (tem data_pedido) para o OTIF
-    // Filtro de unidade: usa cargasUnd (derivadas de lancamentos.und — consistente)
-    const bdLocal = BASE_DATA.filter(r => {
-      if(r.mes_ano !== mesFiltro) return false;
-      if(!rotasRI.includes(r.rota)) return false;
-      if(undFiltro && cargasUnd.size > 0){
-        const cStr = r.carga!=null&&r.carga!==''?String(Math.round(Number(r.carga))):'';
-        if(!cargasUnd.has(cStr)) return false;
-      }
-      return true;
-    });
+    // Calcular OTIF: data_pedido → ts_saiu
+    // Usa bd (Supabase, já tem data_pedido) — sem cache local
     let otif24Tot=0, otif24Ok=0, otif32Tot=0, otif32Ok=0;
     const pedidosContados = new Set();
 
-    bdLocal.forEach(p => {
+    bd.forEach(p => {
       const pedKey = String(p.carga)+'_'+String(p.pedido);
       if(pedidosContados.has(pedKey)) return;
       pedidosContados.add(pedKey);
@@ -14139,35 +14133,18 @@ async function renderDashInterna(){
       if(!dpStr) return;
       const dpMs = new Date(dpStr+'T00:00:00').getTime();
 
-      // Usar data de entrega da planilha se disponível, senão ts_saiu
-      let atualMs = null;
-      if(nEntrega && entregaMap[String(p.pedido)]){
-        atualMs = new Date(entregaMap[String(p.pedido)]+'T00:00:00').getTime();
-      } else {
-        const tsSaiu = cargaSaiuMap[String(p.carga)];
-        if(tsSaiu) atualMs = new Date(tsSaiu).getTime();
-      }
-      if(!atualMs) return;
+      // Sempre usa ts_saiu (data de saída do veículo) como referência de entrega
+      const tsSaiu = cargaSaiuMap[String(p.carga)];
+      if(!tsSaiu) return;
+      const saiuMs = new Date(tsSaiu).getTime();
 
-      const diffHoras = (atualMs - dpMs) / (1000 * 3600);
+      const diffHoras = (saiuMs - dpMs) / (1000 * 3600);
+      if(diffHoras < 0) return; // saída antes do pedido — dado inconsistente
       otif24Tot++;
       if(diffHoras <= 24) otif24Ok++;
       otif32Tot++;
       if(diffHoras <= 32) otif32Ok++;
     });
-
-    // Fallback: se sem BASE_DATA local, usar data_saida planejada vs ts_saiu
-    if(otif24Tot === 0){
-      const excelMesOtif = EXCEL_PROD[mesFiltro] || {};
-      bd.forEach(p=>{
-        const prazoStr = excelMesOtif[parseInt(p.carga)]?.data_saida;
-        if(!prazoStr) return;
-        const entregaStr = entregaMap[String(p.pedido)] || cargaSaiuMap[String(p.carga)]?.slice(0,10) || null;
-        if(!entregaStr) return;
-        otif24Tot++; otif32Tot++;
-        if(entregaStr <= prazoStr){ otif24Ok++; otif32Ok++; }
-      });
-    }
 
     const pct24 = otif24Tot ? Math.round((otif24Ok/otif24Tot)*100) : null;
     const pct32 = otif32Tot ? Math.round((otif32Ok/otif32Tot)*100) : null;
@@ -14222,9 +14199,10 @@ async function renderDashInterna(){
         </div>
       </div>`;
 
-    // 9. Box OTIF (visual avançado com barras duplas)
+    // 9. Box OTIF (data_pedido → ts_saiu)
     if(otifBox) otifBox.innerHTML = `
-      <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:16px">🎯 OTIF — Tempo de Atendimento</h3>
+      <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">🎯 OTIF — Tempo de Atendimento</h3>
+      <p style="font-size:.68rem;color:var(--text-muted);margin-bottom:14px">📦 Data do pedido → 🚛 Saída do veículo</p>
       <div style="margin-bottom:14px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
           <span style="font-size:.78rem;font-weight:700;color:var(--text-secondary)">24 horas</span>
@@ -14245,7 +14223,9 @@ async function renderDashInterna(){
         </div>
         <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${otif32Ok} de ${otif32Tot} pedidos</div>
       </div>
-      <p style="margin-top:12px;font-size:.68rem;color:var(--text-muted)">${nEntrega?`📅 ${nEntrega} pedidos c/ data entrega`:`⏱ Usando ts_saiu das cargas`}</p>`;
+      <p style="margin-top:12px;font-size:.68rem;color:var(--text-muted)">
+        ${otif24Tot===0 ? '⚠️ Pedidos sem data de saída registrada' : `✅ ${otif24Tot} pedidos com saída registrada`}
+      </p>`;
 
     // 10. Box Ranking Motoristas RI
     if(rankBox){
