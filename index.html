@@ -4309,33 +4309,11 @@ textarea:focus{
 
     <!-- Lançamento de KM -->
     <div style="background:#1e293b;border:1px solid rgba(13,148,136,.25);border-radius:14px;padding:18px;margin-bottom:20px">
-      <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0 0 4px">🛣️ Lançar KM da Carga</h3>
-      <p style="font-size:.75rem;color:#64748b;margin:0 0 14px">Digite o número da carga e o KM do veículo</p>
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div style="flex:1;min-width:120px">
-          <label style="font-size:.7rem;color:#64748b;font-weight:600;display:block;margin-bottom:4px">Nº CARGA</label>
-          <input id="mot-km-input-carga" type="number" placeholder="Ex: 1234"
-            style="width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid rgba(13,148,136,.3);color:#f0f0f8;border-radius:10px;padding:10px 14px;font-size:.95rem;outline:none;-moz-appearance:textfield"/>
-        </div>
-        <div style="flex:1;min-width:120px">
-          <label style="font-size:.7rem;color:#64748b;font-weight:600;display:block;margin-bottom:4px">KM DO VEÍCULO</label>
-          <input id="mot-km-input-km" type="number" placeholder="Ex: 58432"
-            style="width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid rgba(13,148,136,.3);color:#f0f0f8;border-radius:10px;padding:10px 14px;font-size:.95rem;outline:none;-moz-appearance:textfield"/>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button onclick="lancarKmInicial()"
-            style="background:linear-gradient(135deg,#0d9488,#14b8a6);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap">
-            🟢 KM Inicial
-          </button>
-          <button onclick="lancarKmFinal()"
-            style="background:linear-gradient(135deg,#b45309,#d97706);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap">
-            🔴 KM Final
-          </button>
-        </div>
+      <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0 0 4px">🛣️ KM das Cargas</h3>
+      <p style="font-size:.75rem;color:#64748b;margin:0 0 14px">Clique na carga para registrar o KM do veículo</p>
+      <div id="mot-km-historico">
+        <div style="text-align:center;padding:20px;color:#64748b;font-size:.82rem">Carregando cargas...</div>
       </div>
-
-      <!-- Histórico KM -->
-      <div id="mot-km-historico" style="margin-top:16px"></div>
     </div>
 
     <!-- Fui como Ajudante -->
@@ -8956,19 +8934,10 @@ async function carregarPortalMotoristaCargasAjudante(){
 
 // ─── KM Cargas ───────────────────────────────────────────────────────────────
 
-async function lancarKmInicial(){
-  await _lancarKm('inicial');
-}
-async function lancarKmFinal(){
-  await _lancarKm('final');
-}
-
-async function _lancarKm(tipo){
+async function lancarKmCarga(carga, tipo){
   if(!USUARIO_LOGADO) return;
-  const carga = Number((document.getElementById('mot-km-input-carga')?.value||'').trim());
-  const km    = Number((document.getElementById('mot-km-input-km')?.value||'').trim());
-  if(!carga||isNaN(carga)){ showToast('Digite um número de carga válido','warning'); return; }
-  if(!km||isNaN(km)||km<=0){ showToast('Digite o KM do veículo','warning'); return; }
+  const km = Number(prompt(tipo==='inicial' ? `KM INICIAL — Carga #${carga}\nDigite o odômetro atual do veículo:` : `KM FINAL — Carga #${carga}\nDigite o odômetro atual do veículo:`));
+  if(!km||isNaN(km)||km<=0){ showToast('KM inválido','warning'); return; }
 
   const myId   = USUARIO_LOGADO.id;
   const myNome = (USUARIO_LOGADO.nome||'').toUpperCase();
@@ -8976,69 +8945,73 @@ async function _lancarKm(tipo){
   const mesStr = agora.slice(0,7);
 
   try{
-    // Buscar info da carga no lancamentos
-    const lanc = await supaFetch(`lancamentos?carga=eq.${carga}&motorista=eq.${encodeURIComponent(myNome)}&select=carga,rota,rire,veiculo&limit=1`).catch(()=>[]) || [];
-    if(!lanc.length){ showToast(`Carga #${carga} não encontrada para você`,'warning'); return; }
-    const { rota='', rire='', veiculo='' } = lanc[0];
-
-    // Verificar se já existe registro para essa carga
-    const existente = await supaFetch(`km_cargas?carga=eq.${carga}&motorista_id=eq.${myId}&select=id,km_inicial,km_final,ts_km_inicial,ts_km_final`).catch(()=>[]) || [];
+    const existente = await supaFetch(`km_cargas?carga=eq.${carga}&motorista_id=eq.${myId}&select=*`).catch(()=>[]) || [];
     const reg = existente[0];
 
     if(tipo === 'inicial'){
       if(reg){
-        // Atualizar km_inicial
         await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_inicial:km, ts_km_inicial:agora }) });
-        showToast(`✅ KM Inicial atualizado: ${km.toLocaleString('pt-BR')} km`,'success');
       } else {
-        // Criar novo registro
+        // Buscar rota/rire do lancamento para guardar junto
+        const lancs = await supaFetch(`lancamentos?carga=eq.${carga}&select=rota,rire,veiculo&limit=1`).catch(()=>[]) || [];
+        const { rota='', rire='', veiculo='' } = lancs[0]||{};
         await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
           id: Date.now().toString(36)+Math.random().toString(36).slice(2),
-          carga, motorista_id:myId, motorista_nome:myNome,
+          carga:Number(carga), motorista_id:myId, motorista_nome:myNome,
           rota, rire, veiculo, mes_ano:mesStr,
           km_inicial:km, km_final:null,
           ts_km_inicial:agora, ts_km_final:null, ts:agora
         })});
-        showToast(`✅ KM Inicial registrado: ${km.toLocaleString('pt-BR')} km`,'success');
       }
+      showToast(`✅ KM Inicial registrado: ${km.toLocaleString('pt-BR')} km`,'success');
     } else {
-      if(!reg||reg.km_inicial===null||reg.km_inicial===undefined){
-        showToast('Registre o KM Inicial primeiro','warning'); return;
-      }
+      if(!reg||reg.km_inicial==null){ showToast('Registre o KM Inicial primeiro','warning'); return; }
       if(km <= reg.km_inicial){ showToast('KM Final deve ser maior que o Inicial','warning'); return; }
       await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_final:km, ts_km_final:agora }) });
-      const kmTotal = km - reg.km_inicial;
-      const msTotal = new Date(agora) - new Date(reg.ts_km_inicial);
-      const horas   = Math.round(msTotal/3600000);
-      showToast(`✅ KM Final registrado! Total: ${kmTotal.toLocaleString('pt-BR')} km em ${horas}h`,'success');
+      const kmRodado = km - reg.km_inicial;
+      const ms  = new Date(agora) - new Date(reg.ts_km_inicial);
+      const h   = Math.floor(ms/3600000);
+      const d   = Math.floor(h/24);
+      const dur = d>0 ? `${d}d ${h%24}h` : `${h}h`;
+      showToast(`✅ Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km em ${dur}`,'success');
     }
-
-    // Limpar campos e recarregar histórico
-    if(document.getElementById('mot-km-input-carga')) document.getElementById('mot-km-input-carga').value='';
-    if(document.getElementById('mot-km-input-km'))    document.getElementById('mot-km-input-km').value='';
     await carregarKmMotorista();
-
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 async function carregarKmMotorista(){
   if(!USUARIO_LOGADO) return;
   const myId   = USUARIO_LOGADO.id;
+  const myNome = (USUARIO_LOGADO.nome||'').toUpperCase();
   const mesStr = new Date().toISOString().slice(0,7);
   const cont   = document.getElementById('mot-km-historico');
   const ROTAS_RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
   const _isRI  = reg => { const r=(reg.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((reg.rota||'').trim().toUpperCase()); };
+  const fmtDt  = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+  const fmtDur = (tsI,tsF) => { if(!tsI||!tsF) return null; const h=Math.floor((new Date(tsF)-new Date(tsI))/3600000); const d=Math.floor(h/24); return d>0?`${d}d ${h%24}h`:`${h}h`; };
 
   try{
-    const rows = await supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*&order=ts.desc`).catch(()=>[]) || [];
+    // Buscar cargas do mês no lancamentos + registros KM em paralelo
+    const [lancs, kmRegs] = await Promise.all([
+      supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01&ts=lte.${mesStr}-31T23:59:59Z&select=carga,rota,rire,veiculo,ts&order=ts.desc`).catch(()=>[]) || [],
+      supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*`).catch(()=>[]) || []
+    ]);
+
+    // Deduplica cargas (lancamentos pode ter duplicatas)
+    const cargasVistas = new Set();
+    const cargas = (lancs||[]).filter(l=>{ const c=String(l.carga); if(cargasVistas.has(c)) return false; cargasVistas.add(c); return true; });
+
+    // Indexar KM por carga
+    const kmMap = {};
+    (kmRegs||[]).forEach(r=>{ kmMap[String(r.carga)]=r; });
 
     // KPIs
     let kmTotal=0, kmRE=0;
-    rows.forEach(r=>{
-      if(r.km_inicial!=null && r.km_final!=null){
-        const diff = r.km_final - r.km_inicial;
-        kmTotal += diff;
-        if(!_isRI(r)) kmRE += diff;
+    (kmRegs||[]).forEach(r=>{
+      if(r.km_inicial!=null&&r.km_final!=null){
+        const diff=r.km_final-r.km_inicial;
+        kmTotal+=diff;
+        if(!_isRI(r)) kmRE+=diff;
       }
     });
     const setKpi=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
@@ -9046,45 +9019,50 @@ async function carregarKmMotorista(){
     setKpi('mot-kpi-km-re',   kmRE>0   ? kmRE.toLocaleString('pt-BR')+' km'   : '-');
 
     if(!cont) return;
-    if(!rows.length){ cont.innerHTML=''; return; }
+    if(!cargas.length){ cont.innerHTML='<div style="text-align:center;padding:16px;color:#64748b;font-size:.82rem">Nenhuma carga encontrada este mês</div>'; return; }
 
-    const fmtDt = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
-    const fmtDias = (tsI, tsF) => {
-      if(!tsI||!tsF) return null;
-      const ms = new Date(tsF) - new Date(tsI);
-      const h  = Math.floor(ms/3600000);
-      const d  = Math.floor(h/24);
-      return d>0 ? `${d}d ${h%24}h` : `${h}h`;
-    };
+    cont.innerHTML = cargas.map(l=>{
+      const c   = String(l.carga);
+      const km  = kmMap[c];
+      const isRI = _isRI(km||l);
+      const kmRodado = km&&km.km_inicial!=null&&km.km_final!=null ? km.km_final-km.km_inicial : null;
+      const dur = km ? fmtDur(km.ts_km_inicial, km.ts_km_final) : null;
+      const badge = `<span style="font-size:.65rem;padding:2px 7px;border-radius:10px;font-weight:700;${isRI?'background:rgba(37,99,235,.2);color:#93c5fd':'background:rgba(234,88,12,.2);color:#fb923c'}">${isRI?'RI':'RE'}</span>`;
 
-    cont.innerHTML = `
-      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.07);padding-top:14px">
-        <div style="font-size:.75rem;font-weight:700;color:#64748b;margin-bottom:10px;text-transform:uppercase">Histórico KM — ${mesStr}</div>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          ${rows.map(r=>{
-            const kmR = (r.km_inicial!=null&&r.km_final!=null) ? r.km_final-r.km_inicial : null;
-            const dur = fmtDias(r.ts_km_inicial, r.ts_km_final);
-            const isRI = _isRI(r);
-            return `<div style="background:rgba(13,148,136,.08);border:1px solid rgba(13,148,136,.2);border-radius:8px;padding:10px 14px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                <div><span style="font-weight:800;color:#f0f0f8">#${r.carga}</span>
-                  <span style="font-size:.72rem;color:#64748b;margin-left:6px">${r.rota||'—'}</span>
-                  <span style="font-size:.68rem;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700;${isRI?'background:rgba(37,99,235,.2);color:#93c5fd':'background:rgba(234,88,12,.2);color:#fb923c'}">${isRI?'RI':'RE'}</span>
-                </div>
-                ${kmR!=null ? `<span style="font-weight:800;color:#2dd4bf;font-size:.9rem">${kmR.toLocaleString('pt-BR')} km</span>` : '<span style="color:#f59e0b;font-size:.75rem">⏳ Pendente</span>'}
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;color:#64748b">
-                <div>🟢 Início: <span style="color:#94a3b8">${fmtDt(r.ts_km_inicial)}</span></div>
-                <div>🔴 Fim: <span style="color:#94a3b8">${fmtDt(r.ts_km_final)}</span></div>
-                ${r.km_inicial!=null?`<div>Odômetro inicial: <span style="color:#94a3b8">${Number(r.km_inicial).toLocaleString('pt-BR')}</span></div>`:''}
-                ${r.km_final!=null?`<div>Odômetro final: <span style="color:#94a3b8">${Number(r.km_final).toLocaleString('pt-BR')}</span></div>`:''}
-                ${dur?`<div style="grid-column:span 2">⏱️ Duração: <span style="color:#a78bfa;font-weight:700">${dur}</span></div>`:''}
-              </div>
-            </div>`;
-          }).join('')}
+      // Estado dos botões
+      const temInicial = km&&km.km_inicial!=null;
+      const temFinal   = km&&km.km_final!=null;
+
+      return `<div style="background:rgba(13,148,136,.07);border:1px solid rgba(13,148,136,.18);border-radius:10px;padding:12px 14px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-weight:800;color:#f0f0f8">#${l.carga}</span>
+            <span style="font-size:.75rem;color:#64748b">${l.rota||'—'}</span>
+            ${badge}
+          </div>
+          ${kmRodado!=null
+            ? `<span style="font-weight:800;color:#2dd4bf">${kmRodado.toLocaleString('pt-BR')} km${dur?' · '+dur:''}</span>`
+            : `<span style="font-size:.72rem;color:#f59e0b">⏳ ${temInicial?'Ag. KM Final':'Sem KM'}</span>`}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;color:#64748b;margin-bottom:8px">
+          <div>🟢 Início: <span style="color:#94a3b8">${temInicial?fmtDt(km.ts_km_inicial):'—'}</span></div>
+          <div>🔴 Fim: <span style="color:#94a3b8">${temFinal?fmtDt(km.ts_km_final):'—'}</span></div>
+          ${temInicial?`<div>Odo. inicial: <span style="color:#94a3b8">${Number(km.km_inicial).toLocaleString('pt-BR')}</span></div>`:''}
+          ${temFinal?`<div>Odo. final: <span style="color:#94a3b8">${Number(km.km_final).toLocaleString('pt-BR')}</span></div>`:''}
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="lancarKmCarga(${l.carga},'inicial')"
+            style="flex:1;background:${temInicial?'rgba(13,148,136,.2)':'linear-gradient(135deg,#0d9488,#14b8a6)'};color:${temInicial?'#94a3b8':'#fff'};border:1px solid rgba(13,148,136,.4);border-radius:8px;padding:7px;font-size:.75rem;font-weight:700;cursor:pointer">
+            🟢 ${temInicial?'Atualizar Inicial':'KM Inicial'}
+          </button>
+          ${!temFinal?`<button onclick="lancarKmCarga(${l.carga},'final')"
+            style="flex:1;background:${temInicial?'linear-gradient(135deg,#b45309,#d97706)':'rgba(180,83,9,.15)'};color:${temInicial?'#fff':'#64748b'};border:1px solid rgba(180,83,9,.4);border-radius:8px;padding:7px;font-size:.75rem;font-weight:700;cursor:pointer${temInicial?'':';opacity:.5'}">
+            🔴 KM Final
+          </button>`:''}
         </div>
       </div>`;
-  }catch(e){}
+    }).join('');
+  }catch(e){ if(cont) cont.innerHTML=''; }
 }
 
 // ─── Admin: redistribuir pedidos entre ajudantes ─────────────────────────────
