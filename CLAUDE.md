@@ -63,6 +63,7 @@ localStorage.setItem('comercial_rotas', JSON.stringify(novaRota));
 | `pagamentos` | Registros de pagamento |
 | `absenteismo` | Registro de absenteísmo |
 | `validacoes_caixa` | Validações do portal de caixa |
+| `abastecimento_loja` | Registros de abastecimento de loja (carga, veículo, motorista, conferente, unidade) |
 | `erros_sistema` | Log de erros em produção |
 
 ## Arquitetura
