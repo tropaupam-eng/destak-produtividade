@@ -2198,6 +2198,7 @@ textarea:focus{
     <span class="planilha-pill" id="planilha-status">Sem dados</span>
     <button class="btn-topbar" id="btn-load" style="animation:pulse 2s infinite" onclick="document.getElementById('file-input').click()">📂 Planilha</button>
     <button class="btn-topbar red" onclick="sincronizarTudo()" id="btn-sync">🔄 Sync</button>
+    <span id="conn-status" title="Status da conexão com o banco" style="font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px;background:rgba(52,211,153,.15);color:#34d399;border:1px solid rgba(52,211,153,.3);cursor:default;transition:all .3s">🟢 Online</span>
     <div class="user-pill">
       <div class="avatar" id="user-avatar-initial">?</div>
       <span id="usuario-nome" style="font-size:.78rem;font-weight:600;color:var(--text-primary)">-</span>
@@ -5100,8 +5101,8 @@ textarea:focus{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '3.9.3';
-console.log('%c[CRONOS] index.html v3.9.3 carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
+const APP_VERSION = '3.9.4';
+console.log('%c[CRONOS] index.html v3.9.4 carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 (function(){
   try{
     const saved = localStorage.getItem('app_version');
@@ -5759,6 +5760,10 @@ async function mostrarApp(){
   if(ls) ls.style.display='none';
   // Atualizar badge de erros assim que app abre
   setTimeout(atualizarBadgeErros, 1500);
+  // Verificar se há nova versão (detecta HTML cacheado no navegador)
+  setTimeout(verificarNovaVersao, 3000);
+  // Iniciar monitor de conexão com o banco
+  iniciarMonitorConexao();
 }
 
 async function filtrarSidebarPorPerfil(){
@@ -21122,6 +21127,74 @@ function exportarAbastecimentoXLSX(){
   const hoje = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `abastecimento_loja_${hoje}.xlsx`);
   showToast('✅ Planilha exportada!','success');
+}
+
+// ── VERIFICAÇÃO DE NOVA VERSÃO ──────────────────────────────────────────────
+async function verificarNovaVersao(){
+  try{
+    const base = window.location.pathname.replace(/\/[^/]*$/, '');
+    const url  = (base || '') + '/version.json?_t=' + Date.now();
+    const resp = await fetch(url, { cache: 'no-store' });
+    if(!resp.ok) return;
+    const data = await resp.json();
+    if(data.version && data.version !== APP_VERSION){
+      mostrarBannerAtualizacao(data.version);
+    }
+  }catch(e){}
+}
+
+function mostrarBannerAtualizacao(novaVersao){
+  if(document.getElementById('banner-atualizacao')) return;
+  const banner = document.createElement('div');
+  banner.id = 'banner-atualizacao';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:linear-gradient(90deg,#059669,#047857);color:#fff;text-align:center;padding:9px 16px;font-size:.85rem;font-weight:700;display:flex;align-items:center;justify-content:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,.3)';
+  const targetUrl = window.location.pathname + '?_v=' + novaVersao + (window.location.search && !window.location.search.includes('_v=') ? '&'+window.location.search.slice(1) : '');
+  banner.innerHTML = `🔄 Nova versão ${novaVersao} disponível!
+    <button onclick="window.location.replace('${window.location.pathname}?_v=${novaVersao}')"
+      style="background:#fff;color:#059669;border:none;border-radius:8px;padding:5px 16px;font-size:.82rem;cursor:pointer;font-weight:800">
+      ⬆️ Atualizar agora
+    </button>
+    <button onclick="document.getElementById('banner-atualizacao').remove()"
+      style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:.75rem;cursor:pointer">
+      ✕
+    </button>`;
+  document.body.prepend(banner);
+}
+
+// ── MONITOR DE CONEXÃO SUPABASE ─────────────────────────────────────────────
+let _connOk = true;
+let _connTimer = null;
+
+async function checarConexaoSupabase(){
+  const el = document.getElementById('conn-status');
+  try{
+    const inicio = Date.now();
+    const rows = await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1');
+    const ms = Date.now() - inicio;
+    _connOk = true;
+    if(el){
+      el.textContent = ms < 800 ? '🟢 Online' : `🟡 Lento (${ms}ms)`;
+      el.style.background = ms < 800 ? 'rgba(52,211,153,.15)' : 'rgba(245,158,11,.15)';
+      el.style.color       = ms < 800 ? '#34d399'              : '#f59e0b';
+      el.style.borderColor = ms < 800 ? 'rgba(52,211,153,.3)' : 'rgba(245,158,11,.3)';
+      el.title = `Banco de dados: OK (${ms}ms)`;
+    }
+  }catch(e){
+    _connOk = false;
+    if(el){
+      el.textContent = '🔴 Offline';
+      el.style.background = 'rgba(239,68,68,.15)';
+      el.style.color       = '#ef4444';
+      el.style.borderColor = 'rgba(239,68,68,.3)';
+      el.title = 'Sem conexão com o banco de dados: ' + (e.message||'erro');
+    }
+  }
+}
+
+function iniciarMonitorConexao(){
+  checarConexaoSupabase();
+  if(_connTimer) clearInterval(_connTimer);
+  _connTimer = setInterval(checarConexaoSupabase, 60000);
 }
 </script>
 
