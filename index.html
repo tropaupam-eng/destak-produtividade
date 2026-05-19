@@ -11533,10 +11533,14 @@ async function carregarPortalMotorista(){
     ).catch(()=>[]) || [];
 
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
-    // Buscar pelo campo condutor (MAIÚSCULO) — regra: pedidos sem ocorrência
-    const bdMot = await supaFetch(
-      `base_data?condutor=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01&select=pedido,ocorrencia,carga,rota,rire,valor&limit=10000`
-    ).catch(()=>[]) || [];
+    // Busca por número de carga (condutor pode estar vazio na planilha importada)
+    const cargasDoMes = [...new Set(lancs.map(l=>Math.round(Number(l.carga))).filter(Boolean))];
+    let bdMot = [];
+    if(cargasDoMes.length > 0){
+      bdMot = await supaFetch(
+        `base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`
+      ).catch(()=>[]) || [];
+    }
 
     // Filtrar pedidos válidos (ocorrência != 1)
     const pedidosMes = bdMot.filter(r => {
@@ -11554,8 +11558,8 @@ async function carregarPortalMotorista(){
     const pedPorCarga = {};
     pedidosMes.forEach(r => {
       const c = Math.round(Number(r.carga));
-      if(!pedPorCarga[c]) pedPorCarga[c] = { pedidos: new Set(), rota: r.rota||'', rire: r.rire||'' };
-      pedPorCarga[c].pedidos.add(String(r.pedido));
+      if(!pedPorCarga[c]) pedPorCarga[c] = new Set();
+      pedPorCarga[c].add(String(r.pedido));
     });
 
     lancs.forEach(l => {
@@ -11565,7 +11569,7 @@ async function carregarPortalMotorista(){
       const cfg   = getValorRota(l.rota||'');
       const temAj = !!(l.ajudante&&l.ajudante.trim());
       const taxa  = isRE ? 0 : (temAj ? (cfg.motCom||0) : (cfg.motSem||0));
-      const nPed  = pedPorCarga[c] ? pedPorCarga[c].pedidos.size : 0;
+      const nPed  = pedPorCarga[c] ? pedPorCarga[c].size : 0;
       const bonus = taxa * nPed;
       totalVal   += bonus;
       linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, ts:l.ts, isRE });
@@ -11576,42 +11580,53 @@ async function carregarPortalMotorista(){
     // ── RANKING RI e RE + BÔNUS ADM ────────────────────
     try{
       const undFilter = undDB ? `&und=eq.${encodeURIComponent(undDB)}` : '';
+      // Busca com carga incluso — fonte de verdade de quem fez o quê
       const todosLanc = await supaFetch(
-        `lancamentos?ts=gte.${mesStr}-01&ts=lt.${mesStr}-32${undFilter}&select=motorista,rota,rire&limit=2000`
+        `lancamentos?ts=gte.${mesStr}-01&ts=lte.${mesStr}-31T23:59:59Z${undFilter}&select=motorista,rota,rire,carga&limit=2000`
       ).catch(()=>[]) || [];
 
-      // Separar RI e RE
       const _isRI = l=>{ const r=(l.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((l.rota||'').trim().toUpperCase()); };
-      const motoristasRI = [...new Set(todosLanc.filter(l=>_isRI(l)).map(l=>(l.motorista||'').toUpperCase().trim()).filter(Boolean))];
-      const motoristasRE = [...new Set(todosLanc.filter(l=>!_isRI(l)).map(l=>(l.motorista||'').toUpperCase().trim()).filter(Boolean))];
 
-      // Buscar pedidos RI
+      // Mapear cargas por motorista + classificação RI/RE do lancamento
+      const cargasPorMot = {}; // mot -> [{carga, isRI}]
+      const cargaRireMap = {}; // carga -> isRI
+      todosLanc.forEach(l => {
+        const mot = (l.motorista||'').toUpperCase().trim();
+        const c   = Math.round(Number(l.carga));
+        if(!mot || !c) return;
+        const ri  = _isRI(l);
+        if(!cargasPorMot[mot]) cargasPorMot[mot] = [];
+        cargasPorMot[mot].push(c);
+        cargaRireMap[c] = ri; // última entrada vence se duplicado
+      });
+
+      // Buscar pedidos de TODAS as cargas do mês em lotes
+      const todasCargas = [...new Set(Object.values(cargasPorMot).flat())];
+      const pedidosPorCarga = {}; // carga -> Set<pedido>
+      for(let i=0; i<todasCargas.length; i+=100){
+        const lote = todasCargas.slice(i,i+100);
+        const rows = await supaFetch(`base_data?carga=in.(${lote.join(',')})&select=carga,pedido,ocorrencia&limit=20000`).catch(()=>[]) || [];
+        rows.forEach(r=>{
+          const ocorr=(r.ocorrencia===null||r.ocorrencia===undefined)?0:Number(r.ocorrencia);
+          if(ocorr===1||!r.pedido) return;
+          const c=Math.round(Number(r.carga));
+          if(!pedidosPorCarga[c]) pedidosPorCarga[c]=new Set();
+          pedidosPorCarga[c].add(String(r.pedido));
+        });
+      }
+
+      // Somar pedidos RI e RE por motorista usando rire do lancamento
       const pedRankRI = {};
-      await Promise.all(motoristasRI.map(async mot => {
-        const rows = await supaFetch(`base_data?condutor=eq.${encodeURIComponent(mot)}&mes_ano=eq.${mesStr}&select=pedido,ocorrencia,rire,rota&limit=10000`).catch(()=>[]) || [];
-        const unicos = new Set();
-        rows.forEach(r=>{
-          const ocorr=(r.ocorrencia===null||r.ocorrencia===undefined)?0:Number(r.ocorrencia);
-          const isRIrow = (()=>{ const x=(r.rire||'').replace(/\./g,'').trim().toUpperCase(); if(x==='RI') return true; if(x==='RE') return false; return ROTAS_RI.has((r.rota||'').trim().toUpperCase()); })();
-          if(ocorr!==1&&r.pedido&&isRIrow) unicos.add(String(r.pedido));
-        });
-        pedRankRI[mot] = unicos.size;
-      }));
-      if(!pedRankRI[nomeDB]) pedRankRI[nomeDB] = pedidosMes.filter(r=>{ const x=(r.rire||'').replace(/\./g,'').trim().toUpperCase(); if(x==='RI') return true; if(x==='RE') return false; return ROTAS_RI.has((r.rota||'').trim().toUpperCase()); }).length;
-
-      // Buscar pedidos RE
       const pedRankRE = {};
-      await Promise.all(motoristasRE.map(async mot => {
-        const rows = await supaFetch(`base_data?condutor=eq.${encodeURIComponent(mot)}&mes_ano=eq.${mesStr}&select=pedido,ocorrencia,rire,rota&limit=10000`).catch(()=>[]) || [];
-        const unicos = new Set();
-        rows.forEach(r=>{
-          const ocorr=(r.ocorrencia===null||r.ocorrencia===undefined)?0:Number(r.ocorrencia);
-          const isRErow = (()=>{ const x=(r.rire||'').replace(/\./g,'').trim().toUpperCase(); if(x==='RE') return true; if(x==='RI') return false; return !ROTAS_RI.has((r.rota||'').trim().toUpperCase()); })();
-          if(ocorr!==1&&r.pedido&&isRErow) unicos.add(String(r.pedido));
+      Object.entries(cargasPorMot).forEach(([mot, cargas])=>{
+        let ri=0, re=0;
+        cargas.forEach(c=>{
+          const count = pedidosPorCarga[c] ? pedidosPorCarga[c].size : 0;
+          if(cargaRireMap[c]) ri+=count; else re+=count;
         });
-        pedRankRE[mot] = unicos.size;
-      }));
-      if(!pedRankRE[nomeDB]) pedRankRE[nomeDB] = pedidosMes.filter(r=>{ const x=(r.rire||'').replace(/\./g,'').trim().toUpperCase(); if(x==='RE') return true; if(x==='RI') return false; return !ROTAS_RI.has((r.rota||'').trim().toUpperCase()); }).length;
+        if(ri>0) pedRankRI[mot]=ri;
+        if(re>0) pedRankRE[mot]=re;
+      });
 
       const rankRI = Object.entries(pedRankRI).sort((a,b)=>b[1]-a[1]);
       const rankRE = Object.entries(pedRankRE).sort((a,b)=>b[1]-a[1]);
