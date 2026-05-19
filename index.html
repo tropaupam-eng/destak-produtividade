@@ -14022,15 +14022,27 @@ async function renderDashInterna(){
     const rotasRIUpper = new Set([...rotasRI.map(n=>n.toUpperCase()), ...ROTAS_RI]);
 
     // Buscar lancamentos do mês filtrados por unidade (se selecionada) para obter cargas confiáveis
+    // motorista incluído para o ranking (base_data.condutor costuma estar vazio)
     const undFilter = undFiltro ? `&und=eq.${encodeURIComponent(undFiltro)}` : '';
     const lancMes = await supaFetch(
-      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire&limit=5000`
+      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista&limit=5000`
     ) || [];
 
     // Cargas da unidade selecionada (via lancamentos — fonte confiável)
     const cargasUndLanc = new Set(
       lancMes.map(r=>r.carga).filter(v=>v!=null&&v!==''&&!isNaN(Number(v))).map(v=>String(Math.round(Number(v))))
     );
+
+    // Mapa carga → isRI e carga → motorista (fonte: lancamentos, que é confiável)
+    const cargaIsRI = {};
+    const cargaMotorista = {};
+    lancMes.forEach(l => {
+      const c = Math.round(Number(l.carga));
+      if(!c) return;
+      const r = (l.rire||'').replace(/\./g,'').trim().toUpperCase();
+      cargaIsRI[c] = r==='RI' || (r!=='RE' && ROTAS_RI.has((l.rota||'').trim().toUpperCase()));
+      if(l.motorista && !cargaMotorista[c]) cargaMotorista[c] = (l.motorista||'').toUpperCase().trim();
+    });
 
     // Buscar base_data do mês — filtrar por carga (se unidade selecionada) ou tudo
     let baseDataSupa;
@@ -14046,8 +14058,12 @@ async function renderDashInterna(){
       ) || [];
     }
 
-    // Filtrar apenas RI (por rire ou rota)
+    // Filtrar apenas RI — usa cargaIsRI (do lancamento, fonte confiável)
+    // Fallback: base_data.rire / rota quando a carga não está no lancamento do mês
     const bd = baseDataSupa.filter(r => {
+      const c = Math.round(Number(r.carga));
+      if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c]; // fonte mais confiável
+      // fallback: base_data.rire ou rota
       const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
       if(rireStr === 'RE') return false;
       if(rireStr === 'RI') return true;
@@ -14152,11 +14168,14 @@ async function renderDashInterna(){
     const corOtif = p => p===null?'#6b7280':p>=95?'#059669':p>=80?'#f59e0b':'#ef4444';
 
     // 6. Ranking Top 5 Motoristas RI do mês
+    // Usa cargaMotorista (do lancamento) como fonte primária — base_data.condutor costuma estar vazio
     const motPedidos = {};
     bd.forEach(r=>{
-      if(!r.condutor) return;
-      if(!motPedidos[r.condutor]) motPedidos[r.condutor] = new Set();
-      motPedidos[r.condutor].add(String(r.pedido));
+      const c = Math.round(Number(r.carga));
+      const mot = cargaMotorista[c] || (r.condutor||'').toUpperCase().trim();
+      if(!mot) return;
+      if(!motPedidos[mot]) motPedidos[mot] = new Set();
+      motPedidos[mot].add(String(r.pedido));
     });
     const rankMot = Object.entries(motPedidos).map(([n,s])=>({nome:n,ped:s.size})).sort((a,b)=>b.ped-a.ped).slice(0,5);
 
