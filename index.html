@@ -4293,6 +4293,51 @@ textarea:focus{
     <div id="mot-ranking-ri" style="display:none"></div>
     <div id="mot-ranking-re" style="display:none"></div>
 
+    <!-- KPIs KM -->
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px">
+      <div style="background:linear-gradient(135deg,#134e4a,#0d9488);border-radius:14px;padding:16px;text-align:center;box-shadow:0 4px 16px rgba(13,148,136,.3)">
+        <div style="font-size:.7rem;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:8px">🛣️ KM Total Mês</div>
+        <div id="mot-kpi-km-total" style="font-size:1.8rem;font-weight:900;color:#fff">-</div>
+        <div style="font-size:.68rem;color:rgba(255,255,255,.5)">todas as rotas</div>
+      </div>
+      <div style="background:linear-gradient(135deg,#1c1917,#78350f);border-radius:14px;padding:16px;text-align:center;box-shadow:0 4px 16px rgba(120,53,15,.3)">
+        <div style="font-size:.7rem;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:8px">🛣️ KM Rotas RE</div>
+        <div id="mot-kpi-km-re" style="font-size:1.8rem;font-weight:900;color:#fff">-</div>
+        <div style="font-size:.68rem;color:rgba(255,255,255,.5)">somente externas</div>
+      </div>
+    </div>
+
+    <!-- Lançamento de KM -->
+    <div style="background:#1e293b;border:1px solid rgba(13,148,136,.25);border-radius:14px;padding:18px;margin-bottom:20px">
+      <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0 0 4px">🛣️ Lançar KM da Carga</h3>
+      <p style="font-size:.75rem;color:#64748b;margin:0 0 14px">Digite o número da carga e o KM do veículo</p>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:120px">
+          <label style="font-size:.7rem;color:#64748b;font-weight:600;display:block;margin-bottom:4px">Nº CARGA</label>
+          <input id="mot-km-input-carga" type="number" placeholder="Ex: 1234"
+            style="width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid rgba(13,148,136,.3);color:#f0f0f8;border-radius:10px;padding:10px 14px;font-size:.95rem;outline:none;-moz-appearance:textfield"/>
+        </div>
+        <div style="flex:1;min-width:120px">
+          <label style="font-size:.7rem;color:#64748b;font-weight:600;display:block;margin-bottom:4px">KM DO VEÍCULO</label>
+          <input id="mot-km-input-km" type="number" placeholder="Ex: 58432"
+            style="width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid rgba(13,148,136,.3);color:#f0f0f8;border-radius:10px;padding:10px 14px;font-size:.95rem;outline:none;-moz-appearance:textfield"/>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="lancarKmInicial()"
+            style="background:linear-gradient(135deg,#0d9488,#14b8a6);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap">
+            🟢 KM Inicial
+          </button>
+          <button onclick="lancarKmFinal()"
+            style="background:linear-gradient(135deg,#b45309,#d97706);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap">
+            🔴 KM Final
+          </button>
+        </div>
+      </div>
+
+      <!-- Histórico KM -->
+      <div id="mot-km-historico" style="margin-top:16px"></div>
+    </div>
+
     <!-- Fui como Ajudante -->
     <div style="background:#1e293b;border:1px solid rgba(124,58,237,.2);border-radius:14px;padding:18px;margin-bottom:20px">
       <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0 0 4px">👷 Fui como Ajudante em uma Carga</h3>
@@ -8344,7 +8389,7 @@ async function fazerLoginCPF(){
       document.getElementById('portal-motorista-wrapper').style.display='block';
       document.getElementById('mot-nome-topbar').textContent = mot.nome;
       await carregarPortalMotorista();
-      await carregarPortalMotoristaCargasAjudante();
+      await Promise.all([carregarPortalMotoristaCargasAjudante(), carregarKmMotorista()]);
       return;
     }
 
@@ -8906,6 +8951,139 @@ async function carregarPortalMotoristaCargasAjudante(){
           </div>`;
         }).join('')
       }</div>`;
+  }catch(e){}
+}
+
+// ─── KM Cargas ───────────────────────────────────────────────────────────────
+
+async function lancarKmInicial(){
+  await _lancarKm('inicial');
+}
+async function lancarKmFinal(){
+  await _lancarKm('final');
+}
+
+async function _lancarKm(tipo){
+  if(!USUARIO_LOGADO) return;
+  const carga = Number((document.getElementById('mot-km-input-carga')?.value||'').trim());
+  const km    = Number((document.getElementById('mot-km-input-km')?.value||'').trim());
+  if(!carga||isNaN(carga)){ showToast('Digite um número de carga válido','warning'); return; }
+  if(!km||isNaN(km)||km<=0){ showToast('Digite o KM do veículo','warning'); return; }
+
+  const myId   = USUARIO_LOGADO.id;
+  const myNome = (USUARIO_LOGADO.nome||'').toUpperCase();
+  const agora  = new Date().toISOString();
+  const mesStr = agora.slice(0,7);
+
+  try{
+    // Buscar info da carga no lancamentos
+    const lanc = await supaFetch(`lancamentos?carga=eq.${carga}&motorista=eq.${encodeURIComponent(myNome)}&select=carga,rota,rire,veiculo&limit=1`).catch(()=>[]) || [];
+    if(!lanc.length){ showToast(`Carga #${carga} não encontrada para você`,'warning'); return; }
+    const { rota='', rire='', veiculo='' } = lanc[0];
+
+    // Verificar se já existe registro para essa carga
+    const existente = await supaFetch(`km_cargas?carga=eq.${carga}&motorista_id=eq.${myId}&select=id,km_inicial,km_final,ts_km_inicial,ts_km_final`).catch(()=>[]) || [];
+    const reg = existente[0];
+
+    if(tipo === 'inicial'){
+      if(reg){
+        // Atualizar km_inicial
+        await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_inicial:km, ts_km_inicial:agora }) });
+        showToast(`✅ KM Inicial atualizado: ${km.toLocaleString('pt-BR')} km`,'success');
+      } else {
+        // Criar novo registro
+        await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
+          id: Date.now().toString(36)+Math.random().toString(36).slice(2),
+          carga, motorista_id:myId, motorista_nome:myNome,
+          rota, rire, veiculo, mes_ano:mesStr,
+          km_inicial:km, km_final:null,
+          ts_km_inicial:agora, ts_km_final:null, ts:agora
+        })});
+        showToast(`✅ KM Inicial registrado: ${km.toLocaleString('pt-BR')} km`,'success');
+      }
+    } else {
+      if(!reg||reg.km_inicial===null||reg.km_inicial===undefined){
+        showToast('Registre o KM Inicial primeiro','warning'); return;
+      }
+      if(km <= reg.km_inicial){ showToast('KM Final deve ser maior que o Inicial','warning'); return; }
+      await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_final:km, ts_km_final:agora }) });
+      const kmTotal = km - reg.km_inicial;
+      const msTotal = new Date(agora) - new Date(reg.ts_km_inicial);
+      const horas   = Math.round(msTotal/3600000);
+      showToast(`✅ KM Final registrado! Total: ${kmTotal.toLocaleString('pt-BR')} km em ${horas}h`,'success');
+    }
+
+    // Limpar campos e recarregar histórico
+    if(document.getElementById('mot-km-input-carga')) document.getElementById('mot-km-input-carga').value='';
+    if(document.getElementById('mot-km-input-km'))    document.getElementById('mot-km-input-km').value='';
+    await carregarKmMotorista();
+
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+async function carregarKmMotorista(){
+  if(!USUARIO_LOGADO) return;
+  const myId   = USUARIO_LOGADO.id;
+  const mesStr = new Date().toISOString().slice(0,7);
+  const cont   = document.getElementById('mot-km-historico');
+  const ROTAS_RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
+  const _isRI  = reg => { const r=(reg.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((reg.rota||'').trim().toUpperCase()); };
+
+  try{
+    const rows = await supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*&order=ts.desc`).catch(()=>[]) || [];
+
+    // KPIs
+    let kmTotal=0, kmRE=0;
+    rows.forEach(r=>{
+      if(r.km_inicial!=null && r.km_final!=null){
+        const diff = r.km_final - r.km_inicial;
+        kmTotal += diff;
+        if(!_isRI(r)) kmRE += diff;
+      }
+    });
+    const setKpi=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
+    setKpi('mot-kpi-km-total', kmTotal>0 ? kmTotal.toLocaleString('pt-BR')+' km' : '-');
+    setKpi('mot-kpi-km-re',   kmRE>0   ? kmRE.toLocaleString('pt-BR')+' km'   : '-');
+
+    if(!cont) return;
+    if(!rows.length){ cont.innerHTML=''; return; }
+
+    const fmtDt = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+    const fmtDias = (tsI, tsF) => {
+      if(!tsI||!tsF) return null;
+      const ms = new Date(tsF) - new Date(tsI);
+      const h  = Math.floor(ms/3600000);
+      const d  = Math.floor(h/24);
+      return d>0 ? `${d}d ${h%24}h` : `${h}h`;
+    };
+
+    cont.innerHTML = `
+      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,.07);padding-top:14px">
+        <div style="font-size:.75rem;font-weight:700;color:#64748b;margin-bottom:10px;text-transform:uppercase">Histórico KM — ${mesStr}</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${rows.map(r=>{
+            const kmR = (r.km_inicial!=null&&r.km_final!=null) ? r.km_final-r.km_inicial : null;
+            const dur = fmtDias(r.ts_km_inicial, r.ts_km_final);
+            const isRI = _isRI(r);
+            return `<div style="background:rgba(13,148,136,.08);border:1px solid rgba(13,148,136,.2);border-radius:8px;padding:10px 14px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <div><span style="font-weight:800;color:#f0f0f8">#${r.carga}</span>
+                  <span style="font-size:.72rem;color:#64748b;margin-left:6px">${r.rota||'—'}</span>
+                  <span style="font-size:.68rem;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700;${isRI?'background:rgba(37,99,235,.2);color:#93c5fd':'background:rgba(234,88,12,.2);color:#fb923c'}">${isRI?'RI':'RE'}</span>
+                </div>
+                ${kmR!=null ? `<span style="font-weight:800;color:#2dd4bf;font-size:.9rem">${kmR.toLocaleString('pt-BR')} km</span>` : '<span style="color:#f59e0b;font-size:.75rem">⏳ Pendente</span>'}
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;color:#64748b">
+                <div>🟢 Início: <span style="color:#94a3b8">${fmtDt(r.ts_km_inicial)}</span></div>
+                <div>🔴 Fim: <span style="color:#94a3b8">${fmtDt(r.ts_km_final)}</span></div>
+                ${r.km_inicial!=null?`<div>Odômetro inicial: <span style="color:#94a3b8">${Number(r.km_inicial).toLocaleString('pt-BR')}</span></div>`:''}
+                ${r.km_final!=null?`<div>Odômetro final: <span style="color:#94a3b8">${Number(r.km_final).toLocaleString('pt-BR')}</span></div>`:''}
+                ${dur?`<div style="grid-column:span 2">⏱️ Duração: <span style="color:#a78bfa;font-weight:700">${dur}</span></div>`:''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
   }catch(e){}
 }
 
