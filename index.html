@@ -8952,9 +8952,12 @@ async function lancarKmCarga(carga, tipo){
       if(reg){
         await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_inicial:km, ts_km_inicial:agora }) });
       } else {
-        // Buscar rota/rire do lancamento para guardar junto
-        const lancs = await supaFetch(`lancamentos?carga=eq.${carga}&select=rota,rire,veiculo&limit=1`).catch(()=>[]) || [];
-        const { rota='', rire='', veiculo='' } = lancs[0]||{};
+        // Buscar rota/veiculo da demanda para guardar junto
+        const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=rota,veiculo&limit=1`).catch(()=>[]) || [];
+        const { rota='', veiculo='' } = dem[0]||{};
+        // Determinar rire pela rota
+        const _RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
+        const rire = _RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
         await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
           id: Date.now().toString(36)+Math.random().toString(36).slice(2),
           carga:Number(carga), motorista_id:myId, motorista_nome:myNome,
@@ -8991,15 +8994,15 @@ async function carregarKmMotorista(){
   const fmtDur = (tsI,tsF) => { if(!tsI||!tsF) return null; const h=Math.floor((new Date(tsF)-new Date(tsI))/3600000); const d=Math.floor(h/24); return d>0?`${d}d ${h%24}h`:`${h}h`; };
 
   try{
-    // Buscar cargas do mês no lancamentos + registros KM em paralelo
-    const [lancs, kmRegs] = await Promise.all([
-      supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01&ts=lte.${mesStr}-31T23:59:59Z&select=carga,rota,rire,veiculo,ts&order=ts.desc`).catch(()=>[]) || [],
+    // Buscar cargas da pré-carga (demandas_rota) + registros KM em paralelo
+    const [demandas, kmRegs] = await Promise.all([
+      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&data_saida=gte.${mesStr}-01&data_saida=lte.${mesStr}-31&status=neq.cancelado&select=carga,rota,status,data_saida,veiculo&order=data_saida.desc`).catch(()=>[]) || [],
       supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*`).catch(()=>[]) || []
     ]);
 
-    // Deduplica cargas (lancamentos pode ter duplicatas)
+    // Deduplica cargas
     const cargasVistas = new Set();
-    const cargas = (lancs||[]).filter(l=>{ const c=String(l.carga); if(cargasVistas.has(c)) return false; cargasVistas.add(c); return true; });
+    const cargas = (demandas||[]).filter(l=>{ const c=String(l.carga); if(cargasVistas.has(c)) return false; cargasVistas.add(c); return true; });
 
     // Indexar KM por carga
     const kmMap = {};
