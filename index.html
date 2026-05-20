@@ -14297,18 +14297,22 @@ async function renderDashInterna(){
       ) || [];
     }
 
-    // Filtrar apenas RI — usa cargaIsRI (do lancamento, fonte confiável)
-    // Fallback: base_data.rire / rota quando a carga não está no lancamento do mês
-    // RETIRA excluído em ambas as fontes (não é entrega — é retirada pelo cliente)
+    // Filtrar apenas RI — prioridade: cadastro de rotas → lancamento → base_data.rire
+    // RETIRA e CEASA excluídos pelo cadastro (RETIRA=RI mas sem entrega real; CEASA=prazo null)
     const rotasContagemUpper = new Set([...ROTAS_CONTAGEM].map(n=>n.toUpperCase()));
     const bd = baseDataSupa.filter(r => {
+      const rotaKey = (r.rota||'').toUpperCase().trim();
+      const cfgRota = CONFIG.rotas?.[rotaKey];
+      // 1º: cadastro de rotas (fonte verdadeira)
+      if(cfgRota) return cfgRota.ri && cfgRota.prazoOtif !== null; // CEASA: ri=true mas prazo=null → excluir aqui tb
+      // 2º: lancamento (cargaIsRI vem de lancamentos.rire)
       const c = Math.round(Number(r.carga));
-      if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c]; // fonte mais confiável
-      // fallback: base_data.rire ou rota (sem RETIRA)
+      if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c];
+      // 3º: base_data.rire
       const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
       if(rireStr === 'RE') return false;
       if(rireStr === 'RI') return true;
-      return rotasContagemUpper.has((r.rota||'').toUpperCase()); // usa ROTAS_CONTAGEM, não ROTAS_RI
+      return rotasContagemUpper.has(rotaKey);
     });
 
     // Cargas RI do período/unidade
@@ -14412,13 +14416,19 @@ async function renderDashInterna(){
       const diffHoras = (refMs - dpMs) / (1000 * 3600);
       if(diffHoras < 0) return; // data inconsistente — ignorar
 
-      // Prazo por rota (CEASA=null→não conta; Petrolina/Juazeiro=24h; R.E.=192h)
+      // Prazo por rota — prioridade: cadastro → lancamento → padrão RI/RE
       const rotaKey = (p.rota||'').toUpperCase().trim();
       const c = Math.round(Number(p.carga));
-      const isRI_c = cargaIsRI.hasOwnProperty(c) ? cargaIsRI[c] : true;
       const cfgRota = CONFIG.rotas?.[rotaKey];
-      if(cfgRota && cfgRota.prazoOtif === null) return; // rota sem prazo
-      const prazo = (cfgRota?.prazoOtif != null) ? cfgRota.prazoOtif : (isRI_c ? 24 : 192);
+      if(cfgRota && cfgRota.prazoOtif === null) return; // rota sem prazo (ex: CEASA)
+      let prazo;
+      if(cfgRota?.prazoOtif != null){
+        prazo = cfgRota.prazoOtif; // cadastro tem prioridade
+      } else {
+        // fallback: tipo do lancamento, depois padrão RI=24h / RE=192h
+        const isRI_c = cargaIsRI.hasOwnProperty(c) ? cargaIsRI[c] : (cfgRota?.ri ?? true);
+        prazo = isRI_c ? 24 : 192;
+      }
       otifTot++;
       if(diffHoras <= prazo) otifOk++;
     });
