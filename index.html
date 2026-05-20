@@ -3006,7 +3006,8 @@ textarea:focus{
       </div>
       <div style="font-size:.75rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Por que não saiu?</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="motivo-pend-btns"></div>
-      <div style="margin-top:14px;display:flex;justify-content:flex-end">
+      <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+        <button onclick="window._pularMotivoPendente()" style="background:transparent;border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:.8rem;color:var(--text-muted);cursor:pointer;font-weight:600" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">⏭️ Deixar para depois</button>
         <span id="motivo-pend-progresso" style="font-size:.75rem;color:var(--text-muted)"></span>
       </div>
     </div>
@@ -3778,6 +3779,10 @@ textarea:focus{
           <label>R$/KM — RE</label>
           <input type="number" id="cad-rota-valor-km" placeholder="0,20" step="0.01" value="0.20" style="width:100px"/>
         </div>
+        <div class="cad-field" id="cad-rota-prazo-field">
+          <label>Prazo OTIF (h)</label>
+          <input type="number" id="cad-rota-prazo-otif" placeholder="vazio=sem" min="1" step="1" style="width:90px" title="24h = R.I. | 192h = 8 dias R.E. | vazio = sem prazo (ex: CEASA)"/>
+        </div>
         <button class="cad-btn-add" onclick="cadAdicionarRota()">➕ Adicionar</button>
       </div>
       <div id="msg-cad-rota" class="cad-msg" style="display:none"></div>
@@ -4464,6 +4469,11 @@ textarea:focus{
           <label style="font-size:.72rem;font-weight:700;color:#ea580c;text-transform:uppercase;display:block;margin-bottom:5px">🛣️ R$/KM — RE</label>
           <input type="number" id="er-valor-km" step="0.01" min="0" placeholder="0,20"
             style="width:100%;border:1.5px solid rgba(234,88,12,.4);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#7c3aed;text-transform:uppercase;display:block;margin-bottom:5px">⏱ Prazo OTIF (horas)</label>
+          <input type="number" id="er-prazo-otif" step="1" min="1" placeholder="vazio = sem prazo (ex: CEASA)"
+            style="width:100%;border:1.5px solid rgba(124,58,237,.4);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
         </div>
       </div>
       <div id="er-msg" style="display:none;padding:9px 13px;border-radius:8px;font-size:.84rem;font-weight:600"></div>
@@ -5909,7 +5919,7 @@ async function syncConfig(){
   }catch(e){ console.warn('Config sync erro:',e.message); }
   // Carregar valores por rota do banco (mot_sem_aj, mot_com_aj, val_ajudante)
   try{
-    const rotas = await supaFetch('rotas?select=nome,tipo,valor_padrao,mot_sem_aj,mot_com_aj,val_ajudante,valor_km&ativo=eq.true');
+    const rotas = await supaFetch('rotas?select=nome,tipo,valor_padrao,mot_sem_aj,mot_com_aj,val_ajudante,valor_km,prazo_otif&ativo=eq.true');
     if(rotas && rotas.length){
       if(!CONFIG.rotas) CONFIG.rotas = {};
       rotas.forEach(r=>{
@@ -5927,6 +5937,7 @@ async function syncConfig(){
           ajud:   r.val_ajudante || 0,
           val_ajudante: r.val_ajudante || 0,
           valorKm: r.valor_km || 0.20,
+          prazoOtif: r.prazo_otif != null ? r.prazo_otif : (isRI ? 24 : 192),
           meta:   r.valor_padrao || 0,
           tipo:   r.tipo || 'RE',
           ri:     isRI
@@ -12999,6 +13010,7 @@ async function cadCarregarRotas(){
             ${r.mot_sem_aj>0?`<span style="color:#2563eb;font-size:.71rem;margin-left:2px">Mot: R$${Number(r.mot_sem_aj).toFixed(2)}</span>`:''}
             ${r.val_ajudante>0?`<span style="color:#7c3aed;font-size:.71rem;margin-left:2px">Aj: R$${Number(r.val_ajudante).toFixed(2)}</span>`:''}
             ${r.tipo==='RE'&&r.valor_km>0?`<span style="color:#ea580c;font-size:.71rem;margin-left:2px">🛣️ R$${Number(r.valor_km).toFixed(2)}/km</span>`:''}
+            ${r.prazo_otif>0?`<span style="color:#7c3aed;font-size:.71rem;margin-left:2px">⏱ OTIF: ${r.prazo_otif}h</span>`:''}
           </div>
         </div>
         <div style="display:flex;gap:5px">
@@ -13018,10 +13030,12 @@ async function cadAdicionarRota(){
   const motSem   = parseFloat(document.getElementById('cad-rota-mot-sem')?.value)||0;
   const motCom   = parseFloat(document.getElementById('cad-rota-mot-com')?.value)||0;
   const ajudante = parseFloat(document.getElementById('cad-rota-ajudante')?.value)||0;
-  const valorKm  = parseFloat(document.getElementById('cad-rota-valor-km')?.value)||0.20;
+  const valorKm   = parseFloat(document.getElementById('cad-rota-valor-km')?.value)||0.20;
+  const prazoOtifRaw2 = document.getElementById('cad-rota-prazo-otif')?.value.trim()||'';
+  const prazoOtif = prazoOtifRaw2 === '' ? null : (parseInt(prazoOtifRaw2)||192);
   if(!nome){ showCadMsg('msg-cad-rota','Informe o nome da rota',false); return; }
   try{
-    const payload = { tipo, valor_padrao:valor, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajudante, valor_km:valorKm, ativo:true };
+    const payload = { tipo, valor_padrao:valor, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajudante, valor_km:valorKm, prazo_otif:prazoOtif, ativo:true };
     // Verificar se já existe — atualizar em vez de inserir
     const ex = await supaFetch(`rotas?nome=eq.${encodeURIComponent(nome)}&select=id`)||[];
     if(ex.length){
@@ -13035,7 +13049,7 @@ async function cadAdicionarRota(){
     await supaFetch('rotas',{method:'POST',body:JSON.stringify({nome,...payload})});
     document.getElementById('cad-rota-nome').value='';
     document.getElementById('cad-rota-valor').value='';
-    ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante','cad-rota-valor-km'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+    ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante','cad-rota-valor-km','cad-rota-prazo-otif'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
     showCadMsg('msg-cad-rota','✅ Rota adicionada!');
     showToast('✅ Rota '+nome+' cadastrada!','success');
     await cadCarregarRotas();
@@ -13048,10 +13062,11 @@ async function salvarRota(id){
   const motSem  = parseFloat(document.getElementById(`rota-motsem-${id}`)?.value)||0;
   const motCom  = parseFloat(document.getElementById(`rota-motcom-${id}`)?.value)||0;
   const ajud    = parseFloat(document.getElementById(`rota-ajud-${id}`)?.value)||0;
-  const valorKm = parseFloat(document.getElementById(`rota-km-${id}`)?.value)||0.20;
+  const valorKm  = parseFloat(document.getElementById(`rota-km-${id}`)?.value)||0.20;
+  const prazoOtif= parseInt(document.getElementById(`rota-prazo-${id}`)?.value)||192;
   try{
     await supaFetch(`rotas?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({
-      valor_padrao:meta, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajud, valor_km:valorKm
+      valor_padrao:meta, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajud, valor_km:valorKm, prazo_otif:prazoOtif
     })});
     showToast('✅ Rota atualizada!','success');
     // Destacar linha salva
@@ -13079,7 +13094,8 @@ function abrirEditarRota(rota){
   document.getElementById('er-mot-sem').value   = rota.mot_sem_aj  > 0 ? rota.mot_sem_aj   : '';
   document.getElementById('er-mot-com').value   = rota.mot_com_aj  > 0 ? rota.mot_com_aj   : '';
   document.getElementById('er-ajudante').value  = rota.val_ajudante> 0 ? rota.val_ajudante  : '';
-  document.getElementById('er-valor-km').value  = rota.valor_km    > 0 ? rota.valor_km      : '0.20';
+  document.getElementById('er-valor-km').value   = rota.valor_km    > 0 ? rota.valor_km      : '0.20';
+  document.getElementById('er-prazo-otif').value = rota.prazo_otif != null ? rota.prazo_otif : '';
   const msg = document.getElementById('er-msg');
   if(msg){ msg.style.display='none'; msg.textContent=''; }
   const modal = document.getElementById('modal-editar-rota');
@@ -13094,8 +13110,10 @@ async function salvarEditarRota(){
   const motSem   = parseFloat(document.getElementById('er-mot-sem').value) || 0;
   const motCom   = parseFloat(document.getElementById('er-mot-com').value) || 0;
   const ajudante = parseFloat(document.getElementById('er-ajudante').value)|| 0;
-  const valorKm  = parseFloat(document.getElementById('er-valor-km').value) || 0.20;
-  const msg      = document.getElementById('er-msg');
+  const valorKm   = parseFloat(document.getElementById('er-valor-km').value)   || 0.20;
+  const prazoOtifRaw = document.getElementById('er-prazo-otif').value.trim();
+  const prazoOtif = prazoOtifRaw === '' ? null : (parseInt(prazoOtifRaw) || 192);
+  const msg       = document.getElementById('er-msg');
 
   function erMsg(txt, ok=true){
     if(!msg) return;
@@ -13117,7 +13135,7 @@ async function salvarEditarRota(){
     }
     await supaFetch(`rotas?id=eq.${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ nome, tipo, valor_padrao: meta, mot_sem_aj: motSem, mot_com_aj: motCom, val_ajudante: ajudante, valor_km: valorKm })
+      body: JSON.stringify({ nome, tipo, valor_padrao: meta, mot_sem_aj: motSem, mot_com_aj: motCom, val_ajudante: ajudante, valor_km: valorKm, prazo_otif: prazoOtif })
     });
     erMsg('✅ Rota salva com sucesso!');
     showToast('✅ Rota '+nome+' atualizada!','success');
@@ -13721,43 +13739,49 @@ function uploadDatasEntrega(event){
           return obj;
         });
       }
-      // Detectar colunas de pedido e data_entrega (flexible naming)
+      // Detectar colunas: pedido obrigatório, data_entrega obrigatória
       const amostra = rows[0]||{};
-      const pedidoCol = Object.keys(amostra).find(k=>/(pedido|order|num|n[uo]mero)/i.test(k));
-      const dataCol = Object.keys(amostra).find(k=>/(entrega|delivery|data.*ent|ent.*data|data_ent)/i.test(k));
+      const keys = Object.keys(amostra);
+      const pedidoCol = keys.find(k=>/(pedido|order|num|n[uo]mero)/i.test(k));
+      const deCol     = keys.find(k=>/(entrega|delivery|data.*ent|ent.*data|data_ent)/i.test(k));
       if(!pedidoCol){ showToast('Coluna "pedido" não encontrada na planilha','warning'); return; }
-      if(!dataCol){ showToast('Coluna "data entrega" não encontrada na planilha','warning'); return; }
-      // Build map {pedido: 'YYYY-MM-DD'}
+      if(!deCol)    { showToast('Coluna "data entrega" não encontrada na planilha','warning'); return; }
+
+      // Normaliza data para 'YYYY-MM-DD'
+      function normData(val){
+        if(!val) return null;
+        if(val instanceof Date) return val.toISOString().slice(0,10);
+        const s = String(val).trim();
+        const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+        if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+        if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        return null;
+      }
+
       const mapa = {};
       let count = 0;
       rows.forEach(r=>{
         const ped = String(r[pedidoCol]||'').trim();
         if(!ped || ped==='0') return;
-        let dt = r[dataCol];
-        if(!dt) return;
-        // Normalizar data
-        if(dt instanceof Date){ dt = dt.toISOString().slice(0,10); }
-        else {
-          dt = String(dt).trim();
-          // DD/MM/YYYY → YYYY-MM-DD
-          const m = dt.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-          if(m) dt = `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
-          // YYYY-MM-DD already OK
-          else if(!/^\d{4}-\d{2}-\d{2}$/.test(dt)) return;
-        }
-        mapa[ped] = dt;
+        const de = normData(r[deCol]);
+        if(!de) return;
+        mapa[ped] = de;
         count++;
       });
+
       // Salvar no Supabase (upsert por mes_ano + pedido)
       const uid = USUARIO_LOGADO?.id||null;
       const registros = Object.entries(mapa).map(([ped,dt])=>({
         mes_ano: mesFiltro, pedido: ped, data_entrega: dt, usuario_id: uid
       }));
-      supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
-        method:'POST',
-        prefer:'resolution=merge-duplicates,return=minimal',
-        body: JSON.stringify(registros)
-      }).catch(e=>console.warn('entrega_datas upload:',e.message));
+      if(registros.length){
+        supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
+          method:'POST',
+          prefer:'resolution=merge-duplicates,return=minimal',
+          body: JSON.stringify(registros)
+        }).catch(e=>console.warn('entrega_datas upload:',e.message));
+      }
+
       showToast(`✅ ${count} datas de entrega carregadas para ${mesFiltro}`,'success');
       renderDashInterna();
     }catch(err){ showToast('Erro ao ler planilha: '+err.message,'warning'); }
@@ -14101,16 +14125,13 @@ async function renderDashInterna(){
     const emAtraso = dem.filter(d=>d.data_saida < hoje && !['saiu','fim_viagem','concluido','cancelado'].includes(d.status));
     const pedidosEmAtraso = emAtraso.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
 
-    // 5. OTIF — data_pedido → ts_saiu (data de saída do veículo)
-    // Quando a planilha de entregas for carregada com datas corretas, trocar ts_saiu por data_entrega
+    // 5. OTIF — data_pedido → ts_saiu (sistema) com fallback da planilha
 
-    // Mapa carga → ts_saiu — fontes em paralelo:
-    //   a) dem (demandas filtradas por data_saida — para KPIs de atraso/contagem)
-    //   b) query direta por carga sem filtro de data (garante OTIF mesmo quando data_saida difere do mes_ano)
+    // Mapa carga → ts_saiu (sistema — quando motorista/adm marca que saiu)
     const cargaSaiuMap = {};
     dem.forEach(d=>{ if(d.ts_saiu) cargaSaiuMap[String(d.carga)] = d.ts_saiu; });
 
-    // Complementar: cargas em bd que não vieram no dem (data_saida fora do intervalo)
+    // Complementar: cargas cujo data_saida ficou fora do intervalo do mês
     if(cargasUnd.size > 0){
       const cargasSemSaida = [...cargasUnd].filter(c=>!cargaSaiuMap[c]);
       if(cargasSemSaida.length > 0){
@@ -14121,21 +14142,32 @@ async function renderDashInterna(){
       }
     }
 
-    // Badge: informa se há planilha de entregas carregada (futuro uso)
-    let entregaMap = {};
+    // Planilha de entregas: pedido → data_entrega (real) e data_saida (saída da planilha base)
+    const entregaMap = {}; // pedido → 'YYYY-MM-DD' (data de entrega real)
+    const saidaMap   = {}; // pedido → 'YYYY-MM-DD' (data de saída da planilha base)
+    let nEntrega = 0, nSaida = 0;
     try{
-      const edRows = await supaFetch(`entrega_datas?mes_ano=eq.${mesFiltro}&select=pedido,data_entrega`).catch(()=>[]);
-      (edRows||[]).forEach(r=>{ if(r.pedido&&r.data_entrega) entregaMap[r.pedido]=r.data_entrega; });
+      const edRows = await supaFetch(
+        `entrega_datas?mes_ano=eq.${mesFiltro}&select=pedido,data_entrega,data_saida`
+      ).catch(()=>[]) || [];
+      edRows.forEach(r=>{
+        const ped = String(r.pedido);
+        if(r.data_entrega) entregaMap[ped] = r.data_entrega;
+        if(r.data_saida)   saidaMap[ped]   = r.data_saida;
+      });
+      nEntrega = Object.keys(entregaMap).length;
+      nSaida   = Object.keys(saidaMap).length;
     }catch(e){}
-    const nEntrega = Object.keys(entregaMap).length;
+
     const badge = document.getElementById('dash-entrega-badge');
     if(badge) badge.textContent = nEntrega
-      ? `✅ Planilha carregada — ${nEntrega} pedidos com data de entrega (OTIF automático)`
-      : '⏱ Sem planilha — OTIF pela data de saída do veículo';
+      ? `✅ Planilha de entrega — ${nEntrega} pedidos com data real`
+      : nSaida
+        ? `🚛 Saída importada — ${nSaida} pedidos (aguardando planilha de entrega)`
+        : '⏱ Sem planilha — OTIF pela saída registrada no sistema';
 
-    // Calcular OTIF: data_pedido → ts_saiu
-    // Usa bd (Supabase, já tem data_pedido) — sem cache local
-    let otif24Tot=0, otif24Ok=0, otif32Tot=0, otif32Ok=0;
+    // Calcular OTIF: data_pedido → ts_saiu (prazo por rota configurado em Cadastro > Rotas)
+    let otifTot=0, otifOk=0;
     const pedidosContados = new Set();
 
     bd.forEach(p => {
@@ -14143,30 +14175,44 @@ async function renderDashInterna(){
       if(pedidosContados.has(pedKey)) return;
       pedidosContados.add(pedKey);
 
-      const dpStr = p.data_pedido; // 'YYYY-MM-DD'
+      const pedStr   = String(p.pedido);
+      const cargaStr = String(p.carga);
+
+      // data_pedido: quando o pedido foi criado (vem da planilha base importada)
+      const dpStr = p.data_pedido;
       if(!dpStr) return;
       const dpMs = new Date(dpStr+'T00:00:00').getTime();
 
-      // Se planilha de entregas carregada → usa data_entrega; senão → ts_saiu
+      // Data final (ordem de prioridade):
+      // 1º data_entrega — data real de entrega ao cliente (planilha de entregas)
+      // 2º data_saida   — data de saída da planilha base (SAÍDA importada)
+      // 3º ts_saiu      — timestamp do sistema quando motorista/adm marcou saída
       let refMs = null;
-      if(nEntrega && entregaMap[String(p.pedido)]){
-        refMs = new Date(entregaMap[String(p.pedido)]+'T00:00:00').getTime();
+      if(entregaMap[pedStr]){
+        refMs = new Date(entregaMap[pedStr]+'T00:00:00').getTime();
+      } else if(saidaMap[pedStr]){
+        refMs = new Date(saidaMap[pedStr]+'T00:00:00').getTime();
       } else {
-        const tsSaiu = cargaSaiuMap[String(p.carga)];
+        const tsSaiu = cargaSaiuMap[cargaStr];
         if(tsSaiu) refMs = new Date(tsSaiu).getTime();
       }
       if(!refMs) return;
 
       const diffHoras = (refMs - dpMs) / (1000 * 3600);
-      if(diffHoras < 0) return; // data anterior ao pedido — dado inconsistente
-      otif24Tot++;
-      if(diffHoras <= 24) otif24Ok++;
-      otif32Tot++;
-      if(diffHoras <= 32) otif32Ok++;
+      if(diffHoras < 0) return; // data inconsistente — ignorar
+
+      // Prazo por rota (CEASA=null→não conta; Petrolina/Juazeiro=24h; R.E.=192h)
+      const rotaKey = (p.rota||'').toUpperCase().trim();
+      const c = Math.round(Number(p.carga));
+      const isRI_c = cargaIsRI.hasOwnProperty(c) ? cargaIsRI[c] : true;
+      const cfgRota = CONFIG.rotas?.[rotaKey];
+      if(cfgRota && cfgRota.prazoOtif === null) return; // rota sem prazo
+      const prazo = (cfgRota?.prazoOtif != null) ? cfgRota.prazoOtif : (isRI_c ? 24 : 192);
+      otifTot++;
+      if(diffHoras <= prazo) otifOk++;
     });
 
-    const pct24 = otif24Tot ? Math.round((otif24Ok/otif24Tot)*100) : null;
-    const pct32 = otif32Tot ? Math.round((otif32Ok/otif32Tot)*100) : null;
+    const pctOtif = otifTot ? Math.round((otifOk/otifTot)*100) : null;
     const corOtif = p => p===null?'#6b7280':p>=95?'#059669':p>=80?'#f59e0b':'#ef4444';
 
     // 6. Ranking Top 5 Motoristas RI do mês
@@ -14187,8 +14233,7 @@ async function renderDashInterna(){
       {label:'🚛 Cargas',     val:totalCargas.toLocaleString('pt-BR'),          cor:'#7c3aed'},
       {label:'✅ Ativas',     val:cargasAtivas.toLocaleString('pt-BR'),         cor:'#059669'},
       {label:'🚛 Partiram',   val:cargasPartidas.length.toLocaleString('pt-BR'),cor:'#E8000D'},
-      {label:'🎯 OTIF 24h',   val:pct24!==null?pct24+'%':'—',                  cor:corOtif(pct24), sub:otif24Tot?`${otif24Ok}/${otif24Tot} ped`:'sem dados'},
-      {label:'🎯 OTIF 32h',   val:pct32!==null?pct32+'%':'—',                  cor:corOtif(pct32), sub:otif32Tot?`${otif32Ok}/${otif32Tot} ped`:'sem dados'},
+      {label:'🎯 OTIF',        val:pctOtif!==null?pctOtif+'%':'—',              cor:corOtif(pctOtif), sub:otifTot?`${otifOk}/${otifTot} ped`:'sem dados'},
     ];
     container.innerHTML = kpis.map(k=>`
       <div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid ${k.cor};border-radius:12px;padding:18px 20px;position:relative;overflow:hidden">
@@ -14218,37 +14263,29 @@ async function renderDashInterna(){
         </div>
       </div>`;
 
-    // 9. Box OTIF (data_pedido → ts_saiu)
+    // 9. Box OTIF
+    const otifFonte = nEntrega
+      ? `📅 Data real de entrega — ${nEntrega} pedidos`
+      : nSaida
+        ? `🚛 Data de saída (planilha base) — ${nSaida} pedidos`
+        : otifTot > 0
+          ? `⏱ Saída registrada no sistema — ${otifTot} pedidos`
+          : '⚠️ Sem dados de saída — importe a planilha';
     if(otifBox) otifBox.innerHTML = `
       <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">🎯 OTIF — Tempo de Atendimento</h3>
-      <p style="font-size:.68rem;color:var(--text-muted);margin-bottom:14px">📦 Data do pedido → 🚛 Saída do veículo</p>
+      <p style="font-size:.68rem;color:var(--text-muted);margin-bottom:14px">📦 Data do pedido → 🚛 Saída / 🏠 Entrega · Prazo por rota</p>
       <div style="margin-bottom:14px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-size:.78rem;font-weight:700;color:var(--text-secondary)">24 horas</span>
-          <span style="font-size:1.1rem;font-weight:900;color:${corOtif(pct24)}">${pct24!==null?pct24+'%':'—'}</span>
+          <span style="font-size:.78rem;font-weight:700;color:var(--text-secondary)">Dentro do prazo</span>
+          <span style="font-size:1.1rem;font-weight:900;color:${corOtif(pctOtif)}">${pctOtif!==null?pctOtif+'%':'—'}</span>
         </div>
         <div style="height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
-          <div style="height:100%;width:${pct24||0}%;background:${corOtif(pct24)};border-radius:4px;transition:width .5s"></div>
+          <div style="height:100%;width:${pctOtif||0}%;background:${corOtif(pctOtif)};border-radius:4px;transition:width .5s"></div>
         </div>
-        <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${otif24Ok} de ${otif24Tot} pedidos</div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${otifOk} de ${otifTot} pedidos</div>
       </div>
-      <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-size:.78rem;font-weight:700;color:var(--text-secondary)">32 horas</span>
-          <span style="font-size:1.1rem;font-weight:900;color:${corOtif(pct32)}">${pct32!==null?pct32+'%':'—'}</span>
-        </div>
-        <div style="height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
-          <div style="height:100%;width:${pct32||0}%;background:${corOtif(pct32)};border-radius:4px;transition:width .5s"></div>
-        </div>
-        <div style="font-size:.68rem;color:var(--text-muted);margin-top:2px">${otif32Ok} de ${otif32Tot} pedidos</div>
-      </div>
-      <p style="margin-top:12px;font-size:.68rem;color:var(--text-muted)">
-        ${nEntrega
-          ? `📅 Usando datas de entrega da planilha (${nEntrega} pedidos)`
-          : otif24Tot===0
-            ? '⚠️ Sem saída registrada — carregue a planilha de entregas'
-            : `⏱ Usando data de saída do veículo (${otif24Tot} pedidos)`}
-      </p>`;
+      <p style="margin-top:4px;font-size:.68rem;color:var(--text-muted)">⚙️ Prazo por rota: Petrolina/Juazeiro = 24h · R.E. = 8 dias · CEASA = não contabilizado</p>
+      <p style="margin-top:8px;font-size:.68rem;color:var(--text-muted)">${otifFonte}</p>`;
 
     // 10. Box Ranking Motoristas RI
     if(rankBox){
@@ -21020,6 +21057,12 @@ async function renderAgendamentos(){
       arr[idx].status        = 'atrasado';
       saveAgendamentos(arr);
     }
+    _idxAtual++;
+    mostrarItem();
+  };
+
+  // Pula a rota atual sem registrar motivo — ela volta na próxima abertura
+  window._pularMotivoPendente = function(){
     _idxAtual++;
     mostrarItem();
   };
