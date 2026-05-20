@@ -11154,13 +11154,27 @@ async function atualizarStatusDemanda(id, status){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
-let _demandaSaidaId = null;
+let _demandaSaidaId   = null;
+let _demandaSaidaData = null; // guarda {carga, rota, motorista} quando aberto pelo portal motorista
 
 function abrirModalSaida(demandaId){
-  _demandaSaidaId = demandaId;
+  _demandaSaidaId   = demandaId;
+  _demandaSaidaData = null;
   const dem = _demandasCache?.find(d=>d.id===demandaId);
   const info = document.getElementById('saida-rota-info');
   if(info && dem) info.textContent = `${dem.rota||'—'} • Carga ${dem.carga} • ${dem.motorista||'—'}`;
+  document.getElementById('saida-data').value = new Date().toISOString().split('T')[0];
+  document.getElementById('saida-km-inicial').value = '';
+  document.getElementById('saida-km-esperado').value = '';
+  document.getElementById('modal-saida-rota').style.display = 'flex';
+}
+
+// Chamado pelo portal do motorista — não depende de _demandasCache
+function motIniciarViagem(demandaId, carga, rota, motorista){
+  _demandaSaidaId   = demandaId;
+  _demandaSaidaData = { carga: Number(carga), rota, motorista };
+  const info = document.getElementById('saida-rota-info');
+  if(info) info.textContent = `${rota||'—'} • Carga #${carga} • ${motorista||'—'}`;
   document.getElementById('saida-data').value = new Date().toISOString().split('T')[0];
   document.getElementById('saida-km-inicial').value = '';
   document.getElementById('saida-km-esperado').value = '';
@@ -11180,25 +11194,27 @@ async function confirmarSaidaRota(){
   if(!data){ showToast('Informe a data de saída','warning'); return; }
   if(!kmIni){ showToast('Informe o KM inicial','warning'); return; }
   try{
-    const dem = _demandasCache?.find(d=>d.id===_demandaSaidaId);
+    const dem = _demandasCache?.find(d=>d.id===_demandaSaidaId) || _demandaSaidaData;
     const tsSaiu = new Date(data+'T08:00:00.000Z').toISOString();
-    await supaFetch(`demandas_rota?id=eq.${_demandaSaidaId}`,{
+    const savedId = _demandaSaidaId;
+    await supaFetch(`demandas_rota?id=eq.${savedId}`,{
       method:'PATCH', body:JSON.stringify({status:'saiu', ts_saiu:tsSaiu})
     });
     await supaFetch('rotas_viagem',{method:'POST',body:JSON.stringify({
-      demanda_id:_demandaSaidaId, carga:dem?.carga||null,
+      demanda_id:savedId, carga:dem?.carga||null,
       data_saida:data, km_inicial:kmIni, km_esperado:kmEsp,
       criado_em:new Date().toISOString()
-    })});
+    })}).catch(()=>{});
     document.getElementById('modal-saida-rota').style.display = 'none';
-    _demandaSaidaId = null;
-    if(dem){ dem.status='saiu'; dem.ts_saiu=tsSaiu; }
-    // Registrar automaticamente no absenteísmo (motorista + ajudante)
-    await registrarRotaComCarga(_demandaSaidaId, data);
-    renderDemandasKPIs(_demandasCache);
-    renderDemandasCards();
-    renderFrotaStatus();
-    showToast('🚛 Carga em rota! KM '+kmIni+' registrado.','success');
+    _demandaSaidaId   = null;
+    _demandaSaidaData = null;
+    if(dem && dem.status !== undefined){ dem.status='saiu'; dem.ts_saiu=tsSaiu; }
+    // Registrar no absenteísmo
+    await registrarRotaComCarga(savedId, data).catch(()=>{});
+    // Atualizar painel admin (se aberto) ou portal motorista
+    if(typeof renderDemandasKPIs==='function') { renderDemandasKPIs(_demandasCache); renderDemandasCards(); renderFrotaStatus(); }
+    if(typeof carregarPortalMotorista==='function') await carregarPortalMotorista().catch(()=>{});
+    showToast('🚛 Viagem iniciada! KM '+kmIni.toLocaleString('pt-BR')+' registrado.','success');
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
@@ -11736,12 +11752,17 @@ async function carregarPortalMotorista(){
               <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">PEDIDOS</div><div style="font-size:1.1rem;font-weight:800;color:#34d399">${da.quantidade_pedidos||'—'}</div></div>
               <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">SAÍDA</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${fmtHora(da.ts_saiu)}</div></div>
             </div>
-            ${da.status==='saiu' ? `<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07)">
-              <button onclick="motoristaChegarViagem('${da.id}')"
-                style="width:100%;background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
-                🏁 Registrar Chegada
-              </button>
-            </div>` : ''}
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07);display:flex;gap:10px;flex-wrap:wrap">
+              ${da.status==='saiu' ? `
+                <button onclick="motoristaChegarViagem('${da.id}')"
+                  style="flex:1;min-width:160px;background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
+                  🏁 Registrar Chegada
+                </button>` : `
+                <button onclick="motIniciarViagem('${da.id}',${da.carga||0},'${(da.rota||'').replace(/'/g,"\\'")}','${da.motorista||''}')"
+                  style="flex:1;min-width:160px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
+                  🚛 Iniciar Viagem
+                </button>`}
+            </div>
           </div>`;
       }
     }catch(e){}
