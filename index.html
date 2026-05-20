@@ -9062,15 +9062,19 @@ async function carregarKmMotorista(){
   const fmtDur = (tsI,tsF) => { if(!tsI||!tsF) return null; const h=Math.floor((new Date(tsF)-new Date(tsI))/3600000); const d=Math.floor(h/24); return d>0?`${d}d ${h%24}h`:`${h}h`; };
 
   try{
-    // Buscar cargas da pré-carga (demandas_rota) + registros KM em paralelo
-    const [demandas, kmRegs] = await Promise.all([
+    // Buscar cargas: demandas_rota + lancamentos (fallback p/ cargas com motorista divergente) + KM
+    const [demandas, lancsKm, kmRegs] = await Promise.all([
       supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&data_saida=gte.${mesStr}-01&data_saida=lte.${mesStr}-31&status=neq.cancelado&select=carga,rota,status,data_saida,veiculo&order=data_saida.desc`).catch(()=>[]) || [],
+      supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lte.${mesStr}-31T23:59:59Z&select=carga,rota,rire&order=ts.desc`).catch(()=>[]) || [],
       supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*`).catch(()=>[]) || []
     ]);
 
-    // Deduplica cargas
+    // Montar lista unificada de cargas (demandas_rota primeiro, depois lancamentos como fallback)
     const cargasVistas = new Set();
-    const cargas = (demandas||[]).filter(l=>{ const c=String(l.carga); if(cargasVistas.has(c)) return false; cargasVistas.add(c); return true; });
+    const cargas = [];
+    (demandas||[]).forEach(l=>{ const c=String(l.carga); if(!cargasVistas.has(c)){ cargasVistas.add(c); cargas.push(l); } });
+    // Adicionar do lancamentos cargas que não estão em demandas_rota
+    (lancsKm||[]).forEach(l=>{ const c=String(l.carga); if(c&&c!=='0'&&!cargasVistas.has(c)){ cargasVistas.add(c); cargas.push({carga:l.carga, rota:l.rota, rire:l.rire, status:'concluido'}); } });
 
     // Indexar KM por carga
     const kmMap = {};
