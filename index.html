@@ -9062,7 +9062,7 @@ async function carregarKmMotorista(){
   const fmtDur = (tsI,tsF) => { if(!tsI||!tsF) return null; const h=Math.floor((new Date(tsF)-new Date(tsI))/3600000); const d=Math.floor(h/24); return d>0?`${d}d ${h%24}h`:`${h}h`; };
 
   try{
-    // Buscar cargas: demandas_rota + lancamentos (fallback p/ cargas com motorista divergente) + KM
+    // Buscar cargas: demandas_rota + lancamentos (fallback) + KM de ambas as tabelas
     const [demandas, lancsKm, kmRegs] = await Promise.all([
       supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&data_saida=gte.${mesStr}-01&data_saida=lte.${mesStr}-31&status=neq.cancelado&select=carga,rota,status,data_saida,veiculo&order=data_saida.desc`).catch(()=>[]) || [],
       supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lte.${mesStr}-31T23:59:59Z&select=carga,rota,rire&order=ts.desc`).catch(()=>[]) || [],
@@ -9073,12 +9073,32 @@ async function carregarKmMotorista(){
     const cargasVistas = new Set();
     const cargas = [];
     (demandas||[]).forEach(l=>{ const c=String(l.carga); if(!cargasVistas.has(c)){ cargasVistas.add(c); cargas.push(l); } });
-    // Adicionar do lancamentos cargas que não estão em demandas_rota
     (lancsKm||[]).forEach(l=>{ const c=String(l.carga); if(c&&c!=='0'&&!cargasVistas.has(c)){ cargasVistas.add(c); cargas.push({carga:l.carga, rota:l.rota, rire:l.rire, status:'concluido'}); } });
 
-    // Indexar KM por carga
+    // Indexar KM de km_cargas por carga
     const kmMap = {};
     (kmRegs||[]).forEach(r=>{ kmMap[String(r.carga)]=r; });
+
+    // Complementar com rotas_viagem (dados salvos pelo admin via confirmarSaidaRota)
+    // rotas_viagem é a fonte quando km_cargas ainda não tem o registro
+    if(cargas.length){
+      const cargaNums = cargas.map(l=>Math.round(Number(l.carga))).filter(Boolean);
+      const rvRegs = await supaFetch(`rotas_viagem?carga=in.(${cargaNums.join(',')})&select=carga,km_inicial,km_final,data_saida,data_retorno`).catch(()=>[]) || [];
+      rvRegs.forEach(r=>{
+        const c = String(r.carga);
+        if(!kmMap[c]){
+          // Converte formato rotas_viagem → mesmo shape que km_cargas
+          kmMap[c] = {
+            carga: r.carga,
+            km_inicial: r.km_inicial,
+            km_final:   r.km_final,
+            ts_km_inicial: r.data_saida ? r.data_saida+'T00:00:00Z' : null,
+            ts_km_final:   r.data_retorno ? r.data_retorno+'T00:00:00Z' : null,
+            _fonte: 'rotas_viagem'
+          };
+        }
+      });
+    }
 
     // KPIs
     let kmTotal=0, kmRE=0, bonusKmRE=0;
