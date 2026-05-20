@@ -2881,7 +2881,7 @@ textarea:focus{
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
       <div>
         <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">📅 Datas de Entrega</h3>
-        <p style="font-size:.78rem;color:var(--text-muted)">Planilha com colunas <strong>Pedido</strong> e <strong>Data Entrega</strong> — usada para calcular OTIF real. Sem dados, usa saída do veículo.</p>
+        <p style="font-size:.78rem;color:var(--text-muted)">Aceita planilha padrão (<strong>Pedido + Data Entrega</strong>) ou exportação do sistema de entregas (<strong>Entrega + Termino_da_Descarga</strong>). Sem dados, usa data de saída do veículo.</p>
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span id="dash-entrega-badge" style="font-size:.78rem;color:var(--text-muted)">Nenhuma planilha carregada</span>
@@ -13863,12 +13863,14 @@ document.addEventListener('click', e => {
 // ══════════════════════════════════════════════════════
 
 // ── Upload de datas de entrega para cálculo do OTIF ────────────────────────
+// Suporta dois formatos:
+//   Formato A (padrão): colunas Pedido + Data Entrega (ou variações)
+//   Formato B (sistema entregas): colunas Entrega + Termino_da_Descarga + Carregamento
 function uploadDatasEntrega(event){
   const file = event.target.files[0];
   if(!file) return;
   const selMes = document.getElementById('dash-int-mes');
-  const mesFiltro = selMes?.value || new Date().toISOString().slice(0,7);
-  const entregaKey = `entrega_datas_${mesFiltro}`;
+  const mesFiltroDefault = selMes?.value || new Date().toISOString().slice(0,7);
   const reader = new FileReader();
   reader.onload = function(e){
     try{
@@ -13878,12 +13880,11 @@ function uploadDatasEntrega(event){
         const ws = wb.Sheets[wb.SheetNames[0]];
         rows = XLSX.utils.sheet_to_json(ws, {defval:''});
       } else {
-        // CSV: parse manual
         const text = new TextDecoder('utf-8').decode(new Uint8Array(e.target.result));
         const lines = text.split(/\r?\n/).filter(l=>l.trim());
         if(!lines.length) return;
         const sep = lines[0].includes(';') ? ';' : ',';
-        const headers = lines[0].split(sep).map(h=>h.trim().toLowerCase().replace(/[^a-z0-9_]/g,'_'));
+        const headers = lines[0].split(sep).map(h=>h.trim());
         rows = lines.slice(1).map(l=>{
           const vals = l.split(sep);
           const obj = {};
@@ -13891,55 +13892,86 @@ function uploadDatasEntrega(event){
           return obj;
         });
       }
-      // Detectar colunas: pedido obrigatório, data_entrega obrigatória
+
       const amostra = rows[0]||{};
       const keys = Object.keys(amostra);
-      const pedidoCol = keys.find(k=>/(pedido|order|num|n[uo]mero)/i.test(k));
-      const deCol     = keys.find(k=>/(entrega|delivery|data.*ent|ent.*data|data_ent)/i.test(k));
-      if(!pedidoCol){ showToast('Coluna "pedido" não encontrada na planilha','warning'); return; }
-      if(!deCol)    { showToast('Coluna "data entrega" não encontrada na planilha','warning'); return; }
 
-      // Normaliza data para 'YYYY-MM-DD'
+      // Detectar formato: Formato B tem coluna Carregamento + Entrega + Termino_da_Descarga
+      const isFormatoB = keys.some(k=>/^carregamento$/i.test(k)) &&
+                         keys.some(k=>/^entrega$/i.test(k)) &&
+                         keys.some(k=>/termino_da_descarga/i.test(k));
+
+      let pedidoCol, deCol;
+      if(isFormatoB){
+        pedidoCol = keys.find(k=>/^entrega$/i.test(k));
+        deCol     = keys.find(k=>/termino_da_descarga/i.test(k));
+      } else {
+        pedidoCol = keys.find(k=>/(pedido|order|n[uo]mero)/i.test(k));
+        deCol     = keys.find(k=>/(data.*entrega|entrega.*data|data.*ent|delivery|data_ent)/i.test(k))
+                 || keys.find(k=>/(data|date)/i.test(k));
+      }
+      if(!pedidoCol){ showToast('Coluna de pedido não encontrada na planilha','warning'); return; }
+      if(!deCol)    { showToast('Coluna de data de entrega não encontrada na planilha','warning'); return; }
+
+      // Normaliza data para 'YYYY-MM-DD' — suporta "dd/mm/aaaa hh:mm" e "dd/mm/aaaa"
       function normData(val){
         if(!val) return null;
         if(val instanceof Date) return val.toISOString().slice(0,10);
-        const s = String(val).trim();
+        const s = String(val).trim().split(' ')[0]; // remove hora se houver
         const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
         if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
         if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
         return null;
       }
 
-      const mapa = {};
+      // Agrupa por pedido → data_entrega, derivando mes_ano de cada data
+      const mapa = {}; // pedido → {data_entrega, mes_ano}
       let count = 0;
       rows.forEach(r=>{
-        const ped = String(r[pedidoCol]||'').trim();
-        if(!ped || ped==='0') return;
+        const ped = String(r[pedidoCol]||'').trim().replace(/\.0$/,'');
+        if(!ped || ped==='0' || ped==='') return;
         const de = normData(r[deCol]);
         if(!de) return;
-        mapa[ped] = de;
+        // Se o pedido aparece mais de uma vez, usa a data mais recente
+        if(!mapa[ped] || de > mapa[ped].data_entrega){
+          mapa[ped] = { data_entrega: de, mes_ano: de.slice(0,7) };
+        }
         count++;
       });
 
-      // Salvar no Supabase (upsert por mes_ano + pedido)
       const uid = USUARIO_LOGADO?.id||null;
-      const registros = Object.entries(mapa).map(([ped,dt])=>({
-        mes_ano: mesFiltro, pedido: ped, data_entrega: dt, usuario_id: uid
+      const registros = Object.entries(mapa).map(([ped,info])=>({
+        id: `${info.mes_ano}_${ped}`,
+        mes_ano: info.mes_ano,
+        pedido: ped,
+        data_entrega: info.data_entrega,
+        usuario_id: uid
       }));
-      if(registros.length){
-        supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
-          method:'POST',
-          prefer:'resolution=merge-duplicates,return=minimal',
-          body: JSON.stringify(registros)
-        }).catch(e=>console.warn('entrega_datas upload:',e.message));
-      }
 
-      showToast(`✅ ${count} datas de entrega carregadas para ${mesFiltro}`,'success');
-      renderDashInterna();
+      if(registros.length){
+        // Enviar em lotes de 200
+        const enviar = async () => {
+          let ok = 0;
+          for(let i=0; i<registros.length; i+=200){
+            await supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
+              method:'POST',
+              prefer:'resolution=merge-duplicates,return=minimal',
+              body: JSON.stringify(registros.slice(i,i+200))
+            }).catch(e=>console.warn('entrega_datas upload lote:',e.message));
+            ok += Math.min(200, registros.length-i);
+          }
+          const formato = isFormatoB ? 'sistema de entregas' : 'padrão';
+          showToast(`✅ ${ok} pedidos com data de entrega importados (${formato})`, 'success');
+          renderDashInterna();
+        };
+        enviar();
+      } else {
+        showToast('Nenhuma data de entrega válida encontrada','warning');
+      }
     }catch(err){ showToast('Erro ao ler planilha: '+err.message,'warning'); }
   };
   reader.readAsArrayBuffer(file);
-  event.target.value = ''; // reset input
+  event.target.value = '';
 }
 
 async function limparDatasEntrega(){
