@@ -16412,8 +16412,8 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   const conferidos = await supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&status=eq.ok&select=carga,pedido`) || [];
   // Buscar validações já feitas
   const valids = await supaFetch(`validacoes_caixa?carga=in.(${cargasIds.join(',')})&select=*`) || [];
-  // Buscar NFs
-  const nfs = await supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido`) || [];
+  // Buscar NFs (inclui tipo e url para auto-selecionar boleto e permitir download)
+  const nfs = await supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido,tipo,url,nome_arquivo&order=criado_em.asc`) || [];
   // Buscar base_data para valores
   const bdData = await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota`) || [];
 
@@ -16502,19 +16502,26 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
           <button onclick="validarPedidoCaixa(${d.carga},${ped},'pendente')" style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:5px;padding:2px 6px;font-size:.65rem;cursor:pointer;margin-left:auto">↩</button>
         </div>`;
         // pendente com NF — mostrar form
-        return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:7px">
+        const nfsPed   = nfsCarga.filter(n=>n.pedido===ped);
+        const boletoPed = nfsPed.find(n=>n.tipo==='boleto');
+        const nfPed     = nfsPed.find(n=>n.tipo==='nf');
+        const formaAuto = val?.forma_pagamento || (boletoPed ? 'Boleto' : '');
+        return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid ${boletoPed?'rgba(234,179,8,.4)':'var(--border-med)'};border-radius:7px">
           <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
             <span style="font-size:.72rem;font-weight:800;color:var(--text-primary);min-width:38px">P.${ped}</span>
-            <select id="pgto-forma-${d.carga}-${ped}" style="border:1px solid var(--border-med);border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
-              ${FORMAS_PGTO.map(f=>`<option value="${f}">${f}</option>`).join('')}
+            <select id="pgto-forma-${d.carga}-${ped}" style="border:1px solid ${boletoPed?'#eab308':'var(--border-med)'};border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
+              ${FORMAS_PGTO.map(f=>`<option value="${f}" ${formaAuto===f?'selected':''}>${f}</option>`).join('')}
             </select>
-            <input type="number" id="pgto-val-${d.carga}-${ped}" placeholder="Valor" step="0.01" value="${bdPed?.valor||''}"
+            <input type="number" id="pgto-val-${d.carga}-${ped}" placeholder="Valor" step="0.01" value="${val?.valor_confirmado||bdPed?.valor||''}"
               style="border:1px solid var(--border-med);border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;width:78px;background:var(--bg-input);color:var(--text-primary)"/>
             <input type="text" id="pgto-obs-${d.carga}-${ped}" placeholder="Obs"
               style="border:1px solid var(--border-med);border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;width:60px;background:var(--bg-input);color:var(--text-primary)"/>
             <button onclick="validarPedidoCaixa(${d.carga},${ped},'validado')" style="background:#059669;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.73rem;font-weight:700;cursor:pointer">✅</button>
             <button onclick="validarPedidoCaixa(${d.carga},${ped},'divergencia')" style="background:#ef4444;color:#fff;border:none;border-radius:5px;padding:3px 7px;font-size:.73rem;font-weight:700;cursor:pointer">⚠️</button>
+            ${boletoPed?.url?`<a href="${boletoPed.url}" target="_blank" title="Abrir boleto" style="background:#eab308;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.7rem;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap">📄 Boleto</a>`:''}
+            ${nfPed?.url?`<a href="${nfPed.url}" target="_blank" title="Abrir NF" style="background:#6366f1;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.7rem;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap">🧾 NF</a>`:''}
           </div>
+          ${boletoPed?`<div style="font-size:.63rem;color:#a16207;margin-top:3px;padding-left:46px">📄 Boleto detectado — forma de pagamento pré-selecionada automaticamente</div>`:''}
         </div>`;
       }
       // etapa retorno
@@ -16567,9 +16574,13 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
       <div style="padding:12px 14px;background:rgba(6,95,70,.04);border-bottom:1px solid var(--border)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px">
           <span style="background:#065f46;color:#fff;font-size:.78rem;font-weight:800;padding:2px 10px;border-radius:20px">💵 Carga ${d.carga}</span>
-          <span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:10px;background:${statusBg[d.status]||'var(--bg-card2)'};color:${statusTx[d.status]||'var(--text-secondary)'}">
-            ${stLabel[d.status]||d.status}
-          </span>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${nfsCarga.length ? `<button onclick="baixarTodasNFsCarga(${d.carga})" title="Baixar/abrir todos os boletos e NFs desta carga"
+              style="background:rgba(99,102,241,.12);color:#4f46e5;border:1px solid rgba(99,102,241,.3);border-radius:7px;padding:2px 9px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">📥 NFs/Boletos (${nfsCarga.length})</button>` : ''}
+            <span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:10px;background:${statusBg[d.status]||'var(--bg-card2)'};color:${statusTx[d.status]||'var(--text-secondary)'}">
+              ${stLabel[d.status]||d.status}
+            </span>
+          </div>
         </div>
         <div style="font-size:.82rem;font-weight:700;color:var(--text-primary);margin-bottom:2px">${d.rota||'—'}</div>
         <div style="font-size:.75rem;color:var(--text-secondary)">🚗 ${d.motorista||'—'}</div>
@@ -16822,6 +16833,64 @@ async function carregarPortalOperador(){
 }
 
 async function carregarPortalCaixa(){ await _renderCaixaCargas('caixa-cargas-portal','caixa-kpi-'); }
+
+// ── Baixar/abrir todos os boletos e NFs de uma carga ──────────────────────
+async function baixarTodasNFsCarga(carga){
+  try{
+    const nfs = await supaFetch(`notas_fiscais?carga=eq.${carga}&select=pedido,tipo,url,nome_arquivo&order=pedido.asc,tipo.asc`) || [];
+    if(!nfs.length){ showToast('Nenhuma NF/boleto encontrado para esta carga','warning'); return; }
+
+    // Abrir modal de impressão/download
+    let html = `<div style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px" id="modal-nf-carga">
+      <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+        <div style="background:linear-gradient(135deg,#4338ca,#6366f1);padding:18px 22px;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:1rem;font-weight:800;color:#fff">📥 NFs e Boletos — Carga ${carga}</div>
+            <div style="font-size:.78rem;color:rgba(255,255,255,.75);margin-top:2px">${nfs.length} arquivo${nfs.length>1?'s':''}</div>
+          </div>
+          <button onclick="document.getElementById('modal-nf-carga').remove()"
+            style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 13px;cursor:pointer;font-size:.85rem;font-weight:600">✕ Fechar</button>
+        </div>
+        <div style="overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px">
+          <button onclick="abrirTodasNFs(${carga})"
+            style="width:100%;background:linear-gradient(135deg,#4338ca,#6366f1);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer;margin-bottom:4px">
+            📂 Abrir Todos em Novas Abas
+          </button>
+          ${nfs.map(n=>{
+            const icone = n.tipo==='boleto' ? '📄' : '🧾';
+            const corBg  = n.tipo==='boleto' ? 'rgba(234,179,8,.1)' : 'rgba(99,102,241,.08)';
+            const corBd  = n.tipo==='boleto' ? 'rgba(234,179,8,.4)' : 'rgba(99,102,241,.25)';
+            const corBtn = n.tipo==='boleto' ? '#d97706' : '#4338ca';
+            return `<div style="background:${corBg};border:1px solid ${corBd};border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px">
+              <span style="font-size:1.3rem">${icone}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:.8rem;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n.nome_arquivo||'arquivo'}</div>
+                <div style="font-size:.7rem;color:#64748b">Pedido ${n.pedido} · ${n.tipo==='boleto'?'Boleto':'Nota Fiscal'}</div>
+              </div>
+              ${n.url?`<a href="${n.url}" target="_blank"
+                style="background:${corBtn};color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;text-decoration:none">
+                ↗ Abrir
+              </a>`:'<span style="font-size:.7rem;color:#9ca3af">Sem link</span>'}
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+    // Fechar clicando fora
+    document.getElementById('modal-nf-carga').addEventListener('click', function(e){ if(e.target===this) this.remove(); });
+  }catch(e){ showToast('Erro ao buscar arquivos: '+e.message,'warning'); }
+}
+
+async function abrirTodasNFs(carga){
+  try{
+    const nfs = await supaFetch(`notas_fiscais?carga=eq.${carga}&select=url&order=pedido.asc`) || [];
+    const urls = nfs.map(n=>n.url).filter(Boolean);
+    if(!urls.length){ showToast('Sem links disponíveis','warning'); return; }
+    urls.forEach((url,i)=>{ setTimeout(()=>window.open(url,'_blank'), i*200); });
+    showToast(`✅ Abrindo ${urls.length} arquivo(s)...`,'success');
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
 
 async function carregarPaginaCaixa(){
   await _renderCaixaCargas('caixa-cargas-inline', 'caixa-kpi-');
