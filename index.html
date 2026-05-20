@@ -8959,16 +8959,60 @@ async function carregarPortalMotoristaCargasAjudante(){
 
 // ─── KM Cargas ───────────────────────────────────────────────────────────────
 
-async function lancarKmCarga(carga, tipo){
-  if(!USUARIO_LOGADO) return;
-  const km = Number(prompt(tipo==='inicial' ? `KM INICIAL — Carga #${carga}\nDigite o odômetro atual do veículo:` : `KM FINAL — Carga #${carga}\nDigite o odômetro atual do veículo:`));
-  if(!km||isNaN(km)||km<=0){ showToast('KM inválido','warning'); return; }
+let _kmModalCarga = null;
+let _kmModalTipo  = null;
 
+function lancarKmCarga(carga, tipo){
+  if(!USUARIO_LOGADO) return;
+  _kmModalCarga = carga;
+  _kmModalTipo  = tipo;
+
+  const isInicial = tipo === 'inicial';
+  const header    = document.getElementById('modal-km-header');
+  const titulo    = document.getElementById('modal-km-titulo');
+  const sub       = document.getElementById('modal-km-sub');
+  const hint      = document.getElementById('modal-km-hint');
+  const btn       = document.getElementById('modal-km-confirmar');
+  const input     = document.getElementById('modal-km-valor');
+
+  if(isInicial){
+    if(header) header.style.background = 'linear-gradient(135deg,#0d9488,#14b8a6)';
+    if(btn)    btn.style.background    = 'linear-gradient(135deg,#0d9488,#14b8a6)';
+    if(titulo) titulo.textContent = '🟢 KM Inicial';
+    if(hint)   hint.textContent   = 'Registre o odômetro antes de sair com o veículo';
+  } else {
+    if(header) header.style.background = 'linear-gradient(135deg,#b45309,#d97706)';
+    if(btn)    btn.style.background    = 'linear-gradient(135deg,#b45309,#d97706)';
+    if(titulo) titulo.textContent = '🔴 KM Final';
+    if(hint)   hint.textContent   = 'Registre o odômetro ao retornar com o veículo';
+  }
+  if(sub)   sub.textContent   = `Carga #${carga}`;
+  if(input) { input.value = ''; }
+
+  const modal = document.getElementById('modal-km-carga');
+  if(modal){ modal.style.display = 'flex'; setTimeout(()=>input&&input.focus(), 120); }
+}
+
+function fecharModalKmCarga(){
+  const modal = document.getElementById('modal-km-carga');
+  if(modal) modal.style.display = 'none';
+  _kmModalCarga = null;
+  _kmModalTipo  = null;
+}
+
+async function confirmarModalKmCarga(){
+  const input = document.getElementById('modal-km-valor');
+  const km = Number(input?.value);
+  if(!km||isNaN(km)||km<=0){ showToast('Informe um KM válido','warning'); input?.focus(); return; }
+
+  const carga  = _kmModalCarga;
+  const tipo   = _kmModalTipo;
   const myId   = USUARIO_LOGADO.id;
   const myNome = (USUARIO_LOGADO.nome||'').toUpperCase();
   const agora  = new Date().toISOString();
   const mesStr = agora.slice(0,7);
 
+  fecharModalKmCarga();
   try{
     const existente = await supaFetch(`km_cargas?carga=eq.${carga}&motorista_id=eq.${myId}&select=*`).catch(()=>[]) || [];
     const reg = existente[0];
@@ -8977,10 +9021,8 @@ async function lancarKmCarga(carga, tipo){
       if(reg){
         await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_inicial:km, ts_km_inicial:agora }) });
       } else {
-        // Buscar rota/veiculo da demanda para guardar junto
         const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=rota,veiculo&limit=1`).catch(()=>[]) || [];
         const { rota='', veiculo='' } = dem[0]||{};
-        // Determinar rire pela rota
         const _RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
         const rire = _RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
         await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
@@ -8994,7 +9036,7 @@ async function lancarKmCarga(carga, tipo){
       showToast(`✅ KM Inicial registrado: ${km.toLocaleString('pt-BR')} km`,'success');
     } else {
       if(!reg||reg.km_inicial==null){ showToast('Registre o KM Inicial primeiro','warning'); return; }
-      if(km <= reg.km_inicial){ showToast('KM Final deve ser maior que o Inicial','warning'); return; }
+      if(km <= reg.km_inicial){ showToast(`KM Final (${km.toLocaleString('pt-BR')}) deve ser maior que o Inicial (${reg.km_inicial.toLocaleString('pt-BR')})`,'warning'); return; }
       await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_final:km, ts_km_final:agora }) });
       const kmRodado = km - reg.km_inicial;
       const ms  = new Date(agora) - new Date(reg.ts_km_inicial);
@@ -9004,7 +9046,7 @@ async function lancarKmCarga(carga, tipo){
       showToast(`✅ Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km em ${dur}`,'success');
     }
     await carregarKmMotorista();
-  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+  }catch(e){ showToast('Erro ao salvar KM: '+e.message,'warning'); }
 }
 
 async function carregarKmMotorista(){
@@ -22794,6 +22836,27 @@ async function excluirTipoReceita(id){
         <button onclick="confirmarFimViagem()" style="flex:2;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer">
           🏁 Confirmar Retorno
         </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL KM CARGA (Inicial / Final) ══ -->
+<div id="modal-km-carga" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:700;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)fecharModalKmCarga()">
+  <div style="background:#1e293b;border-radius:18px;width:100%;max-width:400px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.5)">
+    <div id="modal-km-header" style="background:linear-gradient(135deg,#0d9488,#14b8a6);padding:18px 22px;color:#fff">
+      <h3 id="modal-km-titulo" style="font-size:1.05rem;font-weight:800;margin:0 0 2px">🟢 KM Inicial</h3>
+      <p id="modal-km-sub" style="font-size:.8rem;opacity:.75;margin:0">Carga #—</p>
+    </div>
+    <div style="padding:22px">
+      <label style="font-size:.72rem;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:8px">Odômetro atual do veículo</label>
+      <input id="modal-km-valor" type="number" inputmode="numeric" placeholder="Ex: 45230"
+        onkeydown="if(event.key==='Enter') confirmarModalKmCarga()"
+        style="width:100%;background:#0f172a;border:2px solid rgba(13,148,136,.5);border-radius:10px;padding:14px 16px;font-size:1.3rem;font-weight:700;color:#f0f0f8;outline:none;box-sizing:border-box;text-align:center;-moz-appearance:textfield"/>
+      <div id="modal-km-hint" style="font-size:.75rem;color:#64748b;margin-top:8px;text-align:center"></div>
+      <div style="display:flex;gap:10px;margin-top:18px">
+        <button onclick="fecharModalKmCarga()" style="flex:1;background:rgba(255,255,255,.07);color:#94a3b8;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px;font-size:.88rem;font-weight:600;cursor:pointer">Cancelar</button>
+        <button id="modal-km-confirmar" onclick="confirmarModalKmCarga()" style="flex:2;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;color:#fff;cursor:pointer">Confirmar</button>
       </div>
     </div>
   </div>
