@@ -16418,13 +16418,10 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   const nfs = await supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido,tipo,url,nome_arquivo&limit=1000&order=carga.asc,pedido.asc`) || [];
   // Buscar base_data para valores
   const bdData = await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota`) || [];
-  // Buscar locks de caixa (quem está atendendo cada carga)
-  const _caixaLocksRaw = await supaFetch('configuracoes?chave=like.caixa_lock_%25&select=chave,valor') || [];
-  const locksMap = {};
-  _caixaLocksRaw.forEach(c=>{
-    const cargaKey = parseInt((c.chave||'').replace('caixa_lock_',''));
-    if(!isNaN(cargaKey)) try{ locksMap[cargaKey]=JSON.parse(c.valor||'{}'); }catch(e){}
-  });
+  // Buscar locks de caixa — padrão igual ao arm_status: um único registro JSON
+  const _caixaLocksRaw = await supaFetch('configuracoes?chave=eq.caixa_locks&select=valor').catch(()=>[]) || [];
+  let locksMap = {};
+  try{ if(_caixaLocksRaw.length) locksMap=JSON.parse(_caixaLocksRaw[0].valor||'{}'); }catch(e){}
 
   // fim_viagem: sempre aparece no Caixa (motorista retornou, precisa fechar a carga)
   // Outros status: só aparece se a carga já tem pedidos conferidos pelo Fiscal
@@ -17012,9 +17009,10 @@ async function carregarPaginaCaixa(){
 async function validarPedidoCaixa(carga, pedido, status){
   // Verificar lock — impede que outro usuário salve nesta carga
   try{
-    const _lk = await supaFetch(`configuracoes?chave=eq.caixa_lock_${carga}&select=valor`)||[];
-    if(_lk.length){ const lk={}; try{Object.assign(lk,JSON.parse(_lk[0].valor||'{}'));}catch(e){}
-      if(lk.id && lk.id!==USUARIO_LOGADO?.id){ showToast(`⚠️ Carga em atendimento por ${lk.nome||'outro usuário'}. Peça para liberar primeiro.`,'warning'); return; }
+    const _lks = await _getCaixaLocks();
+    const _lk = _lks[carga];
+    if(_lk?.id && _lk.id!==USUARIO_LOGADO?.id){
+      showToast('⚠️ Carga em atendimento por '+(_lk.nome||'outro usuário')+'. Peça para liberar primeiro.','warning'); return;
     }
   }catch(e){}
   const forma = document.getElementById(`pgto-forma-${carga}-${pedido}`)?.value||'';
@@ -17084,30 +17082,44 @@ async function concluirCaixa(demandaId, carga){
       showToast('✅ Pagamentos confirmados! Carga liberada para viagem.','success');
     }
     // Liberar lock de caixa automaticamente ao concluir
-    if(carga&&carga!=='null') supaFetch(`configuracoes?chave=eq.caixa_lock_${carga}`,{method:'DELETE'}).catch(()=>{});
+    if(carga&&carga!=='null') _getCaixaLocks().then(lks=>{ delete lks[carga]; _saveCaixaLocks(lks); }).catch(()=>{});
     if(document.getElementById('caixa-cargas-portal')?.offsetParent) await carregarPortalCaixa();
     else await carregarPaginaCaixa();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
-// ── Lock de Carga no Caixa ────────────────────────────────────────────────
+// ── Lock de Carga no Caixa (padrão arm_status: único registro JSON) ────────
+async function _getCaixaLocks(){
+  const r = await supaFetch('configuracoes?chave=eq.caixa_locks&select=valor').catch(()=>[]) || [];
+  try{ return r.length ? JSON.parse(r[0].valor||'{}') : {}; }catch(e){ return {}; }
+}
+async function _saveCaixaLocks(locks){
+  await supaFetch('configuracoes',{
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body:JSON.stringify({chave:'caixa_locks', valor:JSON.stringify(locks)})
+  });
+}
 async function pegarCargaCaixa(carga){
   const user = USUARIO_LOGADO;
   if(!user?.id){ showToast('Usuário não identificado','warning'); return; }
-  const valor = JSON.stringify({id:user.id, nome:user.nome||user.name||'Caixa', ts:new Date().toISOString()});
   try{
-    await supaFetch('configuracoes',{
-      method:'POST',
-      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-      body:JSON.stringify({chave:`caixa_lock_${carga}`,valor})
-    });
-    showToast('✅ Carga '+carga+' reservada — outros usuários não podem editar','success');
+    const locks = await _getCaixaLocks();
+    const existing = locks[carga];
+    if(existing?.id && existing.id !== user.id){
+      showToast('⚠️ Carga já em atendimento por '+existing.nome,'warning'); return;
+    }
+    locks[carga] = {id:user.id, nome:user.nome||user.name||'Caixa', ts:new Date().toISOString()};
+    await _saveCaixaLocks(locks);
+    showToast('✅ Carga '+carga+' reservada para você','success');
     await Promise.all([_renderCaixaCargas('caixa-cargas-inline','caixa-kpi-'),_renderCaixaCargas('caixa-cargas-portal','caixa-kpi-')]);
   }catch(e){ showToast('Erro ao reservar: '+e.message,'warning'); }
 }
 async function liberarCargaCaixa(carga){
   try{
-    await supaFetch(`configuracoes?chave=eq.caixa_lock_${carga}`,{method:'DELETE'});
+    const locks = await _getCaixaLocks();
+    delete locks[carga];
+    await _saveCaixaLocks(locks);
     showToast('🔓 Carga '+carga+' liberada','success');
     await Promise.all([_renderCaixaCargas('caixa-cargas-inline','caixa-kpi-'),_renderCaixaCargas('caixa-cargas-portal','caixa-kpi-')]);
   }catch(e){ showToast('Erro ao liberar: '+e.message,'warning'); }
