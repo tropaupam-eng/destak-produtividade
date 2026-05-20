@@ -16328,10 +16328,12 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   // ── SEÇÃO: Boletos lançados pelo fiscal (aparece imediatamente após upload) ──
   const _boletosSeção = document.getElementById(containerId+'-boletos');
   try{
-    const [_boletos, _demandasBol] = await Promise.all([
-      supaFetch('notas_fiscais?tipo=eq.boleto&select=carga,pedido,nome_arquivo,url,fiscal_nome,criado_em&order=criado_em.desc') || [],
+    const [_todosArq, _demandasBol] = await Promise.all([
+      supaFetch('notas_fiscais?select=carga,pedido,tipo,nome_arquivo,url,fiscal_nome,criado_em&order=criado_em.desc') || [],
       supaFetch('demandas_rota?select=carga,rota,motorista,veiculo,status&carga=not.is.null') || []
     ]);
+    // Filtrar boletos: campo tipo='boleto' OU nome do arquivo contém 'boleto' (fallback para registros sem tipo)
+    const _boletos = (_todosArq||[]).filter(n=>n.tipo==='boleto'||(n.tipo==null&&/boleto/i.test(n.nome_arquivo||'')));
     // Agrupar por carga
     const byCarga = {};
     (_boletos||[]).forEach(b=>{
@@ -16502,14 +16504,19 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
           <button onclick="validarPedidoCaixa(${d.carga},${ped},'pendente')" style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:5px;padding:2px 6px;font-size:.65rem;cursor:pointer;margin-left:auto">↩</button>
         </div>`;
         // pendente com NF — mostrar form
-        const nfsPed   = nfsCarga.filter(n=>n.pedido===ped);
-        const boletoPed = nfsPed.find(n=>n.tipo==='boleto');
-        const nfPed     = nfsPed.find(n=>n.tipo==='nf');
+        const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
+        // Detecta boleto por campo tipo OU pelo nome do arquivo (fallback para registros antigos)
+        const _eBoleto  = n => n.tipo==='boleto' || (!n.tipo && /boleto/i.test(n.nome_arquivo||''));
+        const _eNF      = n => n.tipo==='nf'     || (!n.tipo && !/boleto/i.test(n.nome_arquivo||''));
+        const boletoPed = nfsPed.find(_eBoleto);
+        const nfPed     = nfsPed.find(_eNF);
+        // Forma de pagamento: pré-seleciona Boleto só se fiscal enviou boleto; do contrário campo fica vazio para caixa escolher
         const formaAuto = val?.forma_pagamento || (boletoPed ? 'Boleto' : '');
         return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid ${boletoPed?'rgba(234,179,8,.4)':'var(--border-med)'};border-radius:7px">
           <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
             <span style="font-size:.72rem;font-weight:800;color:var(--text-primary);min-width:38px">P.${ped}</span>
             <select id="pgto-forma-${d.carga}-${ped}" style="border:1px solid ${boletoPed?'#eab308':'var(--border-med)'};border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
+              <option value="" ${!formaAuto?'selected':''}>-- Forma --</option>
               ${FORMAS_PGTO.map(f=>`<option value="${f}" ${formaAuto===f?'selected':''}>${f}</option>`).join('')}
             </select>
             <input type="number" id="pgto-val-${d.carga}-${ped}" placeholder="Valor" step="0.01" value="${val?.valor_confirmado||bdPed?.valor||''}"
@@ -16521,7 +16528,7 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
             ${boletoPed?.url?`<a href="${boletoPed.url}" target="_blank" title="Abrir boleto" style="background:#eab308;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.7rem;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap">📄 Boleto</a>`:''}
             ${nfPed?.url?`<a href="${nfPed.url}" target="_blank" title="Abrir NF" style="background:#6366f1;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.7rem;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap">🧾 NF</a>`:''}
           </div>
-          ${boletoPed?`<div style="font-size:.63rem;color:#a16207;margin-top:3px;padding-left:46px">📄 Boleto detectado — forma de pagamento pré-selecionada automaticamente</div>`:''}
+          ${boletoPed&&!formaAuto?`<div style="font-size:.63rem;color:#a16207;margin-top:3px;padding-left:46px">📄 Boleto detectado — forma de pagamento pré-selecionada</div>`:''}
         </div>`;
       }
       // etapa retorno
@@ -16837,47 +16844,72 @@ async function carregarPortalCaixa(){ await _renderCaixaCargas('caixa-cargas-por
 // ── Baixar/abrir todos os boletos e NFs de uma carga ──────────────────────
 async function baixarTodasNFsCarga(carga){
   try{
-    const nfs = await supaFetch(`notas_fiscais?carga=eq.${carga}&select=pedido,tipo,url,nome_arquivo&order=pedido.asc,tipo.asc`) || [];
-    if(!nfs.length){ showToast('Nenhuma NF/boleto encontrado para esta carga','warning'); return; }
+    // Busca TODOS os arquivos da carga sem filtro de tipo
+    const arquivos = await supaFetch(`notas_fiscais?carga=eq.${carga}&select=pedido,tipo,url,nome_arquivo&order=pedido.asc,criado_em.asc`) || [];
+    if(!arquivos.length){ showToast('Nenhum arquivo encontrado para esta carga','warning'); return; }
 
-    // Abrir modal de impressão/download
-    let html = `<div style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px" id="modal-nf-carga">
+    // Detecta tipo por campo tipo OU por nome do arquivo (fallback para registros antigos)
+    const _tipoReal = n => {
+      if(n.tipo==='boleto') return 'boleto';
+      if(n.tipo==='nf')     return 'nf';
+      // fallback: detecta pelo nome
+      return /boleto/i.test(n.nome_arquivo||'') ? 'boleto' : 'nf';
+    };
+
+    const boletos = arquivos.filter(n=>_tipoReal(n)==='boleto');
+    const nfsList = arquivos.filter(n=>_tipoReal(n)==='nf');
+
+    const renderArquivo = (n, tipo) => {
+      const eBoleto = tipo==='boleto';
+      const icone   = eBoleto ? '📄' : '🧾';
+      const corBg   = eBoleto ? 'rgba(234,179,8,.08)' : 'rgba(99,102,241,.08)';
+      const corBd   = eBoleto ? 'rgba(234,179,8,.35)' : 'rgba(99,102,241,.25)';
+      const corBtn  = eBoleto ? '#d97706' : '#4338ca';
+      const label   = eBoleto ? 'Boleto' : 'Nota Fiscal';
+      return `<div style="background:${corBg};border:1px solid ${corBd};border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px">
+        <span style="font-size:1.2rem">${icone}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.8rem;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n.nome_arquivo||'arquivo'}</div>
+          <div style="font-size:.7rem;color:#64748b">Pedido ${n.pedido} · ${label}</div>
+        </div>
+        ${n.url
+          ? `<a href="${n.url}" target="_blank" style="background:${corBtn};color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;text-decoration:none">↗ Abrir</a>`
+          : `<span style="font-size:.7rem;color:#9ca3af">Sem link</span>`}
+      </div>`;
+    };
+
+    const secBoletos = boletos.length
+      ? `<div style="font-size:.72rem;font-weight:800;color:#d97706;margin:8px 0 4px;text-transform:uppercase;letter-spacing:.5px">📄 Boletos (${boletos.length})</div>
+         ${boletos.map(n=>renderArquivo(n,'boleto')).join('')}`
+      : `<div style="font-size:.78rem;color:#9ca3af;padding:6px 0">Nenhum boleto enviado</div>`;
+
+    const secNFs = nfsList.length
+      ? `<div style="font-size:.72rem;font-weight:800;color:#4338ca;margin:12px 0 4px;text-transform:uppercase;letter-spacing:.5px">🧾 Notas Fiscais (${nfsList.length})</div>
+         ${nfsList.map(n=>renderArquivo(n,'nf')).join('')}`
+      : `<div style="font-size:.78rem;color:#9ca3af;padding:6px 0">Nenhuma NF enviada</div>`;
+
+    document.getElementById('modal-nf-carga')?.remove();
+    document.body.insertAdjacentHTML('beforeend', `
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px" id="modal-nf-carga">
       <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4)">
-        <div style="background:linear-gradient(135deg,#4338ca,#6366f1);padding:18px 22px;display:flex;justify-content:space-between;align-items:center">
+        <div style="background:linear-gradient(135deg,#1e3a5f,#4338ca);padding:18px 22px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
           <div>
-            <div style="font-size:1rem;font-weight:800;color:#fff">📥 NFs e Boletos — Carga ${carga}</div>
-            <div style="font-size:.78rem;color:rgba(255,255,255,.75);margin-top:2px">${nfs.length} arquivo${nfs.length>1?'s':''}</div>
+            <div style="font-size:1rem;font-weight:800;color:#fff">📥 Documentos — Carga ${carga}</div>
+            <div style="font-size:.78rem;color:rgba(255,255,255,.75);margin-top:2px">${boletos.length} boleto${boletos.length!==1?'s':''} · ${nfsList.length} NF${nfsList.length!==1?'s':''}</div>
           </div>
           <button onclick="document.getElementById('modal-nf-carga').remove()"
-            style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 13px;cursor:pointer;font-size:.85rem;font-weight:600">✕ Fechar</button>
+            style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 13px;cursor:pointer;font-size:.85rem;font-weight:600">✕</button>
         </div>
-        <div style="overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:4px">
           <button onclick="abrirTodasNFs(${carga})"
-            style="width:100%;background:linear-gradient(135deg,#4338ca,#6366f1);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer;margin-bottom:4px">
-            📂 Abrir Todos em Novas Abas
+            style="width:100%;background:linear-gradient(135deg,#1e3a5f,#4338ca);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer;margin-bottom:8px">
+            📂 Abrir Todos em Novas Abas (${arquivos.filter(n=>n.url).length} arquivos)
           </button>
-          ${nfs.map(n=>{
-            const icone = n.tipo==='boleto' ? '📄' : '🧾';
-            const corBg  = n.tipo==='boleto' ? 'rgba(234,179,8,.1)' : 'rgba(99,102,241,.08)';
-            const corBd  = n.tipo==='boleto' ? 'rgba(234,179,8,.4)' : 'rgba(99,102,241,.25)';
-            const corBtn = n.tipo==='boleto' ? '#d97706' : '#4338ca';
-            return `<div style="background:${corBg};border:1px solid ${corBd};border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px">
-              <span style="font-size:1.3rem">${icone}</span>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:.8rem;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n.nome_arquivo||'arquivo'}</div>
-                <div style="font-size:.7rem;color:#64748b">Pedido ${n.pedido} · ${n.tipo==='boleto'?'Boleto':'Nota Fiscal'}</div>
-              </div>
-              ${n.url?`<a href="${n.url}" target="_blank"
-                style="background:${corBtn};color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;text-decoration:none">
-                ↗ Abrir
-              </a>`:'<span style="font-size:.7rem;color:#9ca3af">Sem link</span>'}
-            </div>`;
-          }).join('')}
+          ${secBoletos}
+          ${secNFs}
         </div>
       </div>
-    </div>`;
-    document.body.insertAdjacentHTML('beforeend', html);
-    // Fechar clicando fora
+    </div>`);
     document.getElementById('modal-nf-carga').addEventListener('click', function(e){ if(e.target===this) this.remove(); });
   }catch(e){ showToast('Erro ao buscar arquivos: '+e.message,'warning'); }
 }
@@ -16887,7 +16919,7 @@ async function abrirTodasNFs(carga){
     const nfs = await supaFetch(`notas_fiscais?carga=eq.${carga}&select=url&order=pedido.asc`) || [];
     const urls = nfs.map(n=>n.url).filter(Boolean);
     if(!urls.length){ showToast('Sem links disponíveis','warning'); return; }
-    urls.forEach((url,i)=>{ setTimeout(()=>window.open(url,'_blank'), i*200); });
+    urls.forEach((url,i)=>{ setTimeout(()=>window.open(url,'_blank'), i*250); });
     showToast(`✅ Abrindo ${urls.length} arquivo(s)...`,'success');
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
