@@ -10061,17 +10061,39 @@ async function criarDemanda(){
   const veiculoSalvar   = veiculo || 'A DEFINIR VEÍCULO';
 
   try{
+    // Se motorista real → já entra em separação diretamente
+    const _temMot = motoristaSalvar && motoristaSalvar !== 'A DEFINIR MOTORISTA';
+    const _novoStatus = _temMot ? 'separacao' : 'pendente';
+    const _tsExtra = _temMot ? {ts_separacao: new Date().toISOString()} : {};
+
     await supaFetch('demandas_rota',{
       method:'POST',
       body: JSON.stringify({
         motorista: motoristaSalvar, veiculo: veiculoSalvar, rota,
         data_saida: data,
         valor_meta: valorMeta,
-        status: 'pendente',
+        status: _novoStatus,
+        ..._tsExtra,
         usuario_id: USUARIO_LOGADO?.id||null
       })
     });
-    showMsgExp('✅ Demanda criada com sucesso!','ok');
+
+    // Se entrou em separação → registrar no arm_status também
+    if(_temMot){
+      try{
+        const _newDem = await supaFetch('demandas_rota?select=id&order=criado_em.desc&limit=1') || [];
+        const _newId  = _newDem[0]?.id;
+        if(_newId){
+          const _cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
+          let _arm = _cfg.length ? (_cfg[0].valor||{}) : {};
+          _arm[_newId] = 'separacao';
+          if(_cfg.length){ await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})}); }
+          else { await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:_arm})}); }
+        }
+      }catch(_){}
+    }
+
+    showMsgExp(_temMot ? '✅ Demanda criada — entrou em Separação!' : '✅ Demanda criada com sucesso!','ok');
     // Limpar formulário
     ['exp-motorista','exp-veiculo','exp-rota','exp-valor-meta'].forEach(id=>{
       const el = document.getElementById(id); if(el) el.value='';
@@ -18635,29 +18657,38 @@ async function conferirPedidoPortal(carga, pedido, status){
       })});
     }
 
-    // Verificar se todos os pedidos desta carga foram conferidos
-    // e atualizar status do armazém automaticamente
+    // Atualizar arm_status automaticamente conforme progresso
     try{
-      const totalPed = BASE_DATA.filter(r=>Math.round(Number(r.carga))===Number(carga)&&r.pedido);
+      const totalPed   = BASE_DATA.filter(r=>Math.round(Number(r.carga))===Number(carga)&&r.pedido);
       const totalUnicos = [...new Set(totalPed.map(r=>r.pedido))].length;
-      const conferidos = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,status`) || [];
-      const confUnicos = [...new Set(conferidos.map(r=>r.pedido))].length;
+      const conferidos  = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,status`) || [];
+      const confUnicos  = [...new Set(conferidos.map(r=>r.pedido))].length;
 
-      if(totalUnicos > 0 && confUnicos >= totalUnicos){
-        // Todos conferidos — mudar status para "carregamento"
-        const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
-        if(demanda){
-          const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-          let armStatus = cfg&&cfg[0] ? cfg[0].valor||{} : {};
-          const stAtual = armStatus[demanda.id]||'pendente';
-          // Só avança se ainda não está em carregado_ok
-          if(stAtual !== 'carregado_ok'){
-            armStatus[demanda.id] = 'carregamento';
-            if(cfg&&cfg[0]){
-              await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
-            }
-            showToast('🚛 Todos conferidos! Status atualizado para Em Carregamento','success');
+      const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
+      if(demanda && confUnicos > 0){
+        const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
+        let armStatus = cfg&&cfg[0] ? cfg[0].valor||{} : {};
+        const stAtual = armStatus[demanda.id]||'pendente';
+        // Primeiro pedido conferido → entra em carregamento automaticamente
+        if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
+          armStatus[demanda.id] = 'carregamento';
+          if(cfg&&cfg[0]){
+            await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
+          } else {
+            await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:armStatus})});
           }
+          // Sincronizar demandas_rota.status
+          if(['pendente','separacao'].includes(demanda.status)){
+            await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
+              method:'PATCH',body:JSON.stringify({status:'carregamento',ts_carregamento:new Date().toISOString()})
+            }).catch(()=>{});
+            demanda.status = 'carregamento';
+          }
+          showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
+        }
+        // Toast quando todos conferidos
+        if(totalUnicos > 0 && confUnicos >= totalUnicos){
+          showToast(`✅ Todos os ${totalUnicos} pedidos conferidos! Aguardando confirmação de carregamento.`,'success');
         }
       }
     }catch(e){ console.warn('auto-status:', e.message); }
@@ -19622,7 +19653,6 @@ function criarModalPedidosConf(){
 async function conferirPedido(carga, pedido, status, atribId){
   try{
     const ex = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&pedido=eq.${pedido}&select=id`) || [];
-    // Usar conferente armazenado ao abrir o modal (corrige bug: atribId ≠ conferente_id)
     const confId   = window._mpcConferenteId   || '';
     const confNome = window._mpcConferenteNome || '';
     const body = { carga, pedido, status, conferente_id: confId, conferente_nome: confNome, conferido_em: new Date().toISOString() };
@@ -19631,6 +19661,27 @@ async function conferirPedido(carga, pedido, status, atribId){
     } else {
       await supaFetch('conferencia_pedidos',{method:'POST',body:JSON.stringify(body)});
     }
+    // Primeiro pedido conferido → entra em carregamento automaticamente
+    try{
+      const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
+      if(demanda){
+        const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
+        let armStatus = cfg&&cfg[0] ? cfg[0].valor||{} : {};
+        const stAtual = armStatus[demanda.id]||'pendente';
+        if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
+          armStatus[demanda.id] = 'carregamento';
+          if(cfg&&cfg[0]){
+            await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
+          }
+          if(['pendente','separacao'].includes(demanda.status)){
+            await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
+              method:'PATCH',body:JSON.stringify({status:'carregamento',ts_carregamento:new Date().toISOString()})
+            }).catch(()=>{});
+            demanda.status = 'carregamento';
+          }
+        }
+      }
+    }catch(_){}
     await verPedidosConferencia(carga, atribId, confId, confNome);
   }catch(e){ showToast('Erro: '+e.message,'error'); }
 }
