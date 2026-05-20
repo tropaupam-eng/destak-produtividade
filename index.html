@@ -16418,6 +16418,13 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   const nfs = await supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido,tipo,url,nome_arquivo&limit=1000&order=carga.asc,pedido.asc`) || [];
   // Buscar base_data para valores
   const bdData = await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota`) || [];
+  // Buscar locks de caixa (quem está atendendo cada carga)
+  const _caixaLocksRaw = await supaFetch('configuracoes?chave=like.caixa_lock_%25&select=chave,valor') || [];
+  const locksMap = {};
+  _caixaLocksRaw.forEach(c=>{
+    const cargaKey = parseInt((c.chave||'').replace('caixa_lock_',''));
+    if(!isNaN(cargaKey)) try{ locksMap[cargaKey]=JSON.parse(c.valor||'{}'); }catch(e){}
+  });
 
   // fim_viagem: sempre aparece no Caixa (motorista retornou, precisa fechar a carga)
   // Outros status: só aparece se a carga já tem pedidos conferidos pelo Fiscal
@@ -16459,6 +16466,11 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
     // Pré-cachear para abrirPaginaImpressao (função síncrona)
     window._nfDocsCache = window._nfDocsCache || {};
     window._nfDocsCache[d.carga] = nfsCarga;
+    // Lock de caixa
+    const lock = locksMap[d.carga];
+    const _meId = USUARIO_LOGADO?.id;
+    const lockedByMe    = !!(lock?.id && lock.id === _meId);
+    const lockedByOther = !!(lock?.id && !lockedByMe);
     const ehRetorno = d.status==='fim_viagem';
     const etapa = ehRetorno ? 'retorno' : d.status==='saiu' ? 'viagem' : 'saida';
 
@@ -16586,7 +16598,12 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
           <span style="background:#065f46;color:#fff;font-size:.78rem;font-weight:800;padding:2px 10px;border-radius:20px">💵 Carga ${d.carga}</span>
           <div style="display:flex;align-items:center;gap:6px">
             ${nfsCarga.length ? `<button onclick="abrirPaginaImpressao(${d.carga})" title="Abrir página de impressão com todos os boletos e NFs"
-              style="background:rgba(99,102,241,.12);color:#4f46e5;border:1px solid rgba(99,102,241,.3);border-radius:7px;padding:2px 9px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">🖨️ Imprimir Docs (${nfsCarga.length})</button>` : ''}
+              style="background:rgba(99,102,241,.12);color:#4f46e5;border:1px solid rgba(99,102,241,.3);border-radius:7px;padding:2px 9px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">🖨️ Docs (${nfsCarga.length})</button>` : ''}
+            ${lockedByMe
+              ? `<span style="background:#dcfce7;color:#166534;border:1px solid #86efac;border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:700;display:inline-flex;align-items:center;gap:5px">🔒 Você atende <button onclick="liberarCargaCaixa(${d.carga})" style="background:#ef4444;color:#fff;border:none;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:.6rem;font-weight:700">Liberar</button></span>`
+              : lockedByOther
+              ? `<span style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:700">⚠️ ${lock.nome||'Outro usuário'}</span>`
+              : `<button onclick="pegarCargaCaixa(${d.carga})" style="background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:700;cursor:pointer">📋 Pegar</button>`}
             <span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:10px;background:${statusBg[d.status]||'var(--bg-card2)'};color:${statusTx[d.status]||'var(--text-secondary)'}">
               ${stLabel[d.status]||d.status}
             </span>
@@ -16617,7 +16634,10 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
       </div>
 
       <!-- Formulários pedidos pendentes -->
-      ${forms ? `<div style="padding:6px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px">${forms}</div>` : ''}
+      ${forms ? `<div style="padding:6px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px${lockedByOther?';pointer-events:none;opacity:.45':''}">
+        ${lockedByOther?`<div style="text-align:center;font-size:.72rem;color:#991b1b;font-weight:700;padding:3px 0;pointer-events:none">🔒 Em atendimento por ${lock.nome||'outro usuário'}</div>`:''}
+        ${forms}
+      </div>` : ''}
 
       <!-- Botão concluir -->
       ${btnConcluir ? `<div style="padding:10px 14px;border-top:1px solid var(--border)">${btnConcluir}</div>` : ''}
@@ -16922,47 +16942,61 @@ async function baixarTodasNFsCarga(carga){
   }catch(e){ showToast('Erro ao buscar arquivos: '+e.message,'warning'); }
 }
 
-// Abre página com TODOS os PDFs embutidos — um único botão "Imprimir Tudo" (sem popup bloqueado)
+// Abre página com TODOS os PDFs em iframes — botão único "Imprimir Tudo" sem popup bloqueado
 function abrirPaginaImpressao(carga){
   const cargaInt = parseInt(carga)||carga;
-  const docs = (window._nfDocsCache||{})[cargaInt] || [];
-  if(!docs.length){ showToast('Nenhum arquivo encontrado para esta carga','warning'); return; }
+  // Abrir AGORA (síncrono no click) — não bloqueia popup
   const win = window.open('','_blank');
   if(!win){ showToast('⚠️ Permita popups para este site e tente novamente','warning'); return; }
-  const _eBoleto = n=>n.tipo==='boleto'||(!n.tipo&&/boleto/i.test(n.nome_arquivo||''));
-  const comUrl = docs.filter(n=>n.url);
-  const nBol = comUrl.filter(_eBoleto).length;
-  const nNF  = comUrl.length - nBol;
-  const embeds = comUrl.map(n=>{
-    const eb = _eBoleto(n);
-    return `<div style="margin-bottom:20px;border-radius:10px;overflow:hidden;border:2px solid ${eb?'#fde68a':'#c7d2fe'};background:${eb?'#fefce8':'#eef2ff'}">
-      <div style="padding:8px 14px;font-size:.82rem;font-weight:700;color:#374151;background:rgba(0,0,0,.05)">
-        ${eb?'📄 Boleto':'🧾 NF'} — Pedido ${n.pedido} — ${(n.nome_arquivo||'').replace(/</g,'&lt;')}
-        <a href="${n.url}" target="_blank" style="float:right;font-size:.75rem;color:#6366f1;font-weight:600">↗ Abrir separado</a>
-      </div>
-      <embed src="${n.url}" type="application/pdf" style="display:block;width:100%;height:1100px;border:none">
-    </div>`;
-  }).join('');
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Carga ${carga} — Impressão</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:Arial,sans-serif;background:#f1f5f9}
-    .bar{background:linear-gradient(135deg,#1e3a5f,#4338ca);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:9;box-shadow:0 2px 8px rgba(0,0,0,.3)}
-    .bar h1{font-size:1rem;font-weight:800;flex:1}
-    .bar p{font-size:.78rem;opacity:.8}
-    .btn-imp{background:#22c55e;color:#fff;border:none;border-radius:9px;padding:10px 22px;font-size:.92rem;font-weight:800;cursor:pointer;white-space:nowrap}
-    .btn-imp:hover{background:#16a34a}
-    .docs{max-width:900px;margin:24px auto;padding:0 16px 60px}
-    @media print{.bar{display:none!important}.docs{margin:0;padding:0}embed{height:100vh;page-break-after:always}}
-  </style></head><body>
-  <div class="bar">
-    <div style="flex:1"><h1>📥 Carga ${carga}</h1><p>${nBol} boleto(s) · ${nNF} NF(s) · ${comUrl.length} arquivo(s) no total</p></div>
-    <button class="btn-imp" onclick="window.print()">🖨️ Imprimir Tudo</button>
-  </div>
-  <div class="docs">${comUrl.length?embeds:'<p style="padding:40px;text-align:center;color:#9ca3af">Nenhum arquivo com link disponível</p>'}</div>
-  </body></html>`);
-  win.document.close();
+
+  function _escrever(docs){
+    const _eb = n=>n.tipo==='boleto'||(!n.tipo&&/boleto/i.test(n.nome_arquivo||''));
+    const comUrl = docs.filter(n=>n.url);
+    const nBol = comUrl.filter(_eb).length;
+    const nNF  = comUrl.length - nBol;
+    const iframes = comUrl.map(n=>{
+      const eb = _eb(n);
+      return `<div style="margin-bottom:28px;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12);border:2px solid ${eb?'#fde68a':'#c7d2fe'}">
+        <div style="background:${eb?'#fef9c3':'#eef2ff'};padding:9px 14px;font-size:.83rem;font-weight:700;color:#374151;display:flex;justify-content:space-between;align-items:center">
+          <span>${eb?'📄 Boleto':'🧾 NF'} — Pedido ${n.pedido} — ${(n.nome_arquivo||'').replace(/</g,'&lt;')}</span>
+          <a href="${n.url}" target="_blank" style="font-size:.75rem;color:#4f46e5;font-weight:600;text-decoration:none">↗ Aba separada</a>
+        </div>
+        <iframe src="${n.url}" style="display:block;width:100%;height:1120px;border:none" loading="lazy"></iframe>
+      </div>`;
+    }).join('');
+    win.document.open();
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Carga ${carga} — Impressão</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;background:#f1f5f9}
+      .bar{background:linear-gradient(135deg,#1e3a5f,#4338ca);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:9;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+      .bi{flex:1}.bi h1{font-size:1.05rem;font-weight:800}.bi p{font-size:.8rem;opacity:.75;margin-top:3px}
+      .btn-p{background:#22c55e;color:#fff;border:none;border-radius:9px;padding:11px 24px;font-size:.95rem;font-weight:800;cursor:pointer}
+      .btn-p:hover{background:#16a34a}
+      .docs{max-width:960px;margin:24px auto;padding:0 16px 60px}
+      .empty{text-align:center;padding:80px;color:#9ca3af;font-size:.9rem}
+      @media print{.bar{display:none!important}.docs{margin:0;padding:0}iframe{height:100vh!important;page-break-after:always;border:none!important}}
+    </style></head><body>
+    <div class="bar">
+      <div class="bi"><h1>📥 Documentos — Carga ${carga}</h1><p>${nBol} boleto(s) · ${nNF} NF(s) · ${comUrl.length} arquivo(s)</p></div>
+      <button class="btn-p" onclick="window.print()">🖨️ Imprimir Tudo</button>
+    </div>
+    <div class="docs">${comUrl.length?iframes:'<div class="empty">Nenhum arquivo com link disponível.</div>'}</div>
+    </body></html>`);
+    win.document.close();
+  }
+
+  const cached = (window._nfDocsCache||{})[cargaInt];
+  if(cached && cached.length){
+    _escrever(cached);
+  } else {
+    // Cache vazio: mostrar loading e buscar async (popup já está aberto — sem bloqueio)
+    win.document.write('<html><body style="font-family:Arial;padding:60px;text-align:center;color:#374151"><h2>⏳ Carregando documentos da carga '+carga+'...</h2></body></html>');
+    supaFetch('notas_fiscais?carga=eq.'+cargaInt+'&select=pedido,tipo,url,nome_arquivo&limit=500&order=pedido.asc')
+      .then(arqs=>{ const d=arqs||[]; window._nfDocsCache=window._nfDocsCache||{}; window._nfDocsCache[cargaInt]=d; _escrever(d); })
+      .catch(e=>{ win.document.open(); win.document.write('<html><body style="font-family:Arial;padding:60px;color:#dc2626"><h2>❌ Erro: '+e.message+'</h2></body></html>'); win.document.close(); });
+  }
 }
 
 async function carregarPaginaCaixa(){
@@ -16976,6 +17010,13 @@ async function carregarPaginaCaixa(){
 }
 
 async function validarPedidoCaixa(carga, pedido, status){
+  // Verificar lock — impede que outro usuário salve nesta carga
+  try{
+    const _lk = await supaFetch(`configuracoes?chave=eq.caixa_lock_${carga}&select=valor`)||[];
+    if(_lk.length){ const lk={}; try{Object.assign(lk,JSON.parse(_lk[0].valor||'{}'));}catch(e){}
+      if(lk.id && lk.id!==USUARIO_LOGADO?.id){ showToast(`⚠️ Carga em atendimento por ${lk.nome||'outro usuário'}. Peça para liberar primeiro.`,'warning'); return; }
+    }
+  }catch(e){}
   const forma = document.getElementById(`pgto-forma-${carga}-${pedido}`)?.value||'';
   const valor = parseFloat(document.getElementById(`pgto-val-${carga}-${pedido}`)?.value)||0;
   const obs   = document.getElementById(`pgto-obs-${carga}-${pedido}`)?.value||'';
@@ -17042,9 +17083,34 @@ async function concluirCaixa(demandaId, carga){
       await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'pronto_viagem'})});
       showToast('✅ Pagamentos confirmados! Carga liberada para viagem.','success');
     }
+    // Liberar lock de caixa automaticamente ao concluir
+    if(carga&&carga!=='null') supaFetch(`configuracoes?chave=eq.caixa_lock_${carga}`,{method:'DELETE'}).catch(()=>{});
     if(document.getElementById('caixa-cargas-portal')?.offsetParent) await carregarPortalCaixa();
     else await carregarPaginaCaixa();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// ── Lock de Carga no Caixa ────────────────────────────────────────────────
+async function pegarCargaCaixa(carga){
+  const user = USUARIO_LOGADO;
+  if(!user?.id){ showToast('Usuário não identificado','warning'); return; }
+  const valor = JSON.stringify({id:user.id, nome:user.nome||user.name||'Caixa', ts:new Date().toISOString()});
+  try{
+    await supaFetch('configuracoes',{
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body:JSON.stringify({chave:`caixa_lock_${carga}`,valor})
+    });
+    showToast('✅ Carga '+carga+' reservada — outros usuários não podem editar','success');
+    await Promise.all([_renderCaixaCargas('caixa-cargas-inline','caixa-kpi-'),_renderCaixaCargas('caixa-cargas-portal','caixa-kpi-')]);
+  }catch(e){ showToast('Erro ao reservar: '+e.message,'warning'); }
+}
+async function liberarCargaCaixa(carga){
+  try{
+    await supaFetch(`configuracoes?chave=eq.caixa_lock_${carga}`,{method:'DELETE'});
+    showToast('🔓 Carga '+carga+' liberada','success');
+    await Promise.all([_renderCaixaCargas('caixa-cargas-inline','caixa-kpi-'),_renderCaixaCargas('caixa-cargas-portal','caixa-kpi-')]);
+  }catch(e){ showToast('Erro ao liberar: '+e.message,'warning'); }
 }
 
 // ══════════════════════════════════════════════════════
