@@ -16849,6 +16849,9 @@ async function baixarTodasNFsCarga(carga){
     const arquivos = await supaFetch(`notas_fiscais?carga=eq.${cargaInt}&select=pedido,tipo,url,nome_arquivo&limit=500&order=pedido.asc`) || [];
     console.log('[baixarTodasNFsCarga] carga='+cargaInt+' arquivos='+arquivos.length, arquivos);
     if(!arquivos.length){ showToast('Nenhum arquivo encontrado para carga '+cargaInt,'warning'); return; }
+    // Cache para abrirPaginaImpressao (função síncrona, sem async)
+    window._nfDocsCache = window._nfDocsCache || {};
+    window._nfDocsCache[cargaInt] = arquivos;
 
     // Detecta tipo por campo tipo OU por nome do arquivo (fallback para registros antigos)
     const _tipoReal = n => {
@@ -16903,9 +16906,9 @@ async function baixarTodasNFsCarga(carga){
             style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 13px;cursor:pointer;font-size:.85rem;font-weight:600">✕</button>
         </div>
         <div style="overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:4px">
-          <button onclick="abrirTodasNFs(${carga})"
+          <button onclick="abrirPaginaImpressao(${cargaInt})"
             style="width:100%;background:linear-gradient(135deg,#1e3a5f,#4338ca);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer;margin-bottom:8px">
-            📂 Abrir Todos em Novas Abas (${arquivos.filter(n=>n.url).length} arquivos)
+            🖨️ Abrir Página para Impressão (${arquivos.filter(n=>n.url).length} arquivos)
           </button>
           ${secBoletos}
           ${secNFs}
@@ -16916,15 +16919,52 @@ async function baixarTodasNFsCarga(carga){
   }catch(e){ showToast('Erro ao buscar arquivos: '+e.message,'warning'); }
 }
 
-async function abrirTodasNFs(carga){
-  try{
-    const cargaInt = parseInt(carga)||carga;
-    const nfs = await supaFetch(`notas_fiscais?carga=eq.${cargaInt}&select=url&limit=500&order=pedido.asc`) || [];
-    const urls = nfs.map(n=>n.url).filter(Boolean);
-    if(!urls.length){ showToast('Sem links disponíveis','warning'); return; }
-    urls.forEach((url,i)=>{ setTimeout(()=>window.open(url,'_blank'), i*250); });
-    showToast(`✅ Abrindo ${urls.length} arquivo(s)...`,'success');
-  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+// Abre UMA página de impressão com todos os documentos listados (evita bloqueio de popup)
+function abrirPaginaImpressao(carga){
+  const docs = (window._nfDocsCache||{})[parseInt(carga)||carga] || [];
+  const win = window.open('','_blank');
+  if(!win){ showToast('⚠️ Permita popups para este site e tente novamente','warning'); return; }
+  const _eBoleto = n=>n.tipo==='boleto'||(!n.tipo&&/boleto/i.test(n.nome_arquivo||''));
+  const boletos  = docs.filter(_eBoleto);
+  const nfsList  = docs.filter(n=>!_eBoleto(n));
+  const row = (n, tipo) => {
+    const eb = tipo==='boleto';
+    return `<a href="${n.url||'#'}" target="_blank" class="item ${eb?'b-item':'n-item'}">
+      <span class="ico">${eb?'📄':'🧾'}</span>
+      <div class="info"><div class="fname">${(n.nome_arquivo||'arquivo').replace(/</g,'&lt;')}</div>
+      <div class="meta">Pedido ${n.pedido}</div></div>
+      <span class="btn ${eb?'btn-b':'btn-n'}">↗ Abrir</span></a>`;
+  };
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <title>Carga ${carga} — Documentos</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:Arial,sans-serif;max-width:680px;margin:32px auto;padding:0 20px;background:#f8fafc;color:#1e293b}
+    h1{font-size:1.25rem;color:#1e3a5f;margin-bottom:4px}
+    .sub{color:#64748b;font-size:.82rem;margin-bottom:24px}
+    h2{font-size:.9rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:6px 0;border-bottom:2px solid;margin:20px 0 8px}
+    .h-b{color:#d97706;border-color:#fde68a} .h-n{color:#4338ca;border-color:#c7d2fe}
+    .item{display:flex;align-items:center;gap:12px;padding:10px 14px;margin:5px 0;border-radius:10px;text-decoration:none;color:inherit;transition:opacity .15s}
+    .item:hover{opacity:.8}
+    .b-item{background:#fefce8;border:1px solid #fde68a}
+    .n-item{background:#eef2ff;border:1px solid #c7d2fe}
+    .ico{font-size:1.3rem;flex-shrink:0}
+    .info{flex:1;min-width:0}
+    .fname{font-weight:700;font-size:.85rem;word-break:break-all}
+    .meta{font-size:.72rem;color:#64748b;margin-top:2px}
+    .btn{padding:5px 13px;border-radius:6px;font-size:.78rem;font-weight:700;white-space:nowrap;color:#fff}
+    .btn-b{background:#d97706} .btn-n{background:#4338ca}
+    .empty{color:#9ca3af;font-style:italic;padding:8px 0;font-size:.82rem}
+    @media print{body{background:#fff}}
+  </style></head><body>
+  <h1>📥 Documentos — Carga ${carga}</h1>
+  <p class="sub">${boletos.length} boleto(s) &nbsp;·&nbsp; ${nfsList.length} nota(s) fiscal(is) &nbsp;·&nbsp; Clique em cada arquivo para abrir e imprimir</p>
+  <h2 class="h-b">📄 Boletos (${boletos.length})</h2>
+  ${boletos.length?boletos.map(n=>row(n,'boleto')).join(''):'<p class="empty">Nenhum boleto enviado</p>'}
+  <h2 class="h-n">🧾 Notas Fiscais (${nfsList.length})</h2>
+  ${nfsList.length?nfsList.map(n=>row(n,'nf')).join(''):'<p class="empty">Nenhuma NF enviada</p>'}
+  </body></html>`);
+  win.document.close();
 }
 
 async function carregarPaginaCaixa(){
