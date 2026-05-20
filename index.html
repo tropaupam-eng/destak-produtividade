@@ -5749,6 +5749,13 @@ async function pushLancamento(l){
       });
       if(res&&res[0]) l._id = res[0].id;
     }
+    // #3 — Atualiza condutor em base_data para todos os pedidos desta carga
+    if(l.carga && l.motorista){
+      supaFetch(`base_data?carga=eq.${l.carga}`,{
+        method:'PATCH',
+        body: JSON.stringify({condutor: l.motorista})
+      }).catch(()=>{});
+    }
   }catch(e){ console.warn('Push erro:',e.message); }
 }
 
@@ -11254,6 +11261,24 @@ async function confirmarSaidaRota(){
       data_saida:data, km_inicial:kmIni, km_esperado:kmEsp,
       criado_em:new Date().toISOString()
     })}).catch(()=>{});
+    // #4 — Propagar data_saida para entrega_datas por pedido (fonte única para OTIF)
+    if(dem?.carga && data){
+      try{
+        const pedidos = await supaFetch(`base_data?carga=eq.${dem.carga}&select=pedido,mes_ano&limit=2000`).catch(()=>[]) || [];
+        if(pedidos.length){
+          const mesAno = pedidos[0].mes_ano || data.slice(0,7);
+          const uniqPeds = [...new Set(pedidos.map(p=>String(p.pedido)).filter(Boolean))];
+          const registros = uniqPeds.map(ped=>({ mes_ano: mesAno, pedido: ped, data_saida: data }));
+          for(let i=0; i<registros.length; i+=100){
+            await supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
+              method:'POST',
+              body: JSON.stringify(registros.slice(i,i+100)),
+              prefer: 'resolution=merge-duplicates,return=minimal'
+            }).catch(()=>{});
+          }
+        }
+      }catch(_){}
+    }
     document.getElementById('modal-saida-rota').style.display = 'none';
     _demandaSaidaId   = null;
     _demandaSaidaData = null;
