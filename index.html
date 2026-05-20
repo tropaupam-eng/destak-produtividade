@@ -16463,11 +16463,7 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
     // Pré-cachear para abrirPaginaImpressao (função síncrona)
     window._nfDocsCache = window._nfDocsCache || {};
     window._nfDocsCache[d.carga] = nfsCarga;
-    // Lock de caixa
-    const lock = locksMap[d.carga];
     const _meId = USUARIO_LOGADO?.id;
-    const lockedByMe    = !!(lock?.id && lock.id === _meId);
-    const lockedByOther = !!(lock?.id && !lockedByMe);
     const ehRetorno = d.status==='fim_viagem';
     const etapa = ehRetorno ? 'retorno' : d.status==='saiu' ? 'viagem' : 'saida';
 
@@ -16515,18 +16511,28 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
           <span style="font-size:.72rem;color:#ef4444">⚠️ ${val?.observacao||'Divergência'}</span>
           <button onclick="validarPedidoCaixa(${d.carga},${ped},'pendente')" style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:5px;padding:2px 6px;font-size:.65rem;cursor:pointer;margin-left:auto">↩</button>
         </div>`;
-        // pendente com NF — mostrar form
+        // pendente com NF — verificar lock por pedido e mostrar form
+        const _pedKey   = `${d.carga}_${ped}`;
+        const _pedLock  = locksMap[_pedKey];
+        const _pedByMe  = !!(_pedLock?.id && _pedLock.id === _meId);
+        const _pedByOth = !!(_pedLock?.id && !_pedByMe);
+        // Se pedido travado por outro usuário: mostrar aviso bloqueado
+        if(_pedByOth) return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fef2f2;border:1px solid #fca5a5;border-radius:7px;opacity:.7">
+          <span style="font-size:.72rem;font-weight:800;color:#991b1b;min-width:38px">P.${ped}</span>
+          <span style="font-size:.72rem;color:#dc2626;flex:1">🔒 Em atendimento por ${_pedLock.nome||'outro usuário'}</span>
+        </div>`;
         const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
-        // Detecta boleto por campo tipo OU pelo nome do arquivo (fallback para registros antigos)
         const _eBoleto  = n => n.tipo==='boleto' || (!n.tipo && /boleto/i.test(n.nome_arquivo||''));
         const _eNF      = n => n.tipo==='nf'     || (!n.tipo && !/boleto/i.test(n.nome_arquivo||''));
         const boletoPed = nfsPed.find(_eBoleto);
         const nfPed     = nfsPed.find(_eNF);
-        // Forma de pagamento: pré-seleciona Boleto só se fiscal enviou boleto; do contrário campo fica vazio para caixa escolher
         const formaAuto = val?.forma_pagamento || (boletoPed ? 'Boleto' : '');
-        return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid ${boletoPed?'rgba(234,179,8,.4)':'var(--border-med)'};border-radius:7px">
+        return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid ${_pedByMe?'#86efac':boletoPed?'rgba(234,179,8,.4)':'var(--border-med)'};border-radius:7px">
           <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
             <span style="font-size:.72rem;font-weight:800;color:var(--text-primary);min-width:38px">P.${ped}</span>
+            ${_pedByMe
+              ? `<span style="background:#dcfce7;color:#166534;border:1px solid #86efac;border-radius:4px;padding:1px 6px;font-size:.63rem;font-weight:700;display:inline-flex;align-items:center;gap:3px">🔒 Seu <button onclick="liberarPedidoCaixa(${d.carga},${ped})" style="background:none;border:none;color:#991b1b;cursor:pointer;font-size:.65rem;padding:0;line-height:1" title="Liberar">✕</button></span>`
+              : `<button onclick="pegarPedidoCaixa(${d.carga},${ped})" title="Pegar este pedido para atendimento" style="background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:4px;padding:1px 7px;font-size:.63rem;font-weight:700;cursor:pointer;white-space:nowrap">📋 Pegar</button>`}
             <select id="pgto-forma-${d.carga}-${ped}" style="border:1px solid ${boletoPed?'#eab308':'var(--border-med)'};border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
               <option value="" ${!formaAuto?'selected':''}>-- Forma --</option>
               ${FORMAS_PGTO.map(f=>`<option value="${f}" ${formaAuto===f?'selected':''}>${f}</option>`).join('')}
@@ -16596,11 +16602,6 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
           <div style="display:flex;align-items:center;gap:6px">
             ${nfsCarga.length ? `<button onclick="abrirPaginaImpressao(${d.carga})" title="Abrir página de impressão com todos os boletos e NFs"
               style="background:rgba(99,102,241,.12);color:#4f46e5;border:1px solid rgba(99,102,241,.3);border-radius:7px;padding:2px 9px;font-size:.68rem;font-weight:700;cursor:pointer;white-space:nowrap">🖨️ Docs (${nfsCarga.length})</button>` : ''}
-            ${lockedByMe
-              ? `<span style="background:#dcfce7;color:#166534;border:1px solid #86efac;border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:700;display:inline-flex;align-items:center;gap:5px">🔒 Você atende <button onclick="liberarCargaCaixa(${d.carga})" style="background:#ef4444;color:#fff;border:none;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:.6rem;font-weight:700">Liberar</button></span>`
-              : lockedByOther
-              ? `<span style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:700">⚠️ ${lock.nome||'Outro usuário'}</span>`
-              : `<button onclick="pegarCargaCaixa(${d.carga})" style="background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:700;cursor:pointer">📋 Pegar</button>`}
             <span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:10px;background:${statusBg[d.status]||'var(--bg-card2)'};color:${statusTx[d.status]||'var(--text-secondary)'}">
               ${stLabel[d.status]||d.status}
             </span>
@@ -16631,10 +16632,7 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
       </div>
 
       <!-- Formulários pedidos pendentes -->
-      ${forms ? `<div style="padding:6px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px${lockedByOther?';pointer-events:none;opacity:.45':''}">
-        ${lockedByOther?`<div style="text-align:center;font-size:.72rem;color:#991b1b;font-weight:700;padding:3px 0;pointer-events:none">🔒 Em atendimento por ${lock.nome||'outro usuário'}</div>`:''}
-        ${forms}
-      </div>` : ''}
+      ${forms ? `<div style="padding:6px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px">${forms}</div>` : ''}
 
       <!-- Botão concluir -->
       ${btnConcluir ? `<div style="padding:10px 14px;border-top:1px solid var(--border)">${btnConcluir}</div>` : ''}
@@ -17007,12 +17005,12 @@ async function carregarPaginaCaixa(){
 }
 
 async function validarPedidoCaixa(carga, pedido, status){
-  // Verificar lock — impede que outro usuário salve nesta carga
+  // Verificar lock por pedido — impede que outro usuário salve
   try{
     const _lks = await _getCaixaLocks();
-    const _lk = _lks[carga];
+    const _lk = _lks[`${carga}_${pedido}`];
     if(_lk?.id && _lk.id!==USUARIO_LOGADO?.id){
-      showToast('⚠️ Carga em atendimento por '+(_lk.nome||'outro usuário')+'. Peça para liberar primeiro.','warning'); return;
+      showToast('⚠️ Pedido '+pedido+' em atendimento por '+(_lk.nome||'outro usuário'),'warning'); return;
     }
   }catch(e){}
   const forma = document.getElementById(`pgto-forma-${carga}-${pedido}`)?.value||'';
@@ -17033,6 +17031,8 @@ async function validarPedidoCaixa(carga, pedido, status){
       await supaFetch('validacoes_caixa',{method:'POST',body});
     }
     showToast(status==='validado'?'✅ Pedido '+pedido+' validado':'⚠️ Divergência registrada','success');
+    // Liberar lock do pedido automaticamente ao validar
+    _getCaixaLocks().then(lks=>{ delete lks[`${carga}_${pedido}`]; _saveCaixaLocks(lks); }).catch(()=>{});
     // Recarregar
     if(document.getElementById('caixa-cargas-portal')?.offsetParent) await carregarPortalCaixa();
     else await carregarPaginaCaixa();
@@ -17081,8 +17081,11 @@ async function concluirCaixa(demandaId, carga){
       await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'pronto_viagem'})});
       showToast('✅ Pagamentos confirmados! Carga liberada para viagem.','success');
     }
-    // Liberar lock de caixa automaticamente ao concluir
-    if(carga&&carga!=='null') _getCaixaLocks().then(lks=>{ delete lks[carga]; _saveCaixaLocks(lks); }).catch(()=>{});
+    // Liberar todos os locks dos pedidos desta carga ao concluir
+    if(carga&&carga!=='null') _getCaixaLocks().then(lks=>{
+      Object.keys(lks).forEach(k=>{ if(k.startsWith(`${carga}_`)) delete lks[k]; });
+      _saveCaixaLocks(lks);
+    }).catch(()=>{});
     if(document.getElementById('caixa-cargas-portal')?.offsetParent) await carregarPortalCaixa();
     else await carregarPaginaCaixa();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -17100,29 +17103,29 @@ async function _saveCaixaLocks(locks){
     body:JSON.stringify({chave:'caixa_locks', valor:JSON.stringify(locks)})
   });
 }
-async function pegarCargaCaixa(carga){
+async function pegarPedidoCaixa(carga, pedido){
   const user = USUARIO_LOGADO;
   if(!user?.id){ showToast('Usuário não identificado','warning'); return; }
+  const key = `${carga}_${pedido}`;
   try{
     const locks = await _getCaixaLocks();
-    const existing = locks[carga];
+    const existing = locks[key];
     if(existing?.id && existing.id !== user.id){
-      showToast('⚠️ Carga já em atendimento por '+existing.nome,'warning'); return;
+      showToast('⚠️ Pedido '+pedido+' já em atendimento por '+existing.nome,'warning'); return;
     }
-    locks[carga] = {id:user.id, nome:user.nome||user.name||'Caixa', ts:new Date().toISOString()};
+    locks[key] = {id:user.id, nome:user.nome||user.name||'Caixa', ts:new Date().toISOString()};
     await _saveCaixaLocks(locks);
-    showToast('✅ Carga '+carga+' reservada para você','success');
     await Promise.all([_renderCaixaCargas('caixa-cargas-inline','caixa-kpi-'),_renderCaixaCargas('caixa-cargas-portal','caixa-kpi-')]);
-  }catch(e){ showToast('Erro ao reservar: '+e.message,'warning'); }
+  }catch(e){ showToast('Erro ao pegar pedido: '+e.message,'warning'); }
 }
-async function liberarCargaCaixa(carga){
+async function liberarPedidoCaixa(carga, pedido){
+  const key = `${carga}_${pedido}`;
   try{
     const locks = await _getCaixaLocks();
-    delete locks[carga];
+    delete locks[key];
     await _saveCaixaLocks(locks);
-    showToast('🔓 Carga '+carga+' liberada','success');
     await Promise.all([_renderCaixaCargas('caixa-cargas-inline','caixa-kpi-'),_renderCaixaCargas('caixa-cargas-portal','caixa-kpi-')]);
-  }catch(e){ showToast('Erro ao liberar: '+e.message,'warning'); }
+  }catch(e){ showToast('Erro ao liberar pedido: '+e.message,'warning'); }
 }
 
 // ══════════════════════════════════════════════════════
