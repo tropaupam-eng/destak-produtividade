@@ -3337,7 +3337,6 @@ textarea:focus{
     <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Pedidos Validados</div><div class="kpi-value" id="caixa-kpi-ok2">—</div></div>
     <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Pendentes</div><div class="kpi-value" id="caixa-kpi-pend2">—</div></div>
   </div>
-  <div id="caixa-cargas-inline-boletos"></div>
   <div id="caixa-cargas-inline">
     <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
   </div>
@@ -16347,73 +16346,6 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   const container = document.getElementById(containerId);
   if(!container) return;
 
-  // ── SEÇÃO: Boletos lançados pelo fiscal (aparece imediatamente após upload) ──
-  const _boletosSeção = document.getElementById(containerId+'-boletos');
-  try{
-    const [_todosArq, _demandasBol] = await Promise.all([
-      supaFetch('notas_fiscais?select=carga,pedido,tipo,nome_arquivo,url,fiscal_nome&limit=2000&order=carga.asc') || [],
-      supaFetch('demandas_rota?select=carga,rota,motorista,veiculo,status&carga=not.is.null') || []
-    ]);
-    // Filtrar boletos: campo tipo='boleto' OU nome do arquivo contém 'boleto' (fallback para registros sem tipo)
-    const _boletos = (_todosArq||[]).filter(n=>n.tipo==='boleto'||(n.tipo==null&&/boleto/i.test(n.nome_arquivo||'')));
-    // Agrupar por carga
-    const byCarga = {};
-    (_boletos||[]).forEach(b=>{
-      if(!b.carga) return;
-      if(!byCarga[b.carga]) byCarga[b.carga] = { boletos:[], dem:null };
-      byCarga[b.carga].boletos.push(b);
-    });
-    (_demandasBol||[]).forEach(d=>{
-      if(byCarga[d.carga]) byCarga[d.carga].dem = d;
-    });
-    // Filtrar apenas cargas que NÃO estão no pipeline principal do caixa (status < aguardando_manifesto)
-    const statusPipeline = new Set(['aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido']);
-    const cargasBolPend = Object.keys(byCarga).filter(c=>{
-      const dem = byCarga[c].dem;
-      return dem && !statusPipeline.has(dem.status);
-    });
-    if(cargasBolPend.length && _boletosSeção){
-      _boletosSeção.innerHTML = `
-      <div style="background:rgba(234,179,8,.05);border:1.5px solid rgba(234,179,8,.3);border-radius:14px;padding:16px 18px;margin-bottom:20px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
-          <span style="font-size:1.2rem">📄</span>
-          <span style="font-size:.95rem;font-weight:800;color:#a16207">Boletos Lançados pelo Fiscal (${cargasBolPend.length} carga${cargasBolPend.length>1?'s':''})</span>
-          <span style="font-size:.73rem;color:#92400e;background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);padding:2px 8px;border-radius:10px;font-weight:600">Aguardando Caixa</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px">
-          ${cargasBolPend.map(c=>{
-            const d = byCarga[c].dem;
-            const bols = byCarga[c].boletos;
-            const fmtDt = s=>s?new Date(s).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
-            const stLabel = {separacao:'Em Separação',carregamento:'Em Carregamento',aguardando_nf:'Aguardando NF',pendente:'Pendente'}[d.status] || d.status;
-            return `<div style="background:var(--bg-card);border:1px solid rgba(234,179,8,.2);border-left:3px solid #eab308;border-radius:10px;padding:12px 14px">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-                <div style="display:flex;align-items:center;gap:6px">
-                  <span style="background:#eab308;color:#fff;font-size:.7rem;font-weight:800;padding:2px 8px;border-radius:12px">🚛 ${d.rota||'—'}</span>
-                  <span style="font-size:.85rem;font-weight:800;color:var(--text-primary)">Carga ${c}</span>
-                </div>
-                <span style="font-size:.67rem;font-weight:600;padding:2px 8px;border-radius:8px;background:rgba(107,114,128,.1);color:#6b7280">${stLabel}</span>
-              </div>
-              <div style="font-size:.73rem;color:var(--text-muted);margin-bottom:8px">🚗 ${d.motorista||'—'}</div>
-              ${bols.map(b=>`
-                <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(234,179,8,.08);border-radius:7px;margin-bottom:4px">
-                  <span style="font-size:.7rem">📄</span>
-                  <div style="flex:1;min-width:0">
-                    <div style="font-size:.73rem;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.nome_arquivo||'boleto'}</div>
-                    <div style="font-size:.67rem;color:var(--text-muted)">Pedido ${b.pedido} · ${fmtDt(b.criado_em)}</div>
-                  </div>
-                  ${b.url?`<a href="${b.url}" target="_blank" style="background:#eab308;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer;white-space:nowrap;text-decoration:none">Ver 📎</a>`:''}
-                </div>
-              `).join('')}
-            </div>`;
-          }).join('')}
-        </div>
-      </div>`;
-    } else if(_boletosSeção){
-      _boletosSeção.innerHTML = '';
-    }
-  }catch(_){}
-
   // Cargas com NF emitida (aguardando_manifesto ou aguardando_nf) — caixa valida em paralelo ao seguros
   // Caixa:
   // Etapa 1 — aguardando_manifesto: fiscal concluiu, caixa valida antes de sair
@@ -23255,7 +23187,6 @@ async function excluirTipoReceita(id){
       <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Pedidos Validados</div><div class="kpi-value" id="caixa-kpi-ok">—</div></div>
       <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Pendentes</div><div class="kpi-value" id="caixa-kpi-pend">—</div></div>
     </div>
-    <div id="caixa-cargas-portal-boletos"></div>
     <div id="caixa-cargas-portal">
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
     </div>
