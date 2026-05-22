@@ -10430,11 +10430,7 @@ async function criarDemanda(){
         const _newDem = await supaFetch('demandas_rota?select=id&order=criado_em.desc&limit=1') || [];
         const _newId  = _newDem[0]?.id;
         if(_newId){
-          const _cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
-          let _arm = _cfg.length ? (_cfg[0].valor||{}) : {};
-          _arm[_newId] = 'separacao';
-          if(_cfg.length){ await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})}); }
-          else { await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:_arm})}); }
+          await supaFetch(`demandas_rota?id=eq.${_newId}`,{method:'PATCH',body:JSON.stringify({arm_status:'separacao'})});
         }
       }catch(_){}
     }
@@ -10588,15 +10584,7 @@ async function admConcluirCarregamento(demandaId, carga){
     }
     // Há conferências — permitir apenas como fallback de emergência (ADM)
     if(!confirm('ATENÇÃO: Há conferências registradas.\nConfirmar carregamento concluído da carga '+carga+'? (ADM)')) return;
-    const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-    let armStatus = cfg&&cfg[0]?cfg[0].valor||{}:{};
-    armStatus[demandaId] = 'carregado_ok';
-    if(cfg&&cfg[0]){
-      await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
-    } else {
-      await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:armStatus})});
-    }
-    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
     showToast('✅ Carga '+carga+' carregada! Aguardando NF.','success');
     await carregarDemandas();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -11420,13 +11408,9 @@ async function salvarEditarDemanda(){
         // 2. Limpar arm_status 'carregado_ok' desta demanda para que
         //    o Armazém não ache que ela já está pronta
         try{
-          const _cfgArm = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
-          if(_cfgArm.length){
-            const _arm = _cfgArm[0].valor || {};
-            if(_arm[id] === 'carregado_ok'){
-              _arm[id] = 'carregamento';
-              await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})});
-            }
+          const _demCur = await supaFetch(`demandas_rota?id=eq.${id}&select=arm_status`).catch(()=>[]) || [];
+          if(_demCur.length && _demCur[0].arm_status === 'carregado_ok'){
+            await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
           }
         }catch(_){}
 
@@ -18783,11 +18767,7 @@ async function concluirFiscalPortal(carga){
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
     // Sincronizar arm_status → carregado_ok (armazém finalizado)
     try{
-      const _cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
-      const _arm = _cfg.length ? (_cfg[0].valor||{}) : {};
-      _arm[id] = 'carregado_ok';
-      if(_cfg.length){ await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})}); }
-      else { await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:_arm})}); }
+      await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok'})});
     }catch(_){}
     showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     await carregarPortalFiscal();
@@ -20141,17 +20121,11 @@ async function conferirPedidoPortal(carga, pedido, status){
 
       const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
       if(demanda && confUnicos > 0){
-        const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-        let armStatus = cfg&&cfg[0] ? cfg[0].valor||{} : {};
-        const stAtual = armStatus[demanda.id]||'pendente';
+        const stAtual = demanda.arm_status || 'pendente';
         // Primeiro pedido conferido → entra em carregamento automaticamente
         if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
-          armStatus[demanda.id] = 'carregamento';
-          if(cfg&&cfg[0]){
-            await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
-          } else {
-            await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:armStatus})});
-          }
+          await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
+          demanda.arm_status = 'carregamento';
           // Sincronizar demandas_rota.status
           if(['pendente','separacao'].includes(demanda.status)){
             await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
@@ -20180,19 +20154,8 @@ async function concluirCarregamentoConferente(carga){
     const dem = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
     if(!dem){ showToast('Demanda não encontrada','warning'); return; }
 
-    // Atualizar status no armazém
-    const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-    let armStatus = cfg&&cfg[0]?cfg[0].valor||{}:{};
-    armStatus[dem.id] = 'carregado_ok';
-
-    if(cfg&&cfg[0]){
-      await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
-    } else {
-      await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:armStatus})});
-    }
-
-    // Atualizar status da demanda para aguardando NF
-    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_nf'})});
+    // Atualizar status no armazém e status da demanda para aguardando NF
+    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf'})});
 
     showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
     await carregarPortalConferente();
@@ -20445,11 +20408,7 @@ async function _executarConclusaoFiscal(){
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
     // Sincronizar arm_status → carregado_ok (armazém finalizado)
     try{
-      const _cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
-      const _arm = _cfg.length ? (_cfg[0].valor||{}) : {};
-      _arm[id] = 'carregado_ok';
-      if(_cfg.length){ await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})}); }
-      else { await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:_arm})}); }
+      await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok'})});
     }catch(_){}
     showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     document.getElementById('modal-xml-fiscal').style.display = 'none';
@@ -20639,20 +20598,18 @@ async function renderArmazem(){
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
 
   // Buscar dados
-  let demandas=[], armStatusGlobal={}, conferentes=[], atribs=[], confStatus=[], separadores=[], fotos={};
+  let demandas=[], conferentes=[], atribs=[], confStatus=[], separadores=[], fotos={};
   // Remove do armazém após fiscal liberar (aguardando_manifesto+). aguardando_nf ainda é etapa do armazém.
   const statusPosArmazem = ['aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
   try{
-    const [_dem, _cfg, _confs, _atribs, _confSt, _fotos] = await Promise.all([
+    const [_dem, _confs, _atribs, _confSt, _fotos] = await Promise.all([
       supaFetch('demandas_rota?carga=not.is.null&select=*&order=data_saida.desc'),
-      supaFetch('configuracoes?chave=eq.arm_status&select=valor'),
       supaFetch('conferentes?select=*&ativo=eq.true&order=nome.asc'),
       supaFetch('atribuicoes_armazem?select=*'),
       supaFetch('conferencia_pedidos?select=carga,pedido,status,conferente_id,conferente_nome'),
       supaFetch('configuracoes?chave=eq.conf_fotos&select=valor')
     ]);
     demandas    = _dem    || [];
-    if(_cfg&&_cfg[0]) armStatusGlobal = _cfg[0].valor||{};
     // Filtra por ativo=true E mesma unidade do usuário logado
     const _undUsr = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
     conferentes = (_confs||[]).filter(c=>{
@@ -20668,20 +20625,20 @@ async function renderArmazem(){
 
   // Separar ativas e concluídas
   const demandasAtivas = demandas.filter(d=>{
-    const armSt = armStatusGlobal[d.id]||'pendente';
+    const armSt = d.arm_status||'pendente';
     if(armSt==='carregado_ok') return false;
     if(statusPosArmazem.includes(d.status)) return false;
     return true;
   });
   const demandasConcluidas = demandas.filter(d=>{
-    const armSt = armStatusGlobal[d.id]||'pendente';
+    const armSt = d.arm_status||'pendente';
     return armSt==='carregado_ok' || statusPosArmazem.includes(d.status);
   });
 
   // KPIs — cargas já além do armazém (aguardando_manifesto+) contam como carregado_ok
   const contStatus={pendente:0,separacao:0,carregamento:0,carregado_ok:0};
   demandas.forEach(d=>{
-    const st = statusPosArmazem.includes(d.status) ? 'carregado_ok' : (armStatusGlobal[d.id]||'pendente');
+    const st = statusPosArmazem.includes(d.status) ? 'carregado_ok' : (d.arm_status||'pendente');
     contStatus[st]=(contStatus[st]||0)+1;
   });
   set('arm-kpi-cargas',demandasAtivas.length);
@@ -20690,7 +20647,7 @@ async function renderArmazem(){
   set('arm-kpi-ok',demandasConcluidas.length);
 
   const ordem={pendente:0,separacao:1,carregamento:2,carregado_ok:3};
-  const sortedAtivas=[...demandasAtivas].sort((a,b)=>(ordem[armStatusGlobal[a.id]||'pendente']||0)-(ordem[armStatusGlobal[b.id]||'pendente']||0));
+  const sortedAtivas=[...demandasAtivas].sort((a,b)=>(ordem[a.arm_status||'pendente']||0)-(ordem[b.arm_status||'pendente']||0));
 
   // ── PAINEL ATIVAS — visão por conferente ──
   const container = document.getElementById('arm-container');
@@ -20743,7 +20700,7 @@ async function renderArmazem(){
             ${minhasAtribs.length ? minhasAtribs.map(a=>{
               const dem = sortedAtivas.find(d=>d.carga===a.carga);
               if(!dem) return '';
-              const st = armStatusGlobal[dem.id]||'pendente';
+              const st = dem.arm_status||'pendente';
               const stCfg = ARM_STATUS[st]||ARM_STATUS.pendente;
               const pedOk  = confStatus.filter(s=>s.carga===dem.carga&&s.status==='ok').length;
               const pedNok = confStatus.filter(s=>s.carga===dem.carga&&s.status==='nok').length;
@@ -20835,7 +20792,7 @@ async function renderArmazem(){
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
           ${semConf.map(d=>{
-            const st = armStatusGlobal[d.id]||'pendente';
+            const st = d.arm_status||'pendente';
             const stCfg = ARM_STATUS[st]||ARM_STATUS.pendente;
             const total = d.quantidade_pedidos||0;
             const dataSaida = d.data_saida?new Date(d.data_saida).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}):'';
@@ -20876,7 +20833,7 @@ async function renderArmazem(){
   // ── PAINEL SEPARAÇÃO ──
   const sepContainer = document.getElementById('arm-sep-container');
   if(sepContainer){
-    const emSeparacao = sortedAtivas.filter(d=>(armStatusGlobal[d.id]||'pendente')==='separacao');
+    const emSeparacao = sortedAtivas.filter(d=>(d.arm_status||'pendente')==='separacao');
     if(!emSeparacao.length){
       sepContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma carga em separação no momento.</p>';
     } else {
@@ -20932,7 +20889,7 @@ async function renderArmazem(){
   }
 
   // ── PAINEL CONFERENTES ──
-  await renderConferentesArmazem(conferentes, atribs, confStatus, demandas, armStatusGlobal, fotos);
+  await renderConferentesArmazem(conferentes, atribs, confStatus, demandas, fotos);
 
   // ── PAINEL CONCLUÍDAS ──
   const conclContainer = document.getElementById('arm-concluido-container');
@@ -20957,7 +20914,7 @@ async function renderArmazem(){
 
 }
 
-async function renderConferentesArmazem(conferentes, atribs, confStatus, demandas, armStatusGlobal, fotos){
+async function renderConferentesArmazem(conferentes, atribs, confStatus, demandas, fotos){
   const container = document.getElementById('arm-conf-container');
   if(!container) return;
   fotos = fotos || {};
@@ -20995,7 +20952,7 @@ async function renderConferentesArmazem(conferentes, atribs, confStatus, demanda
     const atribHtml = minhasAtribs.map(a=>{
       const dem = demandas.find(d=>Number(d.carga)===Number(a.carga));
       if(!dem) return '';
-      const armSt = armStatusGlobal[dem.id]||'pendente';
+      const armSt = dem.arm_status||'pendente';
       const pedOk  = confStatus.filter(s=>s.carga===dem.carga&&s.status==='ok').length;
       const pedNok = confStatus.filter(s=>s.carga===dem.carga&&s.status==='nok').length;
       const total  = dem.quantidade_pedidos||0;
@@ -21154,14 +21111,10 @@ async function conferirPedido(carga, pedido, status, atribId){
     try{
       const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
       if(demanda){
-        const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-        let armStatus = cfg&&cfg[0] ? cfg[0].valor||{} : {};
-        const stAtual = armStatus[demanda.id]||'pendente';
+        const stAtual = demanda.arm_status || 'pendente';
         if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
-          armStatus[demanda.id] = 'carregamento';
-          if(cfg&&cfg[0]){
-            await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
-          }
+          await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
+          demanda.arm_status = 'carregamento';
           if(['pendente','separacao'].includes(demanda.status)){
             await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
               method:'PATCH',body:JSON.stringify({status:'carregamento',ts_carregamento:new Date().toISOString()})
@@ -21228,13 +21181,7 @@ async function admConferirTudo(demandaId, carga){
 async function reabrirCarga(demandaId){
   if(!confirm('Reabrir esta carga no armazém?')) return;
   try{
-    const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-    let armStatus = cfg&&cfg[0]?cfg[0].valor||{}:{};
-    armStatus[demandaId] = 'carregamento';
-    if(cfg&&cfg[0]){
-      await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:armStatus})});
-    }
-    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'saiu'})});
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento',status:'saiu'})});
     showToast('✅ Carga reaberta','success');
     await renderArmazem();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -21242,26 +21189,11 @@ async function reabrirCarga(demandaId){
 
 async function salvarStatusArmazem(demandaId, status){
   try{
-    // Buscar config atual
-    let armStatus = {};
-    const data = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
-    if(data && data[0]) armStatus = data[0].valor || {};
-
-    // Atualizar status
-    armStatus[demandaId] = status;
-
-    // Salvar no Supabase
-    if(data && data[0]){
-      await supaFetch('configuracoes?chave=eq.arm_status',{
-        method:'PATCH',
-        body: JSON.stringify({valor: armStatus})
-      });
-    } else {
-      await supaFetch('configuracoes',{
-        method:'POST',
-        body: JSON.stringify({chave:'arm_status', valor: armStatus})
-      });
-    }
+    // Salvar arm_status diretamente na demanda
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
+      method:'PATCH',
+      body: JSON.stringify({arm_status: status})
+    });
 
     // Sincronizar demandas_rota.status com arm_status
     const dem3 = (await supaFetch(`demandas_rota?id=eq.${demandaId}&select=status,motorista,veiculo`))||[];
@@ -21306,10 +21238,12 @@ async function salvarStatusArmazem(demandaId, status){
         }).catch(()=>{});
       }
     }
-    // Atualizar KPIs
+    // Atualizar KPIs (atualizar cache local para KPI imediato)
+    const _cached = (_demandasCache||[]).find(d=>d.id===demandaId);
+    if(_cached) _cached.arm_status = status;
     const demandas = (_demandasCache||[]).filter(d=>d.carga);
     const contStatus = {pendente:0, separacao:0, carregamento:0, carregado_ok:0};
-    demandas.forEach(d=>{ const st = armStatus[d.id]||'pendente'; contStatus[st]=(contStatus[st]||0)+1; });
+    demandas.forEach(d=>{ const st = d.arm_status||'pendente'; contStatus[st]=(contStatus[st]||0)+1; });
     const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
     set('arm-kpi-sep',  contStatus.separacao);
     set('arm-kpi-car',  contStatus.carregamento);
