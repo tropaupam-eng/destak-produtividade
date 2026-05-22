@@ -10586,8 +10586,8 @@ async function renderFrotaUso(){
       </th>`;
     }).join('');
 
-    // ── Linhas por veículo ──
-    const linhas = todos.map(v => {
+    // ── Dados por veículo (stats + células da tabela) ──
+    const veiculosData = todos.map(v => {
       let diasUsadosPassados = 0;
 
       const celulas = diasUteis.map(dia => {
@@ -10615,7 +10615,6 @@ async function renderFrotaUso(){
         const concluido   = usos.some(u => ['concluido','fim_viagem','saiu'].includes(u.status));
         const soTransito  = !temPartida;
 
-        // Cores: azul = saiu/concluído, amarelo = agendado/trânsito futuro, verde-água = trânsito passado
         let bg, cor, icon;
         if(futuro){
           bg='#fef9c3'; cor='#a16207'; icon= soTransito ? '🛣️' : '⏳';
@@ -10627,7 +10626,6 @@ async function renderFrotaUso(){
           bg='#fef9c3'; cor='#92400e'; icon= soTransito ? '🛣️' : '⏳';
         }
 
-        // Tooltip: só as demandas únicas (evitar repetição de trânsito)
         const demsUnicas = usos.filter(u => !u._transito).length ? usos.filter(u=>!u._transito) : usos;
         const rotas = [...new Set(demsUnicas.map(u => u.rota||'').filter(Boolean))].join(', ');
         const title = demsUnicas.map(u =>
@@ -10642,13 +10640,16 @@ async function renderFrotaUso(){
         </td>`;
       }).join('');
 
-      // Taxa de uso nos dias já passados
       const taxaAtual = nPassados > 0 ? diasUsadosPassados / nPassados : 0;
-      // Projeção: dias usados até agora + (taxa × dias restantes), arredondado
       const projecao  = Math.round(diasUsadosPassados + taxaAtual * nRestantes);
       const pctAtual  = nPassados > 0 ? Math.round(taxaAtual * 100) : 0;
       const pctProj   = totalUteis > 0 ? Math.round((projecao / totalUteis) * 100) : 0;
 
+      return { v, celulas, diasUsadosPassados, projecao, pctAtual, pctProj };
+    });
+
+    // ── Linhas da tabela ──
+    const linhas = veiculosData.map(({ v, celulas, diasUsadosPassados, projecao, pctAtual, pctProj }) => {
       const corAtual = pctAtual >= 80 ? '#059669' : pctAtual >= 50 ? '#f59e0b' : '#6b7280';
       const corProj  = pctProj  >= 80 ? '#059669' : pctProj  >= 50 ? '#f59e0b' : '#ef4444';
       const tipo     = v.tipo ? `<span style="font-size:.62rem;color:var(--text-muted);font-weight:400"> ${v.tipo}</span>` : '';
@@ -10705,7 +10706,94 @@ async function renderFrotaUso(){
     const corBarra = pctMes >= 80 ? '#2563eb' : pctMes >= 50 ? '#3b82f6' : '#93c5fd';
     const fmtFech  = new Date(ano, numMes-1, parseInt(fechamento)).toLocaleDateString('pt-BR',{day:'2-digit',month:'long'});
 
+    // ── Painel Meta de Uso ──
+    const META_USO = 80;
+    const nNaMeta  = veiculosData.filter(x => x.pctAtual >= META_USO).length;
+    const nAbaixo  = veiculosData.length - nNaMeta;
+    const corMeta  = pctTotAtual >= META_USO ? '#059669' : pctTotAtual >= 60 ? '#f59e0b' : '#ef4444';
+    const corMetaProj = pctTotProj >= META_USO ? '#059669' : pctTotProj >= 60 ? '#f59e0b' : '#ef4444';
+    const difMeta  = pctTotAtual - META_USO;
+    const msgMeta  = difMeta >= 0
+      ? `<span style="color:#059669;font-weight:800">✅ +${difMeta}pp acima da meta</span>`
+      : `<span style="color:#ef4444;font-weight:800">⚠️ ${Math.abs(difMeta)}pp abaixo da meta</span>`;
+
+    // Ranking por veículo ordenado por pctAtual desc
+    const rankingHtml = [...veiculosData]
+      .sort((a,b) => b.pctAtual - a.pctAtual)
+      .map(({ v, pctAtual, pctProj, diasUsadosPassados }) => {
+        const corV = pctAtual >= META_USO ? '#059669' : pctAtual >= 50 ? '#f59e0b' : '#ef4444';
+        const iconV = pctAtual >= META_USO ? '✅' : pctAtual >= 50 ? '⚠️' : '❌';
+        const barW  = Math.min(pctAtual, 100);
+        return `<div style="display:flex;align-items:center;gap:10px;padding:5px 0">
+          <span style="font-family:monospace;font-size:.78rem;font-weight:800;color:var(--text-primary);min-width:90px;white-space:nowrap">${v.placa}</span>
+          <div style="flex:1;background:#e5e7eb;border-radius:99px;height:10px;position:relative">
+            <div style="height:100%;width:${barW}%;background:${corV};border-radius:99px;transition:width .5s;min-width:${barW>0?'4px':'0'}"></div>
+            <!-- Linha de meta em 80% -->
+            <div style="position:absolute;left:${META_USO}%;top:-3px;height:16px;width:2px;background:#7c3aed;border-radius:1px"></div>
+          </div>
+          <span style="font-size:.8rem;font-weight:800;color:${corV};min-width:36px;text-align:right">${pctAtual}%</span>
+          <span style="font-size:.72rem" title="${pctAtual>= META_USO?'Na meta':'Abaixo da meta'}">${iconV}</span>
+          <span style="font-size:.7rem;color:var(--text-muted);min-width:60px">${diasUsadosPassados}/${nPassados} dias</span>
+        </div>`;
+      }).join('');
+
     wrap.innerHTML = `
+      <!-- ══ PAINEL META DE USO DA FROTA ══ -->
+      <div style="padding:20px 20px 16px;background:linear-gradient(135deg,#f8fafc,#fff);border-bottom:2px solid var(--border)">
+
+        <!-- KPIs de uso geral -->
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
+          <!-- % Uso Atual -->
+          <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid ${corMeta}40;border-left:4px solid ${corMeta};border-radius:12px;padding:14px 16px;box-shadow:0 2px 8px ${corMeta}15">
+            <div style="font-size:2.4rem;font-weight:900;color:${corMeta};line-height:1">${pctTotAtual}%</div>
+            <div style="font-size:.73rem;color:var(--text-muted);font-weight:600;margin-top:3px">Uso Geral — Atual</div>
+            <div style="font-size:.72rem;margin-top:4px">${msgMeta}</div>
+          </div>
+          <!-- % Projeção -->
+          <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid ${corMetaProj}40;border-left:4px solid #7c3aed;border-radius:12px;padding:14px 16px">
+            <div style="font-size:2.4rem;font-weight:900;color:#7c3aed;line-height:1">${pctTotProj}%</div>
+            <div style="font-size:.73rem;color:var(--text-muted);font-weight:600;margin-top:3px">Projeção — Fechamento</div>
+            <div style="font-size:.72rem;margin-top:4px;color:${pctTotProj>=META_USO?'#059669':'#ef4444'};font-weight:700">
+              ${pctTotProj >= META_USO ? '✅ Projeção na meta' : `⚠️ ${META_USO - pctTotProj}pp para atingir`}
+            </div>
+          </div>
+          <!-- Veículos na meta -->
+          <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid #e5e7eb;border-left:4px solid #2563eb;border-radius:12px;padding:14px 16px">
+            <div style="display:flex;align-items:baseline;gap:6px">
+              <span style="font-size:2.4rem;font-weight:900;color:#2563eb;line-height:1">${nNaMeta}</span>
+              <span style="font-size:1rem;color:var(--text-muted);font-weight:600">/ ${veiculosData.length}</span>
+            </div>
+            <div style="font-size:.73rem;color:var(--text-muted);font-weight:600;margin-top:3px">Veículos ≥ ${META_USO}%</div>
+            <div style="font-size:.72rem;margin-top:4px;color:${nAbaixo>0?'#ef4444':'#059669'};font-weight:700">
+              ${nAbaixo > 0 ? `❌ ${nAbaixo} veículo${nAbaixo>1?'s':''} abaixo da meta` : '✅ Todos na meta'}
+            </div>
+          </div>
+        </div>
+
+        <!-- Barra geral com marcador de meta -->
+        <div style="margin-bottom:18px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+            <span style="font-size:.78rem;font-weight:700;color:var(--text-primary)">🎯 Meta de uso da frota: <strong>${META_USO}%</strong></span>
+            <span style="font-size:.78rem;font-weight:800;color:${corMeta}">${pctTotAtual}% atual</span>
+          </div>
+          <div style="background:#e5e7eb;border-radius:99px;height:16px;position:relative;overflow:visible">
+            <div style="height:100%;width:${Math.min(pctTotAtual,100)}%;background:linear-gradient(90deg,${corMeta}bb,${corMeta});border-radius:99px;transition:width .6s"></div>
+            <!-- Marcador da meta (80%) -->
+            <div style="position:absolute;left:${META_USO}%;top:-5px;height:26px;width:3px;background:#7c3aed;border-radius:2px;z-index:2">
+              <span style="position:absolute;top:28px;left:50%;transform:translateX(-50%);font-size:.62rem;color:#7c3aed;font-weight:800;white-space:nowrap">META ${META_USO}%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ranking por veículo -->
+        <div>
+          <div style="font-size:.7rem;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+            📊 Uso por veículo — dias passados (linha roxa = meta ${META_USO}%)
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">${rankingHtml}</div>
+        </div>
+      </div>
+
       <!-- Barra de progresso mensal -->
       <div style="padding:14px 16px;background:var(--bg-card2);border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
