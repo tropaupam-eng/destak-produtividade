@@ -5742,7 +5742,9 @@ async function carregarDivergenciasAceitas(){
   try{
     if(!USUARIO_LOGADO?.id) return;
     const rows = await supaFetch(`divergencias_aceitas?usuario_id=eq.${USUARIO_LOGADO.id}&select=carga`).catch(()=>[]);
-    window._divAceitasCache = new Set((rows||[]).map(r=>Number(r.carga)));
+    // MERGE com cache em memória (não substituir) — preserva aceites recentes ainda não salvos no banco
+    const doDb = (rows||[]).map(r=>Number(r.carga));
+    window._divAceitasCache = new Set([...doDb, ...window._divAceitasCache]);
   }catch(e){ console.warn('divAceitas:',e.message); }
 }
 
@@ -7262,10 +7264,10 @@ function escolherMotoristaLanc(carga, motorista){
   });
   lancamentos = lancamentos.filter(l=> Number(l.carga)!==carga || (l.motorista||'').trim().toUpperCase()===normEsc);
 
-  // Marcar esta carga como divergência aceita para suprimir re-exibição
+  // Marcar esta carga como divergência aceita — aguardar salvar no banco antes de re-renderizar
   if(!window._divAceitasCache.has(carga)){
     window._divAceitasCache.add(carga);
-    supaFetch('divergencias_aceitas',{method:'POST',body:JSON.stringify({
+    await supaFetch('divergencias_aceitas',{method:'POST',body:JSON.stringify({
       carga: Number(carga),
       usuario_id: USUARIO_LOGADO?.id||null,
       aceita_em: new Date().toISOString()
@@ -12371,9 +12373,10 @@ async function sincronizarTudo(){
     await syncConfig();
   normalizarCondutorBanco(); // normaliza condutor em background
 
-    // 2. Lançamentos do Supabase → local
+    // 2. Divergências aceitas primeiro (antes de renderizar conflitos)
+    await carregarDivergenciasAceitas().catch(()=>{});
+    // 3. Lançamentos do Supabase → local
     await syncLancamentos();
-    carregarDivergenciasAceitas().catch(()=>{}); // cache de divergências aceitas
     migrarRotasSupabase(); // normaliza PETRO→Petrolina, JUA→Juazeiro (roda 1x)
 
     // 3. BASE_DATA do Supabase → local
