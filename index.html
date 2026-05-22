@@ -11362,6 +11362,11 @@ async function salvarEditarDemanda(){
   try{
     const d = _demandasCache.find(x=>x.id===id);
 
+    // Capturar valores ANTES da alteração (para detectar mudanças significativas)
+    const _statusAntes = d?.status || '';
+    const _cargaAntes  = d?.carga  ?? null;
+    const _rotaAntes   = d?.rota   || '';
+
     // ── Registrar alterações no histórico ─────────────────────────────────
     try{
       const LABELS = {motorista:'Motorista',veiculo:'Veículo',rota:'Rota',data_saida:'Data Saída',carga:'Carga',ajudante:'Ajudante'};
@@ -11389,10 +11394,47 @@ async function salvarEditarDemanda(){
 
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
     if(d) Object.assign(d, patch);
+
+    // ── Reabrir para Armazém/Fiscal se carga ou rota mudou ───────────────
+    // Se o número da carga ou a rota mudaram e o status já estava além do
+    // armazém (aguardando_nf, aguardando_manifesto, etc.), voltar ao status
+    // 'carregamento' para que o Armazém possa ver os novos itens em aberto.
+    // Pedidos já conferidos permanecem como conferidos em conferencia_pedidos;
+    // apenas os novos aparecerão como pendentes.
+    const _statusPosArmazem = ['aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem'];
+    const _cargaMudou = patch.carga !== undefined && String(patch.carga) !== String(_cargaAntes);
+    const _rotaMudou  = patch.rota  !== undefined && patch.rota !== _rotaAntes;
+    if((_cargaMudou || _rotaMudou) && _statusPosArmazem.includes(_statusAntes)){
+      try{
+        // 1. Resetar status da demanda para carregamento
+        await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'carregamento'})});
+        if(d) d.status = 'carregamento';
+
+        // 2. Limpar arm_status 'carregado_ok' desta demanda para que
+        //    o Armazém não ache que ela já está pronta
+        try{
+          const _cfgArm = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
+          if(_cfgArm.length){
+            const _arm = _cfgArm[0].valor || {};
+            if(_arm[id] === 'carregado_ok'){
+              _arm[id] = 'carregamento';
+              await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})});
+            }
+          }
+        }catch(_){}
+
+        showToast('⚠️ Carga reaberta — novos itens ficaram em aberto no Armazém','warning');
+      }catch(_e2){
+        showToast('✅ Pré-carga atualizada (status mantido por erro de reset)','success');
+      }
+    } else {
+      showToast('✅ Pré-carga atualizada!','success');
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     renderDemandasCards();
     renderFrotaStatus();
     document.getElementById('modal-editar-demanda').style.display='none';
-    showToast('✅ Pré-carga atualizada!','success');
   }catch(e){
     msg.style.display='block'; msg.style.background='#fee2e2'; msg.style.color='#991b1b';
     msg.textContent='Erro: '+e.message;
