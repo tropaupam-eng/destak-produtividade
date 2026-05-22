@@ -11095,23 +11095,33 @@ function renderDemandasCards(){
   const agendAtrasados = getAgendamentos().filter(a=>a.status==='atrasado' && a.motivo_atraso);
   const comRotasPend = (window._comRotasCache||[]).filter(r=>r.status!=='resolvido');
 
-  // ── Detectar mesmo veículo + mesmo motorista em mais de 1 carga ativa ────
-  // Conta no cache completo (não no filtrado) — alerta aparece em qualquer visão
+  // ── Detectar veículo OU motorista em mais de 1 carga ativa (individualmente) ──
   const _statusAtivos = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
-  const _dupMap = {}; // chave "VEICULO||MOTORISTA" → [{carga, rota, status}]
+  const _mapVeic = {}; // placa → [{carga, rota, status, motorista}]
+  const _mapMot  = {}; // motorista → [{carga, rota, status, veiculo}]
   _demandasCache.forEach(x=>{
+    if(!_statusAtivos.has(x.status)) return;
     const veic = (x.veiculo||'').trim().toUpperCase();
     const mot  = (x.motorista||'').trim().toUpperCase();
-    if(!veic || veic==='A DEFINIR VEÍCULO' || !mot || mot==='A DEFINIR MOTORISTA') return;
-    if(!_statusAtivos.has(x.status)) return;
-    const chave = veic+'||'+mot;
-    if(!_dupMap[chave]) _dupMap[chave] = [];
-    _dupMap[chave].push({carga:x.carga, rota:x.rota, status:x.status});
+    const item = {carga:x.carga, rota:x.rota, status:x.status, veiculo:x.veiculo, motorista:x.motorista};
+    if(veic && veic!=='A DEFINIR VEÍCULO'){
+      if(!_mapVeic[veic]) _mapVeic[veic] = [];
+      _mapVeic[veic].push(item);
+    }
+    if(mot && mot!=='A DEFINIR MOTORISTA'){
+      if(!_mapMot[mot]) _mapMot[mot] = [];
+      _mapMot[mot].push(item);
+    }
   });
-  // Só interessa as chaves com 2+ cargas
-  const _dupSet = {};
-  Object.entries(_dupMap).forEach(([chave, lista])=>{
-    if(lista.length > 1) lista.forEach(item=>{ _dupSet[item.carga] = lista; });
+  // Para cada carga, montar o alerta: duplo por veículo e/ou por motorista
+  const _alertas = {}; // carga → {veic:[...], mot:[...]}
+  Object.values(_mapVeic).forEach(lista=>{
+    if(lista.length < 2) return;
+    lista.forEach(item=>{ if(!_alertas[item.carga]) _alertas[item.carga]={veic:[],mot:[]}; _alertas[item.carga].veic = lista.filter(x=>x.carga!==item.carga); });
+  });
+  Object.values(_mapMot).forEach(lista=>{
+    if(lista.length < 2) return;
+    lista.forEach(item=>{ if(!_alertas[item.carga]) _alertas[item.carga]={veic:[],mot:[]}; _alertas[item.carga].mot = lista.filter(x=>x.carga!==item.carga); });
   });
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -11129,14 +11139,20 @@ function renderDemandasCards(){
       ? `<span style="font-size:.65rem;font-weight:700;background:#dbeafe;color:#1d4ed8;padding:2px 7px;border-radius:10px;white-space:nowrap">📋 Agendado</span>`
       : `<span style="font-size:.65rem;font-weight:700;background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:10px;white-space:nowrap">⚡ Extra</span>`;
 
-    // Badge de alerta: mesmo veículo + motorista em outra carga ativa
-    const _dupCargas = _dupSet[d.carga];
-    const badgeDup = _dupCargas
+    // Badge de alerta: mesmo veículo e/ou motorista em outra carga ativa
+    const _alerta = _alertas[d.carga];
+    const badgeDup = _alerta
       ? (()=>{
-          const outras = _dupCargas.filter(x=>x.carga!==d.carga);
           const lbStatus = {pendente:'Pendente',separacao:'Separação',carregamento:'Carregamento',aguardando_nf:'Ag.NF',aguardando_manifesto:'Ag.Manifesto',pronto_viagem:'Pronto',saiu:'Em Rota',fim_viagem:'Fim Viagem'};
-          const tip = outras.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(' | ');
-          return `<span title="⚠️ Mesmo veículo e motorista em: ${tip}" style="font-size:.65rem;font-weight:800;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:2px 8px;border-radius:10px;white-space:nowrap;cursor:default">⚠️ Duplo</span>`;
+          const hasVeic = _alerta.veic && _alerta.veic.length > 0;
+          const hasMot  = _alerta.mot  && _alerta.mot.length  > 0;
+          let label, tipParts = [];
+          if(hasVeic && hasMot)      label = '⚠️ Duplo';
+          else if(hasVeic)           label = '⚠️ Veículo Duplo';
+          else                       label = '⚠️ Motorista Duplo';
+          if(hasVeic) tipParts.push('Veículo: ' + _alerta.veic.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
+          if(hasMot)  tipParts.push('Motorista: ' + _alerta.mot.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
+          return `<span title="⚠️ ${tipParts.join(' | ')}" style="font-size:.65rem;font-weight:800;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:2px 8px;border-radius:10px;white-space:nowrap;cursor:default">${label}</span>`;
         })()
       : '';
 
