@@ -16983,10 +16983,19 @@ async function baixarTodasNFsCarga(carga){
             style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 13px;cursor:pointer;font-size:.85rem;font-weight:600">✕</button>
         </div>
         <div style="overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:4px">
-          <button onclick="abrirPaginaImpressao(${cargaInt})"
-            style="width:100%;background:linear-gradient(135deg,#1e3a5f,#4338ca);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer;margin-bottom:8px">
-            🖨️ Abrir Página para Impressão (${arquivos.filter(n=>n.url).length} arquivos)
-          </button>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <button onclick="abrirPaginaImpressao(${cargaInt})"
+              style="background:linear-gradient(135deg,#1e3a5f,#4338ca);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.83rem;font-weight:700;cursor:pointer">
+              🖨️ Imprimir (${arquivos.filter(n=>n.url).length})
+            </button>
+            <button id="btn-zip-${cargaInt}" onclick="baixarZipCarga(${cargaInt})"
+              style="background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.83rem;font-weight:700;cursor:pointer">
+              📦 Baixar ZIP
+            </button>
+          </div>
+          <div style="font-size:.7rem;color:#6b7280;text-align:center;margin-bottom:6px;padding:6px 10px;background:rgba(0,0,0,.04);border-radius:7px">
+            📌 Ordem: boleto → NF por pedido · Nomes numerados em sequência
+          </div>
           ${secBoletos}
           ${secNFs}
         </div>
@@ -16994,6 +17003,69 @@ async function baixarTodasNFsCarga(carga){
     </div>`);
     document.getElementById('modal-nf-carga').addEventListener('click', function(e){ if(e.target===this) this.remove(); });
   }catch(e){ showToast('Erro ao buscar arquivos: '+e.message,'warning'); }
+}
+
+// ── Helper: ordena arquivos de uma carga — pedido ASC, boleto antes de NF ──
+function _ordenarDocsCarga(docs){
+  const _tipo = n => (n.tipo==='boleto'||(!n.tipo&&/boleto/i.test(n.nome_arquivo||''))) ? 0 : 1; // boleto=0, nf=1
+  return [...docs].sort((a,b)=> a.pedido!==b.pedido ? a.pedido-b.pedido : _tipo(a)-_tipo(b));
+}
+
+// ── Download ZIP com todos os docs em ordem (boleto → NF por pedido) ─────
+async function baixarZipCarga(carga){
+  const cargaInt = parseInt(carga)||carga;
+  const btn = document.getElementById('btn-zip-'+cargaInt);
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Preparando...'; }
+  try{
+    // Carregar JSZip sob demanda
+    if(!window.JSZip){
+      await new Promise((res,rej)=>{
+        const s=document.createElement('script');
+        s.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        s.onload=res; s.onerror=rej;
+        document.head.appendChild(s);
+      });
+    }
+    // Buscar docs
+    const raw = await supaFetch(`notas_fiscais?carga=eq.${cargaInt}&select=pedido,tipo,url,nome_arquivo&limit=500`) || [];
+    if(!raw.length){ showToast('Nenhum arquivo encontrado','warning'); return; }
+    // Ordenar: pedido ASC, boleto antes de NF
+    const docs = _ordenarDocsCarga(raw).filter(n=>n.url);
+    if(!docs.length){ showToast('Nenhum arquivo com link disponível','warning'); return; }
+
+    const zip  = new window.JSZip();
+    const pasta = zip.folder('Carga_'+cargaInt);
+    let ok=0, erro=0;
+
+    for(let i=0; i<docs.length; i++){
+      const n    = docs[i];
+      const seq  = String(i+1).padStart(3,'0');
+      const tipo = (n.tipo==='boleto'||/boleto/i.test(n.nome_arquivo||'')) ? 'Boleto' : 'NF';
+      const nome = `${seq}_PD${n.pedido}_${tipo}.pdf`;
+      if(btn) btn.textContent=`⏳ ${i+1}/${docs.length}...`;
+      try{
+        const resp = await fetch(n.url);
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        const blob = await resp.blob();
+        pasta.file(nome, blob);
+        ok++;
+      }catch(e){ erro++; console.warn('ZIP skip:',nome,e.message); }
+    }
+
+    if(ok===0){ showToast('Nenhum arquivo pôde ser baixado','warning'); return; }
+    showToast(`⏳ Compactando ${ok} arquivo(s)...`,'warning');
+    const content = await zip.generateAsync({type:'blob', compression:'DEFLATE', compressionOptions:{level:6}});
+    const url = URL.createObjectURL(content);
+    const a   = document.createElement('a');
+    a.href = url; a.download = `Carga_${cargaInt}_Documentos.zip`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    showToast(`✅ ZIP baixado — ${ok} arquivo(s)${erro?' ('+erro+' falhou)':''}`, ok>0&&erro===0?'success':'warning');
+  }catch(e){
+    showToast('Erro ao gerar ZIP: '+e.message,'warning');
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='📦 Baixar ZIP'; }
+  }
 }
 
 // Abre página com TODOS os PDFs em iframes — botão único "Imprimir Tudo" sem popup bloqueado
@@ -17005,7 +17077,8 @@ function abrirPaginaImpressao(carga){
 
   function _escrever(docs){
     const _eb = n=>n.tipo==='boleto'||(!n.tipo&&/boleto/i.test(n.nome_arquivo||''));
-    const comUrl = docs.filter(n=>n.url);
+    // Ordenar: pedido ASC, boleto antes de NF dentro do mesmo pedido
+    const comUrl = _ordenarDocsCarga(docs).filter(n=>n.url);
     const nBol = comUrl.filter(_eb).length;
     const nNF  = comUrl.length - nBol;
     const iframes = comUrl.map(n=>{
