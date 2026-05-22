@@ -787,6 +787,9 @@ body{
 .sb-item.sb-available::before{content:'●';font-size:.55rem;flex-shrink:0;color:#059669}
 .sb-item.sb-occupied{color:#9ca3af}
 .sb-item.sb-occupied::before{content:'●';font-size:.55rem;flex-shrink:0;color:#ef4444}
+.sb-val.sb-maintenance{color:#f59e0b;font-weight:700}
+.sb-item.sb-maintenance{color:#f59e0b}
+.sb-item.sb-maintenance::before{content:'🔧';font-size:.65rem;flex-shrink:0}
 .sb-empty{padding:12px 14px;color:#9ca3af;font-size:.83rem;text-align:center;font-style:italic}
 
 /* ── TOAST (keep existing) ───────────────────────── */
@@ -10097,12 +10100,25 @@ let MOTORISTAS_CACHE = [];
 let VEICULOS_CACHE   = [];
 let ROTAS_CAD_CACHE  = [];
 let _veiculosOcupados = new Set();
+let _veiculosEmManut  = new Set(); // subconjunto: bloqueados especificamente por manutenção ativa
 
 async function atualizarVeiculosOcupados(){
   try{
-    const ativos = await supaFetch('demandas_rota?select=veiculo&veiculo=not.is.null&status=not.in.(saiu,concluido,cancelado)');
-    _veiculosOcupados = new Set((ativos||[]).map(d=>d.veiculo).filter(Boolean));
-  }catch(e){ _veiculosOcupados = new Set(); }
+    const hoje = new Date().toISOString().slice(0,10);
+    const [ativos, manutsAtivas] = await Promise.all([
+      supaFetch('demandas_rota?select=veiculo&veiculo=not.is.null&status=not.in.(saiu,concluido,cancelado)'),
+      // Veículos em manutenção ativa (preventiva ou corretiva já iniciada) também ficam indisponíveis para viagem
+      supaFetch(`manutencoes_frota?select=veiculo,data_inicio&status=in.(agendada,em_andamento)`)
+    ]);
+    const veicsManut = (manutsAtivas||[])
+      .filter(m=>(m.data_inicio||'') <= hoje) // só os que já começaram
+      .map(m=>m.veiculo).filter(Boolean);
+    _veiculosEmManut = new Set(veicsManut);
+    _veiculosOcupados = new Set([
+      ...(ativos||[]).map(d=>d.veiculo).filter(Boolean),
+      ...veicsManut
+    ]);
+  }catch(e){ _veiculosOcupados = new Set(); _veiculosEmManut = new Set(); }
 }
 
 function aplicarSelectBuscavel(selectId, opcoesConfig){
@@ -10286,11 +10302,10 @@ async function carregarVeiculos(){
       const cur = sel.value;
       sel.innerHTML = '<option value="">Selecione o veículo...</option>' +
         VEICULOS_CACHE.map(v=>{
-          const ocup = _veiculosOcupados.has(v.placa);
-          const label = ocup
-            ? `${v.placa}${v.tipo?' — '+v.tipo:''} (em uso)`
-            : `${v.placa}${v.tipo?' — '+v.tipo:''}`;
-          return `<option value="${v.placa}" data-ocup="${ocup}">${label}</option>`;
+          const manut = _veiculosEmManut.has(v.placa);
+          const ocup  = _veiculosOcupados.has(v.placa);
+          const sufixo = manut ? ' (🔧 manutenção)' : ocup ? ' (em uso)' : '';
+          return `<option value="${v.placa}" data-ocup="${ocup}">${v.placa}${v.tipo?' — '+v.tipo:''}${sufixo}</option>`;
         }).join('');
       if(cur) sel.value = cur;
     }
@@ -10299,7 +10314,7 @@ async function carregarVeiculos(){
     popularVeiculosLanc();
     // Aplicar select buscável com cores
     aplicarSelectBuscavel('exp-veiculo', {
-      getClass: (placa)=> _veiculosOcupados.has(placa) ? 'sb-occupied' : 'sb-available'
+      getClass: (placa)=> _veiculosEmManut.has(placa) ? 'sb-maintenance' : _veiculosOcupados.has(placa) ? 'sb-occupied' : 'sb-available'
     });
   }catch(e){ VEICULOS_CACHE=[]; }
 }
