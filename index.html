@@ -17274,8 +17274,17 @@ async function concluirFiscalPortal(carga){
     const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`);
     const id = dem?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto'})});
+    const tsManifesto = new Date().toISOString();
+    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto',ts_aguardando_manifesto:tsManifesto})});
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
+    // Sincronizar arm_status → carregado_ok (armazém finalizado)
+    try{
+      const _cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
+      const _arm = _cfg.length ? (_cfg[0].valor||{}) : {};
+      _arm[id] = 'carregado_ok';
+      if(_cfg.length){ await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})}); }
+      else { await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:_arm})}); }
+    }catch(_){}
     showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     await carregarPortalFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -18921,8 +18930,17 @@ async function _executarConclusaoFiscal(){
     }
     const id = demandaId || (await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`))?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto'})});
+    const tsManifesto = new Date().toISOString();
+    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto',ts_aguardando_manifesto:tsManifesto})});
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
+    // Sincronizar arm_status → carregado_ok (armazém finalizado)
+    try{
+      const _cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor').catch(()=>[]) || [];
+      const _arm = _cfg.length ? (_cfg[0].valor||{}) : {};
+      _arm[id] = 'carregado_ok';
+      if(_cfg.length){ await supaFetch('configuracoes?chave=eq.arm_status',{method:'PATCH',body:JSON.stringify({valor:_arm})}); }
+      else { await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:_arm})}); }
+    }catch(_){}
     showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     document.getElementById('modal-xml-fiscal').style.display = 'none';
     _fiscalXmlCarga = null;
@@ -19148,9 +19166,12 @@ async function renderArmazem(){
     return armSt==='carregado_ok' || statusPosArmazem.includes(d.status);
   });
 
-  // KPIs
+  // KPIs — cargas já além do armazém (aguardando_manifesto+) contam como carregado_ok
   const contStatus={pendente:0,separacao:0,carregamento:0,carregado_ok:0};
-  demandas.forEach(d=>{ const st=armStatusGlobal[d.id]||'pendente'; contStatus[st]=(contStatus[st]||0)+1; });
+  demandas.forEach(d=>{
+    const st = statusPosArmazem.includes(d.status) ? 'carregado_ok' : (armStatusGlobal[d.id]||'pendente');
+    contStatus[st]=(contStatus[st]||0)+1;
+  });
   set('arm-kpi-cargas',demandasAtivas.length);
   set('arm-kpi-sep',contStatus.separacao);
   set('arm-kpi-car',contStatus.carregamento);
