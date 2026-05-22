@@ -3386,37 +3386,14 @@ textarea:focus{
 
   <!-- Abas Armazém -->
   <div id="arm-tabs-bar" style="display:flex;gap:4px;background:var(--bg-card2);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:20px;flex-wrap:wrap">
-    <button class="arm-tab active" id="arm-tab-separacao" onclick="switchArmTab('separacao',this)">📦 Separação</button>
-    <button class="arm-tab" id="arm-tab-carregamento" onclick="switchArmTab('carregamento',this)">🚛 Carregamento</button>
-    <button class="arm-tab" id="arm-tab-conferentes" onclick="switchArmTab('conferentes',this)">👷 Conferentes</button>
+    <button class="arm-tab active" id="arm-tab-demandas" onclick="switchArmTab('demandas',this)">📋 Demandas</button>
     <button class="arm-tab" id="arm-tab-concluido" onclick="switchArmTab('concluido',this)">✅ Concluídas</button>
   </div>
 
-  <!-- Painel Separação -->
-  <div class="arm-panel active" id="arm-painel-separacao">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <p style="font-size:.82rem;color:var(--text-muted)">Cargas aguardando ou em processo de separação</p>
-    </div>
-    <div id="arm-sep-container">
-      <p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p>
-    </div>
-  </div>
-
-  <!-- Painel Carregamento -->
-  <div class="arm-panel" id="arm-painel-carregamento">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <p style="font-size:.82rem;color:var(--text-muted)">Cargas em processo de carregamento no veículo</p>
-    </div>
-    <div id="arm-car-container">
-      <p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p>
-    </div>
-  </div>
-
-  <!-- Painel Conferentes -->
-  <div class="arm-panel" id="arm-painel-conferentes">
-    <div id="arm-conf-container">
-      <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
-    </div>
+  <!-- Painel Demandas (pré-cargas + conferentes) -->
+  <div class="arm-panel active" id="arm-painel-demandas">
+    <div id="arm-demandas-container"><p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p></div>
+    <div id="arm-conf-container"><p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
   <!-- Painel Concluídas -->
@@ -20989,33 +20966,43 @@ async function renderArmazem(){
   const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
 
-  // Buscar dados
-  let demandas=[], conferentes=[], atribs=[], confStatus=[], separadores=[], fotos={};
-  // Remove do armazém após fiscal liberar (aguardando_manifesto+). aguardando_nf ainda é etapa do armazém.
+  let demandas=[], conferentes=[], atribs=[], confStatus=[], fotos={};
   const statusPosArmazem = ['aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
+
+  // Datas do mês corrente
+  const _hoje = new Date();
+  const _mesIni = new Date(_hoje.getFullYear(), _hoje.getMonth(), 1).toISOString().split('T')[0];
+  const _mesFim = new Date(_hoje.getFullYear(), _hoje.getMonth()+1, 0).toISOString().split('T')[0];
+
   try{
-    const [_dem, _confs, _atribs, _confSt, _fotos] = await Promise.all([
+    const [_dem,_confs,_atribs,_confSt,_fotos,_atribsMes,_confStMes] = await Promise.all([
       supaFetch('demandas_rota?carga=not.is.null&select=*&order=data_saida.desc'),
       supaFetch('conferentes?select=*&ativo=eq.true&order=nome.asc'),
       supaFetch('atribuicoes_armazem?select=*'),
       supaFetch('conferencia_pedidos?select=carga,pedido,status,conferente_id,conferente_nome'),
-      supaFetch('configuracoes?chave=eq.conf_fotos&select=valor')
+      supaFetch('configuracoes?chave=eq.conf_fotos&select=valor'),
+      supaFetch(`atribuicoes_armazem?criado_em=gte.${_mesIni}&select=conferente_id,carga`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?conferido_em=gte.${_mesIni}&conferido_em=lte.${_mesFim}T23:59:59&select=conferente_id,pedido`).catch(()=>[])
     ]);
-    demandas    = _dem    || [];
-    // Filtra por ativo=true E mesma unidade do usuário logado
-    const _undUsr = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
+    demandas = _dem || [];
+    const _undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
     conferentes = (_confs||[]).filter(c=>{
-      if(c.ativo !== true) return false;
-      if(_undUsr && (c.unidade||'').trim() !== _undUsr) return false;
+      if(c.ativo!==true) return false;
+      if(_undUsr&&(c.unidade||'').trim()!==_undUsr) return false;
       return true;
     });
-    atribs      = _atribs || [];
-    confStatus  = _confSt || [];
+    atribs     = _atribs || [];
+    confStatus = _confSt || [];
     if(_fotos&&_fotos[0]) fotos = _fotos[0].valor||{};
-    separadores = conferentes.filter(c=>c.perfil==='separador');
+
+    // Stats mensais por conferente
+    const _cMes={}, _pMes={};
+    (_atribsMes||[]).forEach(a=>{ if(!a.conferente_id) return; (_cMes[a.conferente_id]=_cMes[a.conferente_id]||new Set()).add(a.carga); });
+    (_confStMes||[]).forEach(s=>{ if(!s.conferente_id) return; _pMes[s.conferente_id]=(_pMes[s.conferente_id]||0)+1; });
+    window._armCMes = _cMes;
+    window._armPMes = _pMes;
   }catch(e){}
 
-  // Separar ativas e concluídas
   const demandasAtivas = demandas.filter(d=>{
     const armSt = d.arm_status||'pendente';
     if(armSt==='carregado_ok') return false;
@@ -21024,13 +21011,12 @@ async function renderArmazem(){
   });
   const demandasConcluidas = demandas.filter(d=>{
     const armSt = d.arm_status||'pendente';
-    return armSt==='carregado_ok' || statusPosArmazem.includes(d.status);
+    return armSt==='carregado_ok'||statusPosArmazem.includes(d.status);
   });
 
-  // KPIs — cargas já além do armazém (aguardando_manifesto+) contam como carregado_ok
   const contStatus={pendente:0,separacao:0,carregamento:0,carregado_ok:0};
   demandas.forEach(d=>{
-    const st = statusPosArmazem.includes(d.status) ? 'carregado_ok' : (d.arm_status||'pendente');
+    const st = statusPosArmazem.includes(d.status)?'carregado_ok':(d.arm_status||'pendente');
     contStatus[st]=(contStatus[st]||0)+1;
   });
   set('arm-kpi-cargas',demandasAtivas.length);
@@ -21038,192 +21024,183 @@ async function renderArmazem(){
   set('arm-kpi-car',contStatus.carregamento);
   set('arm-kpi-ok',demandasConcluidas.length);
 
-  const ordem={pendente:0,separacao:1,carregamento:2,carregado_ok:3};
-  const sortedAtivas=[...demandasAtivas].sort((a,b)=>(ordem[a.arm_status||'pendente']||0)-(ordem[b.arm_status||'pendente']||0));
+  const confCards = conferentes.filter(c=>(c.perfil||'').toLowerCase()==='conferente');
+  const cargasAtivasSet = new Set(demandasAtivas.map(d=>d.carga));
 
-  // ── PAINEL SEPARAÇÃO ──
-  const sepContainer = document.getElementById('arm-sep-container');
-  if(sepContainer){
-    // Mostra pendentes E em separação (o conferente é o responsável pela equipe)
-    const emSeparacao = sortedAtivas.filter(d=>{
-      const st = d.arm_status||'pendente';
-      return st==='pendente'||st==='separacao';
-    });
-    if(!emSeparacao.length){
-      sepContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma carga em separação no momento.</p>';
+  // ── PAINEL DEMANDAS — Pré-Cargas ──
+  const demandasContainer = document.getElementById('arm-demandas-container');
+  if(demandasContainer){
+    if(!demandasAtivas.length){
+      demandasContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma pré-carga ativa no momento.</p>';
     } else {
-      const confCards = conferentes.filter(c=>(c.perfil||'').toLowerCase()==='conferente');
-      const confOptsHtml = confCards.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
-
-      sepContainer.innerHTML = emSeparacao.map(d=>{
-        const st = d.arm_status||'pendente';
-        const stCfg = ARM_STATUS[st]||ARM_STATUS.pendente;
-        const confCarga = atribs.filter(a=>a.carga===d.carga&&a.tipo!=='separador');
-        const pedOk = confStatus.filter(s=>s.carga===d.carga&&s.status==='ok').length;
-        const total = d.quantidade_pedidos||0;
-        const pct = total>0?Math.round((pedOk/total)*100):0;
-        const semConf = !confCarga.length;
-        const dataSaida = d.data_saida?new Date(d.data_saida).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}):'';
-        const selConfId = `arm-sep-conf-sel-${d.carga}`;
-        const selTrfId  = `arm-sep-trf-sel-${d.carga}`;
-        const podeAvancar = !semConf && st==='separacao';
-        const atribId = confCarga[0]?.id || '';
-        return `<div style="background:var(--bg-card);border:1px solid ${semConf?'rgba(239,68,68,.2)':'rgba(245,158,11,.2)'};border-left:4px solid ${st==='pendente'?'#6b7280':'#f59e0b'};border-radius:10px;padding:12px 16px;margin-bottom:10px">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-            <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-              <span style="background:${stCfg.color};color:#fff;font-size:.74rem;font-weight:800;padding:3px 10px;border-radius:20px">📦 ${d.rota||'—'}</span>
-              <span style="font-size:.82rem;font-weight:800;color:var(--text-primary)">Carga ${d.carga}</span>
-              <span style="font-size:.75rem;color:var(--text-secondary)">${total} pedidos</span>
-              <span style="font-size:.75rem;color:var(--text-muted)">🚗 ${d.motorista&&d.motorista!=='A DEFINIR MOTORISTA'?d.motorista:'—'}</span>
-              ${dataSaida?`<span style="font-size:.7rem;color:var(--text-muted)">📅 ${dataSaida}</span>`:''}
-            </div>
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-              <span style="background:${stCfg.bg};color:${stCfg.color};font-size:.67rem;font-weight:700;padding:2px 8px;border-radius:10px">${stCfg.label}</span>
-              ${st==='separacao'?`<select onchange="salvarStatusArmazem('${d.id}',this.value)" title="Recuar status"
-                style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:2px 6px;font-size:.67rem;font-weight:600;cursor:pointer;outline:none">
-                <option value="pendente" ${st==='pendente'?'selected':''}>⏳ Pendente</option>
-                <option value="separacao" selected>📦 Em Separação</option>
-              </select>`:''}
-              ${st==='separacao'?`<span style="font-size:.74rem;font-weight:800;color:${pct===100?'#059669':'#f59e0b'};background:${pct===100?'rgba(5,150,105,.1)':'rgba(245,158,11,.1)'};padding:2px 9px;border-radius:20px">${pct}%</span>`:''}
-            </div>
-          </div>
-          ${total>0&&st==='separacao'?`<div style="margin-bottom:10px">
-            <div style="display:flex;justify-content:space-between;font-size:.68rem;margin-bottom:3px">
-              <span style="color:var(--green);font-weight:700">✅ ${pedOk} conferido(s)</span>
-              <span style="color:var(--text-muted)">${total} pedidos</span>
-            </div>
-            <div style="background:var(--bg-card2);border-radius:4px;height:6px;overflow:hidden">
-              <div style="height:100%;width:${pct}%;background:${pct===100?'var(--green)':'#f59e0b'};border-radius:4px;transition:width .4s"></div>
-            </div>
-          </div>`:''}
-          ${confCarga.length
-            ?`<div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-                <span style="font-size:.67rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">👷 Responsável:</span>
-                ${confCarga.map(a=>`<span style="background:rgba(37,99,235,.1);color:#2563eb;border:1px solid rgba(37,99,235,.2);border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700">${a.conferente_nome}</span>`).join('')}
-              </div>`
-            :`<div style="margin-bottom:10px;padding:6px 10px;background:rgba(239,68,68,.06);border-radius:6px;border:1px dashed rgba(239,68,68,.25);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-                <span style="font-size:.73rem;color:#dc2626">⚠️ Sem conferente vinculado</span>
-                <div style="display:flex;gap:5px;flex-wrap:wrap">
-                  <select id="${selConfId}" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.73rem;outline:none;min-width:140px">
-                    <option value="">👷 Selecionar conferente...</option>${confOptsHtml}
-                  </select>
-                  <button onclick="vincularConferentePorCarga('${d.id}',${d.carga},'${selConfId}')"
-                    style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:.73rem;font-weight:700;cursor:pointer">🔗 Vincular</button>
-                </div>
-              </div>`}
-          ${podeAvancar?`<div style="display:flex;flex-direction:column;gap:6px;margin-top:2px">
-            <button onclick="salvarStatusArmazem('${d.id}','carregamento')"
-              style="width:100%;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border:none;border-radius:8px;padding:9px;font-size:.82rem;font-weight:800;cursor:pointer;letter-spacing:.3px">
-              🚛 Avançar para Carregamento
-            </button>
-            <details style="background:var(--bg-card2);border-radius:7px;border:1px dashed var(--border-med)">
-              <summary style="padding:6px 11px;font-size:.7rem;font-weight:700;color:var(--text-muted);cursor:pointer;list-style:none;display:flex;align-items:center;gap:5px">
-                🔄 Transferir para outro conferente antes de avançar <span style="margin-left:auto">▾</span>
-              </summary>
-              <div style="padding:10px 11px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap">
-                <select id="${selTrfId}" style="flex:1;min-width:150px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:6px 10px;font-size:.77rem;outline:none">
-                  <option value="">Selecionar novo conferente...</option>${confOptsHtml}
-                </select>
-                <button onclick="transferirEAvancar('${atribId}','${d.id}',${d.carga},'${selTrfId}')"
-                  style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:6px 13px;font-size:.77rem;font-weight:700;cursor:pointer;white-space:nowrap">🔄 Transferir e Avançar</button>
+      const confOptsAllHtml = confCards.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
+      demandasContainer.innerHTML = `
+        <div style="font-size:.68rem;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px">
+          📦 Pré-Cargas em andamento
+          <span style="height:1px;flex:1;background:var(--border)"></span>
+          <span style="background:rgba(37,99,235,.12);color:#60a5fa;border-radius:20px;font-size:.62rem;padding:1px 8px;font-weight:700">${demandasAtivas.length} ativa${demandasAtivas.length!==1?'s':''}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:28px">
+          ${demandasAtivas.map(d=>{
+            const confCarga = atribs.filter(a=>a.carga===d.carga&&a.tipo!=='separador');
+            const pedOk  = confStatus.filter(s=>s.carga===d.carga&&s.status==='ok').length;
+            const pedNok = confStatus.filter(s=>s.carga===d.carga&&s.status==='nok').length;
+            const total  = d.quantidade_pedidos||0;
+            const pct    = total>0?Math.round(((pedOk+pedNok)/total)*100):0;
+            const semConf = !confCarga.length;
+            const semMot  = !d.motorista||d.motorista==='A DEFINIR MOTORISTA';
+            const corBorda  = semConf?'#ef4444':'#3b82f6';
+            const corPct    = pct===100?'#059669':pct>50?'#3b82f6':'#f59e0b';
+            const badgeBg   = semConf?'rgba(239,68,68,.12)':'rgba(37,99,235,.12)';
+            const badgeClr  = semConf?'#fca5a5':'#93c5fd';
+            const badgeTxt  = semConf?'⚠️ Sem conferente':'🚛 Carregando';
+            const okPct  = total>0?Math.round((pedOk/total)*100):0;
+            const nkPct  = total>0?Math.round((pedNok/total)*100):0;
+            return `<div style="background:var(--bg-card);border:1px solid ${corBorda}33;border-left:3px solid ${corBorda};border-radius:10px;padding:12px 13px">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px">
+                <span style="font-size:.88rem;font-weight:900;color:var(--text-primary)">Carga ${d.carga}</span>
+                <span style="background:${badgeBg};color:${badgeClr};border:1px solid ${badgeClr}55;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${badgeTxt}</span>
               </div>
-            </details>
-          </div>`:''}
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:7px">📍 ${d.rota||'—'}</div>
+              <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:7px;font-size:.67rem">
+                <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Motorista</span><span style="color:var(--text-secondary);font-weight:600;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${semMot?'A DEFINIR':d.motorista}</span></div>
+                <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Pedidos</span><span style="color:var(--text-secondary);font-weight:600">${total} total</span></div>
+              </div>
+              ${confCarga.length?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:7px">${confCarga.map(a=>`<span style="background:rgba(37,99,235,.1);border:1px solid rgba(37,99,235,.25);border-radius:6px;padding:2px 7px;font-size:.64rem;font-weight:700;color:#60a5fa">👷 ${a.conferente_nome}</span>`).join('')}</div>`:''}
+              <div>
+                <div style="display:flex;justify-content:space-between;font-size:.62rem;margin-bottom:3px">
+                  <span style="color:var(--green)">✅ ${pedOk} OK${pedNok?` &nbsp; ❌ ${pedNok} NOK`:''}</span>
+                  <span style="font-weight:800;color:${corPct}">${pct}%</span>
+                </div>
+                <div style="background:var(--bg-card2);border-radius:3px;height:5px;overflow:hidden;display:flex">
+                  <div style="height:100%;width:${okPct}%;background:var(--green);transition:width .4s"></div>
+                  <div style="height:100%;width:${nkPct}%;background:#ef4444;transition:width .4s"></div>
+                </div>
+              </div>
+              ${pct===100?`<button onclick="salvarStatusArmazem('${d.id}','carregado_ok')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:7px;padding:6px;font-size:.72rem;font-weight:800;cursor:pointer">✅ Concluir Carregamento</button>`:''}
+            </div>`;
+          }).join('')}
         </div>`;
-      }).join('');
-    }
-  }
-
-  // ── PAINEL CARREGAMENTO ──
-  const carContainer = document.getElementById('arm-car-container');
-  if(carContainer){
-    const emCarregamento = sortedAtivas.filter(d=>(d.arm_status||'pendente')==='carregamento');
-    if(!emCarregamento.length){
-      carContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma carga em carregamento no momento.</p>';
-    } else {
-      const confCardsLst = conferentes.filter(c=>(c.perfil||'').toLowerCase()==='conferente');
-      const confOptsCarHtml = confCardsLst.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
-      carContainer.innerHTML = emCarregamento.map(d=>{
-        const confCarga = atribs.filter(a=>a.carga===d.carga&&a.tipo!=='separador');
-        const pedOk  = confStatus.filter(s=>s.carga===d.carga&&s.status==='ok').length;
-        const pedNok = confStatus.filter(s=>s.carga===d.carga&&s.status==='nok').length;
-        const total  = d.quantidade_pedidos||0;
-        const pct    = total>0?Math.round(((pedOk+pedNok)/total)*100):0;
-        const okPct  = total>0?Math.round((pedOk/total)*100):0;
-        const nkPct  = total>0?Math.round((pedNok/total)*100):0;
-        const fvCar = v=>'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const dataSaida = d.data_saida?new Date(d.data_saida).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}):'';
-        const semMot = !d.motorista||d.motorista==='A DEFINIR MOTORISTA';
-        const semVeic = !d.veiculo||d.veiculo==='A DEFINIR VEÍCULO';
-        const atribId = confCarga[0]?.id || '';
-        const selTrfCarId = `arm-car-trf-sel-${d.carga}`;
-        return `<div style="background:var(--bg-card);border:1px solid rgba(59,130,246,.25);border-left:4px solid #3b82f6;border-radius:10px;padding:14px 16px;margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
-            <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-              <span style="background:#3b82f6;color:#fff;font-size:.74rem;font-weight:800;padding:3px 10px;border-radius:20px">🚛 ${d.rota||'—'}</span>
-              <span style="font-size:.85rem;font-weight:800;color:var(--text-primary)">Carga ${d.carga}</span>
-              <span style="font-size:.75rem;color:var(--text-secondary)">${total} pedidos</span>
-              ${dataSaida?`<span style="font-size:.7rem;color:var(--text-muted)">📅 ${dataSaida}</span>`:''}
-            </div>
-            <span style="font-size:.78rem;font-weight:800;color:${pct===100?'#059669':'#3b82f6'};background:${pct===100?'rgba(5,150,105,.1)':'rgba(59,130,246,.1)'};padding:3px 10px;border-radius:20px">${pct}% conferido</span>
-          </div>
-          ${(semMot||semVeic)?`<div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:5px 10px;margin-bottom:10px;font-size:.7rem;color:#dc2626;font-weight:600">⚠️ ${[semMot?'Motorista':'',semVeic?'Veículo':''].filter(Boolean).join(' e ')} não atribuído(s) — edite na expedição</div>`:''}
-          <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap">
-            <div style="font-size:.78rem;color:var(--text-secondary)">🚗 <b>${semMot?'A DEFINIR':d.motorista}</b></div>
-            <div style="font-size:.78rem;color:var(--text-secondary)">🚚 <b>${semVeic?'A DEFINIR':d.veiculo}</b></div>
-            <div style="font-size:.78rem;color:var(--text-secondary)">💰 <b>${fvCar(d.valor_total||0)}</b></div>
-          </div>
-          <div style="margin-bottom:10px">
-            ${confCarga.length
-              ?`<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-                  <span style="font-size:.67rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">👷 Responsável:</span>
-                  ${confCarga.map(a=>`<span style="background:rgba(37,99,235,.1);color:#2563eb;border:1px solid rgba(37,99,235,.2);border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700">${a.conferente_nome}</span>`).join('')}
-                </div>`
-              :`<div style="padding:7px 10px;background:rgba(239,68,68,.06);border:1px dashed rgba(239,68,68,.3);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-                  <span style="font-size:.73rem;color:#dc2626;font-weight:600">⚠️ Sem conferente vinculado</span>
-                  <div style="display:flex;gap:5px;flex-wrap:wrap">
-                    <select id="arm-car-conf-sel-${d.carga}" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.73rem;outline:none;min-width:150px">
-                      <option value="">👷 Selecionar conferente...</option>${confOptsCarHtml}
-                    </select>
-                    <button onclick="vincularConferentePorCarga('${d.id}',${d.carga},'arm-car-conf-sel-${d.carga}')"
-                      style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:.73rem;font-weight:700;cursor:pointer">🔗 Vincular</button>
-                  </div>
-                </div>`}
-          </div>
-          ${total>0?`<div style="margin-bottom:12px">
-            <div style="display:flex;justify-content:space-between;font-size:.68rem;margin-bottom:4px">
-              <span style="color:var(--green);font-weight:700">✅ ${pedOk} OK</span>
-              ${pedNok?`<span style="color:#ef4444;font-weight:700">❌ ${pedNok} NOK</span>`:''}
-              <span style="color:var(--text-muted)">${total} pedidos</span>
-              <span style="font-weight:800;color:${pct===100?'var(--green)':pct>50?'#3b82f6':'var(--text-muted)'}">${pct}%</span>
-            </div>
-            <div style="background:var(--border);border-radius:3px;height:7px;overflow:hidden;display:flex">
-              <div style="height:100%;width:${okPct}%;background:var(--green);transition:width .4s"></div>
-              <div style="height:100%;width:${nkPct}%;background:#ef4444;transition:width .4s"></div>
-            </div>
-          </div>`:''}
-          ${confCarga.length?`<details style="margin-bottom:8px;background:var(--bg-card2);border-radius:7px;border:1px dashed var(--border-med)">
-            <summary style="padding:6px 11px;font-size:.7rem;font-weight:700;color:var(--text-muted);cursor:pointer;list-style:none;display:flex;align-items:center;gap:5px">
-              🔄 Transferir para outro conferente <span style="margin-left:auto">▾</span>
-            </summary>
-            <div style="padding:10px 11px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap">
-              <select id="${selTrfCarId}" style="flex:1;min-width:150px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:6px 10px;font-size:.77rem;outline:none">
-                <option value="">Selecionar novo conferente...</option>${confOptsCarHtml}
-              </select>
-              <button onclick="transferirConferenteCarga('${atribId}','${d.id}',${d.carga},'${selTrfCarId}')"
-                style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:6px 13px;font-size:.77rem;font-weight:700;cursor:pointer;white-space:nowrap">🔄 Transferir</button>
-            </div>
-          </details>`:''}
-          ${pct===100
-            ?`<div><button onclick="salvarStatusArmazem('${d.id}','carregado_ok')" style="width:100%;background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:8px;padding:9px;font-size:.82rem;font-weight:800;cursor:pointer;letter-spacing:.3px">✅ Confirmar Carregamento Concluído</button></div>`
-            :`<div style="text-align:center;font-size:.72rem;color:var(--text-muted)">Aguardando conferência (${total-pedOk-pedNok} pedidos restantes)</div>`}
-        </div>`;
-      }).join('');
     }
   }
 
   // ── PAINEL CONFERENTES ──
-  await renderConferentesArmazem(conferentes, atribs, confStatus, demandas, fotos);
+  const confContainer = document.getElementById('arm-conf-container');
+  if(confContainer){
+    if(!confCards.length){
+      confContainer.innerHTML='<div style="text-align:center;padding:30px;color:var(--text-muted)">Nenhum conferente ativo cadastrado.</div>';
+    } else {
+      const cMes = window._armCMes||{};
+      const pMes = window._armPMes||{};
+      let html = `<div style="font-size:.68rem;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px">
+        👷 Conferentes
+        <span style="height:1px;flex:1;background:var(--border)"></span>
+        <span style="background:rgba(37,99,235,.1);color:#60a5fa;border-radius:20px;font-size:.62rem;padding:1px 8px;font-weight:700">${confCards.length} ativo${confCards.length!==1?'s':''}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px">`;
+      confCards.forEach(conf=>{
+        const foto = (fotos||{})[conf.id]||'';
+        const fotoHtml = foto
+          ? `<img src="${foto}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid rgba(37,99,235,.35);flex-shrink:0"/>`
+          : `<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#1d4ed8);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.3rem;font-weight:800;flex-shrink:0">${(conf.nome||'?').charAt(0)}</div>`;
+        const cargasMes  = (cMes[conf.id]||new Set()).size;
+        const pedidosMes = pMes[conf.id]||0;
+        const minhasAtribs = atribs.filter(a=>String(a.conferente_id)===String(conf.id)&&a.tipo!=='separador'&&cargasAtivasSet.has(a.carga));
+        const minhasCargasNums = minhasAtribs.map(a=>a.carga);
+        const cargasDisp = demandasAtivas.filter(d=>d.carga&&!minhasCargasNums.includes(d.carga));
+        const selVinc = `conf-vinc-${conf.id}`;
+        const confOptsOutros = confCards.filter(c=>c.id!==conf.id).map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
+        const cargasBody = minhasAtribs.length
+          ? minhasAtribs.map(a=>{
+              const dem = demandasAtivas.find(d=>d.carga===a.carga); if(!dem) return '';
+              const pedOk  = confStatus.filter(s=>s.carga===dem.carga&&s.status==='ok').length;
+              const pedNok = confStatus.filter(s=>s.carga===dem.carga&&s.status==='nok').length;
+              const total  = dem.quantidade_pedidos||0;
+              const pend   = Math.max(0,total-pedOk-pedNok);
+              const pct    = total>0?Math.round(((pedOk+pedNok)/total)*100):0;
+              const okPct  = total>0?Math.round((pedOk/total)*100):0;
+              const nkPct  = total>0?Math.round((pedNok/total)*100):0;
+              const corPct = pct===100?'#059669':pct>50?'#3b82f6':'#f59e0b';
+              const sTrf   = `arm-trf-${conf.id}-${dem.carga}`;
+              const sAdd   = `arm-add2-${conf.id}-${dem.carga}`;
+              return `<div style="font-size:.6rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Demanda atual</div>
+              <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
+                  <div><div style="font-size:.82rem;font-weight:800;color:var(--text-primary)">Carga ${dem.carga}</div><div style="font-size:.64rem;color:var(--text-muted)">${dem.rota||'—'}</div></div>
+                  <div style="font-size:.78rem;font-weight:900;color:${corPct}">${pct}%</div>
+                </div>
+                <div style="background:var(--border);border-radius:3px;height:6px;overflow:hidden;display:flex;margin-bottom:5px">
+                  <div style="height:100%;width:${okPct}%;background:var(--green);transition:width .4s"></div>
+                  <div style="height:100%;width:${nkPct}%;background:#ef4444;transition:width .4s"></div>
+                </div>
+                <div style="display:flex;gap:8px;font-size:.62rem">
+                  <span style="color:var(--green)">✅ ${pedOk} OK</span>
+                  <span style="color:#ef4444">❌ ${pedNok} NOK</span>
+                  <span style="color:var(--text-muted)">⏳ ${pend} pendentes</span>
+                </div>
+                <button onclick="verPedidosConferencia(${dem.carga},'${a.id}','${a.conferente_id||''}','${(a.conferente_nome||'').replace(/'/g,"\\'")}') "
+                  style="width:100%;margin-top:7px;background:rgba(59,130,246,.1);color:#2563eb;border:1px solid rgba(59,130,246,.3);border-radius:7px;padding:5px;font-size:.72rem;font-weight:700;cursor:pointer">
+                  📋 Ver Pedidos para Conferir
+                </button>
+                <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap">
+                  <details style="flex:1;background:var(--bg-card);border-radius:7px;border:1px dashed var(--border-med)">
+                    <summary style="padding:4px 9px;font-size:.67rem;font-weight:700;color:var(--text-muted);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px">🔄 Trocar <span style="margin-left:auto">▾</span></summary>
+                    <div style="padding:7px 9px;border-top:1px solid var(--border);display:flex;gap:5px;flex-wrap:wrap">
+                      <select id="${sTrf}" style="flex:1;min-width:130px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.7rem;outline:none"><option value="">Novo conferente...</option>${confOptsOutros}</select>
+                      <button onclick="transferirConferenteCarga('${a.id}','${dem.id}',${dem.carga},'${sTrf}')" style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.7rem;font-weight:700;cursor:pointer">🔄</button>
+                    </div>
+                  </details>
+                  <details style="flex:1;background:var(--bg-card);border-radius:7px;border:1px dashed var(--border-med)">
+                    <summary style="padding:4px 9px;font-size:.67rem;font-weight:700;color:var(--text-muted);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px">➕ 2º conf. <span style="margin-left:auto">▾</span></summary>
+                    <div style="padding:7px 9px;border-top:1px solid var(--border);display:flex;gap:5px;flex-wrap:wrap">
+                      <select id="${sAdd}" style="flex:1;min-width:130px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.7rem;outline:none"><option value="">Selecionar...</option>${confOptsOutros}</select>
+                      <button onclick="adicionarSegundoConferente('${dem.id}',${dem.carga},'${sAdd}')" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.7rem;font-weight:700;cursor:pointer">➕</button>
+                    </div>
+                  </details>
+                </div>
+              </div>`;
+            }).join('')
+          : `<div style="font-size:.6rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Demanda atual</div>
+             <div style="background:rgba(239,68,68,.04);border:1px dashed rgba(239,68,68,.2);border-radius:9px;padding:10px 12px;text-align:center;font-size:.73rem;color:var(--text-muted);margin-bottom:8px">🟡 Sem demanda no momento</div>`;
+        html += `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+          <div style="background:linear-gradient(135deg,rgba(37,99,235,.09),rgba(37,99,235,.03));padding:14px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border)">
+            ${fotoHtml}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:.9rem;font-weight:800;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${conf.nome}</div>
+              <span style="background:rgba(37,99,235,.12);color:#2563eb;font-size:.62rem;font-weight:700;padding:1px 7px;border-radius:4px">conferente</span>
+              <div style="display:flex;gap:7px;margin-top:7px">
+                <div style="background:rgba(0,0,0,.15);border-radius:8px;padding:5px 10px;min-width:58px;text-align:center">
+                  <div style="font-size:.88rem;font-weight:900;color:var(--text-primary)">${cargasMes}</div>
+                  <div style="font-size:.54rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">cargas/mês</div>
+                </div>
+                <div style="background:rgba(0,0,0,.15);border-radius:8px;padding:5px 10px;min-width:58px;text-align:center">
+                  <div style="font-size:.88rem;font-weight:900;color:var(--text-primary)">${pedidosMes}</div>
+                  <div style="font-size:.54rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">pedidos/mês</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style="padding:12px 14px">
+            ${cargasBody}
+            <div style="border-top:1px dashed var(--border);padding-top:8px;margin-top:2px">
+              ${cargasDisp.length
+                ?`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+                    <select id="${selVinc}" style="flex:1;min-width:150px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:6px 9px;font-size:.73rem;outline:none">
+                      <option value="">🔗 Vincular a uma pré-carga...</option>
+                      ${cargasDisp.map(d=>`<option value="${d.id}|${d.carga}">${d.rota||'—'} — Carga ${d.carga} (${d.quantidade_pedidos||0} ped.)</option>`).join('')}
+                    </select>
+                    <button onclick="vincularConferentePorConf('${conf.id}','${conf.nome.replace(/'/g,"\\'")}','${selVinc}')"
+                      style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:.73rem;font-weight:700;cursor:pointer;white-space:nowrap">🔗 Vincular</button>
+                  </div>`
+                :`<div style="text-align:center;font-size:.7rem;color:var(--text-muted)">Nenhuma pré-carga disponível</div>`}
+            </div>
+          </div>
+        </div>`;
+      });
+      html += '</div>';
+      confContainer.innerHTML = html;
+    }
+  }
 
   // ── PAINEL CONCLUÍDAS ──
   const conclContainer = document.getElementById('arm-concluido-container');
@@ -21249,6 +21226,21 @@ async function renderArmazem(){
 }
 
 // Transfere conferente de uma carga (sem avançar status)
+async function adicionarSegundoConferente(demandaId, carga, selectId){
+  const sel = document.getElementById(selectId);
+  if(!sel||!sel.value){ showToast('Selecione o conferente a adicionar','warning'); return; }
+  const [novoId, novoNome] = sel.value.split('|');
+  if(!novoId||!novoNome){ showToast('Conferente inválido','warning'); return; }
+  try{
+    await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
+      demanda_id:demandaId, carga, conferente_id:novoId, conferente_nome:novoNome,
+      status:'pendente', criado_em:new Date().toISOString()
+    })});
+    showToast('✅ '+novoNome+' adicionado como 2º conferente','success');
+    await renderArmazem();
+  }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+
 async function transferirConferenteCarga(atribId, demandaId, carga, selectId){
   const sel = document.getElementById(selectId);
   if(!sel||!sel.value){ showToast('Selecione o novo conferente','warning'); return; }
@@ -21463,7 +21455,7 @@ async function marcarInicioSeparacao(atribId, carga){
     });
     showToast('▶ Início de separação registrado!','success');
     await renderArmazem();
-    switchArmTab('conferentes', document.getElementById('arm-tab-conferentes'));
+    switchArmTab('demandas', document.getElementById('arm-tab-demandas'));
   }catch(e){ showToast('Erro: '+e.message,'error'); }
 }
 
