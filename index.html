@@ -12859,6 +12859,40 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
               alteracoes:   _alteracoes
             })}).catch(()=>{});
           }catch(_){}
+          // ── Detectar divergências de valor pós-NF ────────────────────
+          try{
+            const _nfsSalvas = await supaFetch(
+              `notas_fiscais?carga=eq.${cargaNum}&valor=not.is.null&pedido=neq.0&select=pedido,valor`
+            ).catch(()=>[]);
+            if(_nfsSalvas && _nfsSalvas.length){
+              // Mapa: pedido → valor atual no import (novos tem TODOS os pedidos do spreadsheet)
+              const _valAtualPed = {};
+              novos.forEach(r=>{ _valAtualPed[String(r.pedido)] = (r.valor||0); });
+              const _divs = [];
+              _nfsSalvas.forEach(nf=>{
+                const _ped = String(nf.pedido);
+                if(_valAtualPed[_ped] === undefined) return;
+                if(Math.abs((_valAtualPed[_ped]||0) - (nf.valor||0)) > 0.01){
+                  _divs.push({pedido:_ped, valorNF:nf.valor, valorAtual:_valAtualPed[_ped]});
+                }
+              });
+              if(_divs.length){
+                showToast(`⚠️ ${_divs.length} pedido(s) com NF emitida tiveram o valor alterado na planilha! Verifique na página Fiscal.`, 'warning', 8000);
+                const _altDiv = {};
+                _divs.forEach(d=>{ _altDiv[`div_nf_ped_${d.pedido}`] = {
+                  label: `Pedido ${d.pedido} — Divergência Pós-NF`,
+                  de:   `R$ ${Number(d.valorNF).toLocaleString('pt-BR',{minimumFractionDigits:2})} (NF emitida)`,
+                  para: `R$ ${Number(d.valorAtual).toLocaleString('pt-BR',{minimumFractionDigits:2})} (planilha atual)`
+                }; });
+                await supaFetch('historico_carga',{method:'POST',body:JSON.stringify({
+                  demanda_id: demandaId, carga: cargaNum,
+                  usuario_id: USUARIO_LOGADO?.id||null,
+                  usuario_nome: USUARIO_LOGADO?.nome||'Desconhecido',
+                  alteracoes: _altDiv
+                })}).catch(()=>{});
+              }
+            }
+          }catch(_){}
           // ──────────────────────────────────────────────────────────────
         }
 
@@ -18913,6 +18947,9 @@ async function uploadNF(carga, pedido){
   if(!files||!files.length){ showToast('Selecione um arquivo','warning'); return; }
   try{
     showToast('📤 Enviando arquivo(s) para o servidor...','warning');
+    // Capturar valor atual do pedido em base_data (snapshot no momento da emissão)
+    const _bdRows = (BASE_DATA||[]).filter(r=>Number(r.carga)===Number(carga)&&Number(r.pedido)===Number(pedido));
+    const _valorEmissao = _bdRows.reduce((s,r)=>s+(parseFloat(r.valor)||0), 0) || null;
     let enviados = 0;
     for(const file of files){
       // Detectar tipo pelo nome: se contém "boleto" → boleto, senão → nf
@@ -18920,7 +18957,7 @@ async function uploadNF(carga, pedido){
       const url = await uploadParaStorage(file, carga, pedido);
       await supaFetch('notas_fiscais',{method:'POST',body:JSON.stringify({
         carga:Number(carga), pedido:Number(pedido),
-        nome_arquivo:file.name, tipo, url,
+        nome_arquivo:file.name, tipo, url, valor:_valorEmissao,
         fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'',
         criado_em:new Date().toISOString()
       })});
@@ -20234,7 +20271,7 @@ async function carregarPaginaFiscal(){
 
     // Buscar TODOS os pedidos dessas cargas (conferidos ou não)
     const [todosPedidos, conferidos, nfs, atribs] = await Promise.all([
-      supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido&order=carga.asc,pedido.asc`).catch(()=>[]),
+      supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor&order=carga.asc,pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch('atribuicoes_fiscal?select=*').catch(()=>[])
@@ -20246,9 +20283,14 @@ async function carregarPaginaFiscal(){
       cargasMap[d.carga] = {demanda:d, pedidos:new Set(), confMap:{}, nfs:[]};
     });
 
-    // Adicionar pedidos do base_data
+    // Adicionar pedidos do base_data + acumular valor atual por pedido (para detecção de divergência)
+    const _valMapFiscal = {}; // {carga: {pedido: valorAtual}}
     (todosPedidos||[]).forEach(p=>{
-      if(cargasMap[p.carga]) cargasMap[p.carga].pedidos.add(p.pedido);
+      if(cargasMap[p.carga]){
+        cargasMap[p.carga].pedidos.add(p.pedido);
+        if(!_valMapFiscal[p.carga]) _valMapFiscal[p.carga]={};
+        _valMapFiscal[p.carga][p.pedido] = (_valMapFiscal[p.carga][p.pedido]||0) + (parseFloat(p.valor)||0);
+      }
     });
 
     // Adicionar pedidos da conferência (mesmo que não estejam no base_data)
@@ -20352,12 +20394,21 @@ async function carregarPaginaFiscal(){
               ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700">❌ NOK</span>`
               : `<span style="font-size:.7rem;background:#fef9c3;color:#92400e;padding:1px 7px;border-radius:5px;font-weight:700">⏳ Sem conf.</span>`;
             const emissores=[...new Set(nfsPed.map(n=>n.fiscal_nome).filter(Boolean))];
+            // Verificar divergência de valor: NF emitida com valor ≠ valor atual em base_data
+            const _nfComValor = nfsPed.find(n=>n.valor!=null);
+            const _valAtualFisc = (_valMapFiscal[carga]??{})[ped]??null;
+            const _temDivFisc = _nfComValor && _valAtualFisc!==null &&
+              Math.abs(_valAtualFisc - _nfComValor.valor) > 0.01;
+            const _divBadge = _temDivFisc
+              ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700;cursor:help" title="NF emitida: R$ ${Number(_nfComValor.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})} | Atual: R$ ${Number(_valAtualFisc).toLocaleString('pt-BR',{minimumFractionDigits:2})}">⚠️ Valor divergente!</span>`
+              : '';
 
             return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
               <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
                   ${confBadge}
+                  ${_divBadge}
                   ${euPeguei?`<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✍️ Você</span>`:''}
                   ${outroPegou?`<span style="font-size:.7rem;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">🔒 ${atribPed.fiscal_nome}</span>`:''}
                   ${conf?.conferente_nome?`<span style="font-size:.7rem;color:var(--text-muted)">${conf.conferente_nome}</span>`:''}
@@ -20471,12 +20522,15 @@ async function confirmarFiscalComXml(){
   }
   try{
     showToast('📤 Enviando arquivo(s)...','warning');
+    // Para upload de carga inteira (pedido=0), usar valor_total da demanda como snapshot
+    const _demCfx = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
+    const _valorEmissaoCfx = _demCfx?.valor_total || null;
     for(const file of files){
       const tipo = /boleto/i.test(file.name) ? 'boleto' : 'nf';
       const url = await uploadParaStorage(file, carga, 0);
       await supaFetch('notas_fiscais',{method:'POST',body:JSON.stringify({
         carga:Number(carga), pedido:0,
-        nome_arquivo:file.name, tipo, url,
+        nome_arquivo:file.name, tipo, url, valor:_valorEmissaoCfx,
         fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'ADM',
         criado_em:new Date().toISOString()
       })});
@@ -20493,13 +20547,16 @@ async function uploadNFInline(carga, pedido){
   if(!files||!files.length){ showToast('Selecione um arquivo','warning'); return; }
   try{
     showToast('📤 Enviando arquivo(s) para o servidor...','warning');
+    // Capturar valor atual do pedido em base_data (snapshot no momento da emissão)
+    const _bdRowsI = (BASE_DATA||[]).filter(r=>Number(r.carga)===Number(carga)&&Number(r.pedido)===Number(pedido));
+    const _valorEmissaoI = _bdRowsI.reduce((s,r)=>s+(parseFloat(r.valor)||0), 0) || null;
     for(const file of files){
       // Detectar tipo pelo nome: se contém "boleto" → boleto, senão → nf
       const tipo = /boleto/i.test(file.name) ? 'boleto' : 'nf';
       const url = await uploadParaStorage(file, carga, pedido);
       await supaFetch('notas_fiscais',{method:'POST',body:JSON.stringify({
         carga:Number(carga), pedido:Number(pedido),
-        nome_arquivo:file.name, tipo, url,
+        nome_arquivo:file.name, tipo, url, valor:_valorEmissaoI,
         fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'ADM',
         criado_em:new Date().toISOString()
       })});
