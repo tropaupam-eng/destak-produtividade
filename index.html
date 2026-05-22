@@ -4202,8 +4202,11 @@ textarea:focus{
   <!-- KPIs -->
   <div id="gf-kpis" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"></div>
 
-  <!-- Barra disponibilidade -->
-  <div id="gf-disponibilidade" style="margin-bottom:16px"></div>
+  <!-- Barras: Utilização de Frota + Disponibilidade de Frota -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+    <div id="gf-utilizacao"></div>
+    <div id="gf-disponibilidade"></div>
+  </div>
 
   <!-- Tabs -->
   <div style="display:flex;gap:6px;margin-bottom:0;border-bottom:2px solid var(--border)">
@@ -11490,23 +11493,27 @@ async function verHistoricoCarga(carga){
 // GESTÃO DE FROTA — JS
 // ══════════════════════════════════════════════════════════════
 
-var _GF_MANUT   = [];
-var _GF_CUSTOS  = [];
-var _GF_DIARIAS = [];
-var _GF_ABA_ATUAL = 'manut';
+var _GF_MANUT           = [];
+var _GF_CUSTOS          = [];
+var _GF_DIARIAS         = [];
+var _GF_DEMANDAS_ATIVAS = []; // veículos atualmente em viagem (para cálculo de utilização)
+var _GF_ABA_ATUAL       = 'manut';
 
 async function carregarGestaoFrota(){
   const hoje = new Date().toISOString().slice(0,10);
   document.getElementById('gf-kpis').innerHTML = '<span style="color:var(--text-muted);font-size:.83rem">Carregando...</span>';
   try{
-    const [manut, custos, diarias] = await Promise.all([
+    const [manut, custos, diarias, demandasAtivas] = await Promise.all([
       supaFetch('manutencoes_frota?select=*&order=data_inicio.desc').catch(()=>[]),
       supaFetch('custos_frota?select=*&order=data.desc').catch(()=>[]),
-      supaFetch('diarias_frota?select=*&order=criado_em.desc').catch(()=>[])
+      supaFetch('diarias_frota?select=*&order=criado_em.desc').catch(()=>[]),
+      // Veículos atualmente em viagem (qualquer status ativo pré-conclusão)
+      supaFetch('demandas_rota?select=veiculo,rota,status&veiculo=not.is.null&status=in.(pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,saiu,fim_viagem)').catch(()=>[])
     ]);
-    _GF_MANUT   = manut   || [];
-    _GF_CUSTOS  = custos  || [];
-    _GF_DIARIAS = diarias || [];
+    _GF_MANUT           = manut          || [];
+    _GF_CUSTOS          = custos         || [];
+    _GF_DIARIAS         = diarias        || [];
+    _GF_DEMANDAS_ATIVAS = demandasAtivas || [];
   }catch(e){ _GF_MANUT=[]; _GF_CUSTOS=[]; _GF_DIARIAS=[]; }
 
   // Popular selects de veículo nas modais de custo e manutenção
@@ -11584,33 +11591,56 @@ function renderGestaoFrotaKPIs(){
       ${sub?`<div style="font-size:.72rem;color:var(--text-muted);margin-top:4px">${sub}</div>`:''}
     </div>`;
 
+  // ── Utilização de Frota: veículos em viagem agora ────────────────
+  const emViagemSet = new Set((_GF_DEMANDAS_ATIVAS||[]).map(d=>d.veiculo).filter(Boolean));
+  const emViagem    = emViagemSet.size;
+  const pctUtil     = totalFrota > 0 ? Math.round(emViagem/totalFrota*100) : 0;
+  // ─────────────────────────────────────────────────────────────────
+
   document.getElementById('gf-kpis').innerHTML = [
-    kpiCard('🚛','Total Frota', totalFrota,'var(--text-primary)'),
-    kpiCard('✅','Disponíveis', disponiveis, naMetaDisp?'#059669':'#f59e0b','de '+totalFrota+' veículos'),
-    kpiCard('🔧','Em Manutenção', emManut, emManut>0?'#ef4444':'#059669', futuras>0?futuras+' agendada(s)':''),
-    kpiCard('📅','Manutenções Futuras', futuras,'#6366f1'),
+    kpiCard('🚛','Total Frota',          totalFrota,'var(--text-primary)'),
+    kpiCard('🚗','Em Rota (Utilização)', emViagem,  emViagem>0?'#f59e0b':'var(--text-muted)', pctUtil+'% da frota'),
+    kpiCard('✅','Disponíveis',          disponiveis, naMetaDisp?'#059669':'#f59e0b', 'de '+totalFrota+' veículos'),
+    kpiCard('🔧','Em Manutenção',        emManut,   emManut>0?'#ef4444':'#059669', futuras>0?futuras+' agendada(s)':''),
     kpiCard('💰','Custos '+mesAtual.slice(5)+'/'+mesAtual.slice(0,4), brl(custoMes),'#2563eb'),
-    kpiCard('💵','Diárias Mês', brl(totalDiariasMot+totalDiariasAj),'#7c3aed','Mot: '+brl(totalDiariasMot)+' | Aj: '+brl(totalDiariasAj))
+    kpiCard('💵','Diárias Mês',          brl(totalDiariasMot+totalDiariasAj),'#7c3aed','Mot: '+brl(totalDiariasMot)+' | Aj: '+brl(totalDiariasAj))
   ].join('');
 
-  // Barra de disponibilidade
-  const barColor = pctDisp>=META_DISP ? '#059669' : pctDisp>=60 ? '#f59e0b' : '#ef4444';
-  const metaPos  = META_DISP;
-  document.getElementById('gf-disponibilidade').innerHTML = `
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px">
+  // ── Barra: Utilização de Frota ────────────────────────────────────
+  const utilColor = pctUtil>=80?'#059669':pctUtil>=50?'#f59e0b':'#6366f1';
+  document.getElementById('gf-utilizacao').innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px;height:100%;box-sizing:border-box">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <span style="font-size:.83rem;font-weight:800;color:var(--text-primary)">🎯 Disponibilidade da Frota</span>
-        <span style="font-size:1rem;font-weight:900;color:${barColor}">${pctDisp}%
-          <span style="font-size:.75rem;font-weight:600;color:var(--text-muted)"> meta: ${META_DISP}%</span>
+        <span style="font-size:.83rem;font-weight:800;color:var(--text-primary)">🚗 Utilização de Frota</span>
+        <span style="font-size:1rem;font-weight:900;color:${utilColor}">${pctUtil}%
+          <span style="font-size:.72rem;font-weight:600;color:var(--text-muted)"> ${emViagem}/${totalFrota} veíc.</span>
         </span>
       </div>
-      <div style="position:relative;background:var(--bg-input);border-radius:20px;height:20px;overflow:visible">
+      <div style="background:var(--bg-input);border-radius:20px;height:14px;overflow:hidden">
+        <div style="height:100%;border-radius:20px;background:${utilColor};width:${Math.min(pctUtil,100)}%;transition:width .5s"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${[...emViagemSet].map(v=>`<span style="font-size:.72rem;background:rgba(245,158,11,.12);color:#92400e;border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:2px 10px;font-weight:700">🚗 ${v}</span>`).join('')||'<span style="font-size:.72rem;color:var(--text-muted)">Nenhum veículo em rota agora</span>'}
+      </div>
+    </div>`;
+
+  // ── Barra: Disponibilidade de Frota (baseada em manutenções) ──────
+  const barColor = pctDisp>=META_DISP ? '#059669' : pctDisp>=60 ? '#f59e0b' : '#ef4444';
+  document.getElementById('gf-disponibilidade').innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px;height:100%;box-sizing:border-box">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span style="font-size:.83rem;font-weight:800;color:var(--text-primary)">🎯 Disponibilidade de Frota</span>
+        <span style="font-size:1rem;font-weight:900;color:${barColor}">${pctDisp}%
+          <span style="font-size:.72rem;font-weight:600;color:var(--text-muted)"> meta: ${META_DISP}%</span>
+        </span>
+      </div>
+      <div style="position:relative;background:var(--bg-input);border-radius:20px;height:14px;overflow:visible">
         <div style="height:100%;border-radius:20px;background:${barColor};width:${Math.min(pctDisp,100)}%;transition:width .5s"></div>
-        <div style="position:absolute;left:${metaPos}%;top:-4px;bottom:-4px;width:2px;background:#f59e0b;border-radius:2px" title="Meta ${META_DISP}%">
-          <div style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:.65rem;font-weight:800;color:#f59e0b;white-space:nowrap">${META_DISP}%</div>
+        <div style="position:absolute;left:${META_DISP}%;top:-3px;bottom:-3px;width:2px;background:#f59e0b;border-radius:2px" title="Meta ${META_DISP}%">
+          <div style="position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:.6rem;font-weight:800;color:#f59e0b;white-space:nowrap">${META_DISP}%</div>
         </div>
       </div>
-      <div style="display:flex;gap:16px;margin-top:10px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         ${[...emManutSet].map(v=>`<span style="font-size:.72rem;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 10px;font-weight:700">🔧 ${v}</span>`).join('')||'<span style="font-size:.72rem;color:#059669;font-weight:600">✅ Nenhum veículo em manutenção agora</span>'}
       </div>
     </div>`;
