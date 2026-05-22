@@ -11095,6 +11095,26 @@ function renderDemandasCards(){
   const agendAtrasados = getAgendamentos().filter(a=>a.status==='atrasado' && a.motivo_atraso);
   const comRotasPend = (window._comRotasCache||[]).filter(r=>r.status!=='resolvido');
 
+  // ── Detectar mesmo veículo + mesmo motorista em mais de 1 carga ativa ────
+  // Conta no cache completo (não no filtrado) — alerta aparece em qualquer visão
+  const _statusAtivos = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
+  const _dupMap = {}; // chave "VEICULO||MOTORISTA" → [{carga, rota, status}]
+  _demandasCache.forEach(x=>{
+    const veic = (x.veiculo||'').trim().toUpperCase();
+    const mot  = (x.motorista||'').trim().toUpperCase();
+    if(!veic || veic==='A DEFINIR VEÍCULO' || !mot || mot==='A DEFINIR MOTORISTA') return;
+    if(!_statusAtivos.has(x.status)) return;
+    const chave = veic+'||'+mot;
+    if(!_dupMap[chave]) _dupMap[chave] = [];
+    _dupMap[chave].push({carga:x.carga, rota:x.rota, status:x.status});
+  });
+  // Só interessa as chaves com 2+ cargas
+  const _dupSet = {};
+  Object.entries(_dupMap).forEach(([chave, lista])=>{
+    if(lista.length > 1) lista.forEach(item=>{ _dupSet[item.carga] = lista; });
+  });
+  // ─────────────────────────────────────────────────────────────────────────
+
   container.innerHTML = data.map(d=>{
     const s   = statusCfg[d.status] || {label:d.status,bg:'#f3f4f6',color:'#374151',bar:'#9ca3af'};
     const meta = d.valor_meta||0;
@@ -11108,6 +11128,17 @@ function renderDemandasCards(){
     const badgeAgend = isAgendado
       ? `<span style="font-size:.65rem;font-weight:700;background:#dbeafe;color:#1d4ed8;padding:2px 7px;border-radius:10px;white-space:nowrap">📋 Agendado</span>`
       : `<span style="font-size:.65rem;font-weight:700;background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:10px;white-space:nowrap">⚡ Extra</span>`;
+
+    // Badge de alerta: mesmo veículo + motorista em outra carga ativa
+    const _dupCargas = _dupSet[d.carga];
+    const badgeDup = _dupCargas
+      ? (()=>{
+          const outras = _dupCargas.filter(x=>x.carga!==d.carga);
+          const lbStatus = {pendente:'Pendente',separacao:'Separação',carregamento:'Carregamento',aguardando_nf:'Ag.NF',aguardando_manifesto:'Ag.Manifesto',pronto_viagem:'Pronto',saiu:'Em Rota',fim_viagem:'Fim Viagem'};
+          const tip = outras.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(' | ');
+          return `<span title="⚠️ Mesmo veículo e motorista em: ${tip}" style="font-size:.65rem;font-weight:800;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:2px 8px;border-radius:10px;white-space:nowrap;cursor:default">⚠️ Duplo</span>`;
+        })()
+      : '';
 
     // Verificar pendência de agendamento (qualquer motivo) — match por rota
     const rotaUp = (d.rota||'').trim().toUpperCase();
@@ -11135,7 +11166,7 @@ function renderDemandasCards(){
 
       <div class="exp-card-top">
         <div class="exp-card-info">
-          <div class="exp-card-rota" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">🛣️ ${d.rota||'—'} ${badgeAgend} ${badgeComercial}</div>
+          <div class="exp-card-rota" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">🛣️ ${d.rota||'—'} ${badgeAgend} ${badgeComercial} ${badgeDup}</div>
           <div class="exp-card-motorista" style="${d.motorista==='A DEFINIR MOTORISTA'?'color:#f59e0b;font-weight:800':''}">🚗 ${d.motorista||'—'}</div>
           <div class="exp-card-veiculo" style="${d.veiculo==='A DEFINIR VEÍCULO'?'color:#f59e0b;font-weight:800':''}">🚛 ${d.veiculo||'—'} ${badgePesoVeiculo(d.veiculo, d.carga, temCarga)}</div>
           <div class="exp-card-ajudante" style="font-size:.78rem;color:${d.ajudante?'var(--text-secondary)':'var(--text-muted)'};margin-top:3px">🤝 ${d.ajudante||'<span style="opacity:.5">Sem ajudante</span>'}</div>
