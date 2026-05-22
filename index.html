@@ -12811,6 +12811,12 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
         // Atualizar demanda com totais reais — NÃO avança status nem arm_status
         // O fluxo correto é: Armazém confere → arm_status=carregado_ok → status=aguardando_nf → Fiscal
         if(demandaId){
+          // Capturar valores antes da atualização para o histórico
+          const _demAntes = (_demandasCache||[]).find(d=>d.id===demandaId);
+          const _pedAntes  = _demAntes?.quantidade_pedidos || 0;
+          const _valAntes  = _demAntes?.valor_total || 0;
+          const _fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+
           await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
             method:'PATCH',
             body: JSON.stringify({
@@ -12819,6 +12825,41 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
               valor_total: totalValor
             })
           }).catch(e=>console.warn(e));
+
+          // ── Gravar no histórico de alterações ─────────────────────────
+          try{
+            const _alteracoes = {};
+            // Pedidos novos inseridos agora
+            if(filtrados.length > 0){
+              _alteracoes['pedidos_adicionados'] = {
+                label: 'Pedidos Adicionados via Planilha',
+                de: `${_pedAntes} pedidos`,
+                para: `${totalPedidos} pedidos (+${filtrados.length} novos)`
+              };
+            }
+            // Variação de valor
+            if(Math.abs(totalValor - _valAntes) > 0.01){
+              _alteracoes['valor_total'] = {
+                label: 'Valor Total',
+                de: _fmtVal(_valAntes),
+                para: _fmtVal(totalValor)
+              };
+            }
+            // Arquivo importado
+            _alteracoes['planilha_importada'] = {
+              label: 'Planilha Importada',
+              de: '—',
+              para: file.name + (filtrados.length === 0 ? ' (sem novos pedidos)' : '')
+            };
+            await supaFetch('historico_carga',{method:'POST',body:JSON.stringify({
+              demanda_id:   demandaId,
+              carga:        cargaNum,
+              usuario_id:   USUARIO_LOGADO?.id   || null,
+              usuario_nome: USUARIO_LOGADO?.nome || 'Desconhecido',
+              alteracoes:   _alteracoes
+            })}).catch(()=>{});
+          }catch(_){}
+          // ──────────────────────────────────────────────────────────────
         }
 
         const tipoMsg = isPrecarga ? '📦 Pré-carga' : '📋 Planilha';
