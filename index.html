@@ -4456,6 +4456,57 @@ textarea:focus{
   </div>
 </div>
 
+<!-- ══ MODAL ALERTA MANUTENÇÃO VENCIDA ══ -->
+<div id="modal-gf-alerta-manut" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:800;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:20px;width:100%;max-width:460px;box-shadow:0 28px 72px rgba(0,0,0,.4);overflow:hidden">
+    <!-- Header laranja de alerta -->
+    <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:20px 24px;color:#fff">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="font-size:2rem">🔔</div>
+        <div>
+          <div style="font-size:.7rem;font-weight:700;opacity:.8;text-transform:uppercase;letter-spacing:.06em">Manutenção — Prazo Vencido</div>
+          <div id="gf-alerta-titulo" style="font-size:1.05rem;font-weight:900;margin-top:2px">Veículo XYZ</div>
+        </div>
+      </div>
+    </div>
+    <div style="padding:22px 24px">
+      <p id="gf-alerta-desc" style="font-size:.88rem;color:#374151;margin-bottom:18px;line-height:1.5"></p>
+
+      <!-- Pergunta principal -->
+      <p style="font-size:.83rem;font-weight:700;color:#111827;margin-bottom:12px">O veículo já saiu da manutenção?</p>
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        <button onclick="gfResponderAlertaManut(true)"
+          style="flex:1;background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:12px;padding:13px;font-size:.9rem;font-weight:700;cursor:pointer">
+          ✅ Sim, já saiu
+        </button>
+        <button onclick="gfResponderAlertaManut(false)"
+          style="flex:1;background:#f3f4f6;color:#374151;border:2px solid #e5e7eb;border-radius:12px;padding:13px;font-size:.9rem;font-weight:700;cursor:pointer">
+          ❌ Não, ainda não
+        </button>
+      </div>
+
+      <!-- Painel de motivo (aparece se responder Não) -->
+      <div id="gf-alerta-painel-motivo" style="display:none;background:#fef3c7;border:1.5px solid #fcd34d;border-radius:12px;padding:14px;margin-bottom:14px">
+        <p style="font-size:.75rem;font-weight:700;color:#92400e;margin-bottom:8px;text-transform:uppercase">📋 Informe o motivo da extensão</p>
+        <textarea id="gf-alerta-motivo" rows="3" placeholder="Ex: Aguardando peças, problema adicional encontrado..."
+          style="width:100%;border:1.5px solid #fcd34d;border-radius:8px;padding:9px 12px;font-size:.84rem;resize:vertical;box-sizing:border-box;background:#fffbeb;color:#111;outline:none"></textarea>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:.72rem;font-weight:700;color:#92400e;text-transform:uppercase">Nova previsão de término:</label>
+          <input type="date" id="gf-alerta-nova-data"
+            style="border:1.5px solid #fcd34d;border-radius:8px;padding:6px 10px;font-size:.82rem;background:#fffbeb;color:#111;outline:none"/>
+        </div>
+        <button onclick="gfSalvarExtensaoManut()"
+          style="width:100%;margin-top:10px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer">
+          💾 Confirmar — Ainda em Manutenção
+        </button>
+      </div>
+
+      <!-- Contador de pendentes -->
+      <div id="gf-alerta-contador" style="text-align:center;font-size:.72rem;color:#9ca3af;margin-top:4px"></div>
+    </div>
+  </div>
+</div>
+
 <div class="page" id="page-abs-armazem"><div class="container">
 
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px">
@@ -11939,6 +11990,103 @@ async function excluirDiariaFrota(id){
   }catch(e){ showToast('Erro ao excluir: '+e.message,'error'); }
 }
 
+// ── Alerta de manutenção com prazo vencido ────────────────────────
+var _gfAlertaFila   = [];  // fila de manutenções a alertar
+var _gfAlertaAtual  = null; // manutenção sendo exibida agora
+
+async function verificarManutencoesFimHoje(){
+  const hoje = new Date().toISOString().slice(0,10);
+  const chaveFlag = 'gf_alerta_check_' + hoje;
+  // Só verifica uma vez por dia por sessão
+  if(sessionStorage.getItem(chaveFlag)) return;
+  sessionStorage.setItem(chaveFlag, '1');
+
+  try{
+    const pendentes = await supaFetch(
+      `manutencoes_frota?data_fim=eq.${hoje}&status=in.(agendada,em_andamento)&select=*`
+    ).catch(()=>[]) || [];
+    if(!pendentes.length) return;
+    _gfAlertaFila = [...pendentes];
+    _gfExibirProximoAlerta();
+  }catch(e){ console.warn('verificarManutencoesFimHoje:', e); }
+}
+
+function _gfExibirProximoAlerta(){
+  if(!_gfAlertaFila.length){ document.getElementById('modal-gf-alerta-manut').style.display='none'; return; }
+  _gfAlertaAtual = _gfAlertaFila[0];
+  const m = _gfAlertaAtual;
+  const fmtD = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
+  const tipoLabel = m.tipo==='preventiva' ? '🛡️ Preventiva' : '🔨 Corretiva';
+
+  document.getElementById('gf-alerta-titulo').textContent = '🚛 ' + (m.veiculo||'—');
+  document.getElementById('gf-alerta-desc').innerHTML =
+    `<strong>${tipoLabel}</strong>${m.descricao?' — '+m.descricao:''}<br>` +
+    `📅 Início: <strong>${fmtD(m.data_inicio)}</strong> &nbsp;→&nbsp; Previsão fim: <strong>${fmtD(m.data_fim)}</strong>`;
+  document.getElementById('gf-alerta-painel-motivo').style.display = 'none';
+  document.getElementById('gf-alerta-motivo').value = '';
+  // Nova data padrão = amanhã
+  const amanha = new Date(); amanha.setDate(amanha.getDate()+1);
+  document.getElementById('gf-alerta-nova-data').value = amanha.toISOString().slice(0,10);
+
+  const total = _gfAlertaFila.length;
+  const idx   = (_gfAlertaFila.indexOf(m)+1);
+  document.getElementById('gf-alerta-contador').textContent =
+    total > 1 ? `Alerta ${idx} de ${total} manutenções vencidas hoje` : '';
+
+  document.getElementById('modal-gf-alerta-manut').style.display = 'flex';
+}
+
+async function gfResponderAlertaManut(saiu){
+  if(!_gfAlertaAtual) return;
+  if(saiu){
+    // Marcar como concluída e liberar veículo
+    const hoje = new Date().toISOString().slice(0,10);
+    const u = USUARIO_LOGADO||{};
+    try{
+      await supaFetch(`manutencoes_frota?id=eq.${_gfAlertaAtual.id}`,{
+        method:'PATCH',
+        body:JSON.stringify({ status:'concluida', data_fim:hoje, usuario_nome:u.nome||null })
+      });
+      // Auto-liberar veículo se não tiver outra manutenção ativa
+      await gfAutoLiberarVeiculo(_gfAlertaAtual.veiculo);
+      showToast(`✅ ${_gfAlertaAtual.veiculo} — Manutenção concluída!`,'success');
+    }catch(e){ showToast('Erro ao salvar: '+e.message,'error'); }
+    _gfAlertaFila.shift();
+    _gfExibirProximoAlerta();
+    // Atualizar lista se a página estiver aberta
+    if(_GF_MANUT.length) carregarGestaoFrota().catch(()=>{});
+  } else {
+    // Mostrar painel de motivo
+    document.getElementById('gf-alerta-painel-motivo').style.display = 'block';
+  }
+}
+
+async function gfSalvarExtensaoManut(){
+  if(!_gfAlertaAtual) return;
+  const motivo   = document.getElementById('gf-alerta-motivo').value.trim();
+  const novaData = document.getElementById('gf-alerta-nova-data').value;
+  if(!motivo){ showToast('Informe o motivo da extensão','warning'); return; }
+
+  const u = USUARIO_LOGADO||{};
+  const obsAtual = _gfAlertaAtual.descricao||'';
+  const obsNova  = obsAtual + (obsAtual?' | ':'' ) + `[Extensão ${new Date().toLocaleDateString('pt-BR')}: ${motivo}]`;
+  try{
+    await supaFetch(`manutencoes_frota?id=eq.${_gfAlertaAtual.id}`,{
+      method:'PATCH',
+      body:JSON.stringify({
+        status:'em_andamento',
+        data_fim: novaData || null,
+        descricao: obsNova,
+        usuario_nome: u.nome||null
+      })
+    });
+    showToast(`🔧 ${_gfAlertaAtual.veiculo} — Manutenção estendida`,'warning');
+  }catch(e){ showToast('Erro ao salvar: '+e.message,'error'); }
+  _gfAlertaFila.shift();
+  _gfExibirProximoAlerta();
+  if(_GF_MANUT.length) carregarGestaoFrota().catch(()=>{});
+}
+
 // ── Veículo auto-disponível após km_final ─────────────────────────
 async function gfAutoLiberarVeiculo(placa){
   if(!placa) return;
@@ -13493,6 +13641,7 @@ function showPage(name,tab){
   else if(name==='gestao-frota') safe(()=>{
     if(VEICULOS_CACHE.length===0){ carregarVeiculos().then(carregarGestaoFrota).catch(()=>carregarGestaoFrota()); }
     else { carregarGestaoFrota(); }
+    verificarManutencoesFimHoje().catch(()=>{});
   },'gestao-frota');
   else if(name==='comercial-rotas') safe(()=>renderComercialRotas(),'comercial-rotas');
   else if(name==='banco-dados')   safe(()=>renderBancoStatus(),'banco-dados');
@@ -13507,6 +13656,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
   // Carregar agendamentos do banco em background (migra do localStorage se necessário)
   loadAgendamentosFromDB().catch(()=>{});
+  // Verificar manutenções com prazo vencido hoje (exibe popup de confirmação)
+  setTimeout(()=>{ verificarManutencoesFimHoje().catch(()=>{}); }, 3000);
   // Restaurar última página visitada
   const ultimaPag = localStorage.getItem('destak_pagina_atual') || 'motoristas';
   const tabEl = document.querySelector('.sidebar-item[data-page="'+ultimaPag+'"]');
