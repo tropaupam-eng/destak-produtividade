@@ -4040,12 +4040,24 @@ textarea:focus{
   </div>
 
   <!-- ── FILTRO DE STATUS ── -->
-  <div class="exp-filter-bar">
+  <div class="exp-filter-bar" style="flex-wrap:wrap;gap:6px">
     <button class="exp-filter-btn active" onclick="filtrarDemandasStatus('',this)">Todas</button>
     <button class="exp-filter-btn" onclick="filtrarDemandasStatus('pendente',this)">⏳ Pendentes</button>
     <button class="exp-filter-btn" onclick="filtrarDemandasStatus('saiu',this)">🚛 Em Rota</button>
     <button class="exp-filter-btn" onclick="filtrarDemandasStatus('concluido',this)">✅ Concluídas</button>
     <button class="exp-filter-btn" onclick="filtrarDemandasStatus('cancelado',this)">❌ Canceladas</button>
+    <!-- Filtros RI / RE -->
+    <div style="width:100%;height:0;border-top:1px solid var(--border);margin:2px 0"></div>
+    <span style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;align-self:center">Interna</span>
+    <button class="exp-filter-btn" onclick="filtrarTipoStatus('RI','pendente',this)"
+      style="border-color:#3b82f6;color:#1d4ed8">📍 RI Pendentes</button>
+    <button class="exp-filter-btn" onclick="filtrarTipoStatus('RI','saiu',this)"
+      style="border-color:#3b82f6;color:#1d4ed8">🚛 RI em Rota</button>
+    <span style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;align-self:center;margin-left:6px">Externa</span>
+    <button class="exp-filter-btn" onclick="filtrarTipoStatus('RE','pendente',this)"
+      style="border-color:#f59e0b;color:#b45309">🗺️ RE Pendentes</button>
+    <button class="exp-filter-btn" onclick="filtrarTipoStatus('RE','saiu',this)"
+      style="border-color:#f59e0b;color:#b45309">🚛 RE em Rota</button>
     <div style="margin-left:auto">
       <input type="text" id="exp-busca" placeholder="🔍 Buscar motorista, rota, carga..."
         oninput="renderDemandasCards()"
@@ -10117,10 +10129,27 @@ async function criarDemanda(){
 
 // Cache das demandas para filtros sem re-fetch
 let _demandasCache = [];
-let _filtroStatus = '';
+let _filtroStatus    = '';
+let _filtroTipoRota  = ''; // '' | 'RI' | 'RE'
+
+// Helper: retorna tipo da rota (RI/RE) a partir do ROTAS_CACHE
+function getTipoRota(nomeRota){
+  const r = ROTAS_CACHE.find(x=>(x.nome||'').trim().toUpperCase()===(nomeRota||'').trim().toUpperCase());
+  return r?.tipo || '';
+}
 
 function filtrarDemandasStatus(status, btn){
-  _filtroStatus = status;
+  _filtroStatus   = status;
+  _filtroTipoRota = '';
+  document.querySelectorAll('.exp-filter-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  renderDemandasCards();
+}
+
+// Filtro combinado: tipo (RI/RE) + status
+function filtrarTipoStatus(tipo, status, btn){
+  _filtroTipoRota = tipo;
+  _filtroStatus   = status;
   document.querySelectorAll('.exp-filter-btn').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   renderDemandasCards();
@@ -11008,6 +11037,10 @@ function renderDemandasCards(){
   if(_filtroStatus){
     if(_filtroStatus==='pendente') data = data.filter(d=>_preViagem.has(d.status));
     else data = data.filter(d=>d.status===_filtroStatus);
+  }
+  // Filtro RI / RE
+  if(_filtroTipoRota){
+    data = data.filter(d=>getTipoRota(d.rota)===_filtroTipoRota);
   }
   if(busca) data = data.filter(d=>
     (d.motorista||'').toLowerCase().includes(busca) ||
@@ -17509,11 +17542,15 @@ async function carregarPortalSeguros(){
 
   try{
     const nfs = await supaFetch('notas_fiscais?select=*&order=carga.asc') || [];
-    const demandas = await supaFetch('demandas_rota?select=carga,rota,motorista,veiculo,valor_total&carga=not.is.null') || [];
+    const todasDemandas = await supaFetch('demandas_rota?select=carga,rota,motorista,veiculo,valor_total&carga=not.is.null') || [];
+    // Excluir rotas internas (RI) — não passam por seguros
+    const demandas = todasDemandas.filter(d=>getTipoRota(d.rota)!=='RI');
+    const cargasRE = new Set(demandas.map(d=>d.carga).filter(Boolean));
 
-    // Agrupar NFs por carga
+    // Agrupar NFs por carga (apenas cargas RE)
     const cargasMap = {};
     nfs.forEach(n=>{
+      if(!cargasRE.has(n.carga)) return; // ignora cargas RI
       if(!cargasMap[n.carga]) cargasMap[n.carga]={pedidos:{},nfs:[]};
       if(!cargasMap[n.carga].pedidos[n.pedido]) cargasMap[n.carga].pedidos[n.pedido]=[];
       cargasMap[n.carga].pedidos[n.pedido].push(n);
@@ -19089,8 +19126,10 @@ async function carregarPaginaSeguros(){
   const container = document.getElementById('seguros-cargas-inline');
   if(!container) return;
   try{
-    // Seguros vê cargas com NFs emitidas (aguardando_manifesto ou pronto_viagem)
-    const demandasSeg = await supaFetch('demandas_rota?status=eq.aguardando_manifesto&select=*&carga=not.is.null') || [];
+    // Seguros vê cargas com NFs emitidas (aguardando_manifesto) — apenas rotas RE (externas)
+    const _todasSeg = await supaFetch('demandas_rota?status=eq.aguardando_manifesto&select=*&carga=not.is.null') || [];
+    // Excluir rotas internas (RI) — não passam por seguros
+    const demandasSeg = _todasSeg.filter(d=>getTipoRota(d.rota)!=='RI');
     const cargasIdsSeg = demandasSeg.map(d=>d.carga).filter(Boolean);
 
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
