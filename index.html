@@ -10577,9 +10577,17 @@ function limparFiltrosExpedicao(){
 
 
 async function admConcluirCarregamento(demandaId, carga){
-  if(!confirm('Confirmar carregamento concluído da carga '+carga+'? (ADM)')) return;
+  // ─── REGRA: o armazém NÃO pode avançar o status diretamente.
+  // Somente o CONFERENTE pode concluir o carregamento (via concluirCarregamentoConferente).
+  // Esta função agora bloqueia caso não haja nenhuma conferência registrada.
   try{
-    // Atualizar status armazém
+    const confOK = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=id&limit=1`) || [];
+    if(!confOK.length){
+      showToast('⛔ Não é permitido concluir sem conferência do conferente. Atribua um conferente e aguarde a conferência.','warning');
+      return;
+    }
+    // Há conferências — permitir apenas como fallback de emergência (ADM)
+    if(!confirm('ATENÇÃO: Há conferências registradas.\nConfirmar carregamento concluído da carga '+carga+'? (ADM)')) return;
     const cfg = await supaFetch('configuracoes?chave=eq.arm_status&select=valor');
     let armStatus = cfg&&cfg[0]?cfg[0].valor||{}:{};
     armStatus[demandaId] = 'carregado_ok';
@@ -10588,8 +10596,7 @@ async function admConcluirCarregamento(demandaId, carga){
     } else {
       await supaFetch('configuracoes',{method:'POST',body:JSON.stringify({chave:'arm_status',valor:armStatus})});
     }
-    // Status da demanda → aguardando NF
-    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_nf'})});
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
     showToast('✅ Carga '+carga+' carregada! Aguardando NF.','success');
     await carregarDemandas();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -19746,12 +19753,14 @@ async function vincularConferente(demandaId, carga){
       })
     });
 
-    // Avançar status da demanda para "separacao" automaticamente
-    // Consulta o banco diretamente (não depende do cache local)
+    // Avançar status da demanda para "separacao" automaticamente ao vincular conferente.
+    // Regra: quando armazém atribui conferente → status vai para separacao.
+    // Somente o CONFERENTE pode avançar de separacao para carregamento (ao iniciar a conferência).
     try{
       const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
       const demAtual = demDB && demDB[0];
-      if(demAtual && demAtual.status==='pendente'){
+      // Avança para separacao a partir de pendente OU carregamento (caso carga tenha sido reaberta)
+      if(demAtual && ['pendente','carregamento'].includes(demAtual.status)){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
           method:'PATCH',
           body:JSON.stringify({status:'separacao', ts_separacao:new Date().toISOString()})
@@ -19783,7 +19792,7 @@ async function vincularConferentePorCarga(demandaId, carga, selectId){
     });
     try{
       const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
-      if(demDB&&demDB[0]&&demDB[0].status==='pendente'){
+      if(demDB&&demDB[0]&&['pendente','carregamento'].includes(demDB[0].status)){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
         const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
       }
@@ -19808,7 +19817,7 @@ async function vincularConferentePorConf(confId, confNome, selectId){
     });
     try{
       const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
-      if(demDB&&demDB[0]&&demDB[0].status==='pendente'){
+      if(demDB&&demDB[0]&&['pendente','carregamento'].includes(demDB[0].status)){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
         const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
       }
