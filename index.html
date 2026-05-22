@@ -17918,13 +17918,13 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   const container = document.getElementById(containerId);
   if(!container) return;
 
-  // Cargas com NF emitida (aguardando_manifesto ou aguardando_nf) — caixa valida em paralelo ao seguros
-  // Caixa:
-  // Etapa 1 — aguardando_manifesto: fiscal concluiu, caixa valida antes de sair
-  // Etapa 2 — saiu/pronto_viagem: em viagem (só visualiza)
-  // Etapa 3 — fim_viagem: retornou, caixa faz conferência final e fecha
-  const _demRaw = await supaFetch('demandas_rota?status=in.(aguardando_manifesto,pronto_viagem,saiu,fim_viagem)&select=*&order=criado_em.desc') || [];
-  const _ordemCaixa = {fim_viagem:0,aguardando_manifesto:1,pronto_viagem:2,saiu:3};
+  // Caixa vê:
+  // aguardando_nf     → fiscal ainda emitindo NFs — caixa acompanha, valida pedidos que já têm NF
+  // aguardando_manifesto → fiscal concluiu — caixa valida / libera para viagem
+  // pronto_viagem / saiu → em viagem (só visualiza)
+  // fim_viagem        → retornou — caixa confere e fecha
+  const _demRaw = await supaFetch('demandas_rota?status=in.(aguardando_nf,aguardando_manifesto,pronto_viagem,saiu,fim_viagem)&select=*&order=criado_em.desc') || [];
+  const _ordemCaixa = {fim_viagem:0,aguardando_manifesto:1,aguardando_nf:2,pronto_viagem:3,saiu:4};
   const demandas = _demRaw.sort((a,b)=>(_ordemCaixa[a.status]??1)-(_ordemCaixa[b.status]??1));
   const cargasIds = demandas.map(d=>d.carga).filter(Boolean);
 
@@ -17936,23 +17936,27 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
     return;
   }
 
-  // Buscar pedidos conferidos OK
-  const conferidos = await supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&status=eq.ok&select=carga,pedido`) || [];
-  // Buscar validações já feitas
-  const valids = await supaFetch(`validacoes_caixa?carga=in.(${cargasIds.join(',')})&select=*`) || [];
-  // Buscar NFs (inclui tipo e url para auto-selecionar boleto e permitir download)
-  const nfs = await supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido,tipo,url,nome_arquivo&limit=1000&order=carga.asc,pedido.asc`) || [];
-  // Buscar base_data para valores
-  const bdData = await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota`) || [];
-  // fim_viagem: sempre aparece no Caixa (motorista retornou, precisa fechar a carga)
-  // Outros status: só aparece se a carga já tem pedidos conferidos pelo Fiscal
-  const cargasComPedidos = new Set(conferidos.map(c=>c.carga));
-  const demandasComPedidos = demandas.filter(d=>
-    d.status === 'fim_viagem' || cargasComPedidos.has(d.carga)
-  );
+  // Todos os pedidos de cada carga (base_data) — caixa vê tudo
+  const [todosPedidos, valids, nfs, bdData, atribsFiscal] = await Promise.all([
+    supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota&order=carga.asc,pedido.asc`).catch(()=>[]),
+    supaFetch(`validacoes_caixa?carga=in.(${cargasIds.join(',')})`).catch(()=>[]),
+    supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido,tipo,url,nome_arquivo&limit=1000&order=carga.asc,pedido.asc`).catch(()=>[]),
+    supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota`).catch(()=>[]),
+    supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=carga,pedido,fiscal_nome,status`).catch(()=>[])
+  ]);
 
-  const totalPed = conferidos.length;
-  const totalOk  = valids.filter(v=>v.status==='validado').length;
+  // Montar mapa: carga → pedidos únicos (Set)
+  const pedidosPorCarga = {};
+  (todosPedidos||[]).forEach(r=>{
+    if(!pedidosPorCarga[r.carga]) pedidosPorCarga[r.carga]=new Set();
+    pedidosPorCarga[r.carga].add(r.pedido);
+  });
+
+  // Sempre mostrar todas as demandas (caixa acompanha desde aguardando_nf)
+  const demandasComPedidos = demandas;
+
+  const totalPed = Object.values(pedidosPorCarga).reduce((s,set)=>s+set.size,0);
+  const totalOk  = (valids||[]).filter(v=>v.status==='validado').length;
   set(kpiPrefix+'cargas', demandasComPedidos.length);
   set(kpiPrefix+'ok', totalOk);
   set(kpiPrefix+'pend', totalPed - totalOk);
@@ -17970,22 +17974,25 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   };
 
   const stLabel = {
+    aguardando_nf:       'Fiscal Emitindo NFs',
     aguardando_manifesto:'Aguardando Caixa',
-    pronto_viagem:'Pronto p/ Viagem',
-    saiu:'Em Viagem 🚛',
-    fim_viagem:'Retornou — Conferência',
+    pronto_viagem:       'Pronto p/ Viagem',
+    saiu:                'Em Viagem 🚛',
+    fim_viagem:          'Retornou — Conferência',
   };
 
   container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px">` +
   demandasComPedidos.map(d=>{
-    const pedidos = [...new Set(conferidos.filter(p=>p.carga===d.carga).map(p=>p.pedido))].sort((a,b)=>a-b);
-    const valCarga = valids.filter(v=>v.carga===d.carga);
-    const nfsCarga = nfs.filter(n=>n.carga===d.carga);
+    const pedidos  = [...(pedidosPorCarga[d.carga]||new Set())].sort((a,b)=>a-b);
+    const valCarga = (valids||[]).filter(v=>v.carga===d.carga);
+    const nfsCarga = (nfs||[]).filter(n=>n.carga===d.carga);
+    const atribsCarga = (atribsFiscal||[]).filter(a=>a.carga===d.carga);
     // Pré-cachear para abrirPaginaImpressao (função síncrona)
     window._nfDocsCache = window._nfDocsCache || {};
     window._nfDocsCache[d.carga] = nfsCarga;
     const ehRetorno = d.status==='fim_viagem';
-    const etapa = ehRetorno ? 'retorno' : d.status==='saiu' ? 'viagem' : 'saida';
+    const fiscalEmitindo = d.status==='aguardando_nf';
+    const etapa = ehRetorno ? 'retorno' : (d.status==='saiu'||fiscalEmitindo) ? 'viagem' : 'saida';
 
     const validados  = valCarga.filter(v=>v.status==='validado').length;
     const baixasOk   = valCarga.filter(v=>v.status==='baixa_ok').length;
@@ -17993,54 +18000,88 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
     const pct = pedidos.length > 0 ? Math.round((contOk/pedidos.length)*100) : 0;
     const tudoOK = pedidos.length > 0 && contOk >= pedidos.length;
 
+    // Progresso do fiscal: pedidos com NF emitida ÷ total pedidos
+    const pedsComNF = new Set(nfsCarga.filter(n=>n.pedido!==0).map(n=>n.pedido));
+    const pctFiscal = pedidos.length > 0 ? Math.round(pedsComNF.size/pedidos.length*100) : 0;
+    const fiscalConcluidoTudo = pedidos.length > 0 && pedsComNF.size >= pedidos.length;
+
     // Quadradinhos por pedido
     const squares = pedidos.map(ped=>{
-      const val = valCarga.find(v=>v.pedido===ped);
-      const hasNF = nfsCarga.some(n=>n.pedido===ped);
+      const val   = valCarga.find(v=>v.pedido===ped);
+      const hasNF = nfsCarga.some(n=>n.pedido===ped&&n.pedido!==0);
+      const atrib = atribsCarga.find(a=>a.pedido===ped&&a.status==='em_andamento');
       let key = val?.status||'pendente';
-      if(key==='pendente' && etapa==='viagem') key='viagem';
+      if(key==='pendente' && (etapa==='viagem'||fiscalEmitindo)&&hasNF) key='pendente';
+      else if(key==='pendente' && etapa==='viagem') key='viagem';
       if(key==='pendente' && !hasNF) key='sem_nf';
       const c = stColor[key]||stColor.pendente;
-      return `<span title="Pedido ${ped}${val?` — ${val.forma_pagamento||''} ${fv(val.valor_confirmado||0)}`:''}"
+      const tooltip = `Pedido ${ped}${hasNF?' — NF emitida':''}${atrib?` — Fiscal: ${atrib.fiscal_nome}`:''}${val?` — ${val.forma_pagamento||''} ${fv(val.valor_confirmado||0)}`:''}`;
+      return `<span title="${tooltip}"
         style="display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:8px;
                background:${c.bg};border:1.5px solid ${c.bd};color:${c.tx};
                font-size:.68rem;font-weight:800;cursor:default;line-height:1;flex-direction:column;gap:1px">
-        ${ped}
+        ${ped}${hasNF?'<span style="font-size:.45rem;line-height:1">📋</span>':''}
       </span>`;
     }).join('');
 
-    // Formulários para pedidos pendentes (só etapa saida/retorno)
-    const forms = etapa==='viagem' ? '' : pedidos.map(ped=>{
+    // Formulários para pedidos — caixa vê todos, mas só valida com NF emitida
+    const forms = pedidos.map(ped=>{
       const val   = valCarga.find(v=>v.pedido===ped);
-      const bdPed = bdData.find(r=>r.carga===d.carga&&r.pedido===ped);
-      const hasNF = nfsCarga.some(n=>n.pedido===ped);
+      const bdPed = (bdData||[]).find(r=>r.carga===d.carga&&r.pedido===ped);
+      const hasNF = nfsCarga.some(n=>n.pedido===ped&&n.pedido!==0);
+      const atrib = atribsCarga.find(a=>a.pedido===ped&&a.status==='em_andamento');
       const st    = val?.status||'pendente';
+      const fiscalInfo = atrib
+        ? `<span style="font-size:.64rem;background:rgba(5,150,105,.1);color:#065f46;padding:1px 6px;border-radius:4px;font-weight:700">👤 ${atrib.fiscal_nome}</span>`
+        : '';
 
-      if(etapa==='saida'){
-        if(st==='validado') return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#f0fdf4;border:1px solid #86efac;border-radius:7px">
+      if(ehRetorno){
+        if(st==='baixa_ok') return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#dbeafe;border:1px solid #93c5fd;border-radius:7px">
+          <span style="font-size:.72rem;font-weight:800;color:#1e40af;min-width:38px">P.${ped}</span>
+          <span style="font-size:.75rem;font-weight:700;color:#2563eb">✅ Baixa OK</span>
+        </div>`;
+        return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:7px">
+          <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+            <span style="font-size:.72rem;font-weight:800;color:var(--text-primary);min-width:38px">P.${ped}</span>
+            <span style="font-size:.72rem;color:var(--text-secondary)">${val?.forma_pagamento||'—'} • ${fv(val?.valor_confirmado||bdPed?.valor||0)}</span>
+            ${!val?.valor_confirmado&&bdPed?.valor?`<span style="font-size:.65rem;color:#92400e;background:#fef9c3;border:1px solid #fde68a;border-radius:4px;padding:1px 5px">📋 Base</span>`:''}
+            ${fiscalInfo}
+            <input type="text" id="pgto-retorno-obs-${d.carga}-${ped}" placeholder="Obs"
+              style="border:1px solid var(--border-med);border-radius:5px;padding:3px 5px;font-size:.72rem;outline:none;width:70px;background:var(--bg-input);color:var(--text-primary)"/>
+            <button onclick="baixaPedidoCaixa(${d.carga},${ped})" style="background:#2563eb;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.73rem;font-weight:700;cursor:pointer">💵 Baixa</button>
+            <button onclick="validarPedidoCaixa(${d.carga},${ped},'divergencia')" style="background:#ef4444;color:#fff;border:none;border-radius:5px;padding:3px 7px;font-size:.73rem;font-weight:700;cursor:pointer">⚠️</button>
+          </div>
+        </div>`;
+      }
+
+      // etapa saida / fiscal emitindo
+      if(st==='validado') return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#f0fdf4;border:1px solid #86efac;border-radius:7px">
           <span style="font-size:.72rem;font-weight:800;color:#065f46;min-width:38px">P.${ped}</span>
           <span style="font-size:.75rem;font-weight:700;color:#059669;flex:1">✅ ${val.forma_pagamento||'OK'} • ${fv(val.valor_confirmado||0)}${val.caixa_nome?` <span style="font-size:.65rem;font-weight:400;color:#6b7280">— ${val.caixa_nome}</span>`:''}</span>
           <button onclick="validarPedidoCaixa(${d.carga},${ped},'pendente')" style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:5px;padding:2px 6px;font-size:.65rem;cursor:pointer">↩</button>
         </div>`;
-        if(!hasNF) return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fef9c3;border:1px solid #fde68a;border-radius:7px">
+      if(!hasNF) return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fef9c3;border:1px solid #fde68a;border-radius:7px">
           <span style="font-size:.72rem;font-weight:800;color:#92400e;min-width:38px">P.${ped}</span>
-          <span style="font-size:.74rem;color:#92400e;font-style:italic">Aguardando NF do Fiscal</span>
+          <span style="font-size:.74rem;color:#92400e;flex:1">⏳ Aguardando NF do Fiscal</span>
+          ${fiscalInfo}
         </div>`;
-        if(st==='divergencia') return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fee2e2;border:1px solid #fca5a5;border-radius:7px;flex-wrap:wrap">
+      if(st==='divergencia') return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fee2e2;border:1px solid #fca5a5;border-radius:7px;flex-wrap:wrap">
           <span style="font-size:.72rem;font-weight:800;color:#991b1b;min-width:38px">P.${ped}</span>
-          <span style="font-size:.72rem;color:#ef4444">⚠️ ${val?.observacao||'Divergência'}</span>
-          <button onclick="validarPedidoCaixa(${d.carga},${ped},'pendente')" style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:5px;padding:2px 6px;font-size:.65rem;cursor:pointer;margin-left:auto">↩</button>
+          <span style="font-size:.72rem;color:#ef4444;flex:1">⚠️ ${val?.observacao||'Divergência'}</span>
+          ${fiscalInfo}
+          <button onclick="validarPedidoCaixa(${d.carga},${ped},'pendente')" style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:5px;padding:2px 6px;font-size:.65rem;cursor:pointer">↩</button>
         </div>`;
-        // pendente com NF — mostrar form
-        const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
-        const _eBoleto  = n => n.tipo==='boleto' || (!n.tipo && /boleto/i.test(n.nome_arquivo||''));
-        const _eNF      = n => n.tipo==='nf'     || (!n.tipo && !/boleto/i.test(n.nome_arquivo||''));
-        const boletoPed = nfsPed.find(_eBoleto);
-        const nfPed     = nfsPed.find(_eNF);
-        const formaAuto = val?.forma_pagamento || (boletoPed ? 'Boleto' : '');
-        return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid ${boletoPed?'rgba(234,179,8,.4)':'var(--border-med)'};border-radius:7px">
+      // pendente com NF — mostrar form de validação
+      const nfsPed    = nfsCarga.filter(n=>n.pedido===ped&&n.pedido!==0);
+      const _eBoleto  = n => n.tipo==='boleto' || (!n.tipo && /boleto/i.test(n.nome_arquivo||''));
+      const _eNF      = n => n.tipo==='nf'     || (!n.tipo && !/boleto/i.test(n.nome_arquivo||''));
+      const boletoPed = nfsPed.find(_eBoleto);
+      const nfPed     = nfsPed.find(_eNF);
+      const formaAuto = val?.forma_pagamento || (boletoPed ? 'Boleto' : '');
+      return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid ${boletoPed?'rgba(234,179,8,.4)':'var(--border-med)'};border-radius:7px">
           <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
             <span style="font-size:.72rem;font-weight:800;color:var(--text-primary);min-width:38px">P.${ped}</span>
+            ${fiscalInfo}
             <select id="pgto-forma-${d.carga}-${ped}" style="border:1px solid ${boletoPed?'#eab308':'var(--border-med)'};border-radius:5px;padding:3px 5px;font-size:.73rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
               <option value="" ${!formaAuto?'selected':''}>-- Forma --</option>
               ${FORMAS_PGTO.map(f=>`<option value="${f}" ${formaAuto===f?'selected':''}>${f}</option>`).join('')}
@@ -18056,26 +18097,10 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
           </div>
           ${boletoPed&&!formaAuto?`<div style="font-size:.63rem;color:#a16207;margin-top:3px;padding-left:46px">📄 Boleto detectado — forma de pagamento pré-selecionada</div>`:''}
         </div>`;
-      }
-      // etapa retorno
-      if(st==='baixa_ok') return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#dbeafe;border:1px solid #93c5fd;border-radius:7px">
-        <span style="font-size:.72rem;font-weight:800;color:#1e40af;min-width:38px">P.${ped}</span>
-        <span style="font-size:.75rem;font-weight:700;color:#2563eb">✅ Baixa OK</span>
-      </div>`;
-      return `<div style="padding:6px 8px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:7px">
-        <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
-          <span style="font-size:.72rem;font-weight:800;color:var(--text-primary);min-width:38px">P.${ped}</span>
-          <span style="font-size:.72rem;color:var(--text-secondary)">${val?.forma_pagamento||'—'} • ${fv(val?.valor_confirmado || bdPed?.valor || 0)}</span>
-          ${!val?.valor_confirmado && bdPed?.valor ? `<span style="font-size:.65rem;color:#92400e;background:#fef9c3;border:1px solid #fde68a;border-radius:4px;padding:1px 5px">📋 Base</span>` : ''}
-          <input type="text" id="pgto-retorno-obs-${d.carga}-${ped}" placeholder="Obs"
-            style="border:1px solid var(--border-med);border-radius:5px;padding:3px 5px;font-size:.72rem;outline:none;width:70px;background:var(--bg-input);color:var(--text-primary)"/>
-          <button onclick="baixaPedidoCaixa(${d.carga},${ped})" style="background:#2563eb;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:.73rem;font-weight:700;cursor:pointer">💵 Baixa</button>
-          <button onclick="validarPedidoCaixa(${d.carga},${ped},'divergencia')" style="background:#ef4444;color:#fff;border:none;border-radius:5px;padding:3px 7px;font-size:.73rem;font-weight:700;cursor:pointer">⚠️</button>
-        </div>
-      </div>`;
     }).join('');
 
     const btnConcluir = (()=>{
+      if(fiscalEmitindo) return `<p style="text-align:center;font-size:.78rem;color:#6366f1;font-weight:700;padding:4px 0">📋 Aguardando Fiscal concluir NFs (${pctFiscal}%)</p>`;
       if(d.status==='saiu') return '<p style="text-align:center;font-size:.78rem;color:#2563eb;font-weight:700;padding:4px 0">🚛 Em viagem</p>';
       // Sem pedidos conferidos (ex: viagem sem NF fiscal): mostrar diretamente o botão de fechar
       if(pedidos.length === 0 && ehRetorno){
@@ -18098,8 +18123,8 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
       </button>`;
     })();
 
-    const statusBg  = {aguardando_manifesto:'rgba(5,150,105,.1)',pronto_viagem:'rgba(37,99,235,.1)',saiu:'rgba(37,99,235,.12)',fim_viagem:'rgba(124,58,237,.1)'};
-    const statusTx  = {aguardando_manifesto:'#065f46',pronto_viagem:'#1d4ed8',saiu:'#1e40af',fim_viagem:'#5b21b6'};
+    const statusBg  = {aguardando_nf:'rgba(99,102,241,.1)',aguardando_manifesto:'rgba(5,150,105,.1)',pronto_viagem:'rgba(37,99,235,.1)',saiu:'rgba(37,99,235,.12)',fim_viagem:'rgba(124,58,237,.1)'};
+    const statusTx  = {aguardando_nf:'#4f46e5',aguardando_manifesto:'#065f46',pronto_viagem:'#1d4ed8',saiu:'#1e40af',fim_viagem:'#5b21b6'};
 
     return `<div style="background:var(--bg-card);border:1.5px solid ${tudoOK?'#059669':'var(--border)'};border-radius:14px;overflow:hidden;display:flex;flex-direction:column">
 
@@ -18119,13 +18144,23 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
         <div style="font-size:.75rem;color:var(--text-secondary)">🚗 ${d.motorista||'—'}</div>
       </div>
 
-      <!-- Barra % -->
-      <div style="padding:6px 14px 0;display:flex;align-items:center;gap:6px">
+      <!-- Barra % Fiscal (progresso NFs emitidas) -->
+      <div style="padding:6px 14px 2px;display:flex;align-items:center;gap:6px">
+        <span style="font-size:.62rem;font-weight:700;color:${fiscalConcluidoTudo?'#059669':'#6366f1'};white-space:nowrap">📋 Fiscal</span>
+        <div style="flex:1;height:5px;background:var(--bg-card2);border-radius:3px">
+          <div style="height:100%;width:${pctFiscal}%;background:${fiscalConcluidoTudo?'#059669':'#6366f1'};border-radius:3px;transition:width .3s"></div>
+        </div>
+        <span style="font-size:.68rem;font-weight:800;color:${fiscalConcluidoTudo?'#059669':'#6366f1'};min-width:28px;text-align:right">${pctFiscal}%</span>
+        <span style="font-size:.65rem;color:var(--text-muted)">${pedsComNF.size}/${pedidos.length} NFs</span>
+      </div>
+      <!-- Barra % Caixa (progresso validações) -->
+      <div style="padding:2px 14px 0;display:flex;align-items:center;gap:6px">
+        <span style="font-size:.62rem;font-weight:700;color:${pct===100?'#059669':'#059669'};white-space:nowrap">💵 Caixa</span>
         <div style="flex:1;height:5px;background:var(--bg-card2);border-radius:3px">
           <div style="height:100%;width:${pct}%;background:${pct===100?'#059669':'#3b82f6'};border-radius:3px;transition:width .3s"></div>
         </div>
-        <span style="font-size:.7rem;font-weight:800;color:${pct===100?'#059669':'var(--text-secondary)'};min-width:28px;text-align:right">${pct}%</span>
-        <span style="font-size:.68rem;color:var(--text-muted)">${contOk}/${pedidos.length}</span>
+        <span style="font-size:.68rem;font-weight:800;color:${pct===100?'#059669':'var(--text-secondary)'};min-width:28px;text-align:right">${pct}%</span>
+        <span style="font-size:.65rem;color:var(--text-muted)">${contOk}/${pedidos.length}</span>
       </div>
 
       <!-- Quadradinhos de pedidos -->
