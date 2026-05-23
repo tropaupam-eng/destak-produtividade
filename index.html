@@ -6114,6 +6114,47 @@ function limparCacheERecarregar(){
   location.reload(true);
 }
 
+// ── Timers de separação e carregamento ──────────────────────────────────────
+function calcTempoDecorrido(tsInicio, tsPausa, tempoPausadoSeg){
+  if(!tsInicio) return null;
+  const inicio = new Date(tsInicio).getTime();
+  const fim    = tsPausa ? new Date(tsPausa).getTime() : Date.now();
+  const totalMs  = Math.max(0, fim - inicio - (tempoPausadoSeg||0)*1000);
+  const totalSeg = Math.floor(totalMs/1000);
+  const h = Math.floor(totalSeg/3600);
+  const m = Math.floor((totalSeg%3600)/60);
+  const s = totalSeg%60;
+  if(h>0)  return `${h}h ${m}min`;
+  if(m>0)  return `${m}min ${s}s`;
+  return `${s}s`;
+}
+function podeGerenciarTimer(){
+  const p = USUARIO_LOGADO?.perfil||'';
+  return ['admin','adm_armazem'].includes(p);
+}
+async function pausarTimer(demandaId){
+  try{
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',
+      body:JSON.stringify({ts_pausa:new Date().toISOString()})});
+    const d=(_demandasCache||[]).find(x=>x.id===demandaId);
+    if(d) d.ts_pausa=new Date().toISOString();
+    showToast('⏸ Timer pausado','info');
+    await renderArmazem();
+  }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+async function retomarTimer(demandaId, tsPausaAtual, tempoPausadoAtual){
+  try{
+    const pausaSeg = Math.floor((Date.now()-new Date(tsPausaAtual).getTime())/1000);
+    const total    = (tempoPausadoAtual||0)+pausaSeg;
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',
+      body:JSON.stringify({ts_pausa:null,tempo_pausado_seg:total})});
+    const d=(_demandasCache||[]).find(x=>x.id===demandaId);
+    if(d){ d.ts_pausa=null; d.tempo_pausado_seg=total; }
+    showToast('▶ Timer retomado','success');
+    await renderArmazem();
+  }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+
 function toggleTema(){
   const isLight = document.body.classList.toggle('light-theme');
   localStorage.setItem('tema',''+isLight);
@@ -21187,6 +21228,27 @@ async function renderArmazem(){
                   <span style="color:#ef4444">❌ ${pedNok} NOK</span>
                   <span style="color:var(--text-muted)">⏳ ${pend} pendentes</span>
                 </div>
+                ${(()=>{
+                  const tSep  = calcTempoDecorrido(dem.ts_separacao, dem.ts_carregamento||dem.ts_pausa, dem.ts_carregamento?0:dem.tempo_pausado_seg);
+                  const tCar  = dem.ts_carregamento ? calcTempoDecorrido(dem.ts_carregamento, dem.ts_pausa, dem.tempo_pausado_seg) : null;
+                  const pausado = !!dem.ts_pausa;
+                  const podePausar = podeGerenciarTimer();
+                  let timerHtml = '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;font-size:.62rem">';
+                  if(tSep) timerHtml += `<span style="background:rgba(99,102,241,.1);color:#818cf8;border-radius:5px;padding:2px 7px;font-weight:700" title="Tempo de separação">🔧 Sep: ${tSep}</span>`;
+                  if(tCar){
+                    const carColor = pausado?'#f59e0b':'#3b82f6';
+                    timerHtml += `<span id="timer-car-${dem.id}" style="background:rgba(59,130,246,.1);color:${carColor};border-radius:5px;padding:2px 7px;font-weight:700;${pausado?'opacity:.7':''}">⏱ Car: ${tCar}${pausado?' ⏸':''}</span>`;
+                    if(podePausar){
+                      if(pausado){
+                        timerHtml += `<button onclick="retomarTimer('${dem.id}','${dem.ts_pausa}',${dem.tempo_pausado_seg||0})" style="background:rgba(5,150,105,.15);color:#059669;border:1px solid rgba(5,150,105,.3);border-radius:5px;padding:1px 7px;font-size:.62rem;font-weight:700;cursor:pointer">▶ Retomar</button>`;
+                      } else {
+                        timerHtml += `<button onclick="pausarTimer('${dem.id}')" style="background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.3);border-radius:5px;padding:1px 7px;font-size:.62rem;font-weight:700;cursor:pointer">⏸ Pausar</button>`;
+                      }
+                    }
+                  }
+                  timerHtml += '</div>';
+                  return (tSep||tCar) ? timerHtml : '';
+                })()}
                 <button onclick="verPedidosConferencia(${dem.carga},'${a.id}','${a.conferente_id||''}','${(a.conferente_nome||'').replace(/'/g,"\\'")}') "
                   style="width:100%;margin-top:7px;background:rgba(59,130,246,.1);color:#2563eb;border:1px solid rgba(59,130,246,.3);border-radius:7px;padding:5px;font-size:.72rem;font-weight:700;cursor:pointer">
                   📋 Ver Pedidos para Conferir
@@ -21573,7 +21635,7 @@ async function conferirPedido(carga, pedido, status, atribId){
     } else {
       await supaFetch('conferencia_pedidos',{method:'POST',body:JSON.stringify(body)});
     }
-    // Primeiro pedido conferido → entra em carregamento automaticamente
+    // Primeiro pedido conferido → inicia timer de carregamento
     try{
       const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
       if(demanda){
@@ -21581,12 +21643,15 @@ async function conferirPedido(carga, pedido, status, atribId){
         if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
           await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
           demanda.arm_status = 'carregamento';
-          if(['pendente','separacao'].includes(demanda.status)){
-            await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
-              method:'PATCH',body:JSON.stringify({status:'carregamento',ts_carregamento:new Date().toISOString()})
-            }).catch(()=>{});
-            demanda.status = 'carregamento';
-          }
+        }
+        // Se ainda não tem ts_carregamento, inicia agora (independente do status)
+        if(!demanda.ts_carregamento){
+          const tsNow = new Date().toISOString();
+          await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
+            method:'PATCH',body:JSON.stringify({status:'carregamento',ts_carregamento:tsNow,ts_pausa:null,tempo_pausado_seg:0})
+          }).catch(()=>{});
+          demanda.status='carregamento'; demanda.ts_carregamento=tsNow;
+          demanda.ts_pausa=null; demanda.tempo_pausado_seg=0;
         }
       }
     }catch(_){}
