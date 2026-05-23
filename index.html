@@ -6597,8 +6597,8 @@ async function filtrarSidebarPorPerfil(){
     // ── Fiscal ──
     'fiscal_op':        ['dashboard','fiscal'],
     'opedor_fiscal':    ['dashboard','fiscal'],
-    'fiscal_admin':     ['dashboard','fiscal','seguros','motoristas','veiculos','geral','financeiro','historico'],
-    'adm_fiscal':       ['dashboard','fiscal','seguros','caixa','motoristas','veiculos','geral','financeiro','historico','cadastros'],
+    'fiscal_admin':     ['dashboard','fiscal','gestao-fiscal','seguros','motoristas','veiculos','geral','financeiro','historico'],
+    'adm_fiscal':       ['dashboard','fiscal','gestao-fiscal','seguros','caixa','motoristas','veiculos','geral','financeiro','historico','cadastros'],
     // ── Comercial ──
     'comercial':        ['dashboard','comercial-rotas','historico','geral'],
     // ── Outros portais dedicados (sidebar vazia — portal próprio) ──
@@ -21021,6 +21021,96 @@ async function resolverCancelamento(id){
   }catch(e){ showToast('Erro: '+e.message,'error'); }
 }
 
+// ── Alertas de rota para fiscal ──────────────────────────────
+async function toggleAlertaFiscal(carga, pedido, rota, btn){
+  if(!USUARIO_LOGADO?.id){ showToast('Usuário não identificado','warning'); return; }
+  const key = `${carga}_${pedido}`;
+  const alertas = window._meusAlertas || new Set();
+  try{
+    if(alertas.has(key)){
+      // Desativar
+      await supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&carga=eq.${carga}&pedido=eq.${pedido}`,{method:'DELETE'});
+      alertas.delete(key);
+      if(btn){ btn.textContent='🔕'; btn.title='Ser notificado quando esta rota finalizar';
+        btn.style.background='rgba(107,114,128,.1)'; btn.style.color='#6b7280'; btn.style.borderColor='rgba(107,114,128,.2)'; }
+      showToast('🔕 Alerta removido','info');
+    } else {
+      // Ativar
+      await supaFetch('alertas_fiscal',{method:'POST',body:JSON.stringify({
+        fiscal_id: USUARIO_LOGADO.id,
+        fiscal_nome: USUARIO_LOGADO.nome,
+        carga: Number(carga),
+        pedido: Number(pedido),
+        rota: rota||'',
+        status: 'pendente'
+      })});
+      alertas.add(key);
+      if(btn){ btn.textContent='🔔'; btn.title='Remover alerta desta rota';
+        btn.style.background='rgba(251,191,36,.2)'; btn.style.color='#f59e0b'; btn.style.borderColor='rgba(251,191,36,.4)'; }
+      showToast('🔔 Você será notificado quando esta rota finalizar','success');
+    }
+    window._meusAlertas = alertas;
+  }catch(e){ showToast('Erro ao salvar alerta: '+e.message,'error'); }
+}
+
+function _mostrarPopupAlerta(rotas){
+  let popup = document.getElementById('popup-alerta-fiscal');
+  if(!popup){
+    popup = document.createElement('div');
+    popup.id = 'popup-alerta-fiscal';
+    popup.style.cssText='position:fixed;bottom:24px;right:24px;z-index:99999;display:flex;flex-direction:column;gap:8px;max-width:340px';
+    document.body.appendChild(popup);
+  }
+  rotas.forEach(r=>{
+    const card = document.createElement('div');
+    card.style.cssText='background:#0f172a;border:2px solid #f59e0b;border-radius:14px;padding:16px 18px;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:_fadeInUp .3s ease;display:flex;gap:12px;align-items:flex-start';
+    card.innerHTML=`<span style="font-size:1.5rem;flex-shrink:0">🔔</span><div style="flex:1"><div style="font-size:.88rem;font-weight:800;color:#f59e0b;margin-bottom:4px">Rota Finalizada!</div><div style="font-size:.82rem;color:#e2e8f0;line-height:1.4">A rota <b>${r.rota||r.carga}</b> vinculada ao pedido <b>${r.pedido}</b> foi concluída.</div><button onclick="this.closest('[id^=popup]')?this.parentNode.parentNode.parentNode.removeChild(this.parentNode.parentNode):null;this.parentNode.parentNode.remove()" style="margin-top:8px;background:rgba(245,158,11,.15);color:#f59e0b;border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:3px 12px;font-size:.75rem;cursor:pointer">Dispensar</button></div>`;
+    popup.appendChild(card);
+    // Auto-remove após 30s
+    setTimeout(()=>{ try{ popup.removeChild(card); }catch(e){} }, 30000);
+  });
+}
+
+let _alertaPollingTimer = null;
+async function iniciarPollingAlertasFiscal(){
+  if(_alertaPollingTimer) clearInterval(_alertaPollingTimer);
+  await _checkAlertasFiscal();
+  _alertaPollingTimer = setInterval(_checkAlertasFiscal, 30000);
+}
+async function _checkAlertasFiscal(){
+  if(!USUARIO_LOGADO?.id) return;
+  if(!['fiscal_admin','fiscal_op','opedor_fiscal','adm_fiscal','admin'].includes(USUARIO_LOGADO?.perfil||'')) return;
+  try{
+    // Buscar alertas pendentes deste usuário
+    const alertas = await supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=id,carga,pedido,rota`).catch(()=>[]);
+    if(!(alertas||[]).length) return;
+    // Verificar se alguma dessas cargas está concluída ou fim_viagem
+    const cargas = [...new Set(alertas.map(a=>a.carga))];
+    const demandas = await supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&status=in.(concluido,fim_viagem)&select=carga,status,rota`).catch(()=>[]);
+    if(!(demandas||[]).length) return;
+    const cargasConcluidas = new Set(demandas.map(d=>d.carga));
+    const rotaMap = {};
+    demandas.forEach(d=>{ rotaMap[d.carga]=d.rota||''; });
+    // Filtrar alertas para essas cargas
+    const paraNotificar = alertas.filter(a=>cargasConcluidas.has(a.carga));
+    if(!paraNotificar.length) return;
+    // Marcar como notificado
+    const ids = paraNotificar.map(a=>a.id);
+    await supaFetch(`alertas_fiscal?id=in.(${ids.join(',')})`,{method:'PATCH',body:JSON.stringify({status:'notificado',notificado_em:new Date().toISOString()})}).catch(()=>{});
+    // Remover do Set local
+    paraNotificar.forEach(a=>{ if(window._meusAlertas) window._meusAlertas.delete(`${a.carga}_${a.pedido}`); });
+    // Mostrar pop-ups
+    _mostrarPopupAlerta(paraNotificar.map(a=>({...a, rota: rotaMap[a.carga]||a.rota})));
+  }catch(e){ console.warn('Polling alertas fiscal:', e); }
+}
+
+if(!document.getElementById('_css_fadeInUp')){
+  const _s=document.createElement('style');
+  _s.id='_css_fadeInUp';
+  _s.textContent='@keyframes _fadeInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}';
+  document.head.appendChild(_s);
+}
+
 async function carregarPaginaFiscal(){
   const container = document.getElementById('fiscal-cargas-inline');
   if(!container) return;
@@ -21044,12 +21134,15 @@ async function carregarPaginaFiscal(){
     }
 
     // Buscar TODOS os pedidos dessas cargas (conferidos ou não)
-    const [todosPedidos, conferidos, nfs, atribs] = await Promise.all([
+    const [todosPedidos, conferidos, nfs, atribs, meusAlertas] = await Promise.all([
       supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor&order=carga.asc,pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
-      supaFetch('atribuicoes_fiscal?select=*').catch(()=>[])
+      supaFetch('atribuicoes_fiscal?select=*').catch(()=>[]),
+      USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([])
     ]);
+    // Montar Set de alertas ativos: "carga_pedido"
+    window._meusAlertas = new Set((meusAlertas||[]).map(a=>`${a.carga}_${a.pedido}`));
 
     // Montar mapa de cargas
     const cargasMap = {};
@@ -21198,6 +21291,7 @@ async function carregarPaginaFiscal(){
                   ${euPeguei?`<button onclick="liberarPedidoFiscal(${carga},${ped})" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer">🔓 Liberar</button>`:''}
                   ${(outroPegou&&['fiscal_admin','admin','adm_fiscal'].includes(perfilUsuario))?`<button onclick="soltarPedidoFiscalADM(${carga},${ped},'${atribPed?.fiscal_nome||''}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">🔓 Soltar (ADM)</button>`:''}
                   <button onclick="abrirModalCancelarPedido(${carga},${ped},'${(dem?.rota||'').replace(/'/g,"\\'")}','${(dem?.motorista||'').replace(/'/g,"\\'")}','page')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">❌ Cancelar</button>
+                  ${(()=>{const _ak=`${carga}_${ped}`;const _ativo=(window._meusAlertas||new Set()).has(_ak);return`<button onclick="toggleAlertaFiscal(${carga},${ped},'${(dem?.rota||'').replace(/'/g,"\\'")}',this)" title="${_ativo?'Remover alerta desta rota':'Ser notificado quando esta rota finalizar'}" style="background:${_ativo?'rgba(251,191,36,.2)':'rgba(107,114,128,.1)'};color:${_ativo?'#f59e0b':'#6b7280'};border:1px solid ${_ativo?'rgba(251,191,36,.4)':'rgba(107,114,128,.2)'};border-radius:6px;padding:3px 8px;font-size:.82rem;cursor:pointer;transition:all .2s">${_ativo?'🔔':'🔕'}</button>`;})()}
                 </div>
               </div>
               ${nfsPed.map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:5px 10px;margin-bottom:3px">
@@ -23094,16 +23188,8 @@ async function iniciarApp(){
   }
   // ─────────────────────────────────────────────────────
 
-  // Fiscal Admin ou Operacional → portal dedicado (sem sidebar)
-  if(USUARIO_LOGADO.perfil === 'fiscal_admin' || USUARIO_LOGADO.perfil === 'fiscal_op' || USUARIO_LOGADO.perfil === 'opedor_fiscal'){
-    document.getElementById('login-screen').style.display='none';
-    document.getElementById('portal-fiscal-wrapper').style.display='block';
-    document.getElementById('fiscal-nome-topbar').textContent = USUARIO_LOGADO.nome;
-    const perfLabFisc = {fiscal_admin:'Fiscal Admin',fiscal_op:'Fiscal Operacional',opedor_fiscal:'Fiscal Operacional'};
-    document.getElementById('fiscal-perfil-label').textContent = perfLabFisc[USUARIO_LOGADO.perfil]||'Fiscal';
-    await carregarPortalFiscal();
-    return;
-  }
+  // Fiscal → app principal com sidebar (igual adm_fiscal)
+  // portal-fiscal-wrapper mantido para compatibilidade mas não é mais a entrada padrão
 
   // Caixa
   if(USUARIO_LOGADO.perfil === 'caixa'){
@@ -23201,9 +23287,11 @@ async function iniciarApp(){
   if(isOperador){
     const tabLanc = document.querySelector('.nav-tab[onclick*="lancamento"]');
     if(tabLanc) showPage('lancamento', tabLanc);
-  } else if(USUARIO_LOGADO.perfil === 'adm_fiscal'){
+  } else if(['adm_fiscal','fiscal_admin','fiscal_op','opedor_fiscal'].includes(USUARIO_LOGADO.perfil)){
     const tabFiscal = document.querySelector('.sidebar-item[data-page="fiscal"]');
     showPage('fiscal', tabFiscal);
+    // Iniciar polling de alertas de rota para fiscal
+    setTimeout(iniciarPollingAlertasFiscal, 2000);
   } else if(USUARIO_LOGADO.perfil === 'adm_armazem'){
     const tabArmazem = document.querySelector('.sidebar-item[data-page="armazem"]');
     showPage('armazem', tabArmazem);
