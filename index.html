@@ -16270,13 +16270,25 @@ async function renderDashInterna(){
     });
 
     // Buscar base_data do mês — filtrar por carga (se unidade selecionada) ou tudo
+    // Estratégia dupla: lancamentos (fonte confiável de unidade) + base_data.und direto
+    // (meses importados via planilha têm und preenchido mas podem não ter lancamento)
     let baseDataSupa;
-    if(undFiltro && cargasUndLanc.size > 0){
-      baseDataSupa = await supaFetch(
-        `base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido&limit=20000`
-      ) || [];
-    } else if(undFiltro && cargasUndLanc.size === 0){
-      baseDataSupa = []; // unidade não tem cargas no período
+    if(undFiltro){
+      const bdSelect = 'carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido';
+      const [bdLanc, bdUnd] = await Promise.all([
+        cargasUndLanc.size > 0
+          ? supaFetch(`base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=${bdSelect}&limit=20000`).catch(()=>[])
+          : Promise.resolve([]),
+        supaFetch(`base_data?mes_ano=eq.${mesFiltro}&und=eq.${encodeURIComponent(undFiltro)}&select=${bdSelect}&limit=20000`).catch(()=>[])
+      ]);
+      // Merge sem duplicatas (carga+pedido como chave)
+      const _seen = new Set();
+      baseDataSupa = [...(bdLanc||[]), ...(bdUnd||[])].filter(r => {
+        const k = `${r.carga}_${r.pedido}`;
+        if(_seen.has(k)) return false;
+        _seen.add(k);
+        return true;
+      });
     } else {
       baseDataSupa = await supaFetch(
         `base_data?mes_ano=eq.${mesFiltro}&select=carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido&limit=20000`
