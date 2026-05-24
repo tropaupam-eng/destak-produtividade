@@ -2405,6 +2405,7 @@ textarea:focus{
     </div>
   </div>
   <div class="filters">
+    <div class="filter-group"><label>Ano</label><select id="m-ano" onchange="onAnoChange('m')"><option value="2026">2026</option></select></div>
     <div class="filter-group"><label>Mês</label><select id="m-mes" onchange="renderMot()"><option value="">Todos</option></select></div>
     <div class="filter-group"><label>Unidade</label><select id="m-und" onchange="renderMot()"><option value="">Todas</option></select></div>
     <div class="filter-group"><label>RI/RE</label><select id="m-rire" onchange="renderMot()"><option value="">Todos</option></select></div>
@@ -2761,7 +2762,13 @@ textarea:focus{
   <!-- ── FILTROS ── -->
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
     <div>
-      <label style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">Período</label>
+      <label style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">Ano</label>
+      <select id="fin-filtro-ano" onchange="onAnoChange('fin')" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:8px 12px;font-size:.85rem;outline:none;min-width:90px">
+        <option value="2026">2026</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">Mês</label>
       <select id="fin-filtro-mes" onchange="renderFinanceiro()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:8px 12px;font-size:.85rem;outline:none;min-width:140px">
         <option value="">Todos os meses</option>
       </select>
@@ -7390,12 +7397,29 @@ function populateSelects(){
     und:  (r.und || cargaUndMapPop[r.carga] || '').trim()
   }));
 
+  // Coletar todos os anos disponíveis e popular selects de ano
+  const todosAnos = [...new Set([
+    ...allEnrich.map(r=>r.mes_ano).filter(Boolean),
+    ...BASE_DATA.map(r=>r.mes_ano).filter(Boolean)
+  ].map(m=>m.slice(0,4)))].sort().reverse();
+
   ['m','v'].forEach(p=>{
-    // Meses: union de lancamentos + BASE_DATA (para incluir meses importados sem lancamento)
-    const meses=[...new Set([
+    // Popular select de ano se existir
+    const selAno = document.getElementById(p+'-ano');
+    if(selAno){
+      const anoAtual = selAno.value || String(new Date().getFullYear());
+      selAno.innerHTML = todosAnos.map(a=>`<option value="${a}" ${a===anoAtual?'selected':''}>${a}</option>`).join('');
+      selAno.value = anoAtual;
+    }
+
+    // Meses: union de lancamentos + BASE_DATA, filtrado pelo ano selecionado
+    const anoSel = document.getElementById(p+'-ano')?.value || String(new Date().getFullYear());
+    const todosMeses=[...new Set([
       ...allEnrich.map(r=>r.mes_ano).filter(Boolean),
       ...BASE_DATA.map(r=>r.mes_ano).filter(Boolean)
     ])].sort();
+    const meses = todosMeses.filter(m=>m.startsWith(anoSel));
+
     ['mes','und','rire','rota'].forEach(f=>{
       const sel=document.getElementById(p+'-'+f),cur=sel.value;
       while(sel.options.length>1)sel.remove(1);
@@ -7415,8 +7439,17 @@ function populateSelects(){
       sel.value=cur;
     });
     const ms=document.getElementById(p+'-mes');
-    if(!ms.value){const mx=[...new Set(allEnrich.map(r=>r.mes_ano).filter(Boolean))].sort();ms.value=mx[mx.length-1]||'';}
+    if(!ms.value){ms.value=meses[meses.length-1]||'';}
   });
+}
+
+function onAnoChange(prefixo){
+  if(prefixo==='m'||prefixo==='v'){
+    populateSelects();
+    renderMot();
+  } else if(prefixo==='fin'){
+    popularFiltrosFinanceiro().then(()=>renderTabelaFinanceiro());
+  }
 }
 
 function getFiltered(prefix){
@@ -22533,13 +22566,29 @@ async function renderFinanceiro(){
 }
 
 async function popularFiltrosFinanceiro(){
-  // Meses disponíveis do BASE_DATA
-  const meses = [...new Set(BASE_DATA.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+  // Todos os meses disponíveis do BASE_DATA
+  const todosMeses = [...new Set(BASE_DATA.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+  const todosAnos  = [...new Set(todosMeses.map(m=>m.slice(0,4)))].sort().reverse();
+
+  // Popular select de ano
+  const selAno = document.getElementById('fin-filtro-ano');
+  if(selAno){
+    const anoAtual = selAno.value || String(new Date().getFullYear());
+    selAno.innerHTML = todosAnos.map(a=>`<option value="${a}" ${a===anoAtual?'selected':''}>${a}</option>`).join('');
+    if(!selAno.value) selAno.value = anoAtual;
+  }
+
+  // Filtrar meses pelo ano selecionado
+  const anoSel = selAno?.value || String(new Date().getFullYear());
+  const meses = todosMeses.filter(m=>m.startsWith(anoSel));
+
   const selMes = document.getElementById('fin-filtro-mes');
   if(selMes){
     const cur = selMes.value;
     selMes.innerHTML = '<option value="">Todos os meses</option>' +
       meses.map(m=>`<option value="${m}" ${m===cur?'selected':''}>${formatarMesAno(m)}</option>`).join('');
+    // Se o mês selecionado não está no ano atual, limpa
+    if(cur && !meses.includes(cur)) selMes.value = '';
   }
 
   // Pessoas (motoristas + ajudantes)
