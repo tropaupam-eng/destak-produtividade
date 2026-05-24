@@ -2996,17 +2996,23 @@ textarea:focus{
       <select id="dash-int-und" onchange="renderDashInterna()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none">
         <option value="">Todas as unidades</option>
       </select>
+      <select id="dash-int-rire" onchange="renderDashInterna()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none">
+        <option value="">RI + RE</option>
+        <option value="RI" selected>R.I.</option>
+        <option value="RE">R.E.</option>
+      </select>
       <select id="dash-int-mes" onchange="renderDashInterna()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none"></select>
       <button onclick="renderDashInterna()" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.83rem;cursor:pointer;font-weight:700">🔄 Atualizar</button>
     </div>
   </div>
   <!-- KPIs principais (6 cards) -->
   <div id="dash-int-kpis" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;margin-bottom:20px"></div>
-  <!-- Linha 2: atraso e OTIF (mantidos para JS) + Ranking -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px" id="dash-int-row2">
+  <!-- Linha 2: atraso, OTIF, ranking motoristas, ranking ajudantes -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;margin-bottom:20px" id="dash-int-row2">
     <div id="dash-int-atraso-box" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px"></div>
     <div id="dash-int-otif-box" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px"></div>
     <div id="dash-int-ranking-box" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px"></div>
+    <div id="dash-int-ranking-aju-box" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px"></div>
   </div>
   <!-- Tabela de cargas em atraso -->
   <div id="dash-int-tabela" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:20px"></div>
@@ -16226,27 +16232,22 @@ async function renderDashInterna(){
       });
     }catch(_){}
   }
-  const undFiltro = selUnd?.value || '';
+  const undFiltro  = selUnd?.value || '';
+  const rireFiltro = document.getElementById('dash-int-rire')?.value ?? 'RI';
 
   try{
     // 1. Buscar rotas RI diretamente do banco
     const todasRotas = await supaFetch('rotas?select=nome,tipo&ativo=eq.true') || [];
     const rotasRI = todasRotas.filter(r=>r.tipo==='RI'||r.tipo==='R.I.'||ROTAS_RI.has((r.nome||'').toUpperCase())).map(r=>r.nome);
-    if(!rotasRI.length){
-      container.innerHTML='<p style="color:var(--text-muted);padding:20px">Nenhuma rota RI cadastrada.</p>';
-      return;
-    }
-    const rotaParam = rotasRI.join(',');
+    const rotaParam = rotasRI.length ? rotasRI.join(',') : '';
 
-    // 2. Filtro de unidade via lancamentos (mesma lógica do Portal Motorista)
-    //    lancamentos.und é consistente; base_data.und pode ser "1","CD","1 - CD","01"
+    // 2. Filtro de unidade via lancamentos + base_data.und direto
     const rotasRIUpper = new Set([...rotasRI.map(n=>n.toUpperCase()), ...ROTAS_RI]);
 
-    // Buscar lancamentos do mês filtrados por unidade (se selecionada) para obter cargas confiáveis
-    // motorista incluído para o ranking (base_data.condutor costuma estar vazio)
+    // Buscar lancamentos do mês — inclui motorista E ajudante para rankings
     const undFilter = undFiltro ? `&und=eq.${encodeURIComponent(undFiltro)}` : '';
     const lancMes = await supaFetch(
-      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista&limit=5000`
+      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista,ajudante&limit=5000`
     ) || [];
 
     // Cargas da unidade selecionada (via lancamentos — fonte confiável)
@@ -16254,34 +16255,33 @@ async function renderDashInterna(){
       lancMes.map(r=>r.carga).filter(v=>v!=null&&v!==''&&!isNaN(Number(v))).map(v=>String(Math.round(Number(v))))
     );
 
-    // Mapa carga → isRI e carga → motorista (fonte: lancamentos, que é confiável)
-    // Mesma lógica do renderMot(): exclui LOJA e RETIRA; usa ROTAS_CONTAGEM (sem RETIRA)
-    const cargaIsRI = {};
+    // Mapa carga → isRI, carga → motorista, carga → ajudante (fonte: lancamentos)
+    // Exclui LOJA e RETIRA; usa ROTAS_CONTAGEM igual ao padrão do sistema
+    const cargaIsRI      = {};
     const cargaMotorista = {};
+    const cargaAjudante  = {};
     lancMes.forEach(l => {
       const c = Math.round(Number(l.carga));
       if(!c) return;
       const mot = (l.motorista||'').toUpperCase().trim();
-      if(mot==='LOJA'||mot==='RETIRA') return; // retirada pelo cliente não é entrega
+      if(mot==='LOJA'||mot==='RETIRA') return;
       const r = (l.rire||'').replace(/\./g,'').trim().toUpperCase();
-      // usa ROTAS_CONTAGEM (sem RETIRA) igual ao padrão do sistema de contagem
       cargaIsRI[c] = r==='RI' || (r!=='RE' && ROTAS_CONTAGEM.has((l.rota||'').trim().toUpperCase()));
       if(l.motorista && !cargaMotorista[c]) cargaMotorista[c] = mot;
+      if(l.ajudante  && !cargaAjudante[c])  cargaAjudante[c]  = (l.ajudante||'').toUpperCase().trim();
     });
 
-    // Buscar base_data do mês — filtrar por carga (se unidade selecionada) ou tudo
-    // Estratégia dupla: lancamentos (fonte confiável de unidade) + base_data.und direto
-    // (meses importados via planilha têm und preenchido mas podem não ter lancamento)
+    // Buscar base_data do mês — inclui valor e ajudante; semana calculada de data_pedido
+    // Estratégia dupla: lancamentos (und confiável) + base_data.und direto
+    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor';
     let baseDataSupa;
     if(undFiltro){
-      const bdSelect = 'carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido';
       const [bdLanc, bdUnd] = await Promise.all([
         cargasUndLanc.size > 0
-          ? supaFetch(`base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=${bdSelect}&limit=20000`).catch(()=>[])
+          ? supaFetch(`base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=${BD_SELECT}&limit=20000`).catch(()=>[])
           : Promise.resolve([]),
-        supaFetch(`base_data?mes_ano=eq.${mesFiltro}&und=eq.${encodeURIComponent(undFiltro)}&select=${bdSelect}&limit=20000`).catch(()=>[])
+        supaFetch(`base_data?mes_ano=eq.${mesFiltro}&und=eq.${encodeURIComponent(undFiltro)}&select=${BD_SELECT}&limit=20000`).catch(()=>[])
       ]);
-      // Merge sem duplicatas (carga+pedido como chave)
       const _seen = new Set();
       baseDataSupa = [...(bdLanc||[]), ...(bdUnd||[])].filter(r => {
         const k = `${r.carga}_${r.pedido}`;
@@ -16291,27 +16291,37 @@ async function renderDashInterna(){
       });
     } else {
       baseDataSupa = await supaFetch(
-        `base_data?mes_ano=eq.${mesFiltro}&select=carga,pedido,condutor,semana_mes,rire,rota,und,data_pedido&limit=20000`
+        `base_data?mes_ano=eq.${mesFiltro}&select=${BD_SELECT}&limit=20000`
       ) || [];
     }
 
-    // Filtrar apenas RI — prioridade: cadastro de rotas → lancamento → base_data.rire
-    // RETIRA e CEASA excluídos pelo cadastro (RETIRA=RI mas sem entrega real; CEASA=prazo null)
+    // Filtrar por RI/RE/Todos conforme seleção do usuário
+    // RI usa lógica completa: cadastro de rotas → lancamento → base_data.rire
     const rotasContagemUpper = new Set([...ROTAS_CONTAGEM].map(n=>n.toUpperCase()));
-    const bd = baseDataSupa.filter(r => {
-      const rotaKey = (r.rota||'').toUpperCase().trim();
-      const cfgRota = CONFIG.rotas?.[rotaKey];
-      // 1º: cadastro de rotas (fonte verdadeira)
-      if(cfgRota) return cfgRota.ri && cfgRota.prazoOtif !== null; // CEASA: ri=true mas prazo=null → excluir aqui tb
-      // 2º: lancamento (cargaIsRI vem de lancamentos.rire)
-      const c = Math.round(Number(r.carga));
-      if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c];
-      // 3º: base_data.rire
-      const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
-      if(rireStr === 'RE') return false;
-      if(rireStr === 'RI') return true;
-      return rotasContagemUpper.has(rotaKey);
-    });
+    let bd;
+    if(rireFiltro === 'RE'){
+      // Apenas R.E.
+      bd = baseDataSupa.filter(r => {
+        const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
+        return rireStr === 'RE';
+      });
+    } else if(rireFiltro === ''){
+      // Todos (RI + RE) — sem filtro de tipo de rota
+      bd = baseDataSupa;
+    } else {
+      // Padrão: R.I. — prioridade: cadastro → lancamento → base_data.rire
+      bd = baseDataSupa.filter(r => {
+        const rotaKey = (r.rota||'').toUpperCase().trim();
+        const cfgRota = CONFIG.rotas?.[rotaKey];
+        if(cfgRota) return cfgRota.ri && cfgRota.prazoOtif !== null;
+        const c = Math.round(Number(r.carga));
+        if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c];
+        const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
+        if(rireStr === 'RE') return false;
+        if(rireStr === 'RI') return true;
+        return rotasContagemUpper.has(rotaKey);
+      });
+    }
 
     // Cargas RI do período/unidade
     const cargasUnd = new Set(bd.map(r=>r.carga).filter(v=>v!=null&&v!==''&&!isNaN(Number(v))).map(v=>String(Math.round(Number(v)))));
@@ -16320,7 +16330,7 @@ async function renderDashInterna(){
     let demQuery;
     if(cargasUnd.size > 0){
       demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&carga=in.(${[...cargasUnd].join(',')})&select=*&order=data_saida.asc`;
-    } else if(!undFiltro){
+    } else if(!undFiltro && rotaParam){
       demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&rota=in.(${rotaParam})&select=*&order=data_saida.asc`;
     } else {
       demQuery = null; // unidade sem dados
@@ -16329,10 +16339,13 @@ async function renderDashInterna(){
     const dem = demandas||[];
 
     // 3. KPIs básicos
-    const totalCargas   = dem.length;
-    const cargasAtivas  = dem.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
-    const totalPedidos  = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size || dem.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
-    const cargasPartidas= dem.filter(d=>['saiu','fim_viagem','concluido'].includes(d.status));
+    // totalCargas e totalPedidos vêm do base_data filtrado (fonte confiável com filtros de unidade/rire)
+    const cargasUnicas   = new Set(bd.map(r=>String(r.carga)).filter(Boolean));
+    const totalCargas    = cargasUnicas.size;
+    const totalPedidos   = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size;
+    const valorTotal     = bd.reduce((s,r)=>s+(Number(r.valor)||0), 0);
+    const cargasAtivas   = dem.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
+    const cargasPartidas = dem.filter(d=>['saiu','fim_viagem','concluido'].includes(d.status));
 
     // 4. Atraso
     const emAtraso = dem.filter(d=>d.data_saida < hoje && !['saiu','fim_viagem','concluido','cancelado'].includes(d.status));
@@ -16434,25 +16447,40 @@ async function renderDashInterna(){
     const pctOtif = otifTot ? Math.round((otifOk/otifTot)*100) : null;
     const corOtif = p => p===null?'#6b7280':p>=95?'#059669':p>=80?'#f59e0b':'#ef4444';
 
-    // 6. Ranking Top 5 Motoristas RI do mês
-    // Usa cargaMotorista (do lancamento) como fonte primária — base_data.condutor costuma estar vazio
+    // 6. Rankings — Motoristas e Ajudantes
+    // Chave: carga+pedido para evitar dupla contagem entre cargas diferentes
     const motPedidos = {};
+    const ajuPedidos = {};
     bd.forEach(r=>{
-      const c = Math.round(Number(r.carga));
+      const c   = Math.round(Number(r.carga));
+      const key = String(r.carga)+'_'+String(r.pedido);
+      // Motorista: lancamento → base_data.condutor
       const mot = cargaMotorista[c] || (r.condutor||'').toUpperCase().trim();
-      if(!mot) return;
-      if(!motPedidos[mot]) motPedidos[mot] = new Set();
-      motPedidos[mot].add(String(r.pedido));
+      if(mot && mot!=='LOJA' && mot!=='RETIRA'){
+        if(!motPedidos[mot]) motPedidos[mot] = new Set();
+        motPedidos[mot].add(key);
+      }
+      // Ajudante: lancamento → base_data.ajudante
+      const aju = cargaAjudante[c] || (r.ajudante||'').toUpperCase().trim();
+      if(aju){
+        if(!ajuPedidos[aju]) ajuPedidos[aju] = new Set();
+        ajuPedidos[aju].add(key);
+      }
     });
     const rankMot = Object.entries(motPedidos).map(([n,s])=>({nome:n,ped:s.size})).sort((a,b)=>b.ped-a.ped).slice(0,5);
+    const rankAju = Object.entries(ajuPedidos).map(([n,s])=>({nome:n,ped:s.size})).sort((a,b)=>b.ped-a.ped).slice(0,5);
 
-    // 7. Renderizar KPIs (6 cards)
+    // 7. Renderizar KPIs
+    const _fmtValor = v => v>=1e6 ? 'R$ '+(v/1e6).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})+' mi'
+                          : v>=1e3 ? 'R$ '+(v/1e3).toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1})+' mil'
+                          : 'R$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
     const kpis = [
-      {label:'📦 Pedidos',    val:totalPedidos.toLocaleString('pt-BR'),         cor:'#2563eb'},
-      {label:'🚛 Cargas',     val:totalCargas.toLocaleString('pt-BR'),          cor:'#7c3aed'},
-      {label:'✅ Ativas',     val:cargasAtivas.toLocaleString('pt-BR'),         cor:'#059669'},
-      {label:'🚛 Partiram',   val:cargasPartidas.length.toLocaleString('pt-BR'),cor:'#E8000D'},
-      {label:'🎯 OTIF',        val:pctOtif!==null?pctOtif+'%':'—',              cor:corOtif(pctOtif), sub:otifTot?`${otifOk}/${otifTot} ped`:'sem dados'},
+      {label:'📦 Pedidos',      val:totalPedidos.toLocaleString('pt-BR'),          cor:'#2563eb'},
+      {label:'🚛 Cargas',       val:totalCargas.toLocaleString('pt-BR'),           cor:'#7c3aed'},
+      {label:'💰 Valor Total',  val:valorTotal>0?_fmtValor(valorTotal):'—',        cor:'#059669'},
+      {label:'✅ Ativas',       val:cargasAtivas.toLocaleString('pt-BR'),          cor:'#0891b2'},
+      {label:'🚛 Partiram',     val:cargasPartidas.length.toLocaleString('pt-BR'), cor:'#E8000D'},
+      {label:'🎯 OTIF',          val:pctOtif!==null?pctOtif+'%':'—',               cor:corOtif(pctOtif), sub:otifTot?`${otifOk}/${otifTot} ped`:'sem dados'},
     ];
     container.innerHTML = kpis.map(k=>`
       <div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid ${k.cor};border-radius:12px;padding:18px 20px;position:relative;overflow:hidden">
@@ -16506,19 +16534,24 @@ async function renderDashInterna(){
       <p style="margin-top:4px;font-size:.68rem;color:var(--text-muted)">⚙️ Prazo por rota: Petrolina/Juazeiro = 24h · R.E. = 8 dias · CEASA = não contabilizado</p>
       <p style="margin-top:8px;font-size:.68rem;color:var(--text-muted)">${otifFonte}</p>`;
 
-    // 10. Box Ranking Motoristas RI
-    if(rankBox){
+    // 10. Box Ranking Motoristas
+    const _rankHtml = (lista, cor) => {
       const MEDALS = ['🥇','🥈','🥉','4️⃣','5️⃣'];
-      rankBox.innerHTML = `
-        <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">🏆 Top Motoristas RI</h3>
-        ${rankMot.length ? rankMot.map((m,i)=>`
-          <div style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;margin-bottom:4px;background:${i===0?'rgba(37,99,235,.08)':'var(--bg-card2)'}">
-            <div style="font-size:1rem;min-width:24px;text-align:center">${MEDALS[i]}</div>
-            <div style="flex:1;font-size:.82rem;font-weight:${i<3?'700':'500'};color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.nome}</div>
-            <div style="font-size:.82rem;font-weight:700;color:#2563eb;white-space:nowrap">${m.ped} ped</div>
-          </div>`).join('')
-        : '<p style="font-size:.82rem;color:var(--text-muted);text-align:center;padding:12px">Sem dados do mês</p>'}`;
-    }
+      if(!lista.length) return '<p style="font-size:.82rem;color:var(--text-muted);text-align:center;padding:12px">Sem dados do mês</p>';
+      return lista.map((m,i)=>`
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;margin-bottom:4px;background:${i===0?`rgba(${cor},.09)`:'var(--bg-card2)'}">
+          <div style="font-size:1rem;min-width:24px;text-align:center">${MEDALS[i]||i+1}</div>
+          <div style="flex:1;font-size:.82rem;font-weight:${i<3?'700':'500'};color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.nome}</div>
+          <div style="font-size:.82rem;font-weight:700;color:rgb(${cor});white-space:nowrap">${m.ped} ped</div>
+        </div>`).join('');
+    };
+    if(rankBox) rankBox.innerHTML = `
+      <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">🏆 Top Motoristas</h3>
+      ${_rankHtml(rankMot,'37,99,235')}`;
+    const rankAjuBox = document.getElementById('dash-int-ranking-aju-box');
+    if(rankAjuBox) rankAjuBox.innerHTML = `
+      <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">👷 Top Ajudantes</h3>
+      ${_rankHtml(rankAju,'124,58,237')}`;
 
     // 11. Tabela de cargas em atraso
     if(tabelaBox){
@@ -16556,9 +16589,10 @@ async function renderDashInterna(){
         : '<p style="text-align:center;padding:24px;color:var(--green);font-weight:700">✅ Nenhuma carga em atraso!</p>'}`;
     }
 
-    // 12. Gráfico: Pedidos por Semana
+    // 12. Gráfico: Pedidos por Semana (semana calculada a partir de data_pedido)
     const motBox = document.getElementById('dash-int-motoristas');
     if(motBox){
+      const _semDoMes = d => { if(!d) return 0; return Math.min(Math.ceil(new Date(d+'T00:00:00').getDate()/7),5); };
       const semLabels = ['1ª Sem','2ª Sem','3ª Sem','4ª Sem','5ª Sem'];
       const semCounts = [0,0,0,0,0];
       const vistoPed = new Set();
@@ -16566,7 +16600,7 @@ async function renderDashInterna(){
         const key = String(p.carga)+'_'+String(p.pedido);
         if(vistoPed.has(key)) return;
         vistoPed.add(key);
-        const s = parseInt(p.semana_mes)||0;
+        const s = _semDoMes(p.data_pedido);
         if(s>=1&&s<=5) semCounts[s-1]++;
       });
       const maxS = Math.max(...semCounts,1);
