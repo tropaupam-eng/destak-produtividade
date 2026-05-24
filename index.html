@@ -22736,6 +22736,29 @@ function renderTabelaFinanceiro(){
   if(statusSel) dados = dados.filter(d=>d.status===statusSel);
   if(tipoSel)   dados = dados.filter(d=>d.tipo===tipoSel);
 
+  // Quando não há filtro de mês: agrupar por nome para não duplicar pessoas
+  if(!mesSel){
+    const mapa = {};
+    dados.forEach(d=>{
+      const k = d.nome+'__'+d.tipo;
+      if(!mapa[k]){
+        mapa[k] = { ...d, entregas: d.entregas||0, ent_sem: d.ent_sem||0, ent_com: d.ent_com||0, total: d.total||0, mes_ano: null, meses: [] };
+      } else {
+        mapa[k].entregas  += (d.entregas||0);
+        mapa[k].ent_sem   += (d.ent_sem||0);
+        mapa[k].ent_com   += (d.ent_com||0);
+        mapa[k].total     += (d.total||0);
+        // Status agregado: se qualquer um pendente → pendente; todos pagos → pago; misto → parcial
+        if(d.status === 'pendente' && mapa[k].status === 'pago') mapa[k].status = 'parcial';
+        else if(d.status === 'pago' && mapa[k].status === 'pendente') mapa[k].status = 'parcial';
+      }
+      if(d.mes_ano) mapa[k].meses.push(d.mes_ano);
+    });
+    dados = Object.values(mapa).sort((a,b)=>b.total-a.total);
+    // Marcar como visão agregada para ajustar o buildRow
+    dados.forEach(d=>{ d._agregado = true; });
+  }
+
   atualizarKPIsFinanceiro(dados);
 
   const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -22749,23 +22772,28 @@ function renderTabelaFinanceiro(){
   function buildRow(d, i){
     const rank = i===0?'gold':i===1?'silver':i===2?'bronze':'other';
     const rankN = i<3?['🥇','🥈','🥉'][i]:i+1;
+    const competencia = d._agregado
+      ? (d.meses&&d.meses.length>1 ? `<span title="${d.meses.map(formatarMesAno).join(', ')}" style="cursor:help;color:var(--text-muted)">${d.meses.length} meses</span>` : formatarMesAno(d.meses&&d.meses[0]))
+      : formatarMesAno(d.mes_ano);
+    const acoes = d._agregado
+      ? `<button onclick="abrirDetalhePagamento('${d.nome}',null)"
+            style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:.72rem;cursor:pointer">👁 Ver</button>`
+      : `<button onclick="marcarPagamento('${d.nome}','${d.mes_ano}','pago')"
+            style="background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.3);border-radius:6px;padding:3px 9px;font-size:.72rem;font-weight:700;cursor:pointer">✅ Pago</button>
+          <button onclick="abrirDetalhePagamento('${d.nome}','${d.mes_ano}')"
+            style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:.72rem;cursor:pointer">👁 Ver</button>`;
     return `<tr>
       <td><span class="fin-rank ${rank}">${rankN}</span></td>
       <td style="font-weight:700;color:var(--text-primary)">${d.nome}</td>
       <td><span class="fin-tipo-badge ${d.tipo}">${d.tipo==='motorista'?'🚗 Motorista':'👷 Ajudante'}</span></td>
       <td style="text-align:center;font-weight:700" title="${d.ent_sem||0} sem ajudante · ${d.ent_com||0} com ajudante">${d.entregas}${(d.ent_sem>0&&d.ent_com>0)?`<span style="font-size:.68rem;color:var(--text-muted);display:block;font-weight:400">${d.ent_sem}✦ ${d.ent_com}👷</span>`:''}</td>
-      <td style="text-align:right;color:var(--text-secondary)">${d.ent_sem>0&&d.ent_com>0?`<span title="Sem aj: R$${(d.ent_sem>0?(d.total/(d.entregas||1)).toFixed(2).replace('.',','):'-')}" style="font-size:.75rem">R$1,00/R$0,50</span>`:(d.val_entrega>0?fv(d.val_entrega):'—')}</td>
+      <td style="text-align:right;color:var(--text-secondary)">${d.ent_sem>0&&d.ent_com>0?`<span style="font-size:.75rem">R$1,00/R$0,50</span>`:(d.val_entrega>0?fv(d.val_entrega):'—')}</td>
       <td style="text-align:right;font-weight:800;color:var(--green);font-size:.95rem">${fv(d.total)}</td>
-      <td style="color:var(--text-secondary)">${formatarMesAno(d.mes_ano)}</td>
+      <td style="color:var(--text-secondary)">${competencia}</td>
       <td style="text-align:center">${statusCfg[d.status]||d.status}</td>
       <td style="color:var(--text-muted);font-size:.82rem">${d.data_pgto?new Date(d.data_pgto).toLocaleDateString('pt-BR'):'—'}</td>
       <td style="text-align:center">
-        <div style="display:flex;gap:5px;justify-content:center">
-          <button onclick="marcarPagamento('${d.nome}','${d.mes_ano}','pago')"
-            style="background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.3);border-radius:6px;padding:3px 9px;font-size:.72rem;font-weight:700;cursor:pointer">✅ Pago</button>
-          <button onclick="abrirDetalhePagamento('${d.nome}','${d.mes_ano}')"
-            style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:.72rem;cursor:pointer">👁 Ver</button>
-        </div>
+        <div style="display:flex;gap:5px;justify-content:center">${acoes}</div>
       </td>
     </tr>`;
   }
