@@ -6722,11 +6722,14 @@ function buildCargaMapCache(){
       map[c].pedidos.add(k);
       if(Number(r.ocorrencia||0)!==1){ map[c].pedidosSemOcorr.add(k); map[c].valor+=v; }
     }
-    if(!map[c].rota && r.rota) map[c].rota=r.rota;
-    if(!map[c].und && r.und) map[c].und=r.und;
-    if(!map[c].rire && r.rire) map[c].rire=r.rire;
-    if(!map[c].placa && r.placa) map[c].placa=r.placa;
-    if(!map[c].ajudante && r.ajudante&&r.ajudante.trim()) map[c].ajudante=r.ajudante.trim();
+    if(!map[c].rota       && r.rota)                    map[c].rota       = r.rota;
+    if(!map[c].und        && r.und)                     map[c].und        = r.und;
+    if(!map[c].rire       && r.rire)                    map[c].rire       = r.rire;
+    if(!map[c].placa      && r.placa)                   map[c].placa      = r.placa;
+    if(!map[c].ajudante   && r.ajudante&&r.ajudante.trim()) map[c].ajudante = r.ajudante.trim();
+    if(!map[c].condutor   && r.condutor&&r.condutor.trim()) map[c].condutor = r.condutor.trim();
+    if(!map[c].mes_ano    && r.mes_ano)                 map[c].mes_ano    = r.mes_ano;
+    if(!map[c].data_pedido && r.data_pedido)            map[c].data_pedido = r.data_pedido;
   });
   window._cargaMapCache = map;
 }
@@ -7413,11 +7416,15 @@ function populateSelects(){
   }));
 
   ['m','v'].forEach(p=>{
-    const meses=[...new Set(allEnrich.map(r=>r.mes_ano).filter(Boolean))].sort();
+    // Meses: union de lancamentos + BASE_DATA (para incluir meses importados sem lancamento)
+    const meses=[...new Set([
+      ...allEnrich.map(r=>r.mes_ano).filter(Boolean),
+      ...BASE_DATA.map(r=>r.mes_ano).filter(Boolean)
+    ])].sort();
     ['mes','und','rire','rota'].forEach(f=>{
       const sel=document.getElementById(p+'-'+f),cur=sel.value;
       while(sel.options.length>1)sel.remove(1);
-      if(f==='mes')meses.forEach(m=>{const o=document.createElement('option');o.value=m;o.text=nomeMes(m);sel.appendChild(o);});
+      if(f==='mes'){meses.forEach(m=>{const o=document.createElement('option');o.value=m;o.text=nomeMes(m);sel.appendChild(o);});}
       else if(f==='und'){
         // Unidades: somente as cadastradas em Cadastro > Unidades, formato "COD - NOME"
         Object.entries(UNIDADES_MAP)
@@ -7569,6 +7576,35 @@ function renderMot(){
     });
   });
 
+  // ── Cargas da planilha (BASE_DATA) sem lançamento correspondente ──────────
+  // Contribuem para a Produtividade quando têm condutor preenchido
+  Object.entries(cargaDados).forEach(([cStr, dados]) => {
+    const c = Math.round(Number(cStr));
+    if(vistas.has(c)) return;                          // já contado via lancamento
+    if(!dados || dados.pedidos.size === 0) return;
+    const condutor = (dados.condutor||'').toUpperCase().trim();
+    if(!condutor || condutor==='LOJA' || condutor==='RETIRA') return;
+    const rota  = dados.rota||'';
+    if(!rotaContaEntrega(rota)) return;
+    const und   = dados.und||'';
+    const lRire = getRireFromRota(rota) || normRire(dados.rire||'') || '';
+    // Aplicar filtros
+    if(f_rire && lRire !== f_rire) return;
+    if(f_und  && und.toUpperCase() !== f_und.toUpperCase()) return;
+    if(f_rota && rota.toUpperCase() !== f_rota.toUpperCase()) return;
+    if(f_mes  && dados.mes_ano !== f_mes) return;
+    vistas.add(c);
+    lancFilt.push({
+      motorista:  condutor,
+      rota, und, carga: c, lRire,
+      qtd:        dados.pedidos.size,
+      valor:      dados.valor,
+      ts:         dados.data_pedido ? dados.data_pedido+'T00:00:00' : null,
+      _ajudante:  (dados.ajudante||'').toUpperCase().trim(),
+      _fromBase:  true
+    });
+  });
+
   // ── KPIs ─────────────────────────────────────────────
   const totalEnt = lancFilt.reduce((s,l)=>s+l.qtd, 0);
   const totalCar = lancFilt.length;
@@ -7590,9 +7626,9 @@ function renderMot(){
   // Usar lancFilt (já filtrado por mês/unidade/rota) para buscar ajudantes
   const auxMap = {};
   lancFilt.forEach(l=>{
-    // Buscar ajudante do lançamento correspondente
-    const lancObj = lancamentos.find(x=>Math.round(Number(x.carga))===l.carga);
-    const aj = (lancObj?.ajudante||'').trim();
+    // Ajudante: planilha direto (_ajudante) ou busca no lançamento correspondente
+    const aj = l._ajudante
+      || (lancamentos.find(x=>Math.round(Number(x.carga))===l.carga)?.ajudante||'').trim();
     if(!aj) return;
     if(!auxMap[aj]) auxMap[aj] = {qt:0};
     auxMap[aj].qt += l.qtd;
@@ -7603,7 +7639,10 @@ function renderMot(){
   const semMap = {1:0,2:0,3:0,4:0,5:0};
   lancFilt.forEach(l=>{
     try{
+      // Para cargas da planilha sem lancamento, ts vem de data_pedido (já é válido)
+      if(!l.ts) return;
       const d     = new Date(l.ts);
+      if(isNaN(d.getTime())) return;
       const first = new Date(d.getFullYear(), d.getMonth(), 1);
       const sem   = Math.floor((d.getDate() + first.getDay() - 1) / 7) + 1;
       if(sem>=1 && sem<=5) semMap[sem] += l.qtd;
