@@ -2427,25 +2427,18 @@ textarea:focus{
 
   <!-- BONIFICAÇÃO -->
   <div class="bonus-card">
-    <h3>💰 Bonificação por Entrega</h3>
-    
-    <div style="overflow-x:auto">
-      <table class="bonus-table">
-        <thead>
-          <tr>
-            <th>Motorista</th>
-            <th>Ajudante</th>
-            <th>Rota</th>
-            <th>RI/RE</th>
-            <th>Entregas</th>
-            <th class="val-mot">💙 Motorista</th>
-            <th class="val-ajud">💚 Ajudante</th>
-            <th class="val-total">💜 Total</th>
-          </tr>
-        </thead>
-        <tbody id="bonus-tbody"></tbody>
-      </table>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <h3 style="margin:0">💰 Bonificação por Entrega</h3>
+      <div style="display:flex;gap:6px">
+        <button id="bonus-btn-mot" onclick="setBonusView('motorista')"
+          style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:.8rem;font-weight:700;cursor:pointer">🚗 Motoristas</button>
+        <button id="bonus-btn-aj" onclick="setBonusView('ajudante')"
+          style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:.8rem;font-weight:600;cursor:pointer">👷 Ajudantes</button>
+        <button id="bonus-btn-det" onclick="setBonusView('detalhe')"
+          style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:.8rem;font-weight:600;cursor:pointer">📋 Por Carga</button>
+      </div>
     </div>
+    <div id="bonus-container"></div>
   </div>
   <!-- BONIFICAÇÃO ADM — Lançamento manual pelo administrador -->
   <div class="bonus-card" id="bonus-adm-section" style="display:none">
@@ -8414,10 +8407,124 @@ function renderBonus(){
     if(isAdm) inicializarBonusAdmForm();
   }
 
-  const tbody = document.getElementById('bonus-tbody');
-  tbody.innerHTML = linhas.length ? [
-    ...linhas.map(l=>`
-      <tr>
+  // ── Agregar por motorista ──
+  const motMap = {};
+  linhas.forEach(l=>{
+    if(!motMap[l.mot]) motMap[l.mot] = {nome:l.mot, entregas:0, entSem:0, entCom:0, total:0};
+    motMap[l.mot].entregas += l.qtd;
+    motMap[l.mot].total    += l.valMot;
+    if(l.ajudante) motMap[l.mot].entCom += l.qtd;
+    else           motMap[l.mot].entSem += l.qtd;
+  });
+  const motAgrup = Object.values(motMap).sort((a,b)=>b.total-a.total);
+
+  // ── Agregar por ajudante ──
+  const ajMap = {};
+  linhas.forEach(l=>{
+    if(!l.ajudante || l.valAjud===0) return;
+    if(!ajMap[l.ajudante]) ajMap[l.ajudante] = {nome:l.ajudante, entregas:0, total:0};
+    ajMap[l.ajudante].entregas += l.qtd;
+    ajMap[l.ajudante].total    += l.valAjud;
+  });
+  const ajAgrup = Object.values(ajMap).sort((a,b)=>b.total-a.total);
+
+  // Salvar para reutilizar no toggle
+  window._bonusMotAgrup = motAgrup;
+  window._bonusAjAgrup  = ajAgrup;
+  window._bonusLinhas   = linhas;
+
+  // Renderizar visão atual
+  const visorAtual = window._bonusView || 'motorista';
+  renderBonusContainer(visorAtual, motAgrup, ajAgrup, linhas, fmtR, totMot, totAjud, totQtd, topMot, topAjud, BONUS_MOT, BONUS_AJUD);
+}
+
+function setBonusView(tipo){
+  window._bonusView = tipo;
+  const fmtR = v => 'R$ '+v.toFixed(2).replace('.',',');
+  renderBonusContainer(tipo,
+    window._bonusMotAgrup||[], window._bonusAjAgrup||[],
+    window._bonusLinhas||[], fmtR,
+    (window._bonusMotAgrup||[]).reduce((s,m)=>s+m.total,0),
+    (window._bonusAjAgrup||[]).reduce((s,a)=>s+a.total,0),
+    (window._bonusLinhas||[]).reduce((s,l)=>s+l.qtd,0),
+    [], [], [100,60,40], [100,50]
+  );
+  // Estilo dos botões
+  ['mot','aj','det'].forEach(k=>{
+    const btn = document.getElementById('bonus-btn-'+k);
+    if(!btn) return;
+    const ativo = (k==='mot'&&tipo==='motorista')||(k==='aj'&&tipo==='ajudante')||(k==='det'&&tipo==='detalhe');
+    btn.style.background = ativo ? 'var(--red)' : 'var(--bg-hover)';
+    btn.style.color = ativo ? '#fff' : 'var(--text-secondary)';
+    btn.style.border = ativo ? 'none' : '1px solid var(--border)';
+  });
+}
+
+function renderBonusContainer(tipo, motAgrup, ajAgrup, linhas, fmtR, totMot, totAjud, totQtd, topMot, topAjud, BONUS_MOT, BONUS_AJUD){
+  const el = document.getElementById('bonus-container');
+  if(!el) return;
+
+  // Atualiza estilo dos botões
+  ['mot','aj','det'].forEach(k=>{
+    const btn = document.getElementById('bonus-btn-'+k);
+    if(!btn) return;
+    const ativo = (k==='mot'&&tipo==='motorista')||(k==='aj'&&tipo==='ajudante')||(k==='det'&&tipo==='detalhe');
+    btn.style.background = ativo ? 'var(--red)' : 'var(--bg-hover)';
+    btn.style.color = ativo ? '#fff' : 'var(--text-secondary)';
+    btn.style.border = ativo ? 'none' : '1px solid var(--border)';
+  });
+
+  if(tipo === 'motorista'){
+    const totBonusMot = topMot.reduce((s,_,i)=>s+BONUS_MOT[i],0);
+    const rows = motAgrup.length ? [
+      ...motAgrup.map((m,i)=>`<tr>
+        <td style="text-align:center;font-weight:700;color:var(--text-muted)">${i+1}</td>
+        <td><strong>${m.nome}</strong></td>
+        <td style="text-align:center">${m.entregas}</td>
+        <td style="text-align:center;font-size:.8rem;color:var(--text-muted)">${m.entSem>0?m.entSem+'✦':''} ${m.entCom>0?m.entCom+'👷':''}</td>
+        <td class="val-mot">${fmtR(m.total)}</td>
+      </tr>`),
+      `<tr class="bonus-total-row">
+        <td colspan="2"><strong>TOTAL</strong></td>
+        <td style="text-align:center">${totQtd}</td>
+        <td></td>
+        <td class="val-mot">${fmtR(totMot)}${totBonusMot>0?' <span style="font-size:.72rem;color:#92400e">+R$'+totBonusMot+' bônus</span>':''}</td>
+      </tr>`
+    ].join('') : '<tr><td colspan="5"><div class="no-data">Nenhum motorista</div></td></tr>';
+    el.innerHTML = `<div style="overflow-x:auto"><table class="bonus-table"><thead><tr>
+      <th style="width:36px">#</th><th>Motorista</th>
+      <th style="text-align:center">Entregas</th>
+      <th style="text-align:center;font-size:.78rem">Sozinho ✦ / Com aj 👷</th>
+      <th class="val-mot">💙 Total Motorista</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+
+  } else if(tipo === 'ajudante'){
+    const totBonusAjud = topAjud.reduce((s,_,i)=>s+BONUS_AJUD[i],0);
+    const rows = ajAgrup.length ? [
+      ...ajAgrup.map((a,i)=>`<tr>
+        <td style="text-align:center;font-weight:700;color:var(--text-muted)">${i+1}</td>
+        <td><strong>${a.nome}</strong></td>
+        <td style="text-align:center">${a.entregas}</td>
+        <td class="val-ajud">${fmtR(a.total)}</td>
+      </tr>`),
+      `<tr class="bonus-total-row">
+        <td colspan="2"><strong>TOTAL</strong></td>
+        <td style="text-align:center">${ajAgrup.reduce((s,a)=>s+a.entregas,0)}</td>
+        <td class="val-ajud">${fmtR(totAjud)}${totBonusAjud>0?' <span style="font-size:.72rem;color:#065f46">+R$'+totBonusAjud+' bônus</span>':''}</td>
+      </tr>`
+    ].join('') : '<tr><td colspan="4"><div class="no-data">Nenhum ajudante</div></td></tr>';
+    el.innerHTML = `<div style="overflow-x:auto"><table class="bonus-table"><thead><tr>
+      <th style="width:36px">#</th><th>Ajudante</th>
+      <th style="text-align:center">Entregas</th>
+      <th class="val-ajud">💚 Total Ajudante</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+
+  } else {
+    // Visão por carga (detalhe original)
+    const totBonusMot  = topMot.reduce((s,_,i)=>s+BONUS_MOT[i],0);
+    const totBonusAjud = topAjud.reduce((s,_,i)=>s+BONUS_AJUD[i],0);
+    const rows = linhas.length ? [
+      ...linhas.map(l=>`<tr>
         <td><strong>${l.mot}</strong></td>
         <td>${l.ajudante||'<span style="color:#9ca3af;font-style:italic">Sem ajudante</span>'}</td>
         <td><span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:700">${l.rota}</span></td>
@@ -8427,18 +8534,20 @@ function renderBonus(){
         <td class="val-ajud">${l.valAjud>0?fmtR(l.valAjud):'—'}</td>
         <td class="val-total">${fmtR(l.valMot+l.valAjud)}</td>
       </tr>`),
-    (()=>{
-      const totBonusMot  = topMot.reduce((s,_,i)=>s+BONUS_MOT[i],0);
-      const totBonusAjud = topAjud.reduce((s,_,i)=>s+BONUS_AJUD[i],0);
-      return `<tr class="bonus-total-row">
+      `<tr class="bonus-total-row">
         <td colspan="4"><strong>TOTAL GERAL</strong></td>
         <td style="text-align:center">${totQtd}</td>
-        <td class="val-mot">${fmtR(totMot)} <span style="font-size:.72rem;color:#92400e">+R$${totBonusMot} bônus</span></td>
-        <td class="val-ajud">${fmtR(totAjud)} <span style="font-size:.72rem;color:#065f46">+R$${totBonusAjud} bônus</span></td>
+        <td class="val-mot">${fmtR(totMot)}${totBonusMot>0?' <span style="font-size:.72rem;color:#92400e">+R$'+totBonusMot+' bônus</span>':''}</td>
+        <td class="val-ajud">${fmtR(totAjud)}${totBonusAjud>0?' <span style="font-size:.72rem;color:#065f46">+R$'+totBonusAjud+' bônus</span>':''}</td>
         <td class="val-total">${fmtR(totMot+totAjud+totBonusMot+totBonusAjud)}</td>
-      </tr>`;
-    })()
-  ].join('') : '<tr><td colspan="8"><div class="no-data">Nenhum lançamento encontrado</div></td></tr>';
+      </tr>`
+    ].join('') : '<tr><td colspan="8"><div class="no-data">Nenhum lançamento encontrado</div></td></tr>';
+    el.innerHTML = `<div style="overflow-x:auto"><table class="bonus-table"><thead><tr>
+      <th>Motorista</th><th>Ajudante</th><th>Rota</th><th>RI/RE</th>
+      <th>Entregas</th><th class="val-mot">💙 Motorista</th>
+      <th class="val-ajud">💚 Ajudante</th><th class="val-total">💜 Total</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
 }
 
 // ── CONFIGURAÇÕES ─────────────────────────────────────
@@ -22539,7 +22648,7 @@ async function gerarPagamentos(btn){
 
       // ── MOTORISTA ──
       if(bonus.mot > 0){
-        const chave = motEfetivo+'__'+mesAno+'__'+und;
+        const chave = motEfetivo+'__'+mesAno+'__MOT';
         if(!pessoaMap[chave]) pessoaMap[chave] = {
           nome:motEfetivo, tipo:'motorista', mes_ano:mesAno,
           rota, rire, und, entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0
@@ -22552,9 +22661,9 @@ async function gerarPagamentos(btn){
 
       // ── AJUDANTE ──
       if(ajudante && bonus.ajud > 0){
-        const chaveAj = ajudante+'__'+mesAno+'__'+und;
+        const chaveAj = ajudante.toUpperCase()+'__'+mesAno+'__AJ';
         if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
-          nome:ajudante, tipo:'ajudante', mes_ano:mesAno,
+          nome:ajudante.toUpperCase(), tipo:'ajudante', mes_ano:mesAno,
           rota, rire, und, entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0
         };
         pessoaMap[chaveAj].entregas += qtd;
@@ -22586,7 +22695,7 @@ async function gerarPagamentos(btn){
       const und   = undMap[condutor] || undMap[(ajudante||'').toUpperCase()] || '';
       vistas.add(c);
       if(bonus.mot > 0){
-        const chave = condutor+'__'+mesAnoBase+'__'+und;
+        const chave = condutor+'__'+mesAnoBase+'__MOT';
         if(!pessoaMap[chave]) pessoaMap[chave] = {
           nome:condutor, tipo:'motorista', mes_ano:mesAnoBase,
           rota:rotaDados, rire:lRire, und, entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0
@@ -22597,7 +22706,7 @@ async function gerarPagamentos(btn){
         else        pessoaMap[chave].ent_sem += qtd;
       }
       if(ajudante && bonus.ajud > 0){
-        const chaveAj = ajudante.toUpperCase()+'__'+mesAnoBase+'__'+und;
+        const chaveAj = ajudante.toUpperCase()+'__'+mesAnoBase+'__AJ';
         if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
           nome:ajudante.toUpperCase(), tipo:'ajudante', mes_ano:mesAnoBase,
           rota:rotaDados, rire:lRire, und, entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0
