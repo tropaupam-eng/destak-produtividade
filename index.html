@@ -22494,17 +22494,21 @@ async function gerarPagamentos(btn){
       };
     }
 
-    // Mapa carga → pedidos do BASE_DATA (igual ao renderBonus)
+    // Mapa carga → pedidos + condutor + rota do BASE_DATA
     const cargaDados = {};
     BASE_DATA.forEach(r=>{
       if(!r.pedido||!r.carga) return;
       const cx = Math.round(Number(r.carga));
-      if(!cargaDados[cx]) cargaDados[cx] = {pedidos:new Set(), pedidosSemOcorr:new Set(), ajudante:''};
+      if(!cargaDados[cx]) cargaDados[cx] = {pedidos:new Set(), pedidosSemOcorr:new Set(), ajudante:'', condutor:'', rota:'', und:'', rire:'', mes_ano:''};
       const k = String(r.pedido);
       cargaDados[cx].pedidos.add(k);
       if(Number(r.ocorrencia||0) !== 1) cargaDados[cx].pedidosSemOcorr.add(k);
-      if(!cargaDados[cx].ajudante && (r.ajudante||'').trim())
-        cargaDados[cx].ajudante = r.ajudante.trim();
+      if(!cargaDados[cx].ajudante  && (r.ajudante||'').trim())  cargaDados[cx].ajudante  = r.ajudante.trim();
+      if(!cargaDados[cx].condutor  && (r.condutor||'').trim())  cargaDados[cx].condutor  = r.condutor.trim();
+      if(!cargaDados[cx].rota      && r.rota)                   cargaDados[cx].rota      = r.rota;
+      if(!cargaDados[cx].und       && r.und)                    cargaDados[cx].und       = r.und;
+      if(!cargaDados[cx].rire      && r.rire)                   cargaDados[cx].rire      = r.rire;
+      if(!cargaDados[cx].mes_ano   && r.mes_ano)                cargaDados[cx].mes_ano   = r.mes_ano;
     });
 
     // Mapa de unidade por nome (fallback para lançamentos sem und preenchido)
@@ -22541,6 +22545,10 @@ async function gerarPagamentos(btn){
       if(!dados || dados.pedidos.size===0) return;
       vistas.add(carga);
 
+      // Condutor: base_data tem prioridade (planilha = fonte verdadeira)
+      const motEfetivo = ((dados.condutor||'').toUpperCase().trim()) || mot;
+      if(!motEfetivo || motEfetivo==='LOJA' || motEfetivo==='RETIRA') return;
+
       // Pedidos sem ocorrência (igual ao renderBonus)
       const qtd = (dados.pedidosSemOcorr||dados.pedidos).size;
       if(qtd===0) return;
@@ -22551,14 +22559,14 @@ async function gerarPagamentos(btn){
 
       const bonus = getBonusRota(rota, temAjud);
       const rire  = getRireFromRota(rota);
-      // Unidade: sempre do cadastro (motorista tem prioridade, fallback no ajudante)
-      const und = undMap[mot] || undMap[(ajudante||'').trim().toUpperCase()] || '';
+      // Unidade: sempre do cadastro (motorista efetivo tem prioridade)
+      const und = undMap[motEfetivo] || undMap[(ajudante||'').trim().toUpperCase()] || '';
 
       // ── MOTORISTA ──
-      if(l.motorista && bonus.mot > 0){
-        const chave = l.motorista+'__'+mesAno+'__'+und;
+      if(bonus.mot > 0){
+        const chave = motEfetivo+'__'+mesAno+'__'+und;
         if(!pessoaMap[chave]) pessoaMap[chave] = {
-          nome:l.motorista, tipo:'motorista', mes_ano:mesAno,
+          nome:motEfetivo, tipo:'motorista', mes_ano:mesAno,
           rota, rire, und, entregas:0, val_entrega:bonus.mot, total:0
         };
         pessoaMap[chave].entregas += qtd;
@@ -22576,6 +22584,48 @@ async function gerarPagamentos(btn){
         pessoaMap[chaveAj].entregas += qtd;
         pessoaMap[chaveAj].total   += bonus.ajud * qtd;
         if(bonus.ajud > 0) pessoaMap[chaveAj].val_entrega = bonus.ajud;
+      }
+    });
+
+    // ── Cargas da planilha sem lançamento (base_data.condutor preenchido) ──
+    Object.entries(cargaDados).forEach(([cStr, dados])=>{
+      const c = Math.round(Number(cStr));
+      if(vistas.has(c)) return;
+      if(!dados || dados.pedidos.size===0) return;
+      const condutor = (dados.condutor||'').toUpperCase().trim();
+      if(!condutor || condutor==='LOJA' || condutor==='RETIRA') return;
+      // Só inclui R.I. (sem lancamento, não conta R.E.)
+      const rireNorm = normRire(dados.rire||'');
+      const lRire = rireNorm || getRireFromRota(dados.rota||'') || '';
+      if(lRire !== 'R.I.') return;
+      const mesAnoBase = dados.mes_ano||'';
+      if(!mesAnoBase) return;
+      if(mesSel && mesAnoBase !== mesSel) return;
+      const qtd = (dados.pedidosSemOcorr||dados.pedidos).size;
+      if(qtd===0) return;
+      const rotaDados = dados.rota||'';
+      const ajudante  = (dados.ajudante||'').trim();
+      const temAjud   = !!ajudante;
+      const bonus = getBonusRota(rotaDados, temAjud);
+      const und   = undMap[condutor] || undMap[(ajudante||'').toUpperCase()] || '';
+      vistas.add(c);
+      if(bonus.mot > 0){
+        const chave = condutor+'__'+mesAnoBase+'__'+und;
+        if(!pessoaMap[chave]) pessoaMap[chave] = {
+          nome:condutor, tipo:'motorista', mes_ano:mesAnoBase,
+          rota:rotaDados, rire:lRire, und, entregas:0, val_entrega:bonus.mot, total:0
+        };
+        pessoaMap[chave].entregas += qtd;
+        pessoaMap[chave].total   += bonus.mot * qtd;
+      }
+      if(ajudante && bonus.ajud > 0){
+        const chaveAj = ajudante.toUpperCase()+'__'+mesAnoBase+'__'+und;
+        if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
+          nome:ajudante.toUpperCase(), tipo:'ajudante', mes_ano:mesAnoBase,
+          rota:rotaDados, rire:lRire, und, entregas:0, val_entrega:bonus.ajud, total:0
+        };
+        pessoaMap[chaveAj].entregas += qtd;
+        pessoaMap[chaveAj].total   += bonus.ajud * qtd;
       }
     });
 
