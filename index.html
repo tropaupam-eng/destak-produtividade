@@ -20804,16 +20804,66 @@ async function carregarPortalConferente(){
   }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; }
 }
 
-async function pegarCargaConferente(carga){
-  if(!USUARIO_LOGADO) return;
-  if(!confirm('Confirmar que você vai conferir a Carga '+carga+'?')) return;
+async function buscarCargaConferente(){
+  const input = document.getElementById('conf-busca-carga');
+  const res   = document.getElementById('conf-busca-resultado');
+  const num   = parseInt(input?.value);
+  if(!num){ if(res) res.innerHTML='<p style="font-size:.82rem;color:#f59e0b">Digite o número da carga.</p>'; return; }
+  if(res) res.innerHTML='<p style="font-size:.82rem;color:var(--text-muted)">🔄 Buscando...</p>';
   try{
+    const [dems, jaAtrib] = await Promise.all([
+      supaFetch(`demandas_rota?carga=eq.${num}&select=*`),
+      supaFetch(`atribuicoes_armazem?carga=eq.${num}&conferente_id=eq.${USUARIO_LOGADO?.id}&select=id`)
+    ]);
+    const dem = (dems||[])[0];
+    if(!dem){ res.innerHTML='<p style="font-size:.82rem;color:#ef4444">⚠️ Carga '+num+' não encontrada.</p>'; return; }
+    if(['concluido','cancelado','saiu','fim_viagem'].includes(dem.status)){
+      res.innerHTML='<p style="font-size:.82rem;color:#ef4444">⚠️ Carga '+num+' já está em estado <strong>'+dem.status+'</strong> e não pode ser conferida.</p>'; return;
+    }
+    if((jaAtrib||[]).length){
+      res.innerHTML='<p style="font-size:.82rem;color:#f59e0b">⚠️ Você já está vinculado à Carga '+num+'.</p>'; return;
+    }
+    const stLabel={pendente:'⏳ Pendente',separacao:'📦 Separação',carregamento:'🔄 Carregamento',aguardando_nf:'📋 Aguard. NF'}[dem.status]||dem.status;
+    res.innerHTML=`
+      <div style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:10px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:.85rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">Carga ${dem.carga} — ${dem.rota||'—'}</div>
+          <div style="font-size:.78rem;color:var(--text-secondary)">🧑 ${dem.motorista||'—'} &nbsp;·&nbsp; 📦 ${dem.quantidade_pedidos||0} pedidos &nbsp;·&nbsp; ${stLabel}</div>
+        </div>
+        <button onclick="pegarCargaConferente('${dem.id}',${dem.carga})"
+          style="background:#059669;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:.85rem;font-weight:700;cursor:pointer;white-space:nowrap">✅ Pegar Carga</button>
+      </div>`;
+  }catch(e){ if(res) res.innerHTML='<p style="font-size:.82rem;color:#ef4444">Erro: '+e.message+'</p>'; }
+}
+
+async function pegarCargaConferente(demandaId, carga){
+  if(!USUARIO_LOGADO) return;
+  try{
+    // Verificar duplicata antes de inserir
+    const jaAtrib = await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${USUARIO_LOGADO.id}&select=id`);
+    if((jaAtrib||[]).length){ showToast('Você já está vinculado a esta carga','warning'); return; }
     await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
-      carga:Number(carga), conferente_id:USUARIO_LOGADO.id,
-      conferente_nome:USUARIO_LOGADO.nome, status:'pendente',
-      criado_em:new Date().toISOString()
+      demanda_id: demandaId,
+      carga: Number(carga),
+      conferente_id: USUARIO_LOGADO.id,
+      conferente_nome: USUARIO_LOGADO.nome,
+      status: 'pendente',
+      criado_em: new Date().toISOString()
     })});
-    showToast('✅ Carga '+carga+' lançada para você!','success');
+    // Avançar demanda para separacao se ainda estiver pendente
+    try{
+      const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
+      if(demDB&&demDB[0]&&demDB[0].status==='pendente'){
+        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
+        const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
+      }
+    }catch(_){}
+    // Limpar busca
+    const inp = document.getElementById('conf-busca-carga');
+    const res = document.getElementById('conf-busca-resultado');
+    if(inp) inp.value='';
+    if(res) res.innerHTML='';
+    showToast('✅ Carga '+carga+' vinculada a você!','success');
     await carregarPortalConferente();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -25869,6 +25919,19 @@ async function excluirTipoReceita(id){
       </div>
     </div>
 
+
+    <!-- Buscar Carga por Número -->
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px">
+      <div style="font-size:.8rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">🔍 Pegar Carga pelo Número</div>
+      <div style="display:flex;gap:10px">
+        <input type="number" id="conf-busca-carga" placeholder="Digite o número da carga..."
+          style="flex:1;border:1.5px solid var(--border-med);border-radius:8px;padding:10px 14px;font-size:1rem;font-weight:700;background:var(--bg-input);color:var(--text-primary);outline:none;-moz-appearance:textfield"
+          onkeydown="if(event.key==='Enter') buscarCargaConferente()">
+        <button onclick="buscarCargaConferente()"
+          style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:.88rem;font-weight:700;cursor:pointer;white-space:nowrap">🔍 Buscar</button>
+      </div>
+      <div id="conf-busca-resultado" style="margin-top:10px"></div>
+    </div>
 
     <!-- Minhas Cargas Ativas -->
     <div style="margin-bottom:24px">
