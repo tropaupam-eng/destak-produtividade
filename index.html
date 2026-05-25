@@ -2972,7 +2972,10 @@ textarea:focus{
   </div>
 
   <!-- KPIs pipeline -->
-  <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:24px"></div>
+  <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:16px"></div>
+
+  <!-- OTIF do mês -->
+  <div id="dash-otif" style="margin-bottom:20px"></div>
 
   <!-- Cards de cargas por setor -->
   <div id="dash-container">
@@ -16774,10 +16777,92 @@ async function renderDashInterna(){
   }catch(e){ if(container) container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; console.error('renderDashInterna:', e); }
 }
 
+async function renderDashOtif(){
+  const el = document.getElementById('dash-otif');
+  if(!el) return;
+  try{
+    const mesAtual = new Date().toISOString().slice(0,7);
+    const entregas = await supaFetch(
+      `entrega_datas?mes_ano=eq.${mesAtual}&data_saida=not.is.null&data_entrega=not.is.null&select=pedido,data_saida,data_entrega`
+    ).catch(()=>[]) || [];
+    if(!entregas.length){ el.innerHTML=''; return; }
+
+    // Mapa rota → {rire, prazoD} via CONFIG em memória
+    const rotaMap = {};
+    if(CONFIG?.rotas){
+      Object.entries(CONFIG.rotas).forEach(([nome,cfg])=>{
+        rotaMap[nome.toUpperCase()] = { rire: cfg.ri?'RI':'RE', prazoD: cfg.prazoOtif?cfg.prazoOtif/24:(cfg.ri?1:8) };
+      });
+    }
+
+    // Mapa pedido → {rota, rire, ocorrencia} do BASE_DATA em memória
+    const pedidoMap = {};
+    (BASE_DATA||[]).forEach(b=>{ const k=String(b.pedido); if(!pedidoMap[k]) pedidoMap[k]={rota:b.rota,rire:b.rire,ocorrencia:b.ocorrencia}; });
+
+    let total=0,riTotal=0,reTotal=0;
+    let onTimeG=0,inFullG=0,otifG=0;
+    let onTimeRI=0,inFullRI=0,otifRI=0;
+    let onTimeRE=0,inFullRE=0,otifRE=0;
+
+    for(const e of entregas){
+      const bd = pedidoMap[String(e.pedido)];
+      const rotaKey = (bd?.rota||'').toUpperCase();
+      const rotaCfg = rotaMap[rotaKey];
+      const rire = rotaCfg?.rire || (bd?.rire?.includes('RI')?'RI':'RE');
+      const prazoD = rotaCfg?.prazoD ?? (rire==='RI'?1:8);
+      const dias = (new Date(e.data_entrega)-new Date(e.data_saida))/(1000*60*60*24);
+      const isOnTime = dias <= prazoD;
+      const isInFull = (bd?.ocorrencia==null||bd?.ocorrencia===0);
+      const isOTIF = isOnTime&&isInFull;
+      total++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
+      if(rire==='RI'){ riTotal++; if(isOnTime)onTimeRI++; if(isInFull)inFullRI++; if(isOTIF)otifRI++; }
+      else           { reTotal++; if(isOnTime)onTimeRE++; if(isInFull)inFullRE++; if(isOTIF)otifRE++; }
+    }
+
+    const pct=(n,d)=>d>0?Math.round(n*100/d):0;
+    const cor=p=>p>=95?'#059669':p>=80?'#f59e0b':'#dc2626';
+    const gP=pct(otifG,total), riP=pct(otifRI,riTotal), reP=pct(otifRE,reTotal);
+
+    const card=(titulo,p,ot,tot,onT,onTot,inF,inFTot,ct)=>`
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${ct};border-radius:12px;padding:16px 18px">
+        <div style="font-size:.7rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">${titulo}</div>
+        <div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:10px">
+          <span style="font-size:2.2rem;font-weight:900;color:${cor(p)};line-height:1">${p}%</span>
+          <span style="font-size:.73rem;color:var(--text-muted);margin-bottom:4px">${ot}/${tot} pedidos</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;justify-content:space-between;font-size:.72rem">
+            <span style="color:var(--text-secondary)">⏱ No Prazo</span>
+            <span style="font-weight:700;color:${onT===onTot?'#059669':'#f59e0b'}">${onT}/${onTot}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.72rem">
+            <span style="color:var(--text-secondary)">📦 Completo</span>
+            <span style="font-weight:700;color:${inF===inFTot?'#059669':'#f59e0b'}">${inF}/${inFTot}</span>
+          </div>
+        </div>
+        <div style="margin-top:8px;background:var(--bg-card2);border-radius:6px;height:6px;overflow:hidden">
+          <div style="height:100%;width:${p}%;background:${cor(p)};border-radius:6px"></div>
+        </div>
+      </div>`;
+
+    el.innerHTML=`
+      <div style="font-size:.75rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">
+        📈 OTIF — ${mesAtual.split('-').reverse().join('/')} &nbsp;·&nbsp; ${total} pedido${total!==1?'s':''} com entrega registrada
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+        ${card('🏆 OTIF Geral',gP,otifG,total,onTimeG,total,inFullG,total,cor(gP))}
+        ${riTotal>0?card('🔵 OTIF R.I.',riP,otifRI,riTotal,onTimeRI,riTotal,inFullRI,riTotal,'#2563eb'):''}
+        ${reTotal>0?card('🟠 OTIF R.E.',reP,otifRE,reTotal,onTimeRE,reTotal,inFullRE,reTotal,'#f59e0b'):''}
+      </div>`;
+  }catch(e){ console.warn('renderDashOtif:',e); el.innerHTML=''; }
+}
+
 async function renderDashboard(){
   const kpisEl = document.getElementById('dash-kpis');
   const container = document.getElementById('dash-container');
   if(!container) return;
+
+  renderDashOtif(); // não bloqueia — carrega em paralelo
 
   try{
     // Buscar todas as cargas ativas (exceto concluídas e canceladas)
