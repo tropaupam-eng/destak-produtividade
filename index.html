@@ -13232,24 +13232,34 @@ async function confirmarSaidaRota(){
     // ── Marcar agendamento: realizado (no prazo) ou atrasado (saiu depois) ───
     try{
       const rotaNorm  = (dem?.rota||'').trim().toUpperCase();
-      const dataAgend = dem?.data_saida || data; // data planejada (agendamento)
-      const dataReal  = data;                    // data digitada no modal (saída real)
-      const arr = getAgendamentos();
-      const idx = arr.findIndex(a =>
-        (a.rota||'').trim().toUpperCase() === rotaNorm && a.data === dataAgend
-      );
-      if(idx >= 0 && arr[idx].status !== 'realizado'){
-        arr[idx].lancado = true;
-        if(dataReal > dataAgend){
-          // Saiu depois do dia planejado → atrasado
-          arr[idx].status       = 'atrasado';
-          arr[idx].motivo_atraso = arr[idx].motivo_atraso || 'atraso_rota';
-          arr[idx].motivo_label  = arr[idx].motivo_label  || '⏱️ Atraso de Rota';
-        } else {
-          // Saiu no dia ou antes → realizado no prazo
-          arr[idx].status = 'realizado';
+      const dataAgend = dem?.data_saida || data;
+      const dataReal  = data;
+      const novoStatus = dataReal > dataAgend ? 'atrasado' : 'realizado';
+      const payload = {
+        lancado: true,
+        status: novoStatus,
+        ...(novoStatus === 'atrasado' ? {motivo_atraso:'atraso_rota', motivo_label:'⏱️ Atraso de Rota'} : {})
+      };
+      // Busca direto no Supabase para garantir match mesmo sem cache local
+      const agendSupa = await supaFetch(
+        `agendamentos_rotas?rota=eq.${encodeURIComponent(rotaNorm)}&data=eq.${dataAgend}&status=neq.realizado&select=id`
+      ).catch(()=>[]) || [];
+      if(agendSupa.length){
+        await supaFetch(`agendamentos_rotas?id=eq.${agendSupa[0].id}`,{
+          method:'PATCH', body:JSON.stringify(payload)
+        }).catch(()=>{});
+        // Atualizar cache local também
+        const arr = getAgendamentos();
+        const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
+        if(idx >= 0){ Object.assign(arr[idx], payload); _agendCache = arr; localStorage.setItem('agendamentos_rotas', JSON.stringify(arr)); }
+      } else {
+        // Fallback: cache local caso Supabase não retorne (offline ou rota não agendada formalmente)
+        const arr = getAgendamentos();
+        const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
+        if(idx >= 0 && arr[idx].status !== 'realizado'){
+          Object.assign(arr[idx], payload);
+          saveAgendamentos(arr);
         }
-        saveAgendamentos(arr);
       }
     }catch(_){}
     // ─────────────────────────────────────────────────────────────────────────
