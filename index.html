@@ -2405,6 +2405,7 @@ textarea:focus{
     </div>
   </div>
   <div class="filters">
+    <div class="filter-group"><label>Ano</label><select id="m-ano" onchange="onAnoChange('m')"><option value="2026">2026</option></select></div>
     <div class="filter-group"><label>Mês</label><select id="m-mes" onchange="renderMot()"><option value="">Todos</option></select></div>
     <div class="filter-group"><label>Unidade</label><select id="m-und" onchange="renderMot()"><option value="">Todas</option></select></div>
     <div class="filter-group"><label>RI/RE</label><select id="m-rire" onchange="renderMot()"><option value="">Todos</option></select></div>
@@ -2761,7 +2762,13 @@ textarea:focus{
   <!-- ── FILTROS ── -->
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
     <div>
-      <label style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">Período</label>
+      <label style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">Ano</label>
+      <select id="fin-filtro-ano" onchange="onAnoChange('fin')" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:8px 12px;font-size:.85rem;outline:none;min-width:90px">
+        <option value="2026">2026</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">Mês</label>
       <select id="fin-filtro-mes" onchange="renderFinanceiro()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:8px 12px;font-size:.85rem;outline:none;min-width:140px">
         <option value="">Todos os meses</option>
       </select>
@@ -7390,12 +7397,29 @@ function populateSelects(){
     und:  (r.und || cargaUndMapPop[r.carga] || '').trim()
   }));
 
+  // Coletar todos os anos disponíveis e popular selects de ano
+  const todosAnos = [...new Set([
+    ...allEnrich.map(r=>r.mes_ano).filter(Boolean),
+    ...BASE_DATA.map(r=>r.mes_ano).filter(Boolean)
+  ].map(m=>m.slice(0,4)))].sort().reverse();
+
   ['m','v'].forEach(p=>{
-    // Meses: union de lancamentos + BASE_DATA (para incluir meses importados sem lancamento)
-    const meses=[...new Set([
+    // Popular select de ano se existir
+    const selAno = document.getElementById(p+'-ano');
+    if(selAno){
+      const anoAtual = selAno.value || String(new Date().getFullYear());
+      selAno.innerHTML = todosAnos.map(a=>`<option value="${a}" ${a===anoAtual?'selected':''}>${a}</option>`).join('');
+      selAno.value = anoAtual;
+    }
+
+    // Meses: union de lancamentos + BASE_DATA, filtrado pelo ano selecionado
+    const anoSel = document.getElementById(p+'-ano')?.value || String(new Date().getFullYear());
+    const todosMeses=[...new Set([
       ...allEnrich.map(r=>r.mes_ano).filter(Boolean),
       ...BASE_DATA.map(r=>r.mes_ano).filter(Boolean)
     ])].sort();
+    const meses = todosMeses.filter(m=>m.startsWith(anoSel));
+
     ['mes','und','rire','rota'].forEach(f=>{
       const sel=document.getElementById(p+'-'+f),cur=sel.value;
       while(sel.options.length>1)sel.remove(1);
@@ -7415,8 +7439,17 @@ function populateSelects(){
       sel.value=cur;
     });
     const ms=document.getElementById(p+'-mes');
-    if(!ms.value){const mx=[...new Set(allEnrich.map(r=>r.mes_ano).filter(Boolean))].sort();ms.value=mx[mx.length-1]||'';}
+    if(!ms.value){ms.value=meses[meses.length-1]||'';}
   });
+}
+
+function onAnoChange(prefixo){
+  if(prefixo==='m'||prefixo==='v'){
+    populateSelects();
+    renderMot();
+  } else if(prefixo==='fin'){
+    popularFiltrosFinanceiro().then(()=>renderTabelaFinanceiro());
+  }
 }
 
 function getFiltered(prefix){
@@ -13199,24 +13232,34 @@ async function confirmarSaidaRota(){
     // ── Marcar agendamento: realizado (no prazo) ou atrasado (saiu depois) ───
     try{
       const rotaNorm  = (dem?.rota||'').trim().toUpperCase();
-      const dataAgend = dem?.data_saida || data; // data planejada (agendamento)
-      const dataReal  = data;                    // data digitada no modal (saída real)
-      const arr = getAgendamentos();
-      const idx = arr.findIndex(a =>
-        (a.rota||'').trim().toUpperCase() === rotaNorm && a.data === dataAgend
-      );
-      if(idx >= 0 && arr[idx].status !== 'realizado'){
-        arr[idx].lancado = true;
-        if(dataReal > dataAgend){
-          // Saiu depois do dia planejado → atrasado
-          arr[idx].status       = 'atrasado';
-          arr[idx].motivo_atraso = arr[idx].motivo_atraso || 'atraso_rota';
-          arr[idx].motivo_label  = arr[idx].motivo_label  || '⏱️ Atraso de Rota';
-        } else {
-          // Saiu no dia ou antes → realizado no prazo
-          arr[idx].status = 'realizado';
+      const dataAgend = dem?.data_saida || data;
+      const dataReal  = data;
+      const novoStatus = dataReal > dataAgend ? 'atrasado' : 'realizado';
+      const payload = {
+        lancado: true,
+        status: novoStatus,
+        ...(novoStatus === 'atrasado' ? {motivo_atraso:'atraso_rota', motivo_label:'⏱️ Atraso de Rota'} : {})
+      };
+      // Busca direto no Supabase para garantir match mesmo sem cache local
+      const agendSupa = await supaFetch(
+        `agendamentos_rotas?rota=eq.${encodeURIComponent(rotaNorm)}&data=eq.${dataAgend}&status=neq.realizado&select=id`
+      ).catch(()=>[]) || [];
+      if(agendSupa.length){
+        await supaFetch(`agendamentos_rotas?id=eq.${agendSupa[0].id}`,{
+          method:'PATCH', body:JSON.stringify(payload)
+        }).catch(()=>{});
+        // Atualizar cache local também
+        const arr = getAgendamentos();
+        const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
+        if(idx >= 0){ Object.assign(arr[idx], payload); _agendCache = arr; localStorage.setItem('agendamentos_rotas', JSON.stringify(arr)); }
+      } else {
+        // Fallback: cache local caso Supabase não retorne (offline ou rota não agendada formalmente)
+        const arr = getAgendamentos();
+        const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
+        if(idx >= 0 && arr[idx].status !== 'realizado'){
+          Object.assign(arr[idx], payload);
+          saveAgendamentos(arr);
         }
-        saveAgendamentos(arr);
       }
     }catch(_){}
     // ─────────────────────────────────────────────────────────────────────────
@@ -16610,7 +16653,6 @@ async function renderDashInterna(){
     const kpis = [
       {label:'📦 Pedidos',      val:totalPedidos.toLocaleString('pt-BR'),          cor:'#2563eb'},
       {label:'🚛 Cargas',       val:totalCargas.toLocaleString('pt-BR'),           cor:'#7c3aed'},
-      {label:'💰 Valor Total',  val:valorTotal>0?_fmtValor(valorTotal):'—',        cor:'#059669'},
       {label:'✅ Ativas',       val:cargasAtivas.toLocaleString('pt-BR'),          cor:'#0891b2'},
       {label:'🚛 Partiram',     val:cargasPartidas.length.toLocaleString('pt-BR'), cor:'#E8000D'},
       {label:'🎯 OTIF',          val:pctOtif!==null?pctOtif+'%':'—',               cor:corOtif(pctOtif), sub:otifTot?`${otifOk}/${otifTot} ped`:'sem dados'},
@@ -18319,15 +18361,24 @@ async function carregarHistoricoRotas(){
       const tSep = diffHoras(inicioSepConf, fimSepConf);
 
       // ── TEMPO FISCAL ──
-      // Início: conferido_em do primeiro pedido OK (quando fiscal pode começar)
-      // Fim: criado_em da última NF emitida
-      const nfsCargaFisc = nfs.filter(n=>n.carga===d.carga&&n.criado_em);
-      const primeiraConfObj = confComData.length
-        ? confComData.reduce((m,x)=>new Date(x.conferido_em)<new Date(m.conferido_em)?x:m, confComData[0])
+      // Início: criado_em da primeira atribuição fiscal (quando fiscal pega a carga)
+      // Fim: criado_em da última NF ou boleto emitido
+      const atribsFiscCarga = atribsFiscal.filter(a=>a.carga===d.carga&&a.criado_em);
+      const primeiraAtribFiscObj = atribsFiscCarga.length
+        ? atribsFiscCarga.reduce((m,a)=>new Date(a.criado_em)<new Date(m.criado_em)?a:m, atribsFiscCarga[0])
         : null;
-      const inicioFisc = primeiraConfObj?.conferido_em || fimSepConf || null;
+      const inicioFisc = primeiraAtribFiscObj?.criado_em || null;
+      const nfsCargaFisc = nfs.filter(n=>n.carga===d.carga&&n.criado_em);
+      const nfsOnly    = nfsCargaFisc.filter(n=>n.tipo!=='boleto');
+      const boletosOnly= nfsCargaFisc.filter(n=>n.tipo==='boleto');
       const ultimaNFObj = nfsCargaFisc.length
         ? nfsCargaFisc.reduce((m,n)=>new Date(n.criado_em)>new Date(m.criado_em)?n:m, nfsCargaFisc[0])
+        : null;
+      const ultimaNFSoObj = nfsOnly.length
+        ? nfsOnly.reduce((m,n)=>new Date(n.criado_em)>new Date(m.criado_em)?n:m, nfsOnly[0])
+        : null;
+      const ultimaBoletoObj = boletosOnly.length
+        ? boletosOnly.reduce((m,n)=>new Date(n.criado_em)>new Date(m.criado_em)?n:m, boletosOnly[0])
         : null;
       const fimFisc = ultimaNFObj?.criado_em || null;
       const tFisc = diffHoras(inicioFisc, fimFisc);
@@ -18407,7 +18458,13 @@ async function carregarHistoricoRotas(){
                confObs.length?'⚠️ '+confObs.map(o=>`Ped.${o.pedido}: ${o.observacao}`).join(' • '):null
               ].filter(Boolean).join(' | '))}
             ${blocoSetor('📋','Fiscal','#059669',tFisc,fiscaisCarga,
-              nfsCarga.length?nfsCarga.length+' NF(s) emitida(s)':'')}
+              [inicioFisc?'Início: '+new Date(inicioFisc).toLocaleString('pt-BR'):null,
+               ultimaNFSoObj?'Última NF: '+new Date(ultimaNFSoObj.criado_em).toLocaleString('pt-BR'):null,
+               ultimaBoletoObj?'Último boleto: '+new Date(ultimaBoletoObj.criado_em).toLocaleString('pt-BR'):null,
+               nfsOnly.length||boletosOnly.length
+                 ? [nfsOnly.length?nfsOnly.length+' NF(s)':null, boletosOnly.length?boletosOnly.length+' boleto(s)':null].filter(Boolean).join(' + ')
+                 : null
+              ].filter(Boolean).join(' | '))}
             ${blocoSetor('🛡️','Seguros','#7c3aed',tSeg,[],'')}
             ${blocoSetor('💵','Caixa','#065f46',null,caixasCarga,
               validCaixa.filter(v=>v.carga===d.carga).length?validCaixa.filter(v=>v.carga===d.carga).length+' pedidos validados':'')}
@@ -21868,7 +21925,7 @@ async function renderArmazem(){
                 <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Motorista</span><span style="color:var(--text-secondary);font-weight:600;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${semMot?'A DEFINIR':d.motorista}</span></div>
                 <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Pedidos</span><span style="color:var(--text-secondary);font-weight:600">${total} total</span></div>
               </div>
-              ${confCarga.length?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:7px">${confCarga.map(a=>`<span style="background:rgba(37,99,235,.1);border:1px solid rgba(37,99,235,.25);border-radius:6px;padding:2px 7px;font-size:.64rem;font-weight:700;color:#60a5fa">👷 ${a.conferente_nome}</span>`).join('')}</div>`:''}
+              ${confCarga.length?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:7px">${confCarga.map(a=>`<span style="background:rgba(37,99,235,.1);border:1px solid rgba(37,99,235,.25);border-radius:6px;padding:2px 5px 2px 7px;font-size:.64rem;font-weight:700;color:#60a5fa;display:inline-flex;align-items:center;gap:4px">👷 ${a.conferente_nome}<button onclick="removerConferente('${a.id}','${d.id}',${d.carga},'${(a.conferente_nome||'').replace(/'/g,"\\'")}'); event.stopPropagation()" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:.8rem;font-weight:900;line-height:1;padding:0 1px;margin-left:1px" title="Desvincular conferente">✕</button></span>`).join('')}</div>`:''}
               <div>
                 <div style="display:flex;justify-content:space-between;font-size:.62rem;margin-bottom:3px">
                   <span style="color:var(--green)">✅ ${pedOk} OK${pedNok?` &nbsp; ❌ ${pedNok} NOK`:''}</span>
@@ -22533,13 +22590,29 @@ async function renderFinanceiro(){
 }
 
 async function popularFiltrosFinanceiro(){
-  // Meses disponíveis do BASE_DATA
-  const meses = [...new Set(BASE_DATA.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+  // Todos os meses disponíveis do BASE_DATA
+  const todosMeses = [...new Set(BASE_DATA.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+  const todosAnos  = [...new Set(todosMeses.map(m=>m.slice(0,4)))].sort().reverse();
+
+  // Popular select de ano
+  const selAno = document.getElementById('fin-filtro-ano');
+  if(selAno){
+    const anoAtual = selAno.value || String(new Date().getFullYear());
+    selAno.innerHTML = todosAnos.map(a=>`<option value="${a}" ${a===anoAtual?'selected':''}>${a}</option>`).join('');
+    if(!selAno.value) selAno.value = anoAtual;
+  }
+
+  // Filtrar meses pelo ano selecionado
+  const anoSel = selAno?.value || String(new Date().getFullYear());
+  const meses = todosMeses.filter(m=>m.startsWith(anoSel));
+
   const selMes = document.getElementById('fin-filtro-mes');
   if(selMes){
     const cur = selMes.value;
     selMes.innerHTML = '<option value="">Todos os meses</option>' +
       meses.map(m=>`<option value="${m}" ${m===cur?'selected':''}>${formatarMesAno(m)}</option>`).join('');
+    // Se o mês selecionado não está no ano atual, limpa
+    if(cur && !meses.includes(cur)) selMes.value = '';
   }
 
   // Pessoas (motoristas + ajudantes)
