@@ -9727,6 +9727,7 @@ async function carregarPortalMotoristaCargasAjudante(){
 
 let _kmModalCarga = null;
 let _kmModalTipo  = null;
+let _fimViagemDemId = null; // set when KM final modal is opened from "Registrar Chegada"
 
 function lancarKmCarga(carga, tipo){
   if(!USUARIO_LOGADO) return;
@@ -9762,8 +9763,9 @@ function lancarKmCarga(carga, tipo){
 function fecharModalKmCarga(){
   const modal = document.getElementById('modal-km-carga');
   if(modal) modal.style.display = 'none';
-  _kmModalCarga = null;
-  _kmModalTipo  = null;
+  _kmModalCarga    = null;
+  _kmModalTipo     = null;
+  _fimViagemDemId  = null;
 }
 
 async function confirmarModalKmCarga(){
@@ -9801,17 +9803,50 @@ async function confirmarModalKmCarga(){
       }
       showToast(`✅ KM Inicial registrado: ${km.toLocaleString('pt-BR')} km`,'success');
     } else {
-      if(!reg||reg.km_inicial==null){ showToast('Registre o KM Inicial primeiro','warning'); return; }
-      if(km <= reg.km_inicial){ showToast(`KM Final (${km.toLocaleString('pt-BR')}) deve ser maior que o Inicial (${reg.km_inicial.toLocaleString('pt-BR')})`,'warning'); return; }
-      await supaFetch(`km_cargas?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify({ km_final:km, ts_km_final:agora }) });
-      const kmRodado = km - reg.km_inicial;
-      const ms  = new Date(agora) - new Date(reg.ts_km_inicial);
+      // Se não há registro em km_cargas, tentar criar a partir do rotas_viagem (KM inicial salvo via "Iniciar Viagem")
+      let regFinal = reg;
+      if(!regFinal || regFinal.km_inicial == null){
+        const demQ = _fimViagemDemId
+          ? await supaFetch(`demandas_rota?id=eq.${_fimViagemDemId}&select=id,rota,veiculo&limit=1`).catch(()=>[])
+          : await supaFetch(`demandas_rota?carga=eq.${carga}&motorista=eq.${encodeURIComponent(myNome)}&status=in.(saiu,fim_viagem)&select=id,rota,veiculo&order=data_saida.desc&limit=1`).catch(()=>[]);
+        const demRow = (demQ||[])[0];
+        if(demRow){
+          const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${demRow.id}&select=km_inicial,data_saida&limit=1`).catch(()=>[]) || [];
+          if(rv[0]?.km_inicial != null){
+            const { rota='', veiculo='' } = demRow;
+            const _RI2 = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
+            const rire2 = _RI2.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
+            const newId = Date.now().toString(36)+Math.random().toString(36).slice(2);
+            const tsIni = rv[0].data_saida ? rv[0].data_saida+'T00:00:00Z' : agora;
+            await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
+              id: newId, carga:Number(carga), motorista_id:myId, motorista_nome:myNome,
+              rota, rire:rire2, veiculo, mes_ano:mesStr,
+              km_inicial:rv[0].km_inicial, km_final:null,
+              ts_km_inicial:tsIni, ts_km_final:null, ts:agora
+            })});
+            regFinal = { id:newId, km_inicial:rv[0].km_inicial, ts_km_inicial:tsIni, veiculo };
+          }
+        }
+      }
+      if(!regFinal || regFinal.km_inicial == null){ showToast('Registre o KM Inicial primeiro','warning'); return; }
+      if(km <= regFinal.km_inicial){ showToast(`KM Final (${km.toLocaleString('pt-BR')}) deve ser maior que o Inicial (${regFinal.km_inicial.toLocaleString('pt-BR')})`,'warning'); return; }
+      await supaFetch(`km_cargas?id=eq.${regFinal.id}`,{ method:'PATCH', body:JSON.stringify({ km_final:km, ts_km_final:agora }) });
+      const kmRodado = km - regFinal.km_inicial;
+      const ms  = new Date(agora) - new Date(regFinal.ts_km_inicial||agora);
       const h   = Math.floor(ms/3600000);
       const d   = Math.floor(h/24);
       const dur = d>0 ? `${d}d ${h%24}h` : `${h}h`;
       showToast(`✅ Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km em ${dur}`,'success');
-      // Auto-liberar veículo se não tiver manutenção ativa agendada
-      if(reg.veiculo) gfAutoLiberarVeiculo(reg.veiculo).catch(()=>{});
+      if(regFinal.veiculo) gfAutoLiberarVeiculo(regFinal.veiculo).catch(()=>{});
+      // Se chamado via "Registrar Chegada", fechar a viagem também
+      if(_fimViagemDemId){
+        const fimId = _fimViagemDemId;
+        _fimViagemDemId = null;
+        const ts2 = new Date().toISOString();
+        await supaFetch(`demandas_rota?id=eq.${fimId}`,{method:'PATCH',body:JSON.stringify({status:'fim_viagem',ts_fim_viagem:ts2})}).catch(()=>{});
+        showToast('🏁 Chegada registrada!','success');
+        await carregarPortalMotorista().catch(()=>{});
+      }
     }
     await carregarKmMotorista();
   }catch(e){ showToast('Erro ao salvar KM: '+e.message,'warning'); }
@@ -13849,6 +13884,18 @@ async function carregarPortalMotorista(){
       if(da && elCargaAtual){
         const statusLabel = {saiu:'🚛 Em Rota',pronto_viagem:'✅ Pronto p/ Viagem',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Ag. NF',aguardando_manifesto:'🛡️ Ag. Manifesto'}[da.status]||da.status;
         const fmtHora = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
+        // Buscar KM da carga ativa
+        let kmAtiva = null;
+        if(da.carga && USUARIO_LOGADO.id){
+          const [kmR, rvR] = await Promise.all([
+            supaFetch(`km_cargas?carga=eq.${da.carga}&motorista_id=eq.${USUARIO_LOGADO.id}&select=km_inicial,km_final&limit=1`).catch(()=>[]),
+            supaFetch(`rotas_viagem?demanda_id=eq.${da.id}&select=km_inicial,km_final&limit=1`).catch(()=>[])
+          ]);
+          kmAtiva = (kmR||[])[0] || (rvR||[])[0] || null;
+        }
+        const temKmIni = kmAtiva?.km_inicial != null;
+        const temKmFim = kmAtiva?.km_final != null;
+        const kmIniStr = temKmIni ? Number(kmAtiva.km_inicial).toLocaleString('pt-BR')+' km' : null;
         elCargaAtual.innerHTML = `
           <div style="background:linear-gradient(135deg,#1e3a5f,#0f2d5a);border:1px solid rgba(37,99,235,.4);border-left:4px solid #2563eb;border-radius:14px;padding:16px 20px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -13861,11 +13908,25 @@ async function carregarPortalMotorista(){
               <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">PEDIDOS</div><div style="font-size:1.1rem;font-weight:800;color:#34d399">${da.quantidade_pedidos||'—'}</div></div>
               <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">SAÍDA</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${fmtHora(da.ts_saiu)}</div></div>
             </div>
+            ${temKmIni||da.status==='saiu' ? `
+            <div style="margin-top:10px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="font-size:.72rem;color:#64748b;font-weight:700">🛣️ KM:</span>
+              ${temKmIni
+                ? `<span style="font-size:.8rem;color:#2dd4bf;font-weight:700">Inicial: ${kmIniStr}</span>`
+                : `<span style="font-size:.75rem;color:#f59e0b;font-weight:600">⚠️ KM Inicial não registrado</span>`}
+              ${temKmFim
+                ? `<span style="font-size:.8rem;color:#34d399;font-weight:700">Final: ${Number(kmAtiva.km_final).toLocaleString('pt-BR')} km</span>`
+                : (temKmIni ? `<span style="font-size:.75rem;color:#64748b">• Final pendente</span>` : '')}
+            </div>` : ''}
             <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07);display:flex;gap:10px;flex-wrap:wrap">
               ${da.status==='saiu' ? `
+                ${!temKmIni ? `<button onclick="lancarKmCarga(${da.carga},'inicial')"
+                  style="flex:1;min-width:130px;background:linear-gradient(135deg,#0d9488,#14b8a6);color:#fff;border:none;border-radius:10px;padding:10px;font-size:.82rem;font-weight:700;cursor:pointer">
+                  🟢 KM Inicial
+                </button>` : ''}
                 <button onclick="motoristaChegarViagem('${da.id}')"
                   style="flex:1;min-width:160px;background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
-                  🏁 Registrar Chegada
+                  🏁 Registrar Chegada${temKmIni?' + KM Final':''}
                 </button>` : `
                 <button onclick="motIniciarViagem('${da.id}',${da.carga||0},'${(da.rota||'').replace(/'/g,"\\'")}','${da.motorista||''}')"
                   style="flex:1;min-width:160px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
@@ -14220,6 +14281,15 @@ async function excluirBonusAdm(mes, idx){
 }
 
 async function motoristaChegarViagem(demId){
+  try{
+    const dem = await supaFetch(`demandas_rota?id=eq.${demId}&select=carga,rota,motorista&limit=1`).catch(()=>[]) || [];
+    if(dem[0]?.carga){
+      _fimViagemDemId = demId;
+      lancarKmCarga(dem[0].carga, 'final');
+      return;
+    }
+  }catch(_){}
+  // Fallback sem carga: apenas confirmar status
   if(!confirm('Confirmar chegada / fim de viagem?')) return;
   try{
     const ts = new Date().toISOString();
