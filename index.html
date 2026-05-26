@@ -18586,6 +18586,10 @@ async function carregarHistoricoRotas(){
         <!-- Reabrir carga -->
         <div style="display:flex;justify-content:flex-end;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
           <div style="display:flex;align-items:center;gap:8px">
+            <button onclick="abrirEditarChegada('${d.id}',${d.carga})"
+              style="background:rgba(245,158,11,.1);color:#f59e0b;border:1.5px solid rgba(245,158,11,.3);border-radius:8px;padding:6px 14px;font-size:.78rem;font-weight:700;cursor:pointer">
+              ✏️ Chegada/KM
+            </button>
             <select id="hist-reabrir-status-${d.id}"
               style="border:1.5px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.78rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
               <option value="pendente">⏳ Pendente</option>
@@ -18993,6 +18997,49 @@ Deseja ir agora para o Caixa fazer a prestação de contas da carga ${dem?.carga
       }, 500);
     }
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+let _editChegadaDemId=null, _editChegadaCarga=null;
+async function abrirEditarChegada(demandaId, carga){
+  _editChegadaDemId = demandaId;
+  _editChegadaCarga = carga;
+  document.getElementById('edit-chegada-titulo').textContent = `Carga #${carga}`;
+  document.getElementById('edit-chegada-data').value = '';
+  document.getElementById('edit-chegada-km').value = '';
+  try{
+    const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${demandaId}&select=*&order=criado_em.desc&limit=1`).catch(()=>[]) || [];
+    const s = rv[0]||{};
+    if(s.data_retorno) document.getElementById('edit-chegada-data').value = s.data_retorno;
+    if(s.km_final)     document.getElementById('edit-chegada-km').value   = s.km_final;
+  }catch(e){}
+  document.getElementById('modal-editar-chegada').style.display='flex';
+}
+function fecharEditarChegada(){
+  document.getElementById('modal-editar-chegada').style.display='none';
+  _editChegadaDemId=null; _editChegadaCarga=null;
+}
+async function salvarEditarChegada(){
+  const data  = document.getElementById('edit-chegada-data').value;
+  const kmFim = parseInt(document.getElementById('edit-chegada-km').value)||null;
+  if(!data){  showToast('Informe a data de chegada','warning'); return; }
+  if(!kmFim){ showToast('Informe o KM final','warning');        return; }
+  try{
+    const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${_editChegadaDemId}&select=*&order=criado_em.desc&limit=1`).catch(()=>[]) || [];
+    const saida = rv[0];
+    if(saida){
+      const diasRota = saida.data_saida
+        ? Math.round((new Date(data)-new Date(saida.data_saida))/(864e5))+1
+        : null;
+      const kmTotal = saida.km_inicial!=null ? kmFim-saida.km_inicial : null;
+      await supaFetch(`rotas_viagem?id=eq.${saida.id}`,{
+        method:'PATCH',
+        body:JSON.stringify({km_final:kmFim, data_retorno:data, dias_rota:diasRota, km_total:kmTotal})
+      });
+    }
+    fecharEditarChegada();
+    showToast('✅ Chegada e KM atualizados!','success');
+    await carregarHistoricoRotas();
+  }catch(e){ showToast('Erro: '+e.message,'error'); }
 }
 
 // ══ PORTAL DO OPERADOR (SEPARADOR) ══════════════════
@@ -26335,6 +26382,34 @@ async function excluirTipoReceita(id){
         <button onclick="fecharModalFimViagem()" style="flex:1;background:#f3f4f6;color:#374151;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:600;cursor:pointer">Cancelar</button>
         <button onclick="confirmarFimViagem()" style="flex:2;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer">
           🏁 Confirmar Retorno
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL EDITAR CHEGADA / KM FINAL ══ -->
+<div id="modal-editar-chegada" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:600;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)fecharEditarChegada()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:420px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+    <div style="background:linear-gradient(135deg,#92400e,#f59e0b);padding:20px 24px;color:#fff">
+      <h3 style="font-size:1.05rem;font-weight:800;margin:0 0 3px">✏️ Editar Chegada / KM Final</h3>
+      <p id="edit-chegada-titulo" style="font-size:.8rem;opacity:.85;margin:0">Carga #—</p>
+    </div>
+    <div style="padding:24px">
+      <div style="display:grid;gap:14px;margin-bottom:20px">
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">📅 Data de Chegada *</label>
+          <input type="date" id="edit-chegada-data" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🔢 KM Final *</label>
+          <input type="number" id="edit-chegada-km" placeholder="Ex: 46080" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button onclick="fecharEditarChegada()" style="flex:1;background:#f3f4f6;color:#374151;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:600;cursor:pointer">Cancelar</button>
+        <button onclick="salvarEditarChegada()" style="flex:2;background:linear-gradient(135deg,#92400e,#f59e0b);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer">
+          💾 Salvar Alterações
         </button>
       </div>
     </div>
