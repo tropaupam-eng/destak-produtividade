@@ -3210,6 +3210,7 @@ textarea:focus{
       </select>
       <button onclick="abrirModalLancarAbs()" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:700">➕ Lançar</button>
       <button onclick="abrirModalFolhaGeral()" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:700">📆 Folga/Feriado Geral</button>
+      <button onclick="gerarPresencasAutomaticas(document.getElementById('abs-filtro-mes')?.value||new Date().toISOString().slice(0,7), true)" id="btn-gerar-presencas" style="background:#059669;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:700">⚡ Gerar Presenças</button>
     </div>
   </div>
 
@@ -17346,6 +17347,88 @@ document.addEventListener('click', function(e){
   }
 });
 
+async function gerarPresencasAutomaticas(mes, manual = false){
+  const btn = document.getElementById('btn-gerar-presencas');
+  const hoje = new Date().toISOString().split('T')[0];
+  const mesAtual = hoje.slice(0,7);
+
+  // Só preenche meses passados ou atual — nunca o futuro
+  if(mes > mesAtual){ if(manual) showToast('Não é possível gerar presenças para meses futuros','warning'); return; }
+
+  // Auto-execução: rodar no máximo 1x por dia por mês
+  const flagKey = `abs_auto_presenca_${mes}_${hoje}`;
+  if(!manual && localStorage.getItem(flagKey)) return;
+
+  if(btn && manual){ btn.disabled = true; btn.textContent = '⏳ Gerando...'; }
+
+  try{
+    const [ano, mesNum] = mes.split('-').map(Number);
+    const primeiroDia = `${mes}-01`;
+    const ultimoDia   = mes === mesAtual ? hoje
+      : `${mes}-${String(new Date(ano, mesNum, 0).getDate()).padStart(2,'0')}`;
+
+    // Buscar funcionários ativos no período
+    const [motoristas, ajudantes] = await Promise.all([
+      supaFetch(`motoristas?select=nome,data_demissao&ativo=eq.true`).catch(()=>[]),
+      supaFetch(`ajudantes?select=nome,data_demissao&ativo=eq.true`).catch(()=>[])
+    ]);
+
+    const funcionarios = [
+      ...(motoristas||[])
+        .filter(m => !m.data_demissao || m.data_demissao >= primeiroDia)
+        .map(m => ({ nome: (m.nome||'').trim().toUpperCase(), funcao: 'motorista' })),
+      ...(ajudantes||[])
+        .filter(a => !a.data_demissao || a.data_demissao >= primeiroDia)
+        .map(a => ({ nome: (a.nome||'').trim().toUpperCase(), funcao: 'ajudante' }))
+    ];
+    if(!funcionarios.length){ if(manual) showToast('Nenhum funcionário ativo encontrado','warning'); return; }
+
+    // Buscar todos os registros já existentes no mês (1 query)
+    const existentes = await supaFetch(`absenteismo?mes_ano=eq.${mes}&select=nome,data`).catch(()=>[]) || [];
+    const existSet = new Set(existentes.map(e => `${(e.nome||'').trim().toUpperCase()}__${e.data}`));
+
+    // Gerar lista de registros faltando
+    const novos = [];
+    const cur = new Date(primeiroDia + 'T12:00:00');
+    const fim = new Date(ultimoDia + 'T12:00:00');
+    while(cur <= fim){
+      const dataStr = cur.toISOString().split('T')[0];
+      for(const f of funcionarios){
+        if(!existSet.has(`${f.nome}__${dataStr}`)){
+          novos.push({ nome:f.nome, funcao:f.funcao, data:dataStr,
+            status:'presente', mes_ano:mes, fonte:'automatico',
+            criado_em: new Date().toISOString() });
+        }
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    if(!novos.length){
+      if(manual) showToast('✅ Todos os dias já têm registro — nenhuma presença pendente!','success');
+      localStorage.setItem(flagKey, '1');
+      return;
+    }
+
+    // Inserir em lotes de 200
+    for(let i = 0; i < novos.length; i += 200){
+      await supaFetch('absenteismo', {
+        method: 'POST', prefer: 'return=minimal',
+        body: JSON.stringify(novos.slice(i, i + 200))
+      }).catch(()=>{});
+    }
+
+    localStorage.setItem(flagKey, '1');
+    if(manual){
+      showToast(`✅ ${novos.length} presenças automáticas geradas!`, 'success');
+      await renderAbsenteismo();
+    }
+  }catch(e){
+    if(manual) showToast('Erro ao gerar presenças: '+e.message,'warning');
+  }finally{
+    if(btn && manual){ btn.disabled = false; btn.textContent = '⚡ Gerar Presenças'; }
+  }
+}
+
 async function renderAbsenteismo(){
   const container = document.getElementById('abs-tbody');
   if(!container) return;
@@ -17812,6 +17895,10 @@ async function renderAbsenteismo(){
     }).join('');
 
   }catch(e){ container.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--text-muted)">Erro: ${e.message}</td></tr>`; }
+
+  // Auto-preencher presenças em background (silencioso, 1x por dia por mês)
+  const _mesPreencher = document.getElementById('abs-filtro-mes')?.value || new Date().toISOString().slice(0,7);
+  gerarPresencasAutomaticas(_mesPreencher, false).catch(()=>{});
 }
 
 // ── STATUS → visual ──────────────────────────────────────
