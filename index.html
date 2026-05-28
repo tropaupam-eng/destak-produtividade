@@ -11024,17 +11024,24 @@ function limparFiltrosExpedicao(){
 
 
 async function admConcluirCarregamento(demandaId, carga){
-  // ─── REGRA: o armazém NÃO pode avançar o status diretamente.
-  // Somente o CONFERENTE pode concluir o carregamento (via concluirCarregamentoConferente).
-  // Esta função agora bloqueia caso não haja nenhuma conferência registrada.
   try{
-    const confOK = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=id&limit=1`) || [];
-    if(!confOK.length){
-      showToast('⛔ Não é permitido concluir sem conferência do conferente. Atribua um conferente e aguarde a conferência.','warning');
+    // Buscar total de pedidos e conferências
+    const [demRow, confRegs] = await Promise.all([
+      supaFetch(`demandas_rota?id=eq.${demandaId}&select=quantidade_pedidos`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.(ok,nok)&select=id`).catch(()=>[])
+    ]);
+    const totalPedidos = demRow?.[0]?.quantidade_pedidos || 0;
+    const conferidos   = (confRegs||[]).length;
+
+    if(totalPedidos > 0 && conferidos < totalPedidos){
+      showToast(`⛔ Não é possível concluir: ${totalPedidos - conferidos} pedido(s) ainda não conferidos (${conferidos}/${totalPedidos}).`,'warning');
       return;
     }
-    // Há conferências — permitir apenas como fallback de emergência (ADM)
-    if(!confirm('ATENÇÃO: Há conferências registradas.\nConfirmar carregamento concluído da carga '+carga+'? (ADM)')) return;
+    if(!conferidos){
+      showToast('⛔ Nenhuma conferência registrada. Atribua um conferente e aguarde a conferência.','warning');
+      return;
+    }
+    if(!confirm(`ATENÇÃO (ADM): Confirmar carregamento concluído da carga ${carga}? (${conferidos}/${totalPedidos} conferidos)`)) return;
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
     showToast('✅ Carga '+carga+' carregada! Aguardando NF.','success');
     await carregarDemandas();
@@ -21316,14 +21323,24 @@ async function conferirPedidoPortal(carga, pedido, status){
 
 
 async function concluirCarregamentoConferente(carga){
-  if(!confirm('Confirmar carregamento concluído da carga '+carga+'?')) return;
   try{
     const dem = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
     if(!dem){ showToast('Demanda não encontrada','warning'); return; }
 
-    // Atualizar status no armazém e status da demanda para aguardando NF
-    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf'})});
+    // Verificar se todos os pedidos foram conferidos
+    const totalPedidos = dem.quantidade_pedidos || 0;
+    if(totalPedidos > 0){
+      const confRegs = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.(ok,nok)&select=id`).catch(()=>[]) || [];
+      const conferidos = confRegs.length;
+      if(conferidos < totalPedidos){
+        showToast(`⚠️ Não é possível concluir: ${totalPedidos - conferidos} pedido(s) ainda não conferidos (${conferidos}/${totalPedidos}). Confira todos antes de concluir o carregamento.`, 'warning');
+        return;
+      }
+    }
 
+    if(!confirm('Confirmar carregamento concluído da carga '+carga+'?')) return;
+
+    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
     showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
     await carregarPortalConferente();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -22333,9 +22350,10 @@ async function renderArmazem(){
                   <div style="height:100%;width:${nkPct}%;background:#ef4444;transition:width .4s"></div>
                 </div>
               </div>
-              ${d.arm_status==='carregado_ok'||['aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(d.status)
+              ${d.arm_status==='carregado_ok'
                 ?`<div style="width:100%;margin-top:8px;background:rgba(5,150,105,.1);color:#059669;border:1px solid rgba(5,150,105,.3);border-radius:7px;padding:6px;font-size:.72rem;font-weight:800;text-align:center">✅ Carregado — Aguardando Saída</div>`
-                :pct===100?`<button onclick="salvarStatusArmazem('${d.id}','carregado_ok')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:7px;padding:6px;font-size:.72rem;font-weight:800;cursor:pointer">✅ Concluir Carregamento</button>`:''}
+                :pct===100?`<button onclick="salvarStatusArmazem('${d.id}','carregado_ok')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:7px;padding:6px;font-size:.72rem;font-weight:800;cursor:pointer">✅ Concluir Carregamento</button>`
+                :`<div style="width:100%;margin-top:8px;background:rgba(245,158,11,.08);color:#b45309;border:1px solid rgba(245,158,11,.25);border-radius:7px;padding:6px;font-size:.72rem;font-weight:700;text-align:center">⏳ ${pct}% conferido — aguardando conclusão</div>`}
             </div>`;
           }).join('')}
         </div>`;
