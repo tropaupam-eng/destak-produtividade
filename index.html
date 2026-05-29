@@ -2382,6 +2382,11 @@ textarea:focus{
   <div class="sidebar-item" data-page="cadastros" onclick="showPage('cadastros',this)">
     <span class="si-icon">🗂️</span><span class="si-label">Cadastros</span>
   </div>
+  <div class="sidebar-item" data-page="notificacoes" onclick="showPage('notificacoes',this)">
+    <span class="si-icon">🔔</span>
+    <span class="si-label">Notificações</span>
+    <span id="badge-notif" style="display:none;background:#ef4444;color:#fff;font-size:.6rem;font-weight:800;border-radius:10px;padding:1px 6px;margin-left:auto">0</span>
+  </div>
   <div class="sidebar-item" data-page="banco-dados" data-perfil="admin" onclick="showPage('banco-dados',this)">
     <span class="si-icon">🗄️</span><span class="si-label">Banco de Dados</span>
   </div>
@@ -5647,6 +5652,42 @@ textarea:focus{
     </div>
   </div>
 </div>
+
+<!-- ══ NOTIFICAÇÕES ══ -->
+<div class="page" id="page-notificacoes"><div class="container" style="max-width:760px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+    <div>
+      <h2 style="font-size:1.2rem;font-weight:800;color:var(--text-primary);margin:0">🔔 Notificações</h2>
+      <p style="font-size:.8rem;color:var(--text-muted);margin:3px 0 0">Avisos e informações para a equipe</p>
+    </div>
+    <button onclick="carregarNotificacoes()" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:600;cursor:pointer;color:var(--text-secondary)">🔄 Atualizar</button>
+  </div>
+
+  <!-- KPI total pedidos -->
+  <div id="notif-kpi-bar" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:22px"></div>
+
+  <!-- Formulário (só admin) -->
+  <div id="notif-form-wrap" style="display:none;background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
+    <div style="font-size:.85rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">📢 Publicar Notificação</div>
+    <textarea id="notif-input" rows="3" placeholder="Digite a mensagem para a equipe..."
+      style="width:100%;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:10px 12px;font-size:.85rem;resize:vertical;outline:none;box-sizing:border-box;font-family:inherit"></textarea>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+      <select id="notif-tipo" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:6px 10px;font-size:.8rem;outline:none">
+        <option value="info">ℹ️ Informação</option>
+        <option value="success">✅ Sucesso / Resultado</option>
+        <option value="warning">⚠️ Atenção</option>
+        <option value="alert">🔴 Urgente</option>
+      </select>
+      <button onclick="publicarNotificacao()" style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:.82rem;font-weight:700;cursor:pointer">📢 Publicar</button>
+    </div>
+  </div>
+
+  <!-- Feed -->
+  <div id="notif-feed" style="display:flex;flex-direction:column;gap:10px">
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">🔄 Carregando...</div>
+  </div>
+</div></div>
+<!-- /notificacoes -->
 
 </div><!-- /app-wrapper -->
 
@@ -14499,6 +14540,7 @@ function showPage(name,tab){
   else if(name==='comercial-rotas') safe(()=>renderComercialRotas(),'comercial-rotas');
   else if(name==='banco-dados')   safe(()=>renderBancoStatus(),'banco-dados');
   else if(name==='erros-sistema') safe(()=>renderErrosSistema(),'erros-sistema');
+  else if(name==='notificacoes')  safe(()=>carregarNotificacoes(),'notificacoes');
 }
 function resetF(p){['mes','und','rire','rota'].forEach(f=>document.getElementById(p+'-'+f).value='');if(p==='m')renderMot();else renderVeic();}
 
@@ -26226,6 +26268,130 @@ async function excluirTipoReceita(id){
     showToast('Tipo excluído','success');
     await renderTiposReceitaCad();
   }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+
+// ══════════════════════════════════════════
+// NOTIFICAÇÕES
+// ══════════════════════════════════════════
+const _NOTIF_TIPOS = {
+  info:    { cor:'#3b82f6', bg:'rgba(59,130,246,.08)', icone:'ℹ️' },
+  success: { cor:'#059669', bg:'rgba(5,150,105,.08)',  icone:'✅' },
+  warning: { cor:'#f59e0b', bg:'rgba(245,158,11,.08)', icone:'⚠️' },
+  alert:   { cor:'#ef4444', bg:'rgba(239,68,68,.08)',  icone:'🔴' },
+};
+
+async function carregarNotificacoes(){
+  // Mostrar / esconder form conforme perfil
+  const isAdm = ['admin','adm_fiscal','fiscal_admin','adm_distribuicao','adm_armazem'].includes(USUARIO_LOGADO?.perfil||'');
+  const formWrap = document.getElementById('notif-form-wrap');
+  if(formWrap) formWrap.style.display = isAdm ? 'block' : 'none';
+
+  // KPIs
+  const kpiBar = document.getElementById('notif-kpi-bar');
+  const feed   = document.getElementById('notif-feed');
+  if(!feed) return;
+
+  try{
+    const notifs = await supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=100`).catch(()=>[]);
+
+    // Extrai contagem via Content-Range header (fetch nativo)
+    let totalPed = '—', totalDem = '—';
+    try{
+      const r1 = await fetch(`${SUPA_URL}/rest/v1/base_data?select=pedido`,{
+        headers:{ apikey: SUPA_KEY, Authorization:'Bearer '+SUPA_KEY, Prefer:'count=exact', Range:'0-0' }
+      });
+      const cr1 = r1.headers.get('Content-Range');
+      if(cr1) totalPed = Number(cr1.split('/')[1]).toLocaleString('pt-BR');
+    }catch(_){}
+    try{
+      const r2 = await fetch(`${SUPA_URL}/rest/v1/demandas_rota?status=not.in.(concluido,cancelado)&select=id`,{
+        headers:{ apikey: SUPA_KEY, Authorization:'Bearer '+SUPA_KEY, Prefer:'count=exact', Range:'0-0' }
+      });
+      const cr2 = r2.headers.get('Content-Range');
+      if(cr2) totalDem = Number(cr2.split('/')[1]).toLocaleString('pt-BR');
+    }catch(_){}
+
+    if(kpiBar) kpiBar.innerHTML = `
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center">
+        <div style="font-size:1.6rem;font-weight:900;color:#3b82f6">${totalPed}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">Total de Pedidos</div>
+      </div>
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center">
+        <div style="font-size:1.6rem;font-weight:900;color:#059669">${totalDem}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">Cargas Ativas</div>
+      </div>
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center">
+        <div style="font-size:1.6rem;font-weight:900;color:#f59e0b">${(notifs||[]).length}</div>
+        <div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">Notificações</div>
+      </div>`;
+
+    // Atualiza badge lateral
+    const badge = document.getElementById('badge-notif');
+    const qtdNot = (notifs||[]).length;
+    if(badge){ badge.textContent=qtdNot; badge.style.display=qtdNot?'inline':'none'; }
+
+    if(!(notifs||[]).length){
+      feed.innerHTML='<div style="text-align:center;padding:50px;color:var(--text-muted)"><div style="font-size:2.5rem;margin-bottom:10px">🔔</div><p>Nenhuma notificação ainda.</p></div>';
+      return;
+    }
+
+    const fmtDt = s => {
+      const d = new Date(s);
+      return d.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});
+    };
+
+    feed.innerHTML = (notifs||[]).map(n=>{
+      const t = _NOTIF_TIPOS[n.tipo] || _NOTIF_TIPOS.info;
+      return `<div style="background:${t.bg};border:1px solid ${t.cor}33;border-left:4px solid ${t.cor};border-radius:12px;padding:14px 18px;position:relative">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <span style="font-size:1.3rem;flex-shrink:0;line-height:1.3">${t.icone}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.9rem;color:var(--text-primary);font-weight:600;line-height:1.5;white-space:pre-wrap">${_escapeHtml(n.mensagem)}</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:7px;flex-wrap:wrap">
+              <span style="font-size:.7rem;color:var(--text-muted)">🕐 ${fmtDt(n.criado_em)}</span>
+              ${n.criado_por?`<span style="font-size:.7rem;color:var(--text-muted)">👤 ${_escapeHtml(n.criado_por)}</span>`:''}
+            </div>
+          </div>
+          ${isAdm?`<button onclick="excluirNotificacao('${n.id}')" title="Excluir"
+            style="background:none;border:none;color:var(--text-muted);font-size:1rem;cursor:pointer;padding:2px 6px;border-radius:5px;flex-shrink:0;opacity:.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='.6'">✕</button>`:''}
+        </div>
+      </div>`;
+    }).join('');
+
+  }catch(e){
+    if(feed) feed.innerHTML=`<p style="color:var(--text-muted);text-align:center;padding:30px">Erro: ${e.message}</p>`;
+  }
+}
+
+async function publicarNotificacao(){
+  const input = document.getElementById('notif-input');
+  const tipo  = document.getElementById('notif-tipo');
+  const msg   = (input?.value||'').trim();
+  if(!msg){ showToast('Digite uma mensagem','warning'); return; }
+  try{
+    await supaFetch('notificacoes',{ method:'POST', body:JSON.stringify({
+      mensagem: msg,
+      tipo: tipo?.value||'info',
+      criado_por: USUARIO_LOGADO?.nome||USUARIO_LOGADO?.email||'Admin',
+      criado_em: new Date().toISOString(),
+      ativo: true
+    })});
+    if(input) input.value='';
+    showToast('Notificação publicada!','success');
+    await carregarNotificacoes();
+  }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+
+async function excluirNotificacao(id){
+  if(!confirm('Excluir esta notificação?')) return;
+  try{
+    await supaFetch(`notificacoes?id=eq.${id}`,{method:'DELETE',prefer:'return=minimal'});
+    await carregarNotificacoes();
+  }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+
+function _escapeHtml(s){
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
 
