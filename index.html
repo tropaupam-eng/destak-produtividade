@@ -4414,6 +4414,36 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <!-- ── CARGAS POR CONFERENTE (adm_distribuicao / admin) ── -->
+  <div id="exp-conferentes-panel" style="display:none;margin-top:28px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer"
+         onclick="expConferentesToggle()">
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+      <span id="exp-conf-toggle-label" style="font-size:.82rem;font-weight:700;color:var(--text-secondary);white-space:nowrap;user-select:none">
+        📊 CARGAS POR CONFERENTE ▼
+      </span>
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+    </div>
+    <div id="exp-conferentes-body" style="">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <label style="font-size:.82rem;color:var(--text-secondary);font-weight:600">Mês:</label>
+        <input type="month" id="exp-conf-mes"
+          style="border:1.5px solid var(--border);border-radius:8px;padding:6px 12px;font-size:.83rem;background:var(--bg-card);color:var(--text-primary);cursor:pointer"
+          onchange="renderConferentesStats()">
+        <button onclick="renderConferentesStats()"
+          style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:6px 14px;font-size:.8rem;color:var(--text-secondary);cursor:pointer;font-weight:600">
+          🔄 Atualizar
+        </button>
+        <span id="exp-conf-total-badge" style="font-size:.8rem;color:var(--text-muted)"></span>
+      </div>
+      <div id="exp-conferentes-lista" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+        <div style="text-align:center;padding:30px;color:#9ca3af;grid-column:1/-1">
+          <p style="font-size:.85rem">Selecione um mês para carregar</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div></div>
 
 <!-- ══ FROTA ══ -->
@@ -11453,6 +11483,90 @@ function limparFiltrosExpedicao(){
   renderDemandasCards();
 }
 
+let _expConfAberto = true;
+function expConferentesToggle(){
+  _expConfAberto = !_expConfAberto;
+  const body = document.getElementById('exp-conferentes-body');
+  const lbl  = document.getElementById('exp-conf-toggle-label');
+  if(body) body.style.display = _expConfAberto ? '' : 'none';
+  if(lbl)  lbl.textContent = '📊 CARGAS POR CONFERENTE ' + (_expConfAberto ? '▼' : '▶');
+}
+
+async function renderConferentesStats(){
+  const panel = document.getElementById('exp-conferentes-panel');
+  if(!panel) return;
+  const perfil = USUARIO_LOGADO?.perfil || '';
+  if(!['admin','adm_distribuicao'].includes(perfil)){ panel.style.display='none'; return; }
+  panel.style.display = '';
+
+  const mesInput = document.getElementById('exp-conf-mes');
+  if(!mesInput) return;
+  if(!mesInput.value){
+    const hoje = new Date();
+    mesInput.value = hoje.toISOString().slice(0,7);
+  }
+  const mes = mesInput.value; // "YYYY-MM"
+
+  const lista = document.getElementById('exp-conferentes-lista');
+  const badge = document.getElementById('exp-conf-total-badge');
+  if(lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#9ca3af;grid-column:1/-1"><p>⏳ Carregando...</p></div>';
+  if(badge) badge.textContent = '';
+
+  try{
+    const rows = await supaFetch(
+      `atribuicoes_armazem?criado_em=gte.${mes}-01T00:00:00&criado_em=lt.${mes}-32T00:00:00&select=conferente_nome,carga&limit=2000`
+    ).catch(()=>[]) || [];
+
+    // Agrupa por conferente_nome → unique cargas
+    const map = {};
+    for(const r of rows){
+      const nome = (r.conferente_nome||'').trim().toUpperCase();
+      if(!nome) continue;
+      if(!map[nome]) map[nome] = new Set();
+      if(r.carga) map[nome].add(String(r.carga));
+    }
+    const sorted = Object.entries(map)
+      .map(([nome, set]) => ({ nome, total: set.size }))
+      .sort((a,b) => b.total - a.total);
+
+    const totalCargas = sorted.reduce((s,x)=>s+x.total,0);
+    const max = sorted[0]?.total || 1;
+    const [ano, mo] = mes.split('-');
+    const mesLabel = new Date(Number(ano), Number(mo)-1, 1)
+      .toLocaleString('pt-BR',{month:'long',year:'numeric'});
+
+    if(badge) badge.textContent = `${sorted.length} conferente(s) · ${totalCargas} cargas em ${mesLabel}`;
+
+    if(!sorted.length){
+      if(lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#9ca3af;grid-column:1/-1"><p>Nenhum dado para este mês</p></div>';
+      return;
+    }
+
+    const cores = ['#2563eb','#16a34a','#d97706','#7c3aed','#dc2626','#0891b2','#65a30d','#c026d3','#ea580c','#0284c7'];
+    if(lista) lista.innerHTML = sorted.map((c,i)=>{
+      const pct = Math.round((c.total/max)*100);
+      const cor = cores[i % cores.length];
+      const iniciais = c.nome.split(' ').slice(0,2).map(w=>w[0]||'').join('');
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <div style="width:34px;height:34px;border-radius:50%;background:${cor}22;color:${cor};font-size:.8rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">${iniciais}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${c.nome}">${c.nome}</div>
+            <div style="font-size:.72rem;color:var(--text-muted)">#${i+1} do ranking</div>
+          </div>
+          <div style="font-size:1.4rem;font-weight:800;color:${cor};min-width:28px;text-align:right">${c.total}</div>
+        </div>
+        <div style="height:6px;background:var(--bg-card2);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${cor};border-radius:3px;transition:width .4s"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px;text-align:right">${c.total} carga${c.total!==1?'s':''}</div>
+      </div>`;
+    }).join('');
+  } catch(e){
+    if(lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#ef4444;grid-column:1/-1"><p>Erro ao carregar dados</p></div>';
+  }
+}
+
 
 
 async function admConcluirCarregamento(demandaId, carga){
@@ -14917,6 +15031,7 @@ function showPage(name,tab){
     const _verPopup = _pExp !== 'operador';
     if(_verPopup) abrirPopupRotasExpedicao();
     carregarDemandas(); carregarMotoristas(); carregarVeiculos(); carregarRotasExp();
+    renderConferentesStats();
   },'expedicao');
   else if(name==='agendamento') safe(()=>initAgendMes(),'agendamento');
   else if(name==='frota') safe(()=>renderFrota(),'frota');
