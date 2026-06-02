@@ -4414,6 +4414,36 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <!-- ── CARGAS POR CONFERENTE (adm_distribuicao / admin) ── -->
+  <div id="exp-conferentes-panel" style="display:none;margin-top:28px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer"
+         onclick="expConferentesToggle()">
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+      <span id="exp-conf-toggle-label" style="font-size:.82rem;font-weight:700;color:var(--text-secondary);white-space:nowrap;user-select:none">
+        📊 CARGAS POR CONFERENTE ▼
+      </span>
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+    </div>
+    <div id="exp-conferentes-body" style="">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <label style="font-size:.82rem;color:var(--text-secondary);font-weight:600">Mês:</label>
+        <input type="month" id="exp-conf-mes"
+          style="border:1.5px solid var(--border);border-radius:8px;padding:6px 12px;font-size:.83rem;background:var(--bg-card);color:var(--text-primary);cursor:pointer"
+          onchange="renderConferentesStats()">
+        <button onclick="renderConferentesStats()"
+          style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:6px 14px;font-size:.8rem;color:var(--text-secondary);cursor:pointer;font-weight:600">
+          🔄 Atualizar
+        </button>
+        <span id="exp-conf-total-badge" style="font-size:.8rem;color:var(--text-muted)"></span>
+      </div>
+      <div id="exp-conferentes-lista" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+        <div style="text-align:center;padding:30px;color:#9ca3af;grid-column:1/-1">
+          <p style="font-size:.85rem">Selecione um mês para carregar</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div></div>
 
 <!-- ══ FROTA ══ -->
@@ -11453,6 +11483,90 @@ function limparFiltrosExpedicao(){
   renderDemandasCards();
 }
 
+let _expConfAberto = true;
+function expConferentesToggle(){
+  _expConfAberto = !_expConfAberto;
+  const body = document.getElementById('exp-conferentes-body');
+  const lbl  = document.getElementById('exp-conf-toggle-label');
+  if(body) body.style.display = _expConfAberto ? '' : 'none';
+  if(lbl)  lbl.textContent = '📊 CARGAS POR CONFERENTE ' + (_expConfAberto ? '▼' : '▶');
+}
+
+async function renderConferentesStats(){
+  const panel = document.getElementById('exp-conferentes-panel');
+  if(!panel) return;
+  const perfil = USUARIO_LOGADO?.perfil || '';
+  if(!['admin','adm_distribuicao'].includes(perfil)){ panel.style.display='none'; return; }
+  panel.style.display = '';
+
+  const mesInput = document.getElementById('exp-conf-mes');
+  if(!mesInput) return;
+  if(!mesInput.value){
+    const hoje = new Date();
+    mesInput.value = hoje.toISOString().slice(0,7);
+  }
+  const mes = mesInput.value; // "YYYY-MM"
+
+  const lista = document.getElementById('exp-conferentes-lista');
+  const badge = document.getElementById('exp-conf-total-badge');
+  if(lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#9ca3af;grid-column:1/-1"><p>⏳ Carregando...</p></div>';
+  if(badge) badge.textContent = '';
+
+  try{
+    const rows = await supaFetch(
+      `atribuicoes_armazem?criado_em=gte.${mes}-01T00:00:00&criado_em=lt.${mes}-32T00:00:00&select=conferente_nome,carga&limit=2000`
+    ).catch(()=>[]) || [];
+
+    // Agrupa por conferente_nome → unique cargas
+    const map = {};
+    for(const r of rows){
+      const nome = (r.conferente_nome||'').trim().toUpperCase();
+      if(!nome) continue;
+      if(!map[nome]) map[nome] = new Set();
+      if(r.carga) map[nome].add(String(r.carga));
+    }
+    const sorted = Object.entries(map)
+      .map(([nome, set]) => ({ nome, total: set.size }))
+      .sort((a,b) => b.total - a.total);
+
+    const totalCargas = sorted.reduce((s,x)=>s+x.total,0);
+    const max = sorted[0]?.total || 1;
+    const [ano, mo] = mes.split('-');
+    const mesLabel = new Date(Number(ano), Number(mo)-1, 1)
+      .toLocaleString('pt-BR',{month:'long',year:'numeric'});
+
+    if(badge) badge.textContent = `${sorted.length} conferente(s) · ${totalCargas} cargas em ${mesLabel}`;
+
+    if(!sorted.length){
+      if(lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#9ca3af;grid-column:1/-1"><p>Nenhum dado para este mês</p></div>';
+      return;
+    }
+
+    const cores = ['#2563eb','#16a34a','#d97706','#7c3aed','#dc2626','#0891b2','#65a30d','#c026d3','#ea580c','#0284c7'];
+    if(lista) lista.innerHTML = sorted.map((c,i)=>{
+      const pct = Math.round((c.total/max)*100);
+      const cor = cores[i % cores.length];
+      const iniciais = c.nome.split(' ').slice(0,2).map(w=>w[0]||'').join('');
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <div style="width:34px;height:34px;border-radius:50%;background:${cor}22;color:${cor};font-size:.8rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">${iniciais}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${c.nome}">${c.nome}</div>
+            <div style="font-size:.72rem;color:var(--text-muted)">#${i+1} do ranking</div>
+          </div>
+          <div style="font-size:1.4rem;font-weight:800;color:${cor};min-width:28px;text-align:right">${c.total}</div>
+        </div>
+        <div style="height:6px;background:var(--bg-card2);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${cor};border-radius:3px;transition:width .4s"></div>
+        </div>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px;text-align:right">${c.total} carga${c.total!==1?'s':''}</div>
+      </div>`;
+    }).join('');
+  } catch(e){
+    if(lista) lista.innerHTML = '<div style="text-align:center;padding:30px;color:#ef4444;grid-column:1/-1"><p>Erro ao carregar dados</p></div>';
+  }
+}
+
 
 
 async function admConcluirCarregamento(demandaId, carga){
@@ -14917,6 +15031,7 @@ function showPage(name,tab){
     const _verPopup = _pExp !== 'operador';
     if(_verPopup) abrirPopupRotasExpedicao();
     carregarDemandas(); carregarMotoristas(); carregarVeiculos(); carregarRotasExp();
+    renderConferentesStats();
   },'expedicao');
   else if(name==='agendamento') safe(()=>initAgendMes(),'agendamento');
   else if(name==='frota') safe(()=>renderFrota(),'frota');
@@ -25358,126 +25473,156 @@ async function renderAgendamentos(){
     return;
   }
 
-  // ── 8. Agrupar por semana ──────────────────────────────────────────────────
-  var semanas = {1:[],2:[],3:[],4:[],5:[]};
-  arr.forEach(function(a){
-    var dia = parseInt((a.data||'').slice(8,10))||1;
-    var s = dia<=7?1:dia<=14?2:dia<=21?3:dia<=28?4:5;
-    semanas[s].push(a);
-  });
+  // ── 8. Calendário mensal (dois painéis: Saídas + Fechamento) ─────────────
 
-  var fmtDia = function(d){ try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit'}); }catch(e){ return d; } };
+  // Paleta de cores por rota (determinística)
+  var _RPAL = ['#7ec854','#5ba8f0','#3ecfab','#f0a83a','#f07a6a','#e87eb8','#f56b6b','#a992f5','#55d68e','#c084e0','#60a5fa','#34d399','#fb923c','#f472b6','#818cf8'];
+  function _rotaCor(nome){ var h=0,n=(nome||'').toUpperCase(); for(var i=0;i<n.length;i++) h=((h*31)+n.charCodeAt(i))>>>0; return _RPAL[h%_RPAL.length]; }
 
-  // ── 9. Helper: gera linha da tabela (string concat segura, sem template aninhado) ──
-  function mkRow(a){
-    var eHoje   = a.data===hoje;
-    var passado = a.data<hoje;
-    var realiz  = a.status==='realizado';
-    var atrasado= a.status==='atrasado';
-    var mKey    = getMKey(a);
-    var mCor    = MCORES[mKey]||'#6b7280';
-    var mTxt    = mKey ? (MLABEL[mKey]||a.motivo_label||mKey) : '';
+  // Subtrair N dias úteis (seg–sex) de uma data
+  function _diasUteisAntes(dataStr,n){ var d=new Date(dataStr+'T12:00:00'),c=0; while(c<n){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; } return d.toISOString().slice(0,10); }
 
+  // Mapa de status de demandas por 'ROTA|DATA'
+  var _demMap={};
+  demandasMes.forEach(function(d){ _demMap[(d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')]=d.status; });
 
-    // Status — inclui 'atrasado' como estado próprio com motivo
-    var sBg, sCor, sLbl;
-    if(realiz)         { sBg='rgba(5,150,105,.12)';  sCor='#059669'; sLbl='✅ Realizada'; }
-    else if(atrasado)  { sBg='rgba(239,68,68,.12)';  sCor='#dc2626'; sLbl='🔴 Atrasado'; }
-    else if(eHoje)     { sBg='rgba(37,99,235,.12)';  sCor='#2563eb'; sLbl='⏳ Hoje'; }
-    else if(passado)   { sBg='rgba(239,68,68,.12)';  sCor='#dc2626'; sLbl='⚠️ Pendente'; }
-    else               { sBg='rgba(107,114,128,.1)'; sCor='#6b7280'; sLbl='📋 Agendada'; }
+  // Mapas por dia
+  var _dayMap={}, _fechMap={}, _extraMap={};
+  arr.forEach(function(a){ (_dayMap[a.data]=_dayMap[a.data]||[]).push(a); var df=_diasUteisAntes(a.data,2); (_fechMap[df]=_fechMap[df]||[]).push({a:a,saida:a.data}); });
+  extras.forEach(function(d){ var dt=d.data_saida||''; (_extraMap[dt]=_extraMap[dt]||[]).push(d); });
 
-    // Badge do motivo
-    var badge = mTxt
-      ? '<span style="display:inline-block;background:'+mCor+'22;color:'+mCor+';border:1px solid '+mCor+'55;font-size:.67rem;font-weight:700;padding:2px 9px;border-radius:10px;white-space:nowrap">'+mTxt+'</span>'
-      : '';
+  // Estrutura do calendário deste mês
+  var _priDia=new Date(mesFiltro+'-01T12:00:00');
+  var _ultDia=new Date(_priDia.getFullYear(),_priDia.getMonth()+1,0).getDate();
+  var _iniSem=_priDia.getDay(); // 0=Dom
+  var _DS=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  var _MOPTS=[{k:'comercial',l:'💰 Comercial'},{k:'veiculo',l:'🚛 Sem Veículo'},{k:'motorista',l:'🚗 Sem Motorista'},{k:'atraso_rota',l:'⏱️ Atraso de Rota'},{k:'atraso_carregamento',l:'📦 Atraso Carregamento'}];
 
-    // Botões do seletor de motivo
-    var MOPTS = [{k:'comercial',l:'💰 Comercial'},{k:'veiculo',l:'🚛 Sem Veículo'},{k:'motorista',l:'🚗 Sem Motorista'},{k:'atraso_rota',l:'⏱️ Atraso de Rota'},{k:'atraso_carregamento',l:'📦 Atraso no Carregamento'}];
-    var mBtns = '';
-    for(var mi=0;mi<MOPTS.length;mi++){
-      var mo = MOPTS[mi];
-      var sel = mKey===mo.k;
-      var c   = MCORES[mo.k]||'#6b7280';
-      mBtns += '<button onclick="salvarMotivoAgend(\''+a.id+'\',\''+mo.k+'\')" '
-        +'style="background:'+(sel?c+'33':'var(--bg-card2)')+';color:'+(sel?c:'var(--text-secondary)')+';'
-        +'border:'+(sel?'2px solid '+c:'1px solid var(--border)')+';border-radius:6px;padding:3px 9px;'
-        +'font-size:.7rem;font-weight:'+(sel?800:600)+';cursor:pointer">'+mo.l+'</button>';
+  function _mkCal(mapDia, tipo){
+    var s='<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">';
+    // Header dias
+    s+='<div style="display:grid;grid-template-columns:repeat(7,1fr);background:var(--bg-card2);border-bottom:1px solid var(--border)">';
+    _DS.forEach(function(d,i){ var wk=i===0||i===6; s+='<div style="text-align:center;padding:9px 4px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:'+(wk?'rgba(248,113,113,.75)':'var(--text-muted)')+'">'+d+'</div>'; });
+    s+='</div>';
+    // Grid
+    s+='<div style="display:grid;grid-template-columns:repeat(7,1fr)">';
+    // Células vazias iniciais
+    for(var bi=0;bi<_iniSem;bi++){
+      var _c0=bi; s+='<div style="min-height:72px;'+(_c0<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);background:rgba(0,0,0,.025)"></div>';
     }
-    if(mKey) mBtns += '<button onclick="salvarMotivoAgend(\''+a.id+'\',\'\')" style="background:rgba(107,114,128,.1);color:#9ca3af;border:1px solid rgba(107,114,128,.2);border-radius:6px;padding:3px 9px;font-size:.7rem;cursor:pointer">✕ Limpar</button>';
+    // Dias do mês
+    for(var dia=1;dia<=_ultDia;dia++){
+      var dStr=mesFiltro+'-'+String(dia).padStart(2,'0');
+      var eH=dStr===hoje, pas=dStr<hoje;
+      var col=(_iniSem+dia-1)%7, wknd=col===0||col===6;
+      var itens=mapDia[dStr]||[], exts=tipo==='saida'?(_extraMap[dStr]||[]):[];
+      var numSt=eH
+        ?'display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:#2563eb;color:#fff;border-radius:50%;font-size:.72rem;font-weight:800'
+        :'font-size:.72rem;font-weight:700;color:'+(wknd?'rgba(239,68,68,.55)':'var(--text-muted)');
+      s+='<div style="min-height:72px;padding:5px 4px;'+(col<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);'+(eH?'background:rgba(37,99,235,.04);':'')+(wknd&&!eH?'background:rgba(0,0,0,.02);':'')+'">';
+      s+='<div style="text-align:right;margin-bottom:4px"><span style="'+numSt+'">'+dia+'</span></div>';
 
-    var bgRow = eHoje ? 'rgba(37,99,235,.04)' : '';
-
-    return '<tr style="border-bottom:1px solid var(--border);'+(bgRow?'background:'+bgRow:'')+'" '
-        +'onmouseover="this.style.background=\'var(--bg-hover)\'" onmouseout="this.style.background=\''+bgRow+'\'">'
-
-      // Data
-      +'<td style="padding:9px 14px;color:var(--text-secondary);font-size:.8rem;white-space:nowrap">'
-        +fmtDia(a.data)
-        +(eHoje?'<span style="margin-left:6px;background:#dbeafe;color:#1d4ed8;font-size:.65rem;padding:1px 6px;border-radius:8px;font-weight:700">HOJE</span>':'')
-      +'</td>'
-
-      // Rota + badge + seletor inline
-      +'<td style="padding:9px 14px;font-weight:800;color:var(--text-primary)">'
-        +a.rota
-        +(badge
-          ? '<div style="margin-top:4px;cursor:pointer" onclick="toggleMotivoAgend(\''+a.id+'\')" title="Clique para alterar">'+badge+' <span style="font-size:.6rem;opacity:.5">✏️</span></div>'
-          : '<div style="margin-top:3px"><button onclick="toggleMotivoAgend(\''+a.id+'\')" style="background:rgba(239,68,68,.07);color:#f87171;border:1px dashed rgba(239,68,68,.3);border-radius:6px;padding:2px 8px;font-size:.67rem;font-weight:600;cursor:pointer">📌 Registrar motivo</button></div>'
-        )
-        +'<div id="motivo-agend-'+a.id+'" style="display:none;margin-top:6px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:10px">'
-          +'<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Por que não saiu?</div>'
-          +'<div style="display:flex;flex-wrap:wrap;gap:4px">'+mBtns+'</div>'
-        +'</div>'
-      +'</td>'
-
-      // Status
-      +'<td style="padding:9px 14px;text-align:center"><span style="background:'+sBg+';color:'+sCor+';font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:20px">'+sLbl+'</span></td>'
-
-      // Obs
-      +'<td style="padding:9px 14px;color:var(--text-muted);font-size:.76rem">'+(a.obs||'—')+'</td>'
-
-      // Ações
-      +'<td style="padding:9px 14px;text-align:center"><div style="display:flex;gap:4px;justify-content:center;flex-wrap:wrap">'
-        +(a.lancado
-          // Rota lançada (pré-carga criada): mostrar botão de reabrir
-          ? '<button onclick="reabrirAgendamento(\''+a.id+'\')" title="Reabrir no popup da Expedição" '
-              +'style="background:rgba(37,99,235,.1);color:#2563eb;border:1px solid rgba(37,99,235,.3);border-radius:6px;padding:4px 8px;font-size:.75rem;cursor:pointer;font-weight:700">🔄 Reabrir</button>'
-          // Rota normal: mostrar realizada/desmarcar
-          : '<button onclick="marcarAgendamentoRealizado(\''+a.id+'\')" title="'+(realiz?'Desmarcar':'Marcar como realizada')+'" '
-              +'style="background:'+(realiz?'#d1fae5':'rgba(5,150,105,.1)')+';color:'+(realiz?'#065f46':'#059669')+';'
-              +'border:1px solid '+(realiz?'#6ee7b7':'rgba(5,150,105,.3)')+';border-radius:6px;padding:4px 8px;font-size:.75rem;cursor:pointer">'+(realiz?'↩️':'✅')+'</button>'
-        )
-        +'<button onclick="abrirModalAgendamento(\''+a.id+'\')" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:.75rem;cursor:pointer;color:var(--text-secondary)">✏️</button>'
-        +'<button onclick="excluirAgendamento(\''+a.id+'\')" style="background:#fee2e2;border:none;border-radius:6px;padding:4px 8px;font-size:.75rem;cursor:pointer;color:#991b1b">🗑</button>'
-      +'</div></td>'
-
-    +'</tr>';
+      if(tipo==='saida'){
+        itens.forEach(function(a){
+          var mKey=getMKey(a);
+          var demSt=_demMap[(a.rota||'').trim().toUpperCase()+'|'+a.data];
+          var saiu=a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(demSt);
+          var naoSaiu=!saiu&&pas&&!eH;
+          var cor=_rotaCor(a.rota||'');
+          var chipBg=saiu?'rgba(5,150,105,.14)':naoSaiu?'rgba(239,68,68,.12)':cor+'18';
+          var chipCor=saiu?'#059669':naoSaiu?'#dc2626':cor;
+          var icone=saiu?'✅':naoSaiu?'❌':(eH?'⏳':'');
+          var rotaC=(a.rota||'').length>13?(a.rota||'').slice(0,13)+'…':(a.rota||'');
+          var mBtns='';
+          if(!saiu){
+            _MOPTS.forEach(function(mo){
+              var sel=mKey===mo.k, mc=MCORES[mo.k]||'#6b7280';
+              mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\''+mo.k+'\')" style="background:'+(sel?mc+'22':'var(--bg-card)')+';color:'+(sel?mc:'var(--text-secondary)')+';border:'+(sel?'1.5px solid '+mc:'1px solid var(--border)')+';border-radius:4px;padding:2px 7px;font-size:.62rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+mo.l+'</button>';
+            });
+            if(mKey) mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\'\')" style="background:rgba(107,114,128,.1);color:#9ca3af;border:1px solid rgba(107,114,128,.2);border-radius:4px;padding:2px 7px;font-size:.62rem;cursor:pointer">✕</button>';
+          }
+          s+='<div style="margin-bottom:3px">'
+            +'<div onclick="'+((!saiu)&&(naoSaiu||eH)?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+((!saiu)&&(naoSaiu||eH)?'pointer':'default')+';background:'+chipBg+';color:'+chipCor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px">'
+              +(icone?'<span>'+icone+'</span>':'')
+              +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rotaC+'</span>'
+              +(mKey?'<span style="font-size:.58rem" title="'+(MLABEL[mKey]||mKey)+'">⚠</span>':'')
+            +'</div>'
+            +(mBtns&&!saiu?'<div id="motivo-agend-'+a.id+'" style="display:none;margin-top:2px;background:var(--bg-card2);border:1px solid var(--border);border-radius:6px;padding:5px">'
+              +'<div style="font-size:.6rem;color:var(--text-muted);font-weight:700;margin-bottom:3px;text-transform:uppercase">Por que não saiu?</div>'
+              +'<div style="display:flex;flex-wrap:wrap;gap:2px">'+mBtns+'</div>'
+            +'</div>':'')
+          +'</div>';
+        });
+        // Extras
+        exts.forEach(function(d){
+          var rc=(d.rota||'').length>13?(d.rota||'').slice(0,13)+'…':(d.rota||'');
+          s+='<div style="margin-bottom:3px;background:rgba(245,158,11,.12);color:#d97706;border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="Extra: '+d.rota+'">⚡ '+rc+'</div>';
+        });
+      } else {
+        // Fechamento: chips com seta para a data de saída
+        itens.forEach(function(item){
+          var a=item.a, diaSaida=parseInt(item.saida.slice(8,10));
+          var cor=_rotaCor(a.rota||'');
+          var rc=(a.rota||'').length>11?(a.rota||'').slice(0,11)+'…':(a.rota||'');
+          s+='<div style="margin-bottom:3px;background:'+cor+'18;color:'+cor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px" title="'+a.rota+' — saída dia '+diaSaida+'">'
+            +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rc+'</span>'
+            +'<span style="font-size:.6rem;opacity:.8">↗'+diaSaida+'</span>'
+          +'</div>';
+        });
+      }
+      s+='</div>';
+    }
+    // Células vazias finais
+    var tot=_iniSem+_ultDia, rest=(7-(tot%7))%7;
+    for(var ri=0;ri<rest;ri++){ var rc2=(tot+ri)%7; s+='<div style="min-height:72px;'+(rc2<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);background:rgba(0,0,0,.025)"></div>'; }
+    s+='</div></div>';
+    return s;
   }
 
-  // ── 10. Montar HTML final ──────────────────────────────────────────────────
-  var html = '';
-  [1,2,3,4,5].forEach(function(s){
-    var itens = semanas[s];
-    if(!itens.length) return;
-    var semR = itens.filter(function(a){return a.status==='realizado';}).length;
-    html += '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:14px">'
-      +'<div style="background:var(--bg-card2);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">'
-        +'<div style="font-size:.88rem;font-weight:800;color:var(--text-primary)">📆 '+s+'ª Semana do Mês</div>'
-        +'<span style="font-size:.75rem;color:var(--text-muted);font-weight:600">'+semR+'/'+itens.length+' realizadas</span>'
-      +'</div>'
-      +'<table style="width:100%;border-collapse:collapse;font-size:.84rem">'
-        +'<thead><tr style="background:var(--bg-card2)">'
-          +'<th style="padding:8px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Data</th>'
-          +'<th style="padding:8px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Rota / Motivo</th>'
-          +'<th style="padding:8px 14px;text-align:center;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Status</th>'
-          +'<th style="padding:8px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Obs</th>'
-          +'<th style="padding:8px 14px;text-align:center;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Ações</th>'
-        +'</tr></thead>'
-        +'<tbody>'+itens.map(mkRow).join('')+'</tbody>'
-      +'</table>'
-    +'</div>';
-  });
-  container.innerHTML = html;
+  // Legenda de rotas
+  var _rotasU=[...new Set(arr.map(function(a){return(a.rota||'').trim();}))].sort();
+  var _leg='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">';
+  _rotasU.forEach(function(r){ var c=_rotaCor(r); _leg+='<div style="display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--text-secondary)"><span style="width:9px;height:9px;border-radius:50%;background:'+c+';flex-shrink:0;display:inline-block"></span>'+r+'</div>'; });
+  _leg+='</div>';
+
+  // ── 9. Montar HTML final ─────────────────────────────────────────────────
+  var html='';
+
+  // --- Calendário de Saídas ---
+  html+='<div style="margin-bottom:32px">';
+  html+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+    +'<div style="width:32px;height:32px;border-radius:8px;background:rgba(5,150,105,.15);color:#059669;display:flex;align-items:center;justify-content:center;font-size:16px">🚚</div>'
+    +'<span style="font-size:1rem;font-weight:800;color:var(--text-primary)">Calendário de Saídas</span>'
+    +'<span style="margin-left:auto;font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">'+arr.length+' agendadas · '+extras.length+' extras</span>'
+  +'</div>';
+  html+=_mkCal(_dayMap,'saida');
+  html+='<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:.72rem;color:var(--text-secondary);align-items:center">'
+    +'<span><span style="color:#059669;font-weight:700">✅</span> Saiu</span>'
+    +'<span><span style="color:#dc2626;font-weight:700">❌</span> Não saiu — clique para registrar motivo</span>'
+    +'<span><span style="color:#d97706;font-weight:700">⚡</span> Extra (sem agendamento)</span>'
+    +'<span><span style="font-weight:700">⏳</span> Hoje</span>'
+  +'</div>';
+  html+=_leg;
+  html+='</div>';
+
+  // --- Divisória ---
+  html+='<div style="height:1px;background:var(--border);margin:0 0 28px;position:relative">'
+    +'<div style="position:absolute;top:-2px;left:50%;transform:translateX(-50%);width:40px;height:5px;border-radius:3px;background:linear-gradient(90deg,#7c3aed,#f07a6a)"></div>'
+  +'</div>';
+
+  // --- Calendário de Fechamento ---
+  html+='<div>';
+  html+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+    +'<div style="width:32px;height:32px;border-radius:8px;background:rgba(124,58,237,.15);color:#7c3aed;display:flex;align-items:center;justify-content:center;font-size:16px">🔒</div>'
+    +'<span style="font-size:1rem;font-weight:800;color:var(--text-primary)">Fechamento de Vendas</span>'
+    +'<span style="margin-left:auto;font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">2 dias úteis antes da saída</span>'
+  +'</div>';
+  html+=_mkCal(_fechMap,'fechamento');
+  html+='<div style="font-size:.72rem;color:var(--text-muted);margin-top:10px">Cada chip mostra a rota e o número <strong>↗DD</strong> indica o dia da saída. O fechamento de vendas deve ocorrer nesta data.</div>';
+  html+=_leg;
+  html+='</div>';
+
+  container.innerHTML=html;
 }
 
 // ── Popup automático: rotas sem motivo que passaram da data ──────────────
