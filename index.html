@@ -5114,11 +5114,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <!-- Ranking detalhado removido — posição exibida nos KPIs acima -->
     <div id="mot-ranking-ri" style="display:none"></div>
     <div id="mot-ranking-re" style="display:none"></div>
-    <div id="mot-kpi-km-total" style="display:none"></div>
 
     <!-- Lançamento de KM -->
     <div style="background:#1e293b;border:1px solid rgba(13,148,136,.25);border-radius:14px;padding:18px;margin-bottom:20px">
-      <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0 0 4px">🛣️ KM das Cargas</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <h3 style="font-size:.9rem;font-weight:800;color:#f0f0f8;margin:0">🛣️ KM das Cargas</h3>
+        <span id="mot-kpi-km-total" style="font-size:.88rem;font-weight:800;color:#2dd4bf"></span>
+      </div>
       <p style="font-size:.75rem;color:#64748b;margin:0 0 14px">Clique na carga para registrar o KM do veículo</p>
       <div id="mot-km-historico">
         <div style="text-align:center;padding:20px;color:#64748b;font-size:.82rem">Carregando cargas...</div>
@@ -10341,12 +10343,13 @@ async function confirmarModalKmCarga(){
         if(demRot[0]){
           await supaFetch(`demandas_rota?id=eq.${demRot[0].id}`,{method:'PATCH',body:JSON.stringify({status:'fim_viagem',ts_fim_viagem:agora})});
           showToast(`🏁 Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km — Fim de Viagem registrado!`,'success');
-          await carregarPortalMotorista().catch(()=>{});
         } else {
           showToast(`✅ Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km em ${dur}`,'success');
         }
+        await carregarPortalMotorista().catch(()=>{});
       }catch(e2){
         showToast(`✅ Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km em ${dur}`,'success');
+        await carregarPortalMotorista().catch(()=>{});
       }
       // Auto-liberar veículo se não tiver manutenção ativa agendada
       if(reg.veiculo) gfAutoLiberarVeiculo(reg.veiculo).catch(()=>{});
@@ -14996,6 +14999,10 @@ async function motoristaChegarViagem(demId){
   try{
     const dem = await supaFetch(`demandas_rota?id=eq.${demId}&select=carga,rota,motorista&limit=1`).catch(()=>[]) || [];
     if(dem[0]?.carga){
+      // Registrar fim_viagem imediatamente para a carga sumir do portal mesmo se o motorista cancelar o KM
+      const ts = new Date().toISOString();
+      await supaFetch(`demandas_rota?id=eq.${demId}`,{method:'PATCH',body:JSON.stringify({status:'fim_viagem',ts_fim_viagem:ts})}).catch(()=>{});
+      await carregarPortalMotorista().catch(()=>{});
       _fimViagemDemId = demId;
       lancarKmCarga(dem[0].carga, 'final');
       return;
@@ -22319,8 +22326,8 @@ async function renderGestaoFiscal(){
     const [fiscais,fotosRes,atribsMes,nfsMes,demandasMes] = await Promise.all([
       supaFetch('usuarios?perfil=in.(fiscal_op,fiscal_admin)&ativo=eq.true&select=id,nome,perfil&order=nome.asc').catch(()=>[]),
       supaFetch('configuracoes?chave=eq.fiscal_fotos&select=valor').catch(()=>[]),
-      supaFetch(`atribuicoes_fiscal?criado_em=gte.${mesIni}&select=carga,fiscal_id,fiscal_nome,status`).catch(()=>[]),
-      supaFetch(`notas_fiscais?criado_em=gte.${mesIni}&select=carga,fiscal_id,fiscal_nome,valor,tipo`).catch(()=>[]),
+      supaFetch(`atribuicoes_fiscal?criado_em=gte.${mesIni}&select=carga,fiscal_id,fiscal_nome,status,criado_em`).catch(()=>[]),
+      supaFetch(`notas_fiscais?criado_em=gte.${mesIni}&select=carga,fiscal_id,fiscal_nome,valor,tipo,criado_em`).catch(()=>[]),
       supaFetch(`demandas_rota?ts_aguardando_nf=gte.${mesIni}&ts_aguardando_nf=not.is.null&select=carga,rota,ts_aguardando_nf,ts_aguardando_manifesto`).catch(()=>[])
     ]);
     const fotos = fotosRes[0]?.valor||{};
@@ -22330,46 +22337,63 @@ async function renderGestaoFiscal(){
     // ── Stats por fiscal ──
     const stats = {};
     (fiscais||[]).forEach(f=>{
-      const minhasCargas = new Set((atribsMes||[]).filter(a=>String(a.fiscal_id)===String(f.id)).map(a=>a.carga));
-      const meusNFs = (nfsMes||[]).filter(n=>String(n.fiscal_id)===String(f.id)).length;
+      const minhasAtribs = (atribsMes||[]).filter(a=>String(a.fiscal_id)===String(f.id));
+      const minhasCargas = new Set(minhasAtribs.map(a=>a.carga));
+      // NF: só conta as do próprio fiscal; Boleto: conta das cargas deste fiscal (qualquer um pode lançar)
+      const meusNFsCount = (nfsMes||[]).filter(n=>String(n.fiscal_id)===String(f.id)&&n.tipo==='nf').length;
+      const meusBolCount = (nfsMes||[]).filter(n=>n.tipo==='boleto'&&minhasCargas.has(n.carga)).length;
       const valorTotal = (nfsMes||[]).filter(n=>String(n.fiscal_id)===String(f.id)&&n.tipo==='nf').reduce((s,n)=>s+(parseFloat(n.valor)||0),0);
+      // Tempo: de atribuicoes_fiscal.criado_em até notas_fiscais.criado_em (por carga)
+      const temposNF=[],temposBol=[];
+      minhasAtribs.forEach(a=>{
+        if(!a.criado_em) return;
+        const nfDaCarga=(nfsMes||[]).find(n=>n.carga===a.carga&&n.tipo==='nf'&&String(n.fiscal_id)===String(f.id));
+        if(nfDaCarga?.criado_em){const m=Math.round((new Date(nfDaCarga.criado_em)-new Date(a.criado_em))/60000);if(m>0&&m<600)temposNF.push(m);}
+        const bolDaCarga=(nfsMes||[]).find(n=>n.carga===a.carga&&n.tipo==='boleto');
+        if(bolDaCarga?.criado_em){const m=Math.round((new Date(bolDaCarga.criado_em)-new Date(a.criado_em))/60000);if(m>0&&m<600)temposBol.push(m);}
+      });
       const demCargas = (demandasMes||[]).filter(d=>minhasCargas.has(d.carga));
       const cargasConcluidas = new Set(demCargas.filter(d=>d.ts_aguardando_manifesto).map(d=>d.carga)).size;
-      const tempos = [];
-      demCargas.forEach(d=>{
-        if(!d.ts_aguardando_nf||!d.ts_aguardando_manifesto) return;
-        const m = Math.round((new Date(d.ts_aguardando_manifesto)-new Date(d.ts_aguardando_nf))/60000);
-        if(m>0&&m<600) tempos.push(m);
-      });
       stats[f.id]={
-        cargas: minhasCargas.size, nfs: meusNFs, valorTotal,
+        cargas: minhasCargas.size, nfs: meusNFsCount, boletos: meusBolCount, valorTotal,
         concluidas: cargasConcluidas,
         taxa: minhasCargas.size?Math.round(cargasConcluidas/minhasCargas.size*100):0,
-        tempoMedio: tempos.length?Math.round(tempos.reduce((a,b)=>a+b,0)/tempos.length):null,
-        amostras: tempos.length
+        tempoMedioNF: temposNF.length?Math.round(temposNF.reduce((a,b)=>a+b,0)/temposNF.length):null,
+        tempoMedioBol: temposBol.length?Math.round(temposBol.reduce((a,b)=>a+b,0)/temposBol.length):null,
+        amostras: temposNF.length
       };
     });
 
     // ── KPIs gerais ──
-    const totalNFs = (nfsMes||[]).length;
-    const todosTempFiscal = [];
-    (demandasMes||[]).forEach(d=>{
-      if(!d.ts_aguardando_nf||!d.ts_aguardando_manifesto) return;
-      const m = Math.round((new Date(d.ts_aguardando_manifesto)-new Date(d.ts_aguardando_nf))/60000);
-      if(m>0&&m<600) todosTempFiscal.push(m);
+    const totalNFs  = (nfsMes||[]).filter(n=>n.tipo==='nf').length;
+    const totalBols = (nfsMes||[]).filter(n=>n.tipo==='boleto').length;
+    const todosTempNF=[], todosTempBol=[];
+    (atribsMes||[]).forEach(a=>{
+      if(!a.criado_em) return;
+      const nfDaCarga=(nfsMes||[]).find(n=>n.carga===a.carga&&n.tipo==='nf'&&String(n.fiscal_id)===String(a.fiscal_id));
+      if(nfDaCarga?.criado_em){const m=Math.round((new Date(nfDaCarga.criado_em)-new Date(a.criado_em))/60000);if(m>0&&m<600)todosTempNF.push(m);}
+      const bolDaCarga=(nfsMes||[]).find(n=>n.carga===a.carga&&n.tipo==='boleto');
+      if(bolDaCarga?.criado_em){const m=Math.round((new Date(bolDaCarga.criado_em)-new Date(a.criado_em))/60000);if(m>0&&m<600)todosTempBol.push(m);}
     });
-    const tempoMedioGeral = todosTempFiscal.length?Math.round(todosTempFiscal.reduce((a,b)=>a+b,0)/todosTempFiscal.length):null;
+    const tempoMedioGeralNF=todosTempNF.length?Math.round(todosTempNF.reduce((a,b)=>a+b,0)/todosTempNF.length):null;
+    const tempoMedioGeralBol=todosTempBol.length?Math.round(todosTempBol.reduce((a,b)=>a+b,0)/todosTempBol.length):null;
     const ranking = [...(fiscais||[])].sort((a,b)=>(stats[b.id]?.cargas||0)-(stats[a.id]?.cargas||0));
     const maisProd = ranking[0];
 
-    // ── Tempo médio por rota ──
+    // ── Tempo médio por rota (atribuicao → NF) ──
+    const _rotaCargaMap = {};
+    (demandasMes||[]).forEach(d=>{ if(d.carga&&d.rota) _rotaCargaMap[d.carga]=d.rota; });
     const rotaMap = {};
-    (demandasMes||[]).forEach(d=>{
-      if(!d.rota||!d.ts_aguardando_nf||!d.ts_aguardando_manifesto) return;
-      const m = Math.round((new Date(d.ts_aguardando_manifesto)-new Date(d.ts_aguardando_nf))/60000);
+    (atribsMes||[]).forEach(a=>{
+      if(!a.criado_em) return;
+      const nfDaCarga=(nfsMes||[]).find(n=>n.carga===a.carga&&n.tipo==='nf'&&String(n.fiscal_id)===String(a.fiscal_id));
+      if(!nfDaCarga?.criado_em) return;
+      const m=Math.round((new Date(nfDaCarga.criado_em)-new Date(a.criado_em))/60000);
       if(m<=0||m>=600) return;
-      if(!rotaMap[d.rota]) rotaMap[d.rota]={total:0,count:0};
-      rotaMap[d.rota].total+=m; rotaMap[d.rota].count++;
+      const rota=_rotaCargaMap[a.carga]||'';
+      if(!rota) return;
+      if(!rotaMap[rota]) rotaMap[rota]={total:0,count:0};
+      rotaMap[rota].total+=m; rotaMap[rota].count++;
     });
     const rotaList = Object.entries(rotaMap).map(([rota,s])=>({rota,avg:Math.round(s.total/s.count),count:s.count})).sort((a,b)=>a.avg-b.avg);
     const maxAvgRota = rotaList.length?Math.max(...rotaList.map(r=>r.avg)):1;
@@ -22381,7 +22405,9 @@ async function renderGestaoFiscal(){
     html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:12px;margin-bottom:24px">
       <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Fiscais Ativos</div><div class="kpi-value">${(fiscais||[]).length}</div></div>
       <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">NFs / Mês</div><div class="kpi-value">${totalNFs}</div></div>
-      <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Tempo Médio NF</div><div class="kpi-value" style="font-size:1.05rem">${fmtT(tempoMedioGeral)}</div></div>
+      <div class="kpi-card" style="border-top-color:#8b5cf6"><div class="kpi-label">Boletos / Mês</div><div class="kpi-value">${totalBols}</div></div>
+      <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">⏱ Tempo Médio NF</div><div class="kpi-value" style="font-size:1.05rem">${fmtT(tempoMedioGeralNF)}</div></div>
+      <div class="kpi-card" style="border-top-color:#06b6d4"><div class="kpi-label">⏱ Tempo Médio Bol</div><div class="kpi-value" style="font-size:1.05rem">${fmtT(tempoMedioGeralBol)}</div></div>
       <div class="kpi-card" style="border-top-color:#7c3aed"><div class="kpi-label">Destaque do Mês</div><div class="kpi-value" style="font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${maisProd?maisProd.nome.split(' ')[0]+'  🏆':'—'}</div></div>
     </div>`;
 
@@ -22405,7 +22431,8 @@ async function renderGestaoFiscal(){
       const badgePerfil = f.perfil==='fiscal_admin'?'adm fiscal':'fiscal';
       const rankBadge = idx<3?`<span style="font-size:1.1rem">${medals[idx]}</span>`:'';
       const corTaxa = s.taxa===100?'#059669':s.taxa>50?'#3b82f6':'#f59e0b';
-      const corTempo = s.tempoMedio==null?'var(--text-muted)':s.tempoMedio<60?'#059669':s.tempoMedio<180?'#f59e0b':'#ef4444';
+      const corTempo = s.tempoMedioNF==null?'var(--text-muted)':s.tempoMedioNF<60?'#059669':s.tempoMedioNF<180?'#f59e0b':'#ef4444';
+      const corTempoBol = s.tempoMedioBol==null?'var(--text-muted)':s.tempoMedioBol<60?'#059669':s.tempoMedioBol<180?'#f59e0b':'#ef4444';
       html += `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">
         <div style="background:linear-gradient(135deg,rgba(5,150,105,.09),rgba(5,150,105,.03));padding:14px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border)">
           ${fotoHtml}
@@ -22420,13 +22447,21 @@ async function renderGestaoFiscal(){
                 <div style="font-size:.88rem;font-weight:900;color:var(--text-primary)">${s.cargas}</div>
                 <div style="font-size:.52rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">cargas/mês</div>
               </div>
-              <div style="background:rgba(0,0,0,.13);border-radius:8px;padding:5px 10px;text-align:center;min-width:54px">
+              <div style="background:rgba(0,0,0,.13);border-radius:8px;padding:5px 10px;text-align:center;min-width:44px">
                 <div style="font-size:.88rem;font-weight:900;color:var(--text-primary)">${s.nfs}</div>
-                <div style="font-size:.52rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">NFs emitidas</div>
+                <div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">NFs</div>
               </div>
-              <div style="background:rgba(0,0,0,.13);border-radius:8px;padding:5px 10px;text-align:center;min-width:54px">
-                <div style="font-size:.88rem;font-weight:900;color:${corTempo}">${fmtT(s.tempoMedio)}</div>
-                <div style="font-size:.52rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">tempo médio</div>
+              <div style="background:rgba(0,0,0,.13);border-radius:8px;padding:5px 10px;text-align:center;min-width:44px">
+                <div style="font-size:.88rem;font-weight:900;color:#8b5cf6">${s.boletos}</div>
+                <div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">Boletos</div>
+              </div>
+              <div style="background:rgba(0,0,0,.13);border-radius:8px;padding:5px 10px;text-align:center;min-width:44px">
+                <div style="font-size:.75rem;font-weight:900;color:${corTempo}">${fmtT(s.tempoMedioNF)}</div>
+                <div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">⏱ NF</div>
+              </div>
+              <div style="background:rgba(0,0,0,.13);border-radius:8px;padding:5px 10px;text-align:center;min-width:44px">
+                <div style="font-size:.75rem;font-weight:900;color:${corTempoBol}">${fmtT(s.tempoMedioBol)}</div>
+                <div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">⏱ Bol</div>
               </div>
             </div>
           </div>
