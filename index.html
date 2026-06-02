@@ -25961,7 +25961,11 @@ function toggleMotivoAgend(id){
   el.style.display = el.style.display==='none' ? 'block' : 'none';
 }
 
+// IDs cujo motivo está sendo editado no popup — evita delete prematuro no banco
+const _editandoMotivo = new Set();
+
 function salvarMotivoAgend(id, motivo){
+  _editandoMotivo.delete(id); // limpa flag de edição após salvar
   var LABELS={comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento'};
   var arr = getAgendamentos(), idx = arr.findIndex(function(a){return a.id===id;});
   if(idx<0){ showToast('Agendamento não encontrado (id: '+id+')','warning'); return; }
@@ -25980,16 +25984,10 @@ function salvarMotivoAgend(id, motivo){
   renderAgendamentos();
 }
 
-// Limpa motivo para reexibir os botões ("alterar")
+// Habilita edição do motivo no popup — NÃO apaga do banco até novo motivo ser selecionado
 function limparMotivoAtraso(id){
-  const arr = getAgendamentos();
-  const idx = arr.findIndex(a=>a.id===id);
-  if(idx<0) return;
-  delete arr[idx].motivo_atraso;
-  delete arr[idx].motivo_label;
-  if(arr[idx].status==='atrasado') arr[idx].status='agendado';
-  saveAgendamentos(arr);
-  renderAgendamentos();
+  _editandoMotivo.add(id);
+  abrirPopupRotasExpedicao(); // re-abre exibindo botões de seleção
 }
 
 // ══ POPUP UNIFICADO — ROTAS DA SEMANA (EXPEDIÇÃO) ═══════════════════════
@@ -26052,8 +26050,9 @@ function abrirPopupRotasExpedicao(){
       const fdt = calcFech(a.data);
       if(!datas.includes(fdt)) return false;
       if(a.status === 'concluido') return false;
-      if(a.status === 'realizado') return false;
-      if(temPreCargaAtiva(a.rota, a.data)) return false;
+      // Mantém realizado no popup se tiver motivo registrado (histórico visível)
+      if(a.status === 'realizado' && !a.motivo_atraso) return false;
+      if(temPreCargaAtiva(a.rota, a.data) && a.status !== 'realizado' && !a.motivo_atraso) return false;
       return true;
     })
     .sort((a,b) => calcFech(a.data).localeCompare(calcFech(b.data)));
@@ -26106,62 +26105,71 @@ function abrirPopupRotasExpedicao(){
     }
 
     rotasDia.forEach(function(a){
-      const temPC     = temPreCargaAtiva(a.rota, a.data);
-      const temMotivo = !!(a.motivo_atraso);
-      const corMot    = CORES_MOT[a.motivo_atraso]||'#6b7280';
+      const temPC      = temPreCargaAtiva(a.rota, a.data);
+      const isRealizado = a.status === 'realizado';
+      const editando   = _editandoMotivo.has(a.id);
+      // motivo "ativo" se existe E não está em modo edição
+      const temMotivo  = !!(a.motivo_atraso) && !editando;
+      const corMot     = CORES_MOT[a.motivo_atraso]||'#6b7280';
       const saidaLabel = new Date(a.data+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'}).replace('.',',');
-      // Borda esquerda: verde se tem pré-carga, cor do motivo se tem motivo, roxo se hoje, cinza senão
-      const borda = temPC ? '#059669' : (temMotivo ? corMot : (isHoje ? '#7c3aed' : '#475569'));
+      const borda = isRealizado ? '#059669' : (temPC ? '#059669' : (temMotivo ? corMot : (isHoje ? '#7c3aed' : '#475569')));
 
-      // Botões de motivo (string concat segura)
+      // Botões de motivo (só relevante para entradas ainda pendentes)
       var mBtns = '';
-      MOTIVOS.forEach(function(m){
-        var sel = a.motivo_atraso===m.key;
-        var c   = CORES_MOT[m.key]||'#6b7280';
-        mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
-          +'style="background:'+(sel?c+'33':'rgba(239,68,68,.06)')+';color:'+(sel?c:'#fca5a5')+';'
-          +'border:'+(sel?'2px solid '+c:'1px solid rgba(239,68,68,.2)')+';border-radius:6px;padding:4px 10px;'
-          +'font-size:.72rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+m.label+'</button>';
-      });
+      if(!isRealizado){
+        MOTIVOS.forEach(function(m){
+          var sel = a.motivo_atraso===m.key;
+          var c   = CORES_MOT[m.key]||'#6b7280';
+          mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
+            +'style="background:'+(sel?c+'33':'rgba(239,68,68,.06)')+';color:'+(sel?c:'#fca5a5')+';'
+            +'border:'+(sel?'2px solid '+c:'1px solid rgba(239,68,68,.2)')+';border-radius:6px;padding:4px 10px;'
+            +'font-size:.72rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+m.label+'</button>';
+        });
+      }
 
-      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+borda+';border-radius:10px;padding:13px 15px;margin-left:8px">'
+      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+borda+';border-radius:10px;padding:13px 15px;margin-left:8px'+(isRealizado?';opacity:.8':'')+'">'
 
         // Cabeçalho: nome + badges
         +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap">'
-          +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+'</div>'
+          +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+(isRealizado?'&nbsp;<span style="font-size:.68rem;font-weight:400;color:#6ee7b7">✅ saiu</span>':'')+'</div>'
           +'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
-            +(isHoje&&!temMotivo&&!temPC?'<span style="background:rgba(124,58,237,.15);color:#c084e0;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔒 Fechar hoje</span>':'')
-            +(temPC?'<span style="background:rgba(5,150,105,.15);color:#34d399;font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid rgba(5,150,105,.3)">✅ Pré-carga ativa</span>':'')
-            +(temMotivo?'<span style="background:'+corMot+'22;color:'+corMot+';font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid '+corMot+'44">📌 '+(a.motivo_label||a.motivo_atraso)+'</span>':'')
+            +(!isRealizado&&isHoje&&!temMotivo&&!temPC?'<span style="background:rgba(124,58,237,.15);color:#c084e0;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔒 Fechar hoje</span>':'')
+            +(temPC&&!isRealizado?'<span style="background:rgba(5,150,105,.15);color:#34d399;font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid rgba(5,150,105,.3)">✅ Pré-carga ativa</span>':'')
+            +((temMotivo||editando)?'<span style="background:'+corMot+'22;color:'+corMot+';font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid '+corMot+'44">📌 '+(a.motivo_label||a.motivo_atraso)+'</span>':'')
           +'</div>'
         +'</div>'
         // Data de saída
         +'<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:9px">📅 Saída: <strong style="color:var(--text-secondary)">'+saidaLabel+'</strong></div>'
 
-        // Ação principal: se tem pré-carga mostra info, senão mostra botão criar
-        +(temPC
-          ? '<div style="background:rgba(5,150,105,.08);border:1px solid rgba(5,150,105,.2);border-radius:8px;padding:9px 14px;font-size:.83rem;color:#34d399;font-weight:600;margin-bottom:9px">'
-              +'✅ Pré-carga já criada para este dia — gerencie na lista abaixo'
+        // Entrada realizada: apenas info do motivo, sem ações
+        +(isRealizado
+          ? '<div style="background:rgba(5,150,105,.07);border:1px solid rgba(5,150,105,.18);border-radius:8px;padding:8px 12px;font-size:.8rem;color:#6ee7b7;font-weight:600">'
+              +'✅ Carga saiu'+(a.motivo_atraso?' com motivo registrado: <strong>'+(a.motivo_label||a.motivo_atraso)+'</strong>':'')
             +'</div>'
-            +'<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
-              +'style="width:100%;background:rgba(5,150,105,.06);color:#6ee7b7;border:1px dashed rgba(5,150,105,.25);border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:600;cursor:pointer;margin-bottom:9px;text-align:left">'
-              +'➕ Criar outra pré-carga'
-            +'</button>'
-          : '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
-              +'style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:8px">'
-              +'<span>➕</span><span>Criar Pré-Carga</span>'
-            +'</button>'
-        )
-
-        // Motivo do atraso — só exibe os botões se ainda não foi registrado
-        +(temMotivo
-          ? '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'
-              +'<span style="font-size:.7rem;color:var(--text-muted)">📌 Motivo registrado</span>'
-              +'<button onclick="limparMotivoAtraso(\''+a.id+'\')" '
-                +'style="background:transparent;border:none;color:var(--text-muted);font-size:.7rem;cursor:pointer;text-decoration:underline;padding:0">alterar</button>'
-            +'</div>'
-          : '<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>'
-            +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
+          // Ação principal para entradas pendentes
+          : (temPC
+              ? '<div style="background:rgba(5,150,105,.08);border:1px solid rgba(5,150,105,.2);border-radius:8px;padding:9px 14px;font-size:.83rem;color:#34d399;font-weight:600;margin-bottom:9px">'
+                  +'✅ Pré-carga já criada para este dia — gerencie na lista abaixo'
+                +'</div>'
+                +'<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
+                  +'style="width:100%;background:rgba(5,150,105,.06);color:#6ee7b7;border:1px dashed rgba(5,150,105,.25);border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:600;cursor:pointer;margin-bottom:9px;text-align:left">'
+                  +'➕ Criar outra pré-carga'
+                +'</button>'
+              : '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
+                  +'style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:8px">'
+                  +'<span>➕</span><span>Criar Pré-Carga</span>'
+                +'</button>'
+            )
+            // Motivo do atraso para entradas pendentes
+            +(temMotivo
+              ? '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'
+                  +'<span style="font-size:.7rem;color:var(--text-muted)">📌 Motivo registrado</span>'
+                  +'<button onclick="limparMotivoAtraso(\''+a.id+'\')" '
+                    +'style="background:transparent;border:none;color:var(--text-muted);font-size:.7rem;cursor:pointer;text-decoration:underline;padding:0">alterar</button>'
+                +'</div>'
+              : '<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>'
+                +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
+            )
         )
 
       +'</div>';
@@ -26200,6 +26208,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
     // Grava o motivo mas a pendência PERMANECE no agendamento (status='atrasado' = pendente com motivo)
     const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
     if(idx<0){ showToast('⚠️ Agendamento não encontrado (id: '+id+')','warning'); return; }
+    _editandoMotivo.delete(id); // limpa flag de edição ao salvar novo motivo
     arr[idx].motivo_atraso = motivo;
     arr[idx].motivo_label  = LABELS[motivo];
     arr[idx].status        = 'atrasado'; // fica visível no popup E no card da demanda
@@ -26213,6 +26222,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
 async function confirmarOutroUnificado(id, rota, data){
   const texto=(document.getElementById('inp-outro-'+id)?.value||'').trim();
   if(!texto){ showToast('Descreva o motivo','warning'); return; }
+  _editandoMotivo.delete(id);
   const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
   if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; saveAgendamentos(arr); }
   showToast('📌 Motivo registrado — rota permanece pendente','warning');
@@ -26533,7 +26543,7 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
       return;
     }
     const labMap = {comercial:'Comercial',veiculo:'Sem Veículo',motorista:'Sem Motorista',atraso_rota:'Atraso de Rota'};
-    if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; saveAgendamentos(arr); }
+    if(idx>=0){ _editandoMotivo.delete(id); arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; saveAgendamentos(arr); }
     if(motivo==='comercial'){
       // Verificar se já existe no Supabase antes de criar
       supaFetch(`comercial_rotas?rota=eq.${encodeURIComponent(rota)}&data=eq.${data}&status=neq.resolvido&select=id&limit=1`)
