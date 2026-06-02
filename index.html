@@ -5075,9 +5075,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <!-- KPIs linha 2: Bônus ADM + KM RE -->
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px">
       <div style="background:linear-gradient(135deg,#064e3b,#059669);border-radius:14px;padding:16px;text-align:center;box-shadow:0 4px 16px rgba(5,150,105,.3)">
-        <div style="font-size:.7rem;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:8px">💰 Bônus ADM</div>
+        <div style="font-size:.7rem;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:8px">💰 Comissão</div>
         <div id="mot-kpi-val" style="font-size:1.2rem;font-weight:900;color:#fff">-</div>
-        <div id="mot-kpi-bonus-status" style="font-size:.68rem;color:rgba(255,255,255,.5)">definido pelo ADM</div>
+        <div id="mot-kpi-bonus-status" style="font-size:.68rem;color:rgba(255,255,255,.5)">calculado pelo sistema</div>
       </div>
       <div style="background:linear-gradient(135deg,#1c1917,#78350f);border-radius:14px;padding:16px;text-align:center;box-shadow:0 4px 16px rgba(120,53,15,.3)">
         <div style="font-size:.7rem;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:8px">🛣️ KM Rotas RE</div>
@@ -14689,8 +14689,8 @@ async function carregarPortalMotorista(){
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
     const cargasDoMes = [...new Set(lancs.map(l=>Math.round(Number(l.carga))).filter(Boolean))];
-    // Busca bdMot + km_cargas + demandas_rota (fallback de pedidos) em paralelo
-    const [bdMot, kmCargasPortal, demsMot] = await Promise.all([
+    // Busca bdMot + km_cargas + demandas_rota + rotas_viagem em paralelo
+    const [bdMot, kmCargasPortal, demsMot, rvPortal] = await Promise.all([
       cargasDoMes.length > 0
         ? supaFetch(`base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`).catch(()=>[])
         : Promise.resolve([]),
@@ -14699,10 +14699,17 @@ async function carregarPortalMotorista(){
         : Promise.resolve([]),
       cargasDoMes.length > 0
         ? supaFetch(`demandas_rota?carga=in.(${cargasDoMes.join(',')})&select=carga,rota,quantidade_pedidos`).catch(()=>[])
+        : Promise.resolve([]),
+      cargasDoMes.length > 0
+        ? supaFetch(`rotas_viagem?carga=in.(${cargasDoMes.join(',')})&select=carga,km_inicial,km_final&order=criado_em.desc`).catch(()=>[])
         : Promise.resolve([])
     ]);
-    // Indexar KM por carga para usar no bônus RE
+    // Indexar KM por carga — rotas_viagem como base, km_cargas sobrepõe (fonte mais confiável)
     const kmPorCargaPortal = {};
+    (rvPortal||[]).forEach(r => {
+      const c = Math.round(Number(r.carga));
+      if(!kmPorCargaPortal[c]) kmPorCargaPortal[c] = r;
+    });
     (kmCargasPortal||[]).forEach(r => { kmPorCargaPortal[Math.round(Number(r.carga))] = r; });
 
     // Filtrar pedidos válidos (ocorrência != 1)
@@ -14759,15 +14766,17 @@ async function carregarPortalMotorista(){
       }
     });
 
-    // Deduplicar por carga — lancamentos pode ter entradas duplicadas
+    // Deduplicar por carga — ordenar por ts desc para o registro mais recente vencer
+    const lancsOrdenados = [...lancs].sort((a,b)=>((b.ts||'')>(a.ts||''))?1:-1);
     const cargasVistas = new Set();
-    const lancsDeduplic = lancs.filter(l => {
+    const lancsDeduplic = lancsOrdenados.filter(l => {
       const c = Math.round(Number(l.carga));
       if(cargasVistas.has(c)) return false;
       cargasVistas.add(c);
       return true;
     });
 
+    let totalKmRE = 0;
     lancsDeduplic.forEach(l => {
       const c     = Math.round(Number(l.carga));
       const rire  = (l.rire||'').replace(/\./g,'').trim().toUpperCase();
@@ -14779,16 +14788,28 @@ async function carregarPortalMotorista(){
       const bonus = taxa * nPed;
       // Bônus KM para rotas RE: km_rodado × valor_km
       const kmReg = kmPorCargaPortal[c];
-      const kmBonusRE = isRE && kmReg && kmReg.km_inicial != null && kmReg.km_final != null
-        ? (kmReg.km_final - kmReg.km_inicial) * (cfg.valorKm || 0.20)
-        : 0;
+      const kmRodado = isRE && kmReg && kmReg.km_inicial != null && kmReg.km_final != null
+        ? kmReg.km_final - kmReg.km_inicial : 0;
+      const kmBonusRE = kmRodado * (cfg.valorKm || 0.20);
+      if(isRE) totalKmRE += kmRodado;
       totalVal += bonus + kmBonusRE;
-      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, ts:l.ts, isRE });
+      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, kmRodado, ts:l.ts, isRE });
     });
 
     setKpi('mot-kpi-ent-ri', pedidosRI.size || 0);
     setKpi('mot-kpi-ent-re', pedidosRE.size || 0);
     setKpi('mot-kpi-ent', totalPedidos || 0); // legado
+    // KM RE — popular card imediatamente com dados já calculados
+    const elKmRePortal = document.getElementById('mot-kpi-km-re');
+    if(elKmRePortal){
+      const totalBonusKmRE = linhasTabela.filter(l=>l.isRE).reduce((s,l)=>s+l.kmBonusRE,0);
+      if(totalKmRE > 0){
+        elKmRePortal.innerHTML = totalKmRE.toLocaleString('pt-BR')+' km'
+          +(totalBonusKmRE>0?`<br><span style="font-size:.75em;color:#fb923c;font-weight:700">R$ ${totalBonusKmRE.toFixed(2).replace('.',',')}</span>`:'');
+      } else {
+        elKmRePortal.textContent = '-';
+      }
+    }
 
     // ── RANKING RI e RE + BÔNUS ADM ────────────────────
     try{
@@ -14863,11 +14884,11 @@ async function carregarPortalMotorista(){
       if(bonusADM !== null){
         setKpi('mot-kpi-val', fmtVal(bonusADM));
         const elStatus = document.getElementById('mot-kpi-bonus-status');
-        if(elStatus) elStatus.textContent = '✅ definido pelo ADM';
+        if(elStatus) elStatus.textContent = `✅ confirmado ADM · est: ${fmtVal(totalVal)}`;
       } else {
-        setKpi('mot-kpi-val', 'Aguardando');
+        setKpi('mot-kpi-val', fmtVal(totalVal));
         const elStatus = document.getElementById('mot-kpi-bonus-status');
-        if(elStatus) elStatus.textContent = '⏳ ADM ainda não lançou';
+        if(elStatus) elStatus.textContent = totalVal > 0 ? '📊 estimativa do sistema' : '⏳ sem entregas lançadas';
       }
 
       window._rankData = { ri: rankRI, re: rankRE };
@@ -14877,7 +14898,9 @@ async function carregarPortalMotorista(){
 
     }catch(e){
       console.warn('Ranking erro:', e.message);
-      setKpi('mot-kpi-val', 'Aguardando');
+      setKpi('mot-kpi-val', fmtVal(totalVal));
+      const elStatusFallback = document.getElementById('mot-kpi-bonus-status');
+      if(elStatusFallback) elStatusFallback.textContent = totalVal > 0 ? '📊 estimativa do sistema' : '⏳ sem entregas lançadas';
       setKpi('mot-kpi-pos', '-');
       setKpi('mot-kpi-pos-re', '-');
     }
