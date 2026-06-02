@@ -5515,9 +5515,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 <!-- ══ POPUP EXPEDIÇÃO — ROTAS DA SEMANA (UNIFICADO) ══ -->
 <div id="popup-rotas-dia" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;align-items:center;justify-content:center;padding:16px">
   <div style="background:var(--bg-card);border-radius:16px;padding:0;width:min(640px,98vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.4)">
-    <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,#0f172a,#1d4ed8);display:flex;align-items:flex-start;justify-content:space-between">
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,#1e1b4b,#7c3aed);display:flex;align-items:flex-start;justify-content:space-between">
       <div>
-        <h3 style="font-size:1.05rem;font-weight:800;color:#fff;margin-bottom:3px">📋 Rotas da Semana — Expedição</h3>
+        <h3 style="font-size:1.05rem;font-weight:800;color:#fff;margin-bottom:3px">🔒 Fechamento de Rotas — Expedição</h3>
         <p style="font-size:.78rem;color:rgba(255,255,255,.65);margin:0" id="popup-rotas-sub">Carregando...</p>
       </div>
       <button onclick="fecharPopupRotasDia()" style="background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:8px;padding:5px 12px;cursor:pointer;font-size:.85rem;margin-left:12px;flex-shrink:0">✕</button>
@@ -25818,23 +25818,30 @@ function abrirPopupRotasExpedicao(){
   });
   if(mudou) saveAgendamentos(agends);
 
-  // Rotas a exibir: próximos 7 dias, exceto as que já saíram ou têm pré-carga ativa
+  // Rotas a exibir: fechamento nos próximos 7 dias (= saída em 2 dias úteis a partir de cada dia)
+  // Calcula a data de fechamento de cada agendamento e filtra pelos próximos 7 dias
+  const calcFech = dataStr => {
+    var d=new Date(dataStr+'T12:00:00'),c=0;
+    while(c<2){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; }
+    return d.toISOString().slice(0,10);
+  };
+
   const rotasSemana = agends
     .filter(a => {
-      if(!datas.includes(a.data)) return false;
+      const fdt = calcFech(a.data);
+      if(!datas.includes(fdt)) return false;
       if(a.status === 'concluido') return false;
-      if(a.status === 'realizado') return false;  // deu baixa = saiu = não aparece
-      // Excluir rotas que já têm pré-carga ativa — não precisam aparecer no popup
+      if(a.status === 'realizado') return false;
       if(temPreCargaAtiva(a.rota, a.data)) return false;
       return true;
     })
-    .sort((a,b) => a.data.localeCompare(b.data));
+    .sort((a,b) => calcFech(a.data).localeCompare(calcFech(b.data)));
 
   const total_ct = rotasSemana.length;
-  const hoje_ct  = rotasSemana.filter(a=>a.data===hojeStr).length;
+  const hoje_ct  = rotasSemana.filter(a=>calcFech(a.data)===hojeStr).length;
   if(sub) sub.textContent = total_ct
-    ? total_ct+' rota(s) nos próximos 7 dias'+(hoje_ct?' — '+hoje_ct+' hoje':'')
-    : 'Nenhuma rota agendada para os próximos 7 dias';
+    ? total_ct+' rota(s) para fechar nos próximos 7 dias'+(hoje_ct?' — '+hoje_ct+' hoje':'')
+    : 'Nenhum fechamento agendado para os próximos 7 dias';
 
   // Helpers
   const fmtLabel = dt => {
@@ -25845,62 +25852,52 @@ function abrirPopupRotasExpedicao(){
   };
   const fmtData = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
 
-  // Retorna a data de fechamento (2 dias úteis antes da saída)
-  const calcFechamento = dt => {
-    var d=new Date(dt+'T12:00:00'), c=0;
-    while(c<2){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; }
-    var f=d.toISOString().slice(0,10);
-    var passouFech = f<hojeStr;
-    var label=new Date(f+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'});
-    return {data:f, label:label.replace('.',','), passou:passouFech};
-  };
-
   const MOTIVOS   = [{key:'comercial',label:'💰 Comercial',desc:'Carga sem valor mínimo'},{key:'veiculo',label:'🚛 Sem Veículo',desc:'Sem veículo disponível'},{key:'motorista',label:'🚗 Sem Motorista',desc:'Sem motorista disponível'},{key:'atraso_rota',label:'⏱️ Atraso de Rota',desc:'Rota saiu com atraso'},{key:'atraso_carregamento',label:'📦 Atraso no Carregamento',desc:'Atraso no carregamento da carga'}];
   const CORES_MOT = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#f97316'};
 
-  // Agrupar por data
-  const porDia = {};
-  rotasSemana.forEach(a=>{ if(!porDia[a.data]) porDia[a.data]=[]; porDia[a.data].push(a); });
+  // Agrupar por data de FECHAMENTO (não de saída)
+  const porFech = {};
+  rotasSemana.forEach(a=>{ var fd=calcFech(a.data); if(!porFech[fd]) porFech[fd]=[]; porFech[fd].push(a); });
 
   var html = '';
 
   datas.forEach(function(dt, di){
     const isHoje   = dt===hojeStr;
     const label    = fmtLabel(dt);
-    const rotasDia = porDia[dt]||[];
+    const rotasDia = porFech[dt]||[];
 
     // Cabeçalho do dia
     html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'10px':'0')+'">'
-      +'<div style="background:'+(isHoje?'#2563eb':'#334155')+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
+      +'<div style="background:'+(isHoje?'#7c3aed':'#334155')+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
         +'<span style="font-size:.58rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.03em">'+label+'</span>'
         +'<span style="font-size:1.15rem;font-weight:900;line-height:1.15">'+new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
         +'<span style="font-size:.6rem;opacity:.8">'+new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
       +'</div>'
-      +'<div style="flex:1;border-top:2px solid '+(isHoje?'rgba(37,99,235,.5)':'rgba(255,255,255,.07)')+'"></div>'
+      +'<div style="flex:1;border-top:2px solid '+(isHoje?'rgba(124,58,237,.5)':'rgba(255,255,255,.07)')+'"></div>'
       +'<span style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">'+fmtData(dt)+'</span>'
     +'</div>';
 
     if(!rotasDia.length){
       html += '<div style="margin-left:8px;padding:9px 14px;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.07);border-radius:8px">'
-        +'<span style="font-size:.78rem;color:var(--text-muted)">Nenhuma rota agendada</span>'
+        +'<span style="font-size:.78rem;color:var(--text-muted)">Nenhum fechamento para este dia</span>'
       +'</div>';
       return;
     }
 
     rotasDia.forEach(function(a){
-      const temPC     = temPreCargaAtiva(a.rota, dt);
+      const temPC     = temPreCargaAtiva(a.rota, a.data);
       const temMotivo = !!(a.motivo_atraso);
       const corMot    = CORES_MOT[a.motivo_atraso]||'#6b7280';
-      const fech      = calcFechamento(dt);
-      // Borda esquerda: verde se tem pré-carga, cor do motivo se tem motivo, azul se hoje, cinza senão
-      const borda = temPC ? '#059669' : (temMotivo ? corMot : (isHoje ? '#2563eb' : '#475569'));
+      const saidaLabel = new Date(a.data+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'}).replace('.',',');
+      // Borda esquerda: verde se tem pré-carga, cor do motivo se tem motivo, roxo se hoje, cinza senão
+      const borda = temPC ? '#059669' : (temMotivo ? corMot : (isHoje ? '#7c3aed' : '#475569'));
 
       // Botões de motivo (string concat segura)
       var mBtns = '';
       MOTIVOS.forEach(function(m){
         var sel = a.motivo_atraso===m.key;
         var c   = CORES_MOT[m.key]||'#6b7280';
-        mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+dt+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
+        mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
           +'style="background:'+(sel?c+'33':'rgba(239,68,68,.06)')+';color:'+(sel?c:'#fca5a5')+';'
           +'border:'+(sel?'2px solid '+c:'1px solid rgba(239,68,68,.2)')+';border-radius:6px;padding:4px 10px;'
           +'font-size:.72rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+m.label+'</button>';
@@ -25912,27 +25909,24 @@ function abrirPopupRotasExpedicao(){
         +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap">'
           +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+'</div>'
           +'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
-            +(isHoje&&!temMotivo&&!temPC?'<span style="background:rgba(37,99,235,.15);color:#60a5fa;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔵 Hoje</span>':'')
+            +(isHoje&&!temMotivo&&!temPC?'<span style="background:rgba(124,58,237,.15);color:#c084e0;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔒 Fechar hoje</span>':'')
             +(temPC?'<span style="background:rgba(5,150,105,.15);color:#34d399;font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid rgba(5,150,105,.3)">✅ Pré-carga ativa</span>':'')
             +(temMotivo?'<span style="background:'+corMot+'22;color:'+corMot+';font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid '+corMot+'44">📌 '+(a.motivo_label||a.motivo_atraso)+'</span>':'')
           +'</div>'
         +'</div>'
-        // Linha de fechamento
-        +'<div style="display:inline-flex;align-items:center;gap:5px;background:'+(fech.passou?'rgba(239,68,68,.1)':'rgba(124,58,237,.1)')+';border:1px solid '+(fech.passou?'rgba(239,68,68,.25)':'rgba(124,58,237,.25)')+';border-radius:6px;padding:3px 10px;font-size:.7rem;font-weight:700;color:'+(fech.passou?'#f87171':'#c084e0')+';margin-bottom:9px">'
-          +'🔒 Fechamento: '+fech.label
-          +(fech.passou?' <span style="font-size:.65rem;font-weight:600;opacity:.8">(passou)</span>':'')
-        +'</div>'
+        // Data de saída
+        +'<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:9px">📅 Saída: <strong style="color:var(--text-secondary)">'+saidaLabel+'</strong></div>'
 
         // Ação principal: se tem pré-carga mostra info, senão mostra botão criar
         +(temPC
           ? '<div style="background:rgba(5,150,105,.08);border:1px solid rgba(5,150,105,.2);border-radius:8px;padding:9px 14px;font-size:.83rem;color:#34d399;font-weight:600;margin-bottom:9px">'
               +'✅ Pré-carga já criada para este dia — gerencie na lista abaixo'
             +'</div>'
-            +'<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+dt+'\',\'lancar\')" '
+            +'<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
               +'style="width:100%;background:rgba(5,150,105,.06);color:#6ee7b7;border:1px dashed rgba(5,150,105,.25);border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:600;cursor:pointer;margin-bottom:9px;text-align:left">'
               +'➕ Criar outra pré-carga'
             +'</button>'
-          : '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+dt+'\',\'lancar\')" '
+          : '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
               +'style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:8px">'
               +'<span>➕</span><span>Criar Pré-Carga</span>'
             +'</button>'
