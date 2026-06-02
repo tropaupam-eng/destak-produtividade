@@ -3695,6 +3695,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <button onclick="renderAbastecimentoLoja()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
   </div>
 
+  <!-- Aviso de rotas de filiais ativas -->
+  <div id="abast-filiais-aviso"></div>
+
   <!-- Formulário -->
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:18px">
     <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:16px">➕ Registrar Abastecimento</h3>
@@ -26603,17 +26606,65 @@ async function limparComercialRotas(){
 let _abastCache = [];
 
 async function renderAbastecimentoLoja(){
-  try{
-    await _popularSelectsAbastecimento();
-  }catch(e){
-    console.warn('Erro ao popular selects abastecimento:', e);
-  }
+  try{ await _avisoRotasFiliais(); }catch(e){ console.warn('aviso filiais:', e); }
+  try{ await _popularSelectsAbastecimento(); }catch(e){ console.warn('Erro ao popular selects abastecimento:', e); }
   try{
     await _carregarListaAbastecimento();
   }catch(e){
     const lista = document.getElementById('abast-lista');
     if(lista) lista.innerHTML='<p style="text-align:center;padding:24px;color:#ef4444">⚠️ Erro ao carregar lista: '+e.message+'</p>';
   }
+}
+
+async function _avisoRotasFiliais(){
+  const div = document.getElementById('abast-filiais-aviso');
+  if(!div) return;
+  const FILIAIS = ['PATOS','NATAL','SALVADOR'];
+  const rotasQ = FILIAIS.map(r=>`rota.ilike.*${r}*`).join(',');
+  const ativas = await supaFetch(
+    `demandas_rota?or=(${rotasQ})&status=not.in.(concluido,cancelado,fim_viagem)&select=carga,rota,motorista,veiculo,data_saida,status&order=data_saida.asc`
+  ).catch(()=>[]) || [];
+
+  if(!ativas.length){ div.innerHTML=''; return; }
+
+  const statusLabel = {
+    pendente:'Pendente', separacao:'Em Separação',
+    carregamento:'Carregando', aguardando_manifesto:'Ag. Manifesto', saiu:'Em Trânsito'
+  };
+  const statusCor = {
+    pendente:'#f59e0b', separacao:'#3b82f6',
+    carregamento:'#8b5cf6', aguardando_manifesto:'#06b6d4', saiu:'#059669'
+  };
+  const fmtDt = dt => dt ? new Date(dt+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
+
+  div.innerHTML = `
+    <div style="background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(245,158,11,.05));border:1.5px solid rgba(245,158,11,.4);border-radius:14px;padding:16px 20px;margin-bottom:18px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <span style="font-size:1.3rem">🚛</span>
+        <div>
+          <div style="font-size:.92rem;font-weight:800;color:#d97706">Carregamentos de Filiais em Andamento</div>
+          <div style="font-size:.75rem;color:var(--text-muted);margin-top:1px">${ativas.length} rota${ativas.length>1?'s':''} ativa${ativas.length>1?'s':''} — Patos · Natal · Salvador</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px">
+        ${ativas.map(r=>{
+          const cor = statusCor[r.status]||'#64748b';
+          const lbl = statusLabel[r.status]||r.status;
+          return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px 14px;min-width:190px;flex:1">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">
+              <span style="font-size:.82rem;font-weight:800;color:var(--text-primary)">🗺️ ${r.rota}</span>
+              <span style="font-size:.68rem;font-weight:700;color:${cor};background:${cor}22;padding:2px 8px;border-radius:20px;white-space:nowrap">${lbl}</span>
+            </div>
+            <div style="font-size:.78rem;color:var(--text-secondary);line-height:1.6">
+              <div>🚚 <b>${r.veiculo||'—'}</b></div>
+              <div>👤 ${r.motorista||'—'}</div>
+              <div>📅 Saída: <b>${fmtDt(r.data_saida)}</b></div>
+              <div style="color:var(--text-muted);font-size:.72rem">Carga #${r.carga}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
 }
 
 async function _popularSelectsAbastecimento(){
