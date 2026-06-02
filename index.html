@@ -5899,20 +5899,17 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <div id="tv-kpi-col">
       <!-- Linha 1 -->
       <div id="tv-kpi-row1">
-        <!-- Equipe / Absenteísmo -->
+        <!-- OTIF do Mês -->
         <div class="tv-card">
-          <div class="tv-card-title">🌡️ Capacidade da Equipe — Hoje</div>
-          <div id="tv-abs-content">
-            <div class="tv-therm-wrap">
-              <div class="tv-therm-label"><span>Distribuição</span><span id="tv-abs-dist-pct">—</span></div>
-              <div class="tv-therm-bar"><div id="tv-abs-dist-fill" class="tv-therm-fill" style="width:0%;background:#3b82f6"></div></div>
-              <div style="font-size:.68rem;color:rgba(255,255,255,.4);margin-top:2px" id="tv-abs-dist-sub"></div>
+          <div class="tv-card-title">📊 OTIF — Mês Atual</div>
+          <div id="tv-otif-content">
+            <div style="text-align:center;padding:6px 0 4px">
+              <div id="tv-otif-pct" style="font-size:2.6rem;font-weight:900;color:#34d399;line-height:1;font-variant-numeric:tabular-nums">—</div>
+              <div style="font-size:.6rem;color:rgba(255,255,255,.35);margin-top:2px;letter-spacing:.5px">ON TIME IN FULL</div>
             </div>
-            <div class="tv-therm-wrap" style="margin-top:10px">
-              <div class="tv-therm-label"><span>Armazém</span><span id="tv-abs-arm-pct">—</span></div>
-              <div class="tv-therm-bar"><div id="tv-abs-arm-fill" class="tv-therm-fill" style="width:0%;background:#8b5cf6"></div></div>
-              <div style="font-size:.68rem;color:rgba(255,255,255,.4);margin-top:2px" id="tv-abs-arm-sub"></div>
-            </div>
+            <div class="tv-therm-bar" style="margin:8px 0 4px"><div id="tv-otif-fill" class="tv-therm-fill" style="width:0%;background:#34d399"></div></div>
+            <div style="font-size:.67rem;color:rgba(255,255,255,.4)" id="tv-otif-sub">—</div>
+            <div id="tv-prazo-list" style="margin-top:8px"></div>
           </div>
         </div>
         <!-- Frota -->
@@ -14692,13 +14689,16 @@ async function carregarPortalMotorista(){
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
     const cargasDoMes = [...new Set(lancs.map(l=>Math.round(Number(l.carga))).filter(Boolean))];
-    // Busca bdMot + km_cargas em paralelo
-    const [bdMot, kmCargasPortal] = await Promise.all([
+    // Busca bdMot + km_cargas + demandas_rota (fallback de pedidos) em paralelo
+    const [bdMot, kmCargasPortal, demsMot] = await Promise.all([
       cargasDoMes.length > 0
         ? supaFetch(`base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`).catch(()=>[])
         : Promise.resolve([]),
       motId
         ? supaFetch(`km_cargas?motorista_id=eq.${motId}&mes_ano=eq.${mesStr}&select=carga,km_inicial,km_final,rire,rota`).catch(()=>[])
+        : Promise.resolve([]),
+      cargasDoMes.length > 0
+        ? supaFetch(`demandas_rota?carga=in.(${cargasDoMes.join(',')})&select=carga,rota,quantidade_pedidos`).catch(()=>[])
         : Promise.resolve([])
     ]);
     // Indexar KM por carga para usar no bônus RE
@@ -14740,6 +14740,23 @@ async function carregarPortalMotorista(){
       const c = Math.round(Number(r.carga));
       if(!pedPorCarga[c]) pedPorCarga[c] = new Set();
       pedPorCarga[c].add(String(r.pedido));
+    });
+
+    // Fallback: cargas sem dados no base_data usam quantidade_pedidos da demandas_rota
+    const demsByCaraga = {};
+    (demsMot||[]).forEach(d=>{ demsByCaraga[Math.round(Number(d.carga))] = d; });
+    cargasDoMes.forEach(c=>{
+      if(!pedPorCarga[c] && demsByCaraga[c]?.quantidade_pedidos > 0){
+        const n = demsByCaraga[c].quantidade_pedidos;
+        const fakeSet = new Set(Array.from({length:n},(_,i)=>`~${c}_${i}`));
+        pedPorCarga[c] = fakeSet;
+        const isRI = cargaIsRI[c] !== undefined ? cargaIsRI[c] : ROTAS_RI.has((demsByCaraga[c].rota||'').toUpperCase());
+        cargaIsRI[c] = isRI;
+        for(let i=0;i<n;i++){
+          if(isRI) pedidosRI.add(`~${c}_${i}`);
+          else     pedidosRE.add(`~${c}_${i}`);
+        }
+      }
     });
 
     // Deduplicar por carga — lancamentos pode ter entradas duplicadas
@@ -15764,7 +15781,7 @@ async function renderRH(){
   if(lista) lista.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Carregando colaboradores...</div>';
 
   try{
-    const dados = await supaFetch('dp_funcionarios?ativo=eq.true&select=*&order=departamento.asc,nome.asc&limit=500').catch(()=>[]) || [];
+    const dados = await supaFetch('dp_funcionarios?ativo=eq.true&select=*&order=departamento.asc,nome.asc&limit=500') || [];
     _rhDados = dados;
 
     // KPIs
@@ -27584,8 +27601,9 @@ async function carregarTV(){
   if(el) el.textContent = 60;
 
   try{
+    const mesStr = hoje.slice(0,7);
     const [banners, demRota, motoristas, ajudantes, conferentes, absHoje,
-           veiculos, manuts, demArmazem, demHoje, notifs] = await Promise.all([
+           veiculos, manuts, demArmazem, demHoje, notifs, cargasMes, rotasOtif] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.(pronto_viagem,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida&order=data_saida.desc&limit=60`).catch(()=>[]),
       supaFetch(`motoristas?ativo=eq.true&select=nome`).catch(()=>[]),
@@ -27597,6 +27615,8 @@ async function carregarTV(){
       supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status`).catch(()=>[]),
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
+      supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=not.in.(cancelado,pendente)&select=carga,rota,status,ts_saiu,ts_concluido`).catch(()=>[]),
+      supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif`).catch(()=>[]),
     ]);
 
     // ── Carrossel ──
@@ -27605,37 +27625,45 @@ async function carregarTV(){
     // ── Ticker ──
     _tvRenderTicker(demRota||[]);
 
-    // ── Absenteísmo ──
-    const absMap = {};
-    (absHoje||[]).forEach(r=>{ absMap[(r.nome||'').trim().toUpperCase()] = r.status; });
+    // ── OTIF do Mês ──
+    const rotasPrazo = {};
+    (rotasOtif||[]).forEach(r=>{ if(r.prazo_otif) rotasPrazo[(r.nome||'').toUpperCase()]=r.prazo_otif; });
 
-    const calcAbs = (nomes) => {
-      const total = nomes.length;
-      if(!total) return { total:0, presentes:0, ausentes:0, pct:100 };
-      const ausentes = nomes.filter(n=>{
-        const st = absMap[(n||'').trim().toUpperCase()];
-        return st==='falta'||st==='atestado';
-      }).length;
-      const presentes = total - ausentes;
-      const pct = Math.round(presentes/total*100);
-      return { total, presentes, ausentes, pct };
-    };
-
-    const distNomes = [...(motoristas||[]),...(ajudantes||[])].map(f=>f.nome);
-    const armNomes  = (conferentes||[]).map(f=>f.nome);
-    const absDist   = calcAbs(distNomes);
-    const absArm    = calcAbs(armNomes);
-
-    const _setTherm = (fillId, pctId, subId, data, cor) => {
-      const fill = document.getElementById(fillId);
-      const pct  = document.getElementById(pctId);
-      const sub  = document.getElementById(subId);
-      if(fill){ fill.style.width=data.pct+'%'; fill.style.background = data.pct>=90?'#34d399':data.pct>=70?'#f59e0b':'#ef4444'; }
-      if(pct)  pct.textContent = data.pct+'%';
-      if(sub)  sub.textContent = `${data.presentes} presente${data.presentes!==1?'s':''} / ${data.total} total${data.ausentes?' — '+data.ausentes+' ausente'+(data.ausentes!==1?'s':''):''}`;
-    };
-    _setTherm('tv-abs-dist-fill','tv-abs-dist-pct','tv-abs-dist-sub', absDist, '#3b82f6');
-    _setTherm('tv-abs-arm-fill', 'tv-abs-arm-pct', 'tv-abs-arm-sub', absArm,  '#8b5cf6');
+    let otifTotal=0, otifNoPrazo=0, emTransito=[];
+    (cargasMes||[]).forEach(d=>{
+      const prazo = rotasPrazo[(d.rota||'').toUpperCase()];
+      if(!prazo) return;
+      if(d.status==='concluido'){
+        otifTotal++;
+        if(d.ts_saiu&&d.ts_concluido){
+          const ms=new Date(d.ts_concluido)-new Date(d.ts_saiu);
+          if(ms<=prazo*3600000) otifNoPrazo++;
+        }
+      } else if(d.ts_saiu){
+        const prazoPct=Math.round((Date.now()-new Date(d.ts_saiu))/(prazo*3600000)*100);
+        if(prazoPct>=70) emTransito.push({carga:d.carga, rota:d.rota, prazoPct});
+      }
+    });
+    const otifPct = otifTotal>0 ? Math.round(otifNoPrazo/otifTotal*100) : null;
+    const otifCor = otifPct==null?'#64748b':otifPct>=85?'#34d399':otifPct>=70?'#f59e0b':'#ef4444';
+    const otifEl  = document.getElementById('tv-otif-pct');
+    const otifFill= document.getElementById('tv-otif-fill');
+    const otifSub = document.getElementById('tv-otif-sub');
+    const prazoList= document.getElementById('tv-prazo-list');
+    if(otifEl){ otifEl.textContent=otifPct!=null?otifPct+'%':'—'; otifEl.style.color=otifCor; }
+    if(otifFill){ otifFill.style.width=(otifPct||0)+'%'; otifFill.style.background=otifCor; }
+    if(otifSub) otifSub.textContent=otifTotal>0?`${otifNoPrazo} de ${otifTotal} cargas no prazo`:'Aguardando conclusões do mês';
+    if(prazoList){
+      emTransito.sort((a,b)=>b.prazoPct-a.prazoPct);
+      const criticas=emTransito.slice(0,4);
+      prazoList.innerHTML=criticas.length?criticas.map(d=>{
+        const cor=d.prazoPct>=100?'#ef4444':d.prazoPct>=85?'#f59e0b':'#fbbf24';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-top:1px solid rgba(255,255,255,.07)">
+          <span style="font-size:.67rem;color:rgba(255,255,255,.55)">#${d.carga} ${d.rota}</span>
+          <span style="font-size:.67rem;font-weight:800;color:${cor}">${d.prazoPct>=100?'⚠️ Vencido':d.prazoPct+'%'}</span>
+        </div>`;
+      }).join(''):'';
+    }
 
     // ── Frota ──
     const totalVeic = (veiculos||[]).length;
