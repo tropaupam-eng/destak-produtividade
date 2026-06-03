@@ -18258,15 +18258,16 @@ async function gerarPresencasAutomaticas(mes, manual = false){
     const funcionarios = [
       ...(motoristas||[])
         .filter(m => !m.data_demissao || m.data_demissao >= primeiroDia)
-        .map(m => ({ nome: (m.nome||'').trim().toUpperCase(), funcao: 'motorista' })),
+        .map(m => ({ nome: (m.nome||'').trim(), funcao: 'motorista' })),
       ...(ajudantes||[])
         .filter(a => !a.data_demissao || a.data_demissao >= primeiroDia)
-        .map(a => ({ nome: (a.nome||'').trim().toUpperCase(), funcao: 'ajudante' }))
+        .map(a => ({ nome: (a.nome||'').trim(), funcao: 'ajudante' }))
     ];
     if(!funcionarios.length){ if(manual) showToast('Nenhum funcionário ativo encontrado','warning'); return; }
 
     // Buscar todos os registros já existentes no mês (1 query)
     const existentes = await supaFetch(`absenteismo?mes_ano=eq.${mes}&select=nome,data`).catch(()=>[]) || [];
+    // existSet normaliza para uppercase para comparação case-insensitive
     const existSet = new Set(existentes.map(e => `${(e.nome||'').trim().toUpperCase()}__${e.data}`));
 
     // Gerar lista de registros faltando
@@ -18276,7 +18277,7 @@ async function gerarPresencasAutomaticas(mes, manual = false){
     while(cur <= fim){
       const dataStr = cur.toISOString().split('T')[0];
       for(const f of funcionarios){
-        if(!existSet.has(`${f.nome}__${dataStr}`)){
+        if(!existSet.has(`${f.nome.toUpperCase()}__${dataStr}`)){
           novos.push({ nome:f.nome, funcao:f.funcao, data:dataStr,
             status:'presente', mes_ano:mes, fonte:'automatico',
             criado_em: new Date().toISOString() });
@@ -18385,6 +18386,12 @@ async function renderAbsenteismo(){
       ...ajudantesAll.filter(a => a.ativo !== false).map(a=>a.nome.trim().toUpperCase())
     ]);
 
+    // Mapa de uppercase → nome natural (para normalizar registros salvos em maiúsculas)
+    const nomeNaturalMap = {};
+    [...motoristasAll, ...ajudantesAll].forEach(p=>{
+      if(p.nome) nomeNaturalMap[(p.nome||'').trim().toUpperCase()] = (p.nome||'').trim();
+    });
+
     // Filtrar dados: só mostrar quem está no cadastro e ativo no período
     let filtrados = dados.filter(d=>{
       const nomeUp = (d.nome||'').trim().toUpperCase();
@@ -18431,11 +18438,12 @@ async function renderAbsenteismo(){
       filtrados = filtrados.filter(d=>pessoasUnd.has((d.nome||'').trim().toUpperCase()));
     }
 
-    // Agrupar por funcionário
+    // Agrupar por funcionário (normaliza nomes salvos em maiúsculas para o nome natural do cadastro)
     const porFunc = {};
     filtrados.forEach(d=>{
-      if(!porFunc[d.nome]) porFunc[d.nome] = {funcao:d.funcao, dias:{}};
-      porFunc[d.nome].dias[d.data] = d.status;
+      const nomeKey = nomeNaturalMap[(d.nome||'').trim().toUpperCase()] || (d.nome||'').trim();
+      if(!porFunc[nomeKey]) porFunc[nomeKey] = {funcao:d.funcao, dias:{}};
+      porFunc[nomeKey].dias[d.data] = d.status;
     });
 
     // Garantir que TODOS os motoristas/ajudantes ativos apareçam,
@@ -18934,9 +18942,9 @@ async function salvarStatusMs(){
       const data = document.getElementById('ms-data')?.value;
       if(!data){ showToast('Informe a data','warning'); return; }
       const mesAno = data.slice(0,7);
-      const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${data}&select=id`) || [];
+      const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${data}&select=id`) || [];
       if(ex.length){
-        await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,fonte:'manual'})});
+        await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status,nome,observacao:obs,fonte:'manual'})});
       } else {
         await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao:_funcao,data,status,mes_ano:mesAno,observacao:obs,fonte:'manual',criado_em:new Date().toISOString()})});
       }
@@ -18974,9 +18982,10 @@ async function marcarPresencaItem(nome, btn){
     const mesAno = hoje.slice(0,7);
     const setor  = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
     const funcao = setor === 'armazem' ? 'conferente' : 'motorista';
-    const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id`) || [];
+    // Busca case-insensitive para encontrar registros salvos em maiúsculas (gerarPresencasAutomaticas)
+    const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id,nome`) || [];
     if(ex.length){
-      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',fonte:'manual'})});
+      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte:'manual'})});
     } else {
       await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
     }
@@ -18996,8 +19005,9 @@ async function marcarPresencaItem(nome, btn){
 
 // ── Render da lista no modal ──────────────────────────────
 async function renderListaModal(pessoas, registrosHoje){
+  // statusMap usa uppercase como chave para match case-insensitive
   const statusMap = {};
-  registrosHoje.forEach(r=>{ statusMap[r.nome] = r.status; });
+  registrosHoje.forEach(r=>{ if(r.nome) statusMap[(r.nome||'').trim().toUpperCase()] = r.status; });
 
   const lista = document.getElementById('abs-lista-funcs');
   if(!lista) return;
@@ -19010,7 +19020,7 @@ async function renderListaModal(pessoas, registrosHoje){
   lista.innerHTML = pessoas.map(p=>{
     const iniciais = _absIniciais(p.nome);
     const cor      = _absAvatarCor(p.nome);
-    const st  = statusMap[p.nome];
+    const st  = statusMap[(p.nome||'').trim().toUpperCase()];
     const sv  = st ? (_absStatusCor[st]||{}) : null;
 
     const badge = sv
