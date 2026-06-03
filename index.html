@@ -7283,6 +7283,32 @@ function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), w
 // Inclui nomes abreviados E completos; syncConfig() adiciona rotas do banco dinamicamente
 const ROTAS_RI       = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 const ROTAS_CONTAGEM = new Set(['PETRO','JUA','CEASA','PETROLINA','JUAZEIRO']);
+
+// ── Helper: retorna a unidade do usuário logado (admin = '' = sem filtro) ──
+async function _getUnidadeUsuario(){
+  const isAdmin = (USUARIO_LOGADO?.perfil === 'admin');
+  if(isAdmin) return '';
+  let und = (USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
+  if(!und && USUARIO_LOGADO?.id){
+    try{
+      const r = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
+      und = (r?.[0]?.unidade || '').trim();
+      if(und){ USUARIO_LOGADO.unidade = und; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
+    }catch(_){}
+  }
+  return und;
+}
+
+// ── Helper: upserta registro de presença (case-insensitive) ──
+async function _absUpsertPresenca(nome, funcao, data, fonte='manual'){
+  const mesAno = data.slice(0,7);
+  const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${data}&select=id,nome`) || [];
+  if(ex.length){
+    await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte})});
+  } else {
+    await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data,status:'presente',mes_ano:mesAno,fonte,criado_em:new Date().toISOString()})});
+  }
+}
 let CARGA_MAP   = {};
 let CARGAS_BASE = new Set();
 let UNIDADES_MAP = {};
@@ -9188,13 +9214,10 @@ function resetarConfig(){
 function getValorRota(rota){
   const r = (rota||'').toUpperCase();
 
-  // Rotas internas conhecidas
-  const rotasRI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
-
   // Buscar no CONFIG (carregado do banco via syncConfig)
   const cfgRota = CONFIG.rotas[r];
   if(cfgRota){
-    const isRI = cfgRota.ri !== undefined ? cfgRota.ri : rotasRI.has(r);
+    const isRI = cfgRota.ri !== undefined ? cfgRota.ri : ROTAS_RI.has(r);
     if(!isRI){
       // Rota externa: motorista NÃO recebe por pedido — recebe por KM
       return { motSem:0, motCom:0, ajud: cfgRota.ajud ?? cfgRota.val_ajudante ?? 0, valorKm: cfgRota.valorKm ?? 0.20, ri:false };
@@ -9209,7 +9232,7 @@ function getValorRota(rota){
   }
 
   // Rota não cadastrada: verificar se é interna pelo nome
-  if(rotasRI.has(r)){
+  if(ROTAS_RI.has(r)){
     return CONFIG.rotas['CEASA'] || { motSem:1.00, motCom:0.50, ajud:0.50, valorKm:0, ri:true };
   }
 
@@ -10373,8 +10396,7 @@ async function confirmarModalKmCarga(){
       } else {
         const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=rota,veiculo&limit=1`).catch(()=>[]) || [];
         const { rota='', veiculo='' } = dem[0]||{};
-        const _RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
-        const rire = _RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
+        const rire = ROTAS_RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
         await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
           id: Date.now().toString(36)+Math.random().toString(36).slice(2),
           carga:Number(carga), motorista_id:myId, motorista_nome:myNome,
@@ -10445,7 +10467,6 @@ async function carregarKmMotorista(){
   const myNome = (USUARIO_LOGADO.nome||'').toUpperCase();
   const mesStr = new Date().toISOString().slice(0,7);
   const cont   = document.getElementById('mot-km-historico');
-  const ROTAS_RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
   const _isRI  = reg => { const r=(reg.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((reg.rota||'').trim().toUpperCase()); };
   const fmtDt  = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
   const fmtDur = (tsI,tsF) => { if(!tsI||!tsF) return null; const h=Math.floor((new Date(tsF)-new Date(tsI))/3600000); const d=Math.floor(h/24); return d>0?`${d}d ${h%24}h`:`${h}h`; };
@@ -11729,7 +11750,7 @@ async function apagarDemanda(id){
           agends[idx].acao    = '';
           agends[idx].status  = agends[idx].motivo_atraso ? 'atrasado'
             : (agends[idx].data < hojeApagar ? 'atrasado' : 'agendado');
-          saveAgendamentos(agends);
+          await saveAgendamentos(agends);
           showToast('✅ Pré-carga apagada — '+demanda.rota+' voltou ao popup','success');
         } else {
           showToast('✅ Pré-carga apagada','success');
@@ -14070,7 +14091,7 @@ async function confirmarSaidaRota(){
         const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
         if(idx >= 0 && arr[idx].status !== 'realizado'){
           Object.assign(arr[idx], payload);
-          saveAgendamentos(arr);
+          await saveAgendamentos(arr);
         }
       }
     }catch(_){}
@@ -14650,7 +14671,6 @@ async function carregarPortalMotorista(){
   const mesNome= mes.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
   const setKpi = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
   const fmtVal = v=>'R$ '+Number(v||0).toFixed(2).replace('.',',');
-  const ROTAS_RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 
   // Labels
   const lblMes = document.getElementById('mot-kpi-mes-label');
@@ -18464,23 +18484,9 @@ async function renderAbsenteismo(){
   const filtMes   = document.getElementById('abs-filtro-mes')?.value||'';
   const filtTipo  = document.getElementById('abs-filtro-tipo')?.value||'';
   const _filtUndEl = document.getElementById('abs-filtro-unidade');
-  // Admin sempre vê tudo — nunca filtra por unidade
-  const _isAdmin = (USUARIO_LOGADO?.perfil === 'admin');
-  console.log('[AbsDist v3.6] perfil:', USUARIO_LOGADO?.perfil, '| isAdmin:', _isAdmin, '| unidade:', USUARIO_LOGADO?.unidade);
-  let undUsuario = _isAdmin ? '' : (USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
-  // Se NÃO for admin e unidade estiver vazia, tenta buscar do banco (com try/catch para não travar a função)
-  if(!_isAdmin && !undUsuario && USUARIO_LOGADO?.id){
-    try{
-      const _fresh = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
-      if(_fresh?.[0]){
-        undUsuario = (_fresh[0].unidade || '').trim();
-        if(undUsuario){ USUARIO_LOGADO.unidade = undUsuario; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
-      }
-    }catch(_){ /* sem unidade — mostra tudo */ }
-  }
-  // Se usuário tem unidade definida e o filtro de UI está vazio, aplica a unidade do usuário automaticamente
+  const undUsuario = await _getUnidadeUsuario();
   if(_filtUndEl && !_filtUndEl.value && undUsuario) _filtUndEl.value = undUsuario;
-  const filtUnd   = _isAdmin ? (document.getElementById('abs-filtro-unidade')?.value||'') : (_filtUndEl?.value || '');
+  const filtUnd   = _filtUndEl?.value || '';
   const filtNome  = document.getElementById('abs-filtro-nome')?.value||'';
 
   try{
@@ -19102,17 +19108,10 @@ async function marcarPresencaItem(nome, btn){
   btn.disabled = true;
   btn.innerHTML = '<span style="opacity:.6">...</span>';
   try{
-    const hoje   = new Date().toISOString().split('T')[0];
-    const mesAno = hoje.slice(0,7);
-    const setor  = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
-    const funcao = setor === 'armazem' ? 'conferente' : 'motorista';
-    // Busca case-insensitive para encontrar registros salvos em maiúsculas (gerarPresencasAutomaticas)
-    const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id,nome`) || [];
-    if(ex.length){
-      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte:'manual'})});
-    } else {
-      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
-    }
+    const hoje  = new Date().toISOString().split('T')[0];
+    const setor = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
+    const funcao= setor === 'armazem' ? 'conferente' : 'motorista';
+    await _absUpsertPresenca(nome, funcao, hoje, 'manual');
     const row   = btn.closest('.abs-item');
     const badge = row?.querySelector('.abs-status-badge');
     const s     = _absStatusCor['presente'];
@@ -19214,13 +19213,7 @@ async function abrirModalLancarAbsFunc(nome, statusInicial){
 async function lancarPresencaRapida(nome){
   try{
     const hoje = new Date().toISOString().split('T')[0];
-    const mesAno = hoje.slice(0,7);
-    const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id`) || [];
-    if(ex.length){
-      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',fonte:'manual'})});
-    } else {
-      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
-    }
+    await _absUpsertPresenca(nome, 'motorista', hoje, 'manual');
     showToast('✅ '+nome+' — Presença lançada!','success');
     await renderAbsenteismo();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -19236,19 +19229,10 @@ async function abrirModalLancarAbs(){
   const busca = document.getElementById('abs-lista-busca');
   if(busca) busca.value = '';
 
-  // Carregar lista de pessoas — sempre busca unidade atualizada do banco
-  let undUsuario = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
-  if(USUARIO_LOGADO?.id){
-    try{
-      const _fresh = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
-      const _undFresh = (_fresh?.[0]?.unidade || '').trim();
-      if(_undFresh){ undUsuario = _undFresh; USUARIO_LOGADO.unidade = _undFresh; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
-    }catch(_){}
-  }
-  console.log('[AbrirModalAbs] undUsuario =', undUsuario);
+  // Carregar lista de pessoas filtrada por unidade
+  const undUsuario = await _getUnidadeUsuario();
   let pessoas = [];
   try{
-    if(!undUsuario){ console.warn('[AbrirModalAbs] unidade vazia — buscando sem filtro'); }
     const urlMots = undUsuario
       ? `motoristas?select=nome&ativo=eq.true&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
       : 'motoristas?select=nome&ativo=eq.true&order=nome.asc';
@@ -21315,18 +21299,14 @@ async function renderAbsArmazem(){
   const hoje        = new Date().toISOString().split('T')[0];
 
   try{
-    // 1. Unidade do usuário — admin sempre vê tudo (sem filtro de unidade)
-    const _isAdminArm = (USUARIO_LOGADO?.perfil === 'admin');
-    const undUsuario = _isAdminArm ? '' : (USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
-    console.log('[AbsArm] perfil:', USUARIO_LOGADO?.perfil, '| undUsuario:', JSON.stringify(undUsuario));
+    // 1. Unidade do usuário
+    const undUsuario = await _getUnidadeUsuario();
 
     // 2. Buscar conferentes filtrando por unidade se disponível
     const urlConfsBase = undUsuario
       ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
       : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&limit=500`;
-    console.log('[AbsArm] URL conferentes:', urlConfsBase);
     const confsDB = await supaFetch(urlConfsBase) || [];
-    console.log('[AbsArm] confsDB.length:', confsDB.length);
 
     // 2. Filtrar desligados fora do período
     // Inclui todos sem data_demissao (independente do flag ativo),
@@ -24597,7 +24577,6 @@ function renderTabelaFinanceiro(){
     pago:    '<span class="fin-status pago">✅ Pago</span>',
     parcial: '<span class="fin-status parcial">🔶 Parcial</span>',
   };
-  const riRotas = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 
   function buildRow(d, i){
     const rank = i===0?'gold':i===1?'silver':i===2?'bronze':'other';
@@ -25565,13 +25544,13 @@ function getAgendamentos(){
   try{ return JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]'); }catch(e){ return []; }
 }
 
-function saveAgendamentos(arr){
+async function saveAgendamentos(arr){
   const antigos = _agendCache !== null ? _agendCache : getAgendamentos();
   const idsNovos = new Set(arr.map(a=>a.id));
   const deletados = antigos.filter(a=>!idsNovos.has(a.id)).map(a=>a.id);
   _agendCache = arr;
-  localStorage.setItem('agendamentos_rotas', JSON.stringify(arr));
-  _syncAgendSupabase(arr, deletados);
+  localStorage.setItem('agendamentos_rotas', JSON.stringify(arr)); // cache
+  await _syncAgendSupabase(arr, deletados); // fonte verdadeira
 }
 
 async function _syncAgendSupabase(arr, deletados=[]){
@@ -25709,7 +25688,7 @@ function carregarCalendarioMaio2026(){
     }
   });
 
-  if(added) saveAgendamentos(arr);
+  if(added) await saveAgendamentos(arr);
 }
 
 function abrirModalAgendamento(id){
@@ -25742,7 +25721,7 @@ function abrirModalAgendamento(id){
   modal.style.display='flex';
 }
 
-function salvarAgendamento(){
+async function salvarAgendamento(){
   const id   = document.getElementById('agend-id').value;
   const rota = document.getElementById('agend-rota').value.trim();
   const data = document.getElementById('agend-data').value;
@@ -25756,24 +25735,24 @@ function salvarAgendamento(){
   } else {
     arr.push({id:'agend_'+Date.now(), rota, data, obs, mes_ano, status:'agendado', criado_em:new Date().toISOString()});
   }
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   document.getElementById('modal-agendamento').style.display='none';
   showToast('✅ Agendamento salvo','success');
   renderAgendamentos();
 }
 
-function excluirAgendamento(id){
+async function excluirAgendamento(id){
   if(!confirm('Excluir este agendamento?')) return;
-  saveAgendamentos(getAgendamentos().filter(a=>a.id!==id));
+  await saveAgendamentos(getAgendamentos().filter(a=>a.id!==id));
   showToast('Agendamento excluído','success');
   renderAgendamentos();
 }
 
-function marcarAgendamentoRealizado(id){
+async function marcarAgendamentoRealizado(id){
   const arr = getAgendamentos();
   const idx = arr.findIndex(a=>a.id===id);
   if(idx>=0){ arr[idx].status = arr[idx].status==='realizado' ? 'agendado' : 'realizado'; }
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   renderAgendamentos();
 }
 
@@ -26094,14 +26073,14 @@ async function renderAgendamentos(){
     modal.style.display = 'flex';
   }
 
-  window._salvarMotivoPendente = function(id, motivo){
+  window._salvarMotivoPendente = async function(id, motivo){
     var arr  = getAgendamentos();
     var idx  = arr.findIndex(function(a){ return a.id===id; });
     if(idx>=0){
       arr[idx].motivo_atraso = motivo;
       arr[idx].motivo_label  = LABELS_POP[motivo]||motivo;
       arr[idx].status        = 'atrasado';
-      saveAgendamentos(arr);
+      await saveAgendamentos(arr);
     }
     _idxAtual++;
     mostrarItem();
@@ -26135,12 +26114,12 @@ async function renderAgendamentos(){
 })();
 
 // ── Reabrir agendamento (resetar lancado:true) ────────────────────────────
-function reabrirAgendamento(id){
+async function reabrirAgendamento(id){
   var arr = getAgendamentos(), idx = arr.findIndex(function(a){return a.id===id;});
   if(idx<0){ showToast('Agendamento não encontrado','warning'); return; }
   arr[idx].lancado = false;
   arr[idx].status  = arr[idx].motivo_atraso ? 'atrasado' : 'agendado';
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   showToast('🔄 Rota reaberta — aparece novamente no popup da Expedição','success');
   renderAgendamentos();
 }
@@ -26156,7 +26135,7 @@ function toggleMotivoAgend(id){
 // IDs cujo motivo está sendo editado no popup — evita delete prematuro no banco
 const _editandoMotivo = new Set();
 
-function salvarMotivoAgend(id, motivo){
+async function salvarMotivoAgend(id, motivo){
   _editandoMotivo.delete(id); // limpa flag de edição após salvar
   var LABELS={comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento'};
   var arr = getAgendamentos(), idx = arr.findIndex(function(a){return a.id===id;});
@@ -26172,7 +26151,7 @@ function salvarMotivoAgend(id, motivo){
     if(arr[idx].status==='atrasado') arr[idx].status='agendado';
     showToast('✅ Motivo removido','success');
   }
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   renderAgendamentos();
 }
 
@@ -26183,7 +26162,7 @@ function limparMotivoAtraso(id){
 }
 
 // ══ POPUP UNIFICADO — ROTAS DA SEMANA (EXPEDIÇÃO) ═══════════════════════
-function abrirPopupRotasExpedicao(){
+async function abrirPopupRotasExpedicao(){
   // Não exibir para Expedição Operador — apenas gestores/admins
   if((USUARIO_LOGADO?.perfil||'') === 'operador') return;
 
@@ -26227,7 +26206,7 @@ function abrirPopupRotasExpedicao(){
       mudou = true;
     }
   });
-  if(mudou) saveAgendamentos(agends);
+  if(mudou) await saveAgendamentos(agends);
 
   // Rotas a exibir: fechamento nos próximos 7 dias (= saída em 2 dias úteis a partir de cada dia)
   // Calcula a data de fechamento de cada agendamento e filtra pelos próximos 7 dias
@@ -26388,7 +26367,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
         arr[idx].acao    = 'lancar';
         // Mantém status='atrasado' se tinha motivo; senão mantém o status atual
         // (NÃO marca realizado — só marca realizado quando o motorista confirma saída)
-        saveAgendamentos(arr);
+        await saveAgendamentos(arr);
       }
       showToast('✅ Pré-carga criada: '+rota,'success');
       carregarDemandas();
@@ -26404,7 +26383,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
     arr[idx].motivo_atraso = motivo;
     arr[idx].motivo_label  = LABELS[motivo];
     arr[idx].status        = 'atrasado'; // fica visível no popup E no card da demanda
-    saveAgendamentos(arr);
+    await saveAgendamentos(arr);
     showToast('📌 Motivo registrado — '+rota+' permanece pendente','warning');
     abrirPopupRotasExpedicao(); // re-renderiza o popup (card fica visível com motivo)
     renderDemandasCards();      // atualiza badge nos cards da expedição
@@ -26416,7 +26395,7 @@ async function confirmarOutroUnificado(id, rota, data){
   if(!texto){ showToast('Descreva o motivo','warning'); return; }
   _editandoMotivo.delete(id);
   const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
-  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; saveAgendamentos(arr); }
+  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; await saveAgendamentos(arr); }
   showToast('📌 Motivo registrado — rota permanece pendente','warning');
   abrirPopupRotasExpedicao();
   renderDemandasCards();
@@ -26470,7 +26449,7 @@ async function acaoRotaDia(id, rota, acao){
     // Marcar agendamento como realizado automaticamente
     const arr = getAgendamentos();
     const idx = arr.findIndex(a=>a.id===id);
-    if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao=acao; saveAgendamentos(arr); }
+    if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao=acao; await saveAgendamentos(arr); }
     carregarDemandas();
   }
 
@@ -26722,7 +26701,7 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
         motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO',
         usuario_id:USUARIO_LOGADO?.id||null
       })});
-      if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao='lancar'; saveAgendamentos(arr); }
+      if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao='lancar'; await saveAgendamentos(arr); }
       if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#059669;font-weight:700">✅ Pré-carga criada — aparecerá na Expedição</div>';
       showToast('✅ Pré-carga criada para '+rota,'success');
       renderDemandasCards();
@@ -26735,7 +26714,7 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
       return;
     }
     const labMap = {comercial:'Comercial',veiculo:'Sem Veículo',motorista:'Sem Motorista',atraso_rota:'Atraso de Rota'};
-    if(idx>=0){ _editandoMotivo.delete(id); arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; saveAgendamentos(arr); }
+    if(idx>=0){ _editandoMotivo.delete(id); arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; await saveAgendamentos(arr); }
     if(motivo==='comercial'){
       // Verificar se já existe no Supabase antes de criar
       supaFetch(`comercial_rotas?rota=eq.${encodeURIComponent(rota)}&data=eq.${data}&status=neq.resolvido&select=id&limit=1`)
@@ -26756,12 +26735,12 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
   }
 }
 
-function confirmarOutro(id, rota, data){
+async function confirmarOutro(id, rota, data){
   const obs = document.getElementById('inp-outro-'+id)?.value.trim();
   if(!obs){ showToast('Descreva o motivo','warning'); return; }
   const arr = getAgendamentos();
   const idx = arr.findIndex(a=>a.id===id);
-  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=obs; saveAgendamentos(arr); }
+  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=obs; await saveAgendamentos(arr); }
   const card = document.getElementById('popup-rota-'+id);
   if(card) card.innerHTML=`<div style="text-align:center;padding:12px;color:#b91c1c;font-weight:700">⏳ Atraso registrado — ${obs}</div>`;
   showToast('⏳ Atraso registrado: '+rota,'warning');
@@ -27107,19 +27086,8 @@ async function salvarAbastecimento(){
     })});
     showToast('✅ Abastecimento registrado!','success');
     // Auto-registrar presença do conferente no dia de saída
-    if(confNome && dataSaida){
-      try{
-        const mesAno = dataSaida.slice(0,7);
-        const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(confNome)}&data=eq.${dataSaida}&select=id`) || [];
-        if(!ex.length){
-          await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
-            nome: confNome, funcao:'conferente', data: dataSaida,
-            status:'presente', mes_ano: mesAno, fonte:'abastecimento',
-            criado_em: new Date().toISOString()
-          })});
-        }
-      }catch(_){}
-    }
+    if(confNome && dataSaida)
+      _absUpsertPresenca(confNome, 'conferente', dataSaida, 'abastecimento').catch(()=>{});
     // Fechar popup e limpar campos
     document.getElementById('modal-abastecimento').style.display = 'none';
     document.getElementById('abast-carga').value='';
