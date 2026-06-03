@@ -5051,6 +5051,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#f59e0b;text-transform:uppercase">🩺 Atestado</th>
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase">😴 Folga</th>
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#be185d;text-transform:uppercase">🏖 Férias</th>
+            <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#2563eb;text-transform:uppercase">📦 Conf.</th>
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:var(--red);text-transform:uppercase">% Abs.</th>
           </tr>
         </thead>
@@ -21289,7 +21290,7 @@ async function renderAbsArmazem(){
   const container = document.getElementById('abs-arm-tbody');
   if(!container){ console.warn('[AbsArm] container abs-arm-tbody não encontrado'); return; }
   // Mostrar loading imediato
-  container.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">
+  container.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">
     <div style="display:inline-block;width:28px;height:28px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:10px"></div>
     Carregando dados do armazém...
   </td></tr>`;
@@ -21350,19 +21351,42 @@ async function renderAbsArmazem(){
     });
     console.log('[AbsArm] confsAtivos:', confsAtivos.length, '| confsFiltrados:', confsFiltrados.length, '| filtTipo:', JSON.stringify(filtTipoArm), 'filtNome:', JSON.stringify(filtNomeArm));
 
-    // 3. Buscar lançamentos de absenteísmo do período para essas pessoas
+    // 3. Buscar lançamentos de absenteísmo + abastecimento + conferidos do período
     const nomesSet = new Set(confsFiltrados.map(cf=>cf.nome.trim().toUpperCase()));
     let url = 'absenteismo?select=nome,data,status&order=nome.asc,data.asc';
     if(filtMes) url += `&mes_ano=eq.${filtMes}`;
-    const lancamentos = await supaFetch(url) || [];
+    const periodoInicio = filtMes ? filtMes+'-01' : new Date().toISOString().slice(0,7)+'-01';
+    const periodoFim    = filtMes ? filtMes+'-31' : new Date().toISOString().slice(0,7)+'-31';
+    const [lancamentos, abastRows, confPedRows] = await Promise.all([
+      supaFetch(url).catch(()=>[]),
+      supaFetch(`abastecimento_loja?data_saida=gte.${periodoInicio}&data_saida=lte.${periodoFim}&select=conferente_nome,data_saida`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?conferido_em=gte.${periodoInicio}T00:00:00&conferido_em=lte.${periodoFim}T23:59:59&status=eq.ok&select=conferente_nome,pedido`).catch(()=>[]),
+    ]);
 
     // 4. Agrupar lançamentos por nome (normalizado)
     const lancMap = {};
-    lancamentos.forEach(d=>{
+    (lancamentos||[]).forEach(d=>{
       const nomeUp = (d.nome||'').trim().toUpperCase();
-      if(!nomesSet.has(nomeUp)) return; // ignorar quem não é do armazém
+      if(!nomesSet.has(nomeUp)) return;
       if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
       lancMap[nomeUp][d.data] = d.status;
+    });
+
+    // 4b. Mesclar abastecimento como "presente" (fonte: abastecimento) quando não há registro
+    (abastRows||[]).forEach(r=>{
+      if(!r.data_saida||!r.conferente_nome) return;
+      const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
+      if(!nomesSet.has(nomeUp)) return;
+      if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
+      if(!lancMap[nomeUp][r.data_saida]) lancMap[nomeUp][r.data_saida] = 'presente';
+    });
+
+    // 4c. Contar pedidos conferidos por pessoa no período
+    const pedConf = {};
+    (confPedRows||[]).forEach(r=>{
+      if(!r.conferente_nome) return;
+      const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
+      pedConf[nomeUp] = (pedConf[nomeUp]||0) + 1;
     });
 
     // 5. Montar porFunc com TODOS os cadastrados (mesmo sem lançamento)
@@ -21374,6 +21398,7 @@ async function renderAbsArmazem(){
         perfil: cf.perfil,
         ativo: cf.ativo,
         data_demissao: cf.data_demissao||null,
+        pedidosConf: pedConf[nomeUp]||0,
         dias: lancMap[nomeUp] || {}
       };
     });
@@ -21409,7 +21434,7 @@ async function renderAbsArmazem(){
 
     console.log('[AbsArm] funcs.length:', funcs.length);
     if(!funcs.length){
-      container.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">
+      container.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">
         Nenhum funcionário encontrado.<br>
         <small style="color:#9ca3af">confsDB: ${confsDB.length} | ativos: ${confsAtivos.length} | filtros: tipo="${filtTipoArm}" nome="${filtNomeArm}" mês="${filtMes}" | unidade="${undUsuario}"</small>
       </td></tr>`;
@@ -21464,11 +21489,16 @@ async function renderAbsArmazem(){
             : `<span style="font-weight:800;color:var(--text-muted)">0</span>`}
         </td>
         <td style="padding:10px 14px;text-align:center">
+          ${d.pedidosConf>0
+            ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:.78rem;font-weight:800;padding:2px 9px;border-radius:5px">${d.pedidosConf}</span>`
+            : `<span style="font-weight:800;color:var(--text-muted)">—</span>`}
+        </td>
+        <td style="padding:10px 14px;text-align:center">
           <span style="background:${corF}22;color:${corF};font-size:.78rem;font-weight:800;padding:2px 8px;border-radius:5px">${pctF}%</span>
         </td>
       </tr>`;
     }).join('');
-  }catch(e){ console.error('[AbsArm] ERRO:', e); container.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:20px;color:#ef4444">Erro: ${e.message}</td></tr>`; }
+  }catch(e){ console.error('[AbsArm] ERRO:', e); container.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:20px;color:#ef4444">Erro: ${e.message}</td></tr>`; }
 }
 
 async function abrirModalLancarAbsArm(){
@@ -27076,6 +27106,20 @@ async function salvarAbastecimento(){
       confirmado_em: null
     })});
     showToast('✅ Abastecimento registrado!','success');
+    // Auto-registrar presença do conferente no dia de saída
+    if(confNome && dataSaida){
+      try{
+        const mesAno = dataSaida.slice(0,7);
+        const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(confNome)}&data=eq.${dataSaida}&select=id`) || [];
+        if(!ex.length){
+          await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
+            nome: confNome, funcao:'conferente', data: dataSaida,
+            status:'presente', mes_ano: mesAno, fonte:'abastecimento',
+            criado_em: new Date().toISOString()
+          })});
+        }
+      }catch(_){}
+    }
     // Fechar popup e limpar campos
     document.getElementById('modal-abastecimento').style.display = 'none';
     document.getElementById('abast-carga').value='';
