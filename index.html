@@ -7629,7 +7629,7 @@ async function carregarCSV(file) {
 async function onFileSelected(event) {
   const file = event.target.files[0];
   if(!file) return;
-  document.getElementById('loading').classList.remove('hidden');
+  _loadingShow('Processando planilha...');
   try {
     const ext = file.name.split('.').pop().toLowerCase();
     const novosRecords = ext === 'csv' ? await carregarCSV(file) : await carregarPlanilha(file);
@@ -7661,7 +7661,7 @@ async function onFileSelected(event) {
     try{
       await pushBaseData(candidateBASE);
     }catch(e){
-      document.getElementById('loading').classList.add('hidden');
+      _loadingHide();
       try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
         mensagem:'Falha ao importar planilha (onFileSelected): '+e.message,
         contexto:JSON.stringify({arquivo:file.name, registros:recordsNovos.length}),
@@ -7727,7 +7727,7 @@ async function onFileSelected(event) {
     showToast('Erro ao ler planilha: ' + err.message, 'error');
     console.error(err);
   } finally {
-    document.getElementById('loading').classList.add('hidden');
+    _loadingHide();
     event.target.value = '';
   }
 }
@@ -24974,13 +24974,8 @@ const _ut=document.getElementById('update-time'); if(_ut) _ut.textContent='Atual
 // ── SISTEMA ANTI-TELA BRANCA ────────────────────────────
 // Wrapper que adiciona timeout, retry e loading para qualquer função async
 async function safeLoad(fn, label, timeoutMs=15000){
-  const loadEl = document.getElementById('loading');
-  const loadTxt = document.getElementById('loading-text');
+  _loadingShow(label||'Carregando...');
   try{
-    if(loadEl) loadEl.classList.remove('hidden');
-    if(loadTxt) loadTxt.textContent = label||'Carregando...';
-
-    // Timeout automático
     const resultado = await Promise.race([
       fn(),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error('Timeout: '+timeoutMs/1000+'s')), timeoutMs))
@@ -24988,9 +24983,7 @@ async function safeLoad(fn, label, timeoutMs=15000){
     return resultado;
   }catch(e){
     console.error('[safeLoad] '+label+': ', e);
-    // Mostrar opção de retry se demorar demais
-    showToast('⚠️ '+( label||'Aba')+'  lenta ou sem resposta. Tentando novamente...','warning');
-    // Uma tentativa automática
+    showToast('⚠️ '+(label||'Aba')+' lenta ou sem resposta. Tentando novamente...','warning');
     try{
       const resultado2 = await Promise.race([
         fn(),
@@ -25002,16 +24995,41 @@ async function safeLoad(fn, label, timeoutMs=15000){
       throw e2;
     }
   }finally{
-    if(loadEl) loadEl.classList.add('hidden');
+    _loadingHide();
   }
 }
 
-// supaFetch com timeout e retry automático
+// ── Loading global: referência contada + debounce ────────────────────────────
+// Qualquer supaFetch ativa o relógio; só some quando TODAS as chamadas terminam.
+// Debounce de 150ms evita piscar em chamadas rápidas.
+let _loadingCount = 0;
+let _loadingTimer = null;
+function _loadingShow(txt){
+  _loadingCount++;
+  const loadTxt = document.getElementById('loading-text');
+  if(loadTxt && txt) loadTxt.textContent = txt;
+  if(!_loadingTimer){
+    _loadingTimer = setTimeout(()=>{
+      if(_loadingCount > 0) document.getElementById('loading')?.classList.remove('hidden');
+    }, 150);
+  }
+}
+function _loadingHide(){
+  _loadingCount = Math.max(0, _loadingCount - 1);
+  if(_loadingCount === 0){
+    clearTimeout(_loadingTimer); _loadingTimer = null;
+    document.getElementById('loading')?.classList.add('hidden');
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+// supaFetch com timeout, retry automático e loading global
 const _supaFetchOrig = supaFetch;
 async function supaFetch(path, opts={}, _tentativa=1){
   const TIMEOUT_MS = 35000; // 35s — aguenta cold start do Supabase
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), TIMEOUT_MS);
+  _loadingShow();
   try{
     const res = await fetch(SUPA_URL+'/rest/v1/'+path, {
       signal: controller.signal,
@@ -25035,6 +25053,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
       if(_tentativa < 2){
         console.warn('[supaFetch] Timeout na tentativa 1 — retentando:', path.slice(0,80));
         clearTimeout(tid);
+        _loadingHide(); // decrementa antes do retry (o retry vai incrementar de novo)
         return supaFetch(path, opts, 2);
       }
       throw new Error('Timeout na query: '+path.slice(0,120));
@@ -25042,6 +25061,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
     throw e;
   }finally{
     clearTimeout(tid);
+    _loadingHide();
   }
 }
 // ────────────────────────────────────────────────────────
