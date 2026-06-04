@@ -6985,67 +6985,64 @@ async function syncBaseData(mesFiltro){
 }
 
 async function pushBaseData(records){
-  // ── Estratégia: upsert POR MÊS ──────────────────────────────────────
-  // Deleta apenas os meses presentes no upload atual.
-  // Outros meses ficam intactos no banco (histórico preservado).
-  try{
-    if(!records || records.length === 0){
-      showToast('⚠️ Nenhum registro para enviar.','warning');
-      return;
-    }
-
-    // 1. Identificar meses no upload atual
-    const mesesNoUpload = [...new Set(records.map(r=>r.mes_ano).filter(Boolean))];
-    showToast(`📤 Salvando ${records.length} registros (${mesesNoUpload.join(', ')})...`,'warning');
-
-    // 2. Deletar apenas esses meses no banco (preserva outros meses)
-    for(const mes of mesesNoUpload){
-      try{
-        await supaFetch(`base_data?mes_ano=eq.${mes}`,{
-          method:'DELETE', prefer:'return=minimal'
-        });
-      }catch(delErr){
-        console.warn(`DELETE base_data mes_ano=${mes} erro:`, delErr.message);
-      }
-    }
-
-    // 3. Upsert em lotes de 300 (com data_pedido e peso_kg)
-    const LOTE = 300;
-    let enviados = 0;
-    for(let i=0; i<records.length; i+=LOTE){
-      const lote = records.slice(i,i+LOTE).map(r=>({
-        carga:      Number(r.carga)||null,
-        pedido:     Number(r.pedido)||null,
-        valor:      Number(r.valor)||0,
-        peso_kg:    Number(r.peso_kg||r.peso||0)||0,
-        und:        r.und||'',
-        rire:       r.rire||'',
-        rota:       r.rota||'',
-        placa:      r.placa||'',
-        condutor:   (r.condutor||'').toUpperCase().trim(),
-        ajudante:   r.ajudante||'',
-        ocorrencia: Number(r.ocorrencia)||0,
-        mes_ano:    r.mes_ano||'',
-        semana_mes: Number(r.semana_mes)||0,
-        data_pedido:r.data_pedido||null
-      })).filter(r=>r.carga!=null&&r.pedido!=null);
-
-      await supaFetch('base_data?on_conflict=carga,pedido',{
-        method:'POST',
-        prefer:'resolution=merge-duplicates,return=minimal',
-        body: JSON.stringify(lote)
-      });
-      enviados += lote.length;
-      showToast(`📤 Salvando... ${enviados}/${records.length}`,'warning');
-    }
-
-    showToast(`✅ ${records.length} registros salvos! Meses: ${mesesNoUpload.join(', ')}. Disponível em qualquer dispositivo.`,'success');
-    // Atualizar painel de status do banco
-    if(typeof renderBancoStatus==='function') renderBancoStatus();
-  }catch(e){
-    console.warn('pushBaseData erro:', e.message);
-    showToast('⚠️ Erro ao salvar planilha: '+e.message,'warning');
+  // ── Fonte oficial: Supabase. Erros propagam para o chamador. ─────────
+  // Estratégia: DELETE meses presentes no upload → INSERT full batch.
+  if(!records || records.length === 0){
+    showToast('⚠️ Nenhum registro para enviar.','warning');
+    return;
   }
+
+  const mesesNoUpload = [...new Set(records.map(r=>r.mes_ano).filter(Boolean))];
+  showToast(`📤 Gravando ${records.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
+
+  // 1. Deletar meses que serão re-inseridos (preserva histórico de outros meses)
+  for(const mes of mesesNoUpload){
+    await supaFetch(`base_data?mes_ano=eq.${mes}`,{
+      method:'DELETE', prefer:'return=minimal'
+    }); // erro aqui sobe para o chamador
+  }
+
+  // 2. Inserir em lotes
+  const LOTE = 300;
+  let enviados = 0;
+  for(let i=0; i<records.length; i+=LOTE){
+    const lote = records.slice(i,i+LOTE).map(r=>({
+      carga:      Number(r.carga)||null,
+      pedido:     Number(r.pedido)||null,
+      valor:      Number(r.valor)||0,
+      peso_kg:    Number(r.peso_kg||r.peso||0)||0,
+      und:        r.und||'',
+      rire:       r.rire||'',
+      rota:       r.rota||'',
+      placa:      r.placa||'',
+      condutor:   (r.condutor||'').toUpperCase().trim(),
+      ajudante:   r.ajudante||'',
+      ocorrencia: Number(r.ocorrencia)||0,
+      mes_ano:    r.mes_ano||'',
+      semana_mes: Number(r.semana_mes)||0,
+      data_pedido:r.data_pedido||null
+    })).filter(r=>r.carga!=null&&r.pedido!=null);
+
+    await supaFetch('base_data?on_conflict=carga,pedido',{
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify(lote)
+    });
+    enviados += lote.length;
+    showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
+  }
+
+  // 3. Validar: contagem do primeiro mês deve ser > 0
+  const esperadosPorMes = records.filter(r=>r.mes_ano===mesesNoUpload[0]).length;
+  if(esperadosPorMes > 0 && mesesNoUpload[0]){
+    const verificacao = await supaFetch(`base_data?mes_ano=eq.${mesesNoUpload[0]}&select=pedido`).catch(()=>[]);
+    if(!verificacao || verificacao.length === 0){
+      throw new Error(`Validação pós-gravação falhou: 0 registros encontrados no banco para ${mesesNoUpload[0]}`);
+    }
+  }
+
+  showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
+  if(typeof renderBancoStatus==='function') renderBancoStatus();
 }
 
 async function normalizarCondutorBanco(){
@@ -7637,73 +7634,60 @@ async function onFileSelected(event) {
     const ext = file.name.split('.').pop().toLowerCase();
     const novosRecords = ext === 'csv' ? await carregarCSV(file) : await carregarPlanilha(file);
 
-    // ACUMULAR: manter dados anteriores + adicionar novos sem duplicar
-    // Chave: carga+pedido (só para registros com ambos válidos)
+    // ── Montar array candidato (sem modificar BASE_DATA ainda) ──────────
     const chavesExistentes = new Set(
-      BASE_DATA
-        .filter(r => r.carga && r.pedido)
-        .map(r => Number(r.carga)+'_'+Number(r.pedido))
+      BASE_DATA.filter(r=>r.carga&&r.pedido).map(r=>Number(r.carga)+'_'+Number(r.pedido))
     );
-    const recordsNovos = novosRecords.filter(r => {
-      if(!r.carga || !r.pedido) return true;
+    const recordsNovos = novosRecords.filter(r=>{
+      if(!r.carga||!r.pedido) return true;
       return !chavesExistentes.has(Number(r.carga)+'_'+Number(r.pedido));
     });
-    BASE_DATA = [...BASE_DATA, ...recordsNovos];
-    window._cargaMapCache = null;
+    const candidateBASE = [...BASE_DATA, ...recordsNovos];
 
-    // Verificar integridade: garantir que und está preenchido nos registros novos
-    BASE_DATA.forEach(r => {
-      if(!r.und) {
-        // Tentar pegar und de outro registro da mesma carga
-        const ref = BASE_DATA.find(x => Number(x.carga)===Number(r.carga) && x.und);
-        if(ref) r.und = ref.und;
-      }
+    // Enriquecer candidato (und, rota, rire) antes de gravar
+    candidateBASE.forEach(r=>{
+      if(!r.und){ const ref=candidateBASE.find(x=>Number(x.carga)===Number(r.carga)&&x.und); if(ref) r.und=ref.und; }
     });
-
-    console.log('Acumulando:', recordsNovos.length, 'novos | Total:', BASE_DATA.length);
-
-    // Enriquecer BASE_DATA: preencher rota/rire/und dos registros sem esses campos (ex: CSV)
     const _lancMapEnrich = {};
     lancamentos.forEach(l=>{ const c=Math.round(Number(l.carga)); if(!_lancMapEnrich[c]) _lancMapEnrich[c]=l; });
-    BASE_DATA.forEach(r=>{
-      const c = Math.round(Number(r.carga));
-      const lanc = _lancMapEnrich[c];
-      if(!lanc) return;
-      if(!r.rota || r.rota.trim()==='') r.rota = lanc.rota || '';
-      if(!r.und  || r.und.trim()==='')  r.und  = lanc.und  || '';
-      r.rire = normRire(r.rire) || (r.rota ? getRireFromRota(r.rota) : '');
+    candidateBASE.forEach(r=>{
+      const c=Math.round(Number(r.carga)); const lanc=_lancMapEnrich[c]; if(!lanc) return;
+      if(!r.rota||r.rota.trim()==='') r.rota=lanc.rota||'';
+      if(!r.und ||r.und.trim()==='')  r.und =lanc.und ||'';
+      r.rire=normRire(r.rire)||(r.rota?getRireFromRota(r.rota):'');
     });
 
-    // Salvar BASE_DATA no localStorage para persistir entre sessões
-    try {
-      localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA));
-    } catch(e) {
-      console.warn('BASE_DATA grande demais para localStorage, usando só em memória');
+    // ── GRAVAR NO SUPABASE PRIMEIRO (fonte oficial) ──────────────────────
+    try{
+      await pushBaseData(candidateBASE);
+    }catch(e){
+      document.getElementById('loading').classList.add('hidden');
+      try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
+        mensagem:'Falha ao importar planilha (onFileSelected): '+e.message,
+        contexto:JSON.stringify({arquivo:file.name, registros:recordsNovos.length}),
+        tipo:'import_base_data', criado_em:new Date().toISOString()
+      })}); }catch(_){}
+      showToast('❌ Falha ao gravar no banco. Importação cancelada — nenhum dado foi persistido.','warning');
+      return;
     }
 
-    // Atualizar CARGA_MAP acumulando também
-    if(window._newCargaMap) {
-      Object.entries(window._newCargaMap).forEach(([c,v]) => {
-        if(!CARGA_MAP[c]) CARGA_MAP[c] = v;
-        else {
-          // Merge pedidos únicos
-          const pedidosUnicos = [...new Set([...CARGA_MAP[c].pedidos, ...v.pedidos])];
-          CARGA_MAP[c] = {...v, pedidos: pedidosUnicos, qtd_pedidos: pedidosUnicos.length};
-        }
+    // ── Supabase confirmou: agora atualiza cache local ───────────────────
+    BASE_DATA = candidateBASE;
+    window._cargaMapCache = null;
+    try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
+
+    // Atualizar CARGA_MAP
+    if(window._newCargaMap){
+      Object.entries(window._newCargaMap).forEach(([c,v])=>{
+        if(!CARGA_MAP[c]) CARGA_MAP[c]=v;
+        else{ const pu=[...new Set([...CARGA_MAP[c].pedidos,...v.pedidos])]; CARGA_MAP[c]={...v,pedidos:pu,qtd_pedidos:pu.length}; }
       });
     }
+    try{ localStorage.setItem('carga_map_prod', JSON.stringify(CARGA_MAP)); }catch(_){}
 
-    // Salvar CARGA_MAP no localStorage
-    try {
-      localStorage.setItem('carga_map_prod', JSON.stringify(CARGA_MAP));
-    } catch(e) {}
-
-    // Atualizar sets de cargas base
-    if(window.CARGAS_BASE_DYNAMIC) {
-      window.CARGAS_BASE_DYNAMIC.forEach(c => CARGAS_BASE.add(c));
-    }
-    MOTORISTAS  = window.MOTORISTAS_DYNAMIC  || MOTORISTAS;
-    ROTAS       = window.ROTAS_DYNAMIC       || ROTAS;
+    if(window.CARGAS_BASE_DYNAMIC) window.CARGAS_BASE_DYNAMIC.forEach(c=>CARGAS_BASE.add(c));
+    MOTORISTAS = window.MOTORISTAS_DYNAMIC || MOTORISTAS;
+    ROTAS      = window.ROTAS_DYNAMIC      || ROTAS;
 
     const totalNovos = recordsNovos.length;
     const totalAcum  = BASE_DATA.length;
@@ -7736,9 +7720,7 @@ async function onFileSelected(event) {
     populateSelects();
     renderMot(); renderVeic(); renderLanc(); renderPendentes(); detectarConflitos(); renderGeral();
 
-    // Enviar planilha para o servidor (compartilhar com a equipe)
-    await pushBaseData(BASE_DATA);
-
+    // pushBaseData já foi chamado antes da atualização local (fonte oficial: Supabase)
     const msg = '✅ +' + totalNovos.toLocaleString('pt-BR') + ' novos | Total: ' + totalAcum.toLocaleString('pt-BR') + (resolvidos > 0 ? ' | ' + resolvidos + ' pendente(s) resolvido(s)!' : '');
     showToast(msg, 'success');
   } catch(err) {
@@ -14237,17 +14219,11 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
         // Rota: pré-carga usa a cidade principal; padrão usa a rota do primeiro registro
         const rotaDaPlan    = novos._rotaPrincipal || novos[0].rota || '';
 
-        // Salvar no BASE_DATA local (sem duplicar)
-        const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
-        const filtrados  = novos.filter(r=>!chaveExist.has(Number(r.carga)+'_'+String(r.pedido)));
-        BASE_DATA = [...BASE_DATA, ...filtrados];
-        window._cargaMapCache = null;
-        try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
-
-        // Enviar ao Supabase em lote — usa upsert (on_conflict) para tolerar
-        // re-importações sem duplicar; envia novos (não filtrados) para garantir
-        // sincronização mesmo quando os dados já estão no cache local.
+        // ── GRAVAR NO SUPABASE PRIMEIRO (fonte oficial) ──────────────────
+        // Base_data local só é atualizada após confirmação do banco.
+        // Qualquer falha aborta a importação sem persistir nada localmente.
         try{
+          showToast(`📤 Gravando ${novos.length} pedidos no banco...`,'warning');
           const LOTE = 200;
           for(let i=0;i<novos.length;i+=LOTE){
             await supaFetch('base_data?on_conflict=carga,pedido',{
@@ -14261,9 +14237,28 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
               })))
             });
           }
+          // Validar: confirmar que os dados chegaram ao banco
+          const gravados = await supaFetch(`base_data?carga=eq.${cargaNum}&select=pedido`).catch(()=>[]);
+          if((!gravados||gravados.length===0) && novos.length>0){
+            throw new Error(`Validação pós-gravação falhou: 0 registros encontrados para carga ${cargaNum}`);
+          }
+          // ✅ Banco confirmou — atualizar cache local
+          const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
+          const filtrados  = novos.filter(r=>!chaveExist.has(Number(r.carga)+'_'+String(r.pedido)));
+          if(filtrados.length){
+            BASE_DATA = [...BASE_DATA, ...filtrados];
+            window._cargaMapCache = null;
+            try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
+          }
         }catch(e){
-          console.warn('Erro ao salvar base_data:', e.message);
-          showToast('⚠️ Planilha salva localmente mas não sincronizou com a nuvem. Use "Reenviar p/ nuvem".','warning');
+          try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
+            mensagem:'Falha ao importar planilha (expedição): '+e.message,
+            contexto:JSON.stringify({carga:cargaNum, pedidos:novos.length}),
+            tipo:'import_base_data', criado_em:new Date().toISOString()
+          })}); }catch(_){}
+          showToast('❌ Falha ao gravar no banco. Importação cancelada — nenhum dado foi persistido.','warning');
+          resolve(null);
+          return;
         }
 
         // Atualizar demanda com totais reais — NÃO avança status nem arm_status
@@ -14400,12 +14395,19 @@ function fecharModalVincular(){
   if(carga){ carga.value=''; carga.style.borderColor='#e2e8f0'; }
 }
 async function reenviarCargaSupabase(carga){
-  const registros = BASE_DATA.filter(r=>Number(r.carga)===Number(carga));
+  // Tenta BASE_DATA em memória; se vazio, tenta cache localStorage (migração)
+  let registros = BASE_DATA.filter(r=>Number(r.carga)===Number(carga));
   if(!registros.length){
-    showToast(`⚠️ Nenhum dado local para carga ${carga}. Importe a planilha primeiro.`,'warning');
+    try{
+      const cached = JSON.parse(localStorage.getItem('base_data_prod')||'[]');
+      registros = cached.filter(r=>Number(r.carga)===Number(carga));
+    }catch(_){}
+  }
+  if(!registros.length){
+    showToast(`⚠️ Carga ${carga} não encontrada no cache local. Re-importe a planilha.`,'warning');
     return;
   }
-  showToast(`📤 Enviando ${registros.length} pedidos da carga ${carga} para a nuvem...`,'warning');
+  showToast(`📤 Reenviando ${registros.length} pedidos da carga ${carga} para o banco...`,'warning');
   try{
     const LOTE = 200;
     for(let i=0;i<registros.length;i+=LOTE){
@@ -14420,7 +14422,16 @@ async function reenviarCargaSupabase(carga){
         })))
       });
     }
-    showToast(`✅ Carga ${carga}: ${registros.length} pedidos sincronizados com a nuvem!`,'success');
+    // Confirmar que chegou ao banco
+    const check = await supaFetch(`base_data?carga=eq.${carga}&select=pedido`).catch(()=>[]);
+    if(!check||check.length===0) throw new Error('Validação: banco continua vazio após envio');
+    // Limpar localStorage desta carga (banco é fonte oficial agora)
+    try{
+      const raw = JSON.parse(localStorage.getItem('base_data_prod')||'[]');
+      const sem = raw.filter(r=>Number(r.carga)!==Number(carga));
+      if(sem.length < raw.length) localStorage.setItem('base_data_prod',JSON.stringify(sem));
+    }catch(_){}
+    showToast(`✅ Carga ${carga}: ${registros.length} pedidos gravados no banco!`,'success');
   }catch(e){
     showToast(`⚠️ Erro ao reenviar carga ${carga}: ${e.message}`,'warning');
   }
@@ -15224,29 +15235,12 @@ async function sincronizarTudo(){
     await syncLancamentos();
     migrarRotasSupabase(); // normaliza PETRO→Petrolina, JUA→Juazeiro (roda 1x)
 
-    // 3. BASE_DATA do Supabase → local
+    // 3. BASE_DATA do Supabase → local (fonte oficial; localStorage não é fallback)
     const temBase = await syncBaseData();
     if(!temBase){
-      try{
-        const saved = localStorage.getItem('base_data_prod');
-        if(saved){
-          const raw = JSON.parse(saved);
-          // Deduplicar ao carregar do localStorage
-          const _sk = new Set();
-          BASE_DATA = raw.filter(r=>{
-            if(!r.carga||!r.pedido) return true;
-            const k=Number(r.carga)+'_'+Number(r.pedido);
-            if(_sk.has(k)) return false;
-            _sk.add(k); return true;
-          });
-          window._cargaMapCache = null;
-        }
-      }catch(e){}
-    }
-
-    // 4. Se temos BASE_DATA local mas servidor está vazio, sobe
-    if(!temBase && BASE_DATA.length > 0){
-      await pushBaseData(BASE_DATA);
+      BASE_DATA = [];
+      window._cargaMapCache = null;
+      showToast('⚠️ Nenhum dado de planilha encontrado no banco. Carregue uma planilha.','warning');
     }
 
     // 5. Salvar lançamentos locais que ainda não estão no servidor
@@ -24936,42 +24930,9 @@ popularMotoristas();
 
 const now=new Date();
 const _ut=document.getElementById('update-time'); if(_ut) _ut.textContent='Atualizado: '+now.toLocaleDateString('pt-BR')+' '+now.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-// Recuperar BASE_DATA salvo anteriormente
-(function(){
-  try {
-    const savedBase = localStorage.getItem('base_data_prod');
-    if(savedBase) {
-      const parsed = JSON.parse(savedBase);
-      // Deduplicar ao recuperar
-      const chaves = new Set();
-      BASE_DATA = parsed.filter(r => {
-        if(!r.carga || !r.pedido) return true;
-        const k = Number(r.carga)+'_'+Number(r.pedido);
-        if(chaves.has(k)) return false;
-        chaves.add(k);
-        return true;
-      });
-      window._cargaMapCache = null;
-      // Garantir und preenchido
-      BASE_DATA.forEach(r => {
-        if(!r.und) {
-          const ref = BASE_DATA.find(x => Number(x.carga)===Number(r.carga) && x.und);
-          if(ref) r.und = ref.und;
-        }
-      });
-      // Enriquecer rota/rire/und com dados dos lançamentos
-      const _lmRec = {};
-      lancamentos.forEach(l=>{ const c=Math.round(Number(l.carga)); if(!_lmRec[c]) _lmRec[c]=l; });
-      BASE_DATA.forEach(r=>{
-        const c=Math.round(Number(r.carga)); const lanc=_lmRec[c]; if(!lanc) return;
-        if(!r.rota||r.rota.trim()==='') r.rota=lanc.rota||'';
-        if(!r.und ||r.und.trim()==='')  r.und =lanc.und ||'';
-        r.rire = normRire(r.rire) || (r.rota?getRireFromRota(r.rota):'');
-      });
-      console.log('BASE_DATA recuperado e deduplicado:', BASE_DATA.length, 'registros');
-    }
-  } catch(e) { console.error('Erro ao recuperar BASE_DATA:', e); }
-})();
+// BASE_DATA é carregado do Supabase em iniciarApp() via syncBaseData().
+// O localStorage serve apenas como cache write-through — não é carregado aqui.
+// (bloco de carga antigo removido — fonte oficial = Supabase)
 
 // Recuperar CARGA_MAP salvo
 (function(){
