@@ -5655,6 +5655,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">📦 Nº Carga <span style="color:#9ca3af;font-size:.68rem">(deixe vazio para definir depois)</span></label>
           <input type="number" id="edit-dem-carga" placeholder="Ex: 13052" style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px 13px;font-size:.9rem;outline:none;color:#111;box-sizing:border-box"/>
         </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">🎯 KM Esperado <span style="color:#9ca3af;font-size:.68rem">(opcional)</span></label>
+          <input type="number" id="edit-dem-km-esperado" placeholder="Ex: 850" min="0" style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px 13px;font-size:.9rem;outline:none;color:#111;box-sizing:border-box"/>
+        </div>
         <div style="grid-column:1/-1">
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">🤝 Ajudante <span style="color:#9ca3af;font-size:.68rem">(opcional)</span></label>
           <select id="edit-dem-ajudante" style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px 13px;font-size:.9rem;outline:none;color:#111;background:#fff;cursor:pointer;box-sizing:border-box">
@@ -12503,6 +12507,9 @@ async function abrirEditarDemanda(id){
   // Carga: pré-preencher se existir
   const cargaInput = document.getElementById('edit-dem-carga');
   if(cargaInput) cargaInput.value = d.carga||'';
+  const kmEspInput = document.getElementById('edit-dem-km-esperado');
+  if(kmEspInput) kmEspInput.value = d.km_esperado||'';
+
 
   // Popular motoristas
   const selMot = document.getElementById('edit-dem-motorista');
@@ -12565,6 +12572,7 @@ async function salvarEditarDemanda(){
   const data  = document.getElementById('edit-dem-data').value;
   const cargaVal = document.getElementById('edit-dem-carga')?.value?.trim()||'';
   const ajudVal  = document.getElementById('edit-dem-ajudante')?.value?.trim()||'';
+  const kmEspVal = parseInt(document.getElementById('edit-dem-km-esperado')?.value||'')||null;
   const msg   = document.getElementById('edit-dem-msg');
 
   const patch = {};
@@ -12611,6 +12619,12 @@ async function salvarEditarDemanda(){
 
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
     if(d) Object.assign(d, patch);
+
+    // ── Salvar KM Esperado separado (coluna opcional — ignora se não existir) ──
+    if(kmEspVal!==null){
+      try{ await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({km_esperado:kmEspVal})}); if(d) d.km_esperado=kmEspVal; }
+      catch(eKm){ /* coluna km_esperado ainda não existe no banco — ignorar */ }
+    }
 
     // ── Reabrir para Armazém/Fiscal se carga ou rota mudou ───────────────
     // Se o número da carga ou a rota mudaram e o status já estava além do
@@ -13963,7 +13977,8 @@ function abrirModalSaida(demandaId){
   if(info && dem) info.textContent = `${dem.rota||'—'} • Carga ${dem.carga} • ${dem.motorista||'—'}`;
   document.getElementById('saida-data').value = new Date().toISOString().split('T')[0];
   document.getElementById('saida-km-inicial').value = '';
-  document.getElementById('saida-km-esperado').value = '';
+  // Pré-preencher KM Esperado salvo na pré-carga (edição da expedição)
+  document.getElementById('saida-km-esperado').value = dem?.km_esperado||'';
   // Admin vê campo KM Esperado
   const espRow = document.getElementById('saida-km-esperado-row');
   if(espRow) espRow.style.display = '';
@@ -19122,10 +19137,17 @@ async function marcarPresencaItem(nome, btn){
   btn.disabled = true;
   btn.innerHTML = '<span style="opacity:.6">...</span>';
   try{
-    const hoje  = new Date().toISOString().split('T')[0];
-    const setor = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
-    const funcao= setor === 'armazem' ? 'conferente' : 'motorista';
-    await _absUpsertPresenca(nome, funcao, hoje, 'manual');
+    const hoje   = new Date().toISOString().split('T')[0];
+    const mesAno = hoje.slice(0,7);
+    const setor  = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
+    const funcao = setor === 'armazem' ? 'conferente' : 'motorista';
+    // Busca case-insensitive para encontrar registros salvos em maiúsculas (gerarPresencasAutomaticas)
+    const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id,nome`) || [];
+    if(ex.length){
+      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte:'manual'})});
+    } else {
+      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
+    }
     const row   = btn.closest('.abs-item');
     const badge = row?.querySelector('.abs-status-badge');
     const s     = _absStatusCor['presente'];
@@ -22162,7 +22184,7 @@ async function carregarPortalConferente(){
       supaFetch(`conferencia_pedidos?conferente_id=eq.${myId}&conferido_em=gte.${mesInicio}&status=eq.ok&select=pedido,carga`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=in.(pendente,separacao,carregamento,aguardando_nf)&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id&order=carga.desc`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.(pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id&order=carga.desc`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status`).catch(()=>[]),
       supaFetch(`configuracoes?chave=eq.config_bonus&select=valor`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.false&select=*&order=criado_em.desc`).catch(()=>[])
@@ -22254,7 +22276,7 @@ async function carregarPortalConferente(){
 
     const atribsAtivas = (atribsMinha||[]).filter(a=>{
       const dem = demMap[a.carga];
-      return dem && ['pendente','separacao','carregamento','aguardando_nf'].includes(dem.status);
+      return dem && ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(dem.status);
     });
 
     if(!atribsAtivas.length){
@@ -26195,7 +26217,7 @@ function toggleMotivoAgend(id){
 // IDs cujo motivo está sendo editado no popup — evita delete prematuro no banco
 const _editandoMotivo = new Set();
 
-async function salvarMotivoAgend(id, motivo){
+function salvarMotivoAgend(id, motivo){
   _editandoMotivo.delete(id); // limpa flag de edição após salvar
   var LABELS={comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento'};
   var arr = getAgendamentos(), idx = arr.findIndex(function(a){return a.id===id;});
@@ -26774,7 +26796,7 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
       return;
     }
     const labMap = {comercial:'Comercial',veiculo:'Sem Veículo',motorista:'Sem Motorista',atraso_rota:'Atraso de Rota'};
-    if(idx>=0){ _editandoMotivo.delete(id); arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; await saveAgendamentos(arr); }
+    if(idx>=0){ _editandoMotivo.delete(id); arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; saveAgendamentos(arr); }
     if(motivo==='comercial'){
       // Verificar se já existe no Supabase antes de criar
       supaFetch(`comercial_rotas?rota=eq.${encodeURIComponent(rota)}&data=eq.${data}&status=neq.resolvido&select=id&limit=1`)
