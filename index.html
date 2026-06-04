@@ -6708,44 +6708,41 @@ let USUARIO_LOGADO = null;
 
 async function login(email, senha){
   try{
-    // 1. Tabela usuarios (admins, operadores)
-    const data = await supaFetch(`usuarios?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&ativo=eq.true&select=*`);
-    if(data && data.length > 0){
-      USUARIO_LOGADO = data[0];
+    const e2 = encodeURIComponent(email), s2 = encodeURIComponent(senha);
+    // Buscar em todas as tabelas em paralelo (1 round-trip ao invés de 4-5)
+    const [users, mots, ajs, confs] = await Promise.all([
+      supaFetch(`usuarios?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`motoristas?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`ajudantes?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`conferentes?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+    ]);
+
+    if(users?.length){
+      USUARIO_LOGADO = users[0];
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
-    // 2. Tabela motoristas
-    const mot = await supaFetch(`motoristas?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&ativo=eq.true&select=*`);
-    if(mot && mot.length > 0){
-      USUARIO_LOGADO = {...mot[0], perfil:'motorista'};
+    if(mots?.length){
+      USUARIO_LOGADO = {...mots[0], perfil:'motorista'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
-    // 3. Tabela ajudantes
-    const aj = await supaFetch(`ajudantes?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&ativo=eq.true&select=*`);
-    if(aj && aj.length > 0){
-      if(aj.length > 1){
-        // Emails duplicados — logar aviso mas usar o primeiro
-        console.warn('ATENÇÃO: múltiplos ajudantes com o mesmo email:', email);
-      }
-      USUARIO_LOGADO = {...aj[0], perfil:'ajudante'};
+    if(ajs?.length){
+      if(ajs.length > 1) console.warn('ATENÇÃO: múltiplos ajudantes com o mesmo email:', email);
+      USUARIO_LOGADO = {...ajs[0], perfil:'ajudante'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
-    // 3b. Fallback: ajudante aprovado mas ativo pode estar null/false (bug de cadastro)
-    const ajAprv = await supaFetch(`ajudantes?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&status=eq.aprovado&select=*`);
-    if(ajAprv && ajAprv.length > 0){
-      // Corrigir ativo automaticamente
+    if(confs?.length){
+      USUARIO_LOGADO = {...confs[0], perfil: confs[0].perfil||'conferente'};
+      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+      return USUARIO_LOGADO;
+    }
+    // Fallback: ajudante aprovado mas ativo=false (bug de cadastro)
+    const ajAprv = await supaFetch(`ajudantes?email=eq.${e2}&senha=eq.${s2}&status=eq.aprovado&select=*`);
+    if(ajAprv?.length){
       await supaFetch(`ajudantes?id=eq.${ajAprv[0].id}`,{method:'PATCH',body:JSON.stringify({ativo:true})}).catch(()=>{});
       USUARIO_LOGADO = {...ajAprv[0], ativo:true, perfil:'ajudante'};
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
-    }
-    // 4. Tabela conferentes (adm_armazem e conferente)
-    const conf = await supaFetch(`conferentes?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&select=*&ativo=eq.true`);
-    if(conf && conf.length > 0){
-      USUARIO_LOGADO = {...conf[0], perfil: conf[0].perfil||'conferente'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
@@ -9399,40 +9396,37 @@ async function calcularPagamentos(){
       return;
     }
 
-    // Para cada ajudante, calcular entregas do mês
-    const linhas = await Promise.all(ajudantes.map(async aj=>{
-      // Buscar lançamentos do ajudante no mês
-      const lancs = await supaFetch(
-        `lancamentos?ajudante=eq.${encodeURIComponent(aj.nome)}&select=carga,rota,ts`
-      );
+    // Buscar TODOS os lançamentos dos ajudantes no mês em 1 query (evita N+1)
+    const mesInicio = `${mes}-01T00:00:00Z`;
+    const mesFim    = `${mes}-31T23:59:59Z`;
+    const nomesAj   = ajudantes.map(a=>encodeURIComponent(a.nome)).join(',');
+    const [todosLancs, todosPags] = await Promise.all([
+      supaFetch(`lancamentos?ajudante=in.(${nomesAj})&ts=gte.${mesInicio}&ts=lte.${mesFim}&select=carga,rota,ajudante`).catch(()=>[]),
+      supaFetch(`pagamentos?mes_ano=eq.${mes}&select=*`).catch(()=>[]),
+    ]);
 
-      // Filtrar pelo mês
-      const lancsMes = (lancs||[]).filter(l=>{
-        const d = new Date(l.ts);
-        const lMes = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
-        return lMes === mes;
-      });
+    // Batch: buscar base_data de todas as cargas únicas de uma vez
+    const cargasUnicas = [...new Set((todosLancs||[]).map(l=>l.carga).filter(Boolean))];
+    let baseByC = {};
+    if(cargasUnicas.length){
+      const baseAll = await supaFetch(`base_data?carga=in.(${cargasUnicas.join(',')})&ocorrencia=neq.1&select=carga,pedido`).catch(()=>[]);
+      (baseAll||[]).forEach(r=>{ if(!baseByC[r.carga]) baseByC[r.carga]=[]; baseByC[r.carga].push(r); });
+    }
+    const pagsByAj = {};
+    (todosPags||[]).forEach(p=>{ pagsByAj[p.ajudante_id] = p; });
 
-      // Contar pedidos e calcular valor
+    // Montar linhas sem mais queries
+    const linhas = ajudantes.map(aj=>{
+      const lancsMes = (todosLancs||[]).filter(l=>(l.ajudante||'').toUpperCase()===(aj.nome||'').toUpperCase());
       let totalEnt=0, totalVal=0;
       for(const l of lancsMes){
-        const base = await supaFetch(
-          `base_data?carga=eq.${l.carga}&ocorrencia=neq.1&select=pedido`
-        );
-        const qtd = (base||[]).length;
+        const qtd = (baseByC[l.carga]||[]).length;
         const cfg = getValorRota(l.rota);
         totalEnt += qtd;
         totalVal += (cfg.ajud||0) * qtd;
       }
-
-      // Verificar se já tem pagamento registrado
-      const pagExist = await supaFetch(
-        `pagamentos?ajudante_id=eq.${aj.id}&mes_ano=eq.${mes}&select=*`
-      );
-      const pag = pagExist&&pagExist[0] ? pagExist[0] : null;
-
-      return {aj, totalEnt, totalVal, pag, lancsMes};
-    }));
+      return {aj, totalEnt, totalVal, pag: pagsByAj[aj.id]||null, lancsMes};
+    });
 
     if(linhas.length===0){
       tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:20px;color:#9ca3af">Nenhum dado</td></tr>';
@@ -22987,7 +22981,7 @@ async function carregarPaginaFiscal(){
       supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor&order=carga.asc,pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
-      supaFetch('atribuicoes_fiscal?select=*').catch(()=>[]),
+      supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([])
     ]);
     // Montar Set de alertas ativos: "carga_pedido"
