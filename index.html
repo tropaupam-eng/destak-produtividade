@@ -7030,10 +7030,9 @@ async function pushBaseData(records){
         data_pedido:r.data_pedido||null
       })).filter(r=>r.carga!=null&&r.pedido!=null);
 
-      await supaFetch('base_data',{
+      await supaFetch('base_data?on_conflict=carga,pedido',{
         method:'POST',
         prefer:'resolution=merge-duplicates,return=minimal',
-        upsert: true,
         body: JSON.stringify(lote)
       });
       enviados += lote.length;
@@ -13815,6 +13814,7 @@ function renderDemandasCards(){
             onclick="abrirVincularCarga('${d.id}')">
             ${temCarga?'🔗 '+d.carga:'📦 Vincular Pré-Carga'}
           </button>
+          ${temCarga?`<button onclick="reenviarCargaSupabase(${d.carga})" title="Reenviar dados desta carga para a nuvem (use se o conferente não ver os pedidos)" style="background:var(--bg-card2);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem;cursor:pointer">☁️</button>`:''}
           ${(()=>{
             const pipeline = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
             const pipeLabels = {pendente:'⏳ Pend.',separacao:'📦 Sep.',carregamento:'🚛 Carg.',aguardando_nf:'📋 NF',aguardando_manifesto:'🛡️ Man.',pronto_viagem:'✅ Pronto',saiu:'🚛 Saiu',fim_viagem:'🏁 Fim',concluido:'✅ Ok'};
@@ -14244,14 +14244,16 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
         window._cargaMapCache = null;
         try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
 
-        // Enviar ao Supabase em lote
+        // Enviar ao Supabase em lote — usa upsert (on_conflict) para tolerar
+        // re-importações sem duplicar; envia novos (não filtrados) para garantir
+        // sincronização mesmo quando os dados já estão no cache local.
         try{
           const LOTE = 200;
-          for(let i=0;i<filtrados.length;i+=LOTE){
-            await supaFetch('base_data',{
+          for(let i=0;i<novos.length;i+=LOTE){
+            await supaFetch('base_data?on_conflict=carga,pedido',{
               method:'POST',
-              prefer:'return=minimal',
-              body: JSON.stringify(filtrados.slice(i,i+LOTE).map(r=>({
+              prefer:'resolution=ignore-duplicates,return=minimal',
+              body: JSON.stringify(novos.slice(i,i+LOTE).map(r=>({
                 carga:r.carga, pedido:r.pedido, valor:r.valor,
                 und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
                 ajudante:r.ajudante, ocorrencia:r.ocorrencia,
@@ -14259,7 +14261,10 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
               })))
             });
           }
-        }catch(e){ console.warn('Erro ao salvar base_data:', e.message); }
+        }catch(e){
+          console.warn('Erro ao salvar base_data:', e.message);
+          showToast('⚠️ Planilha salva localmente mas não sincronizou com a nuvem. Use "Reenviar p/ nuvem".','warning');
+        }
 
         // Atualizar demanda com totais reais — NÃO avança status nem arm_status
         // O fluxo correto é: Armazém confere → arm_status=carregado_ok → status=aguardando_nf → Fiscal
@@ -14394,6 +14399,33 @@ function fecharModalVincular(){
   const carga = document.getElementById('vc-carga');
   if(carga){ carga.value=''; carga.style.borderColor='#e2e8f0'; }
 }
+async function reenviarCargaSupabase(carga){
+  const registros = BASE_DATA.filter(r=>Number(r.carga)===Number(carga));
+  if(!registros.length){
+    showToast(`⚠️ Nenhum dado local para carga ${carga}. Importe a planilha primeiro.`,'warning');
+    return;
+  }
+  showToast(`📤 Enviando ${registros.length} pedidos da carga ${carga} para a nuvem...`,'warning');
+  try{
+    const LOTE = 200;
+    for(let i=0;i<registros.length;i+=LOTE){
+      await supaFetch('base_data?on_conflict=carga,pedido',{
+        method:'POST',
+        prefer:'resolution=ignore-duplicates,return=minimal',
+        body:JSON.stringify(registros.slice(i,i+LOTE).map(r=>({
+          carga:r.carga, pedido:r.pedido, valor:r.valor,
+          und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
+          ajudante:r.ajudante, ocorrencia:r.ocorrencia,
+          mes_ano:r.mes_ano, semana_mes:r.semana_mes, rire:r.rire
+        })))
+      });
+    }
+    showToast(`✅ Carga ${carga}: ${registros.length} pedidos sincronizados com a nuvem!`,'success');
+  }catch(e){
+    showToast(`⚠️ Erro ao reenviar carga ${carga}: ${e.message}`,'warning');
+  }
+}
+
 function abrirVincularCarga(demandaId){
   const modal = document.getElementById('modal-vincular-carga');
   if(!modal) return;
