@@ -25338,6 +25338,55 @@ async function iniciarApp(){
     showToast('⚠️ Carregue a planilha para ver os dados','warning');
   }
 
+  // ── Auto-sync: sobe cargas do localStorage que ainda não chegaram ao banco ──
+  // Roda silenciosamente em background; não bloqueia o restante do startup.
+  (async function _autoSyncLocalParaSupabase(){
+    try{
+      const cached = JSON.parse(localStorage.getItem('base_data_prod')||'[]');
+      if(!cached.length){ localStorage.removeItem('base_data_prod'); return; }
+
+      // Cargas que estão no cache local mas não no BASE_DATA (Supabase)
+      const cargasNoSupabase = new Set(BASE_DATA.map(r=>Number(r.carga)));
+      const cargasSoLocal = [...new Set(
+        cached.map(r=>Number(r.carga)).filter(c=>c && !cargasNoSupabase.has(c))
+      )];
+
+      if(!cargasSoLocal.length){
+        localStorage.removeItem('base_data_prod'); // cache limpo, banco tem tudo
+        return;
+      }
+
+      console.log('[auto-sync] Cargas no cache local não encontradas no banco:', cargasSoLocal);
+      showToast(`🔄 Sincronizando ${cargasSoLocal.length} carga(s) pendente(s) com o banco...`,'warning');
+
+      const LOTE = 200;
+      for(const carga of cargasSoLocal){
+        const registros = cached.filter(r=>Number(r.carga)===carga);
+        for(let i=0;i<registros.length;i+=LOTE){
+          await supaFetch('base_data?on_conflict=carga,pedido',{
+            method:'POST',
+            prefer:'resolution=ignore-duplicates,return=minimal',
+            body:JSON.stringify(registros.slice(i,i+LOTE).map(r=>({
+              carga:r.carga, pedido:r.pedido, valor:r.valor,
+              und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
+              ajudante:r.ajudante, ocorrencia:r.ocorrencia,
+              mes_ano:r.mes_ano, semana_mes:r.semana_mes, rire:r.rire
+            })))
+          });
+        }
+      }
+
+      // Recarregar BASE_DATA do banco para incluir os novos registros
+      await syncBaseData();
+      localStorage.removeItem('base_data_prod');
+      window._cargaMapCache = null;
+      populateSelects(); renderMot(); renderVeic(); renderGeral(); renderLanc();
+      showToast(`✅ ${cargasSoLocal.length} carga(s) sincronizada(s) automaticamente com o banco!`,'success');
+    }catch(e){
+      console.warn('[auto-sync] Falha ao subir cache local:', e.message);
+    }
+  })();
+
   // Enriquecer BASE_DATA com dados dos lançamentos
   const _lmE={};
   lancamentos.forEach(l=>{ const cx=Math.round(Number(l.carga)); if(!_lmE[cx]) _lmE[cx]=l; });
