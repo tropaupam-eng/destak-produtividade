@@ -2574,7 +2574,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Registro de cargas internas e externas não vinculadas à Expedição</p>
     </div>
     <div style="display:flex;gap:8px">
-      <button onclick="renderLanc()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+      <button onclick="syncLancamentos().then(renderLanc)" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
     </div>
   </div>
 
@@ -5051,6 +5051,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#f59e0b;text-transform:uppercase">🩺 Atestado</th>
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase">😴 Folga</th>
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#be185d;text-transform:uppercase">🏖 Férias</th>
+            <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:#2563eb;text-transform:uppercase">📦 Conf.</th>
             <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:var(--red);text-transform:uppercase">% Abs.</th>
           </tr>
         </thead>
@@ -5966,13 +5967,34 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div class="tv-card">
           <div class="tv-card-title">📊 OTIF — Mês Atual</div>
           <div id="tv-otif-content">
-            <div style="text-align:center;padding:6px 0 4px">
-              <div id="tv-otif-pct" style="font-size:2.6rem;font-weight:900;color:#34d399;line-height:1;font-variant-numeric:tabular-nums">—</div>
-              <div style="font-size:.6rem;color:rgba(255,255,255,.35);margin-top:2px;letter-spacing:.5px">ON TIME IN FULL</div>
+            <!-- Anel + Stats -->
+            <div style="display:flex;align-items:center;gap:14px;padding:2px 0 8px">
+              <!-- Anel de progresso -->
+              <div id="tv-otif-ring" style="width:92px;height:92px;border-radius:50%;background:conic-gradient(#34d399 0deg,rgba(255,255,255,.07) 0deg);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .8s ease">
+                <div style="width:66px;height:66px;border-radius:50%;background:#06091a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px">
+                  <span id="tv-otif-pct" style="font-size:1.35rem;font-weight:900;color:#34d399;line-height:1;font-variant-numeric:tabular-nums">—</span>
+                  <span style="font-size:.42rem;color:rgba(255,255,255,.28);letter-spacing:.6px;text-transform:uppercase">OTIF</span>
+                </div>
+              </div>
+              <!-- Stats laterais -->
+              <div style="flex:1;display:flex;flex-direction:column;gap:7px">
+                <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:6px">
+                  <span style="font-size:.62rem;color:rgba(255,255,255,.38)">✅ No Prazo</span>
+                  <span id="tv-otif-ok-num" style="font-size:.95rem;font-weight:900;color:#34d399;font-variant-numeric:tabular-nums">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:6px">
+                  <span style="font-size:.62rem;color:rgba(255,255,255,.38)">🚛 Cargas</span>
+                  <span id="tv-otif-total-num" style="font-size:.95rem;font-weight:900;color:rgba(255,255,255,.75);font-variant-numeric:tabular-nums">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="font-size:.62rem;color:rgba(255,255,255,.38)">⚠️ Em Risco</span>
+                  <span id="tv-otif-risco-num" style="font-size:.95rem;font-weight:900;color:#f59e0b;font-variant-numeric:tabular-nums">0</span>
+                </div>
+                <div class="tv-therm-bar" style="margin-top:2px"><div id="tv-otif-fill" class="tv-therm-fill" style="width:0%;background:#34d399"></div></div>
+              </div>
             </div>
-            <div class="tv-therm-bar" style="margin:8px 0 4px"><div id="tv-otif-fill" class="tv-therm-fill" style="width:0%;background:#34d399"></div></div>
-            <div style="font-size:.67rem;color:rgba(255,255,255,.4)" id="tv-otif-sub">—</div>
-            <div id="tv-prazo-list" style="margin-top:8px"></div>
+            <!-- Cargas críticas -->
+            <div id="tv-prazo-list" style="margin-top:2px"></div>
           </div>
         </div>
         <!-- Frota -->
@@ -6690,44 +6712,41 @@ let USUARIO_LOGADO = null;
 
 async function login(email, senha){
   try{
-    // 1. Tabela usuarios (admins, operadores)
-    const data = await supaFetch(`usuarios?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&ativo=eq.true&select=*`);
-    if(data && data.length > 0){
-      USUARIO_LOGADO = data[0];
+    const e2 = encodeURIComponent(email), s2 = encodeURIComponent(senha);
+    // Buscar em todas as tabelas em paralelo (1 round-trip ao invés de 4-5)
+    const [users, mots, ajs, confs] = await Promise.all([
+      supaFetch(`usuarios?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`motoristas?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`ajudantes?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`conferentes?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+    ]);
+
+    if(users?.length){
+      USUARIO_LOGADO = users[0];
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
-    // 2. Tabela motoristas
-    const mot = await supaFetch(`motoristas?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&ativo=eq.true&select=*`);
-    if(mot && mot.length > 0){
-      USUARIO_LOGADO = {...mot[0], perfil:'motorista'};
+    if(mots?.length){
+      USUARIO_LOGADO = {...mots[0], perfil:'motorista'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
-    // 3. Tabela ajudantes
-    const aj = await supaFetch(`ajudantes?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&ativo=eq.true&select=*`);
-    if(aj && aj.length > 0){
-      if(aj.length > 1){
-        // Emails duplicados — logar aviso mas usar o primeiro
-        console.warn('ATENÇÃO: múltiplos ajudantes com o mesmo email:', email);
-      }
-      USUARIO_LOGADO = {...aj[0], perfil:'ajudante'};
+    if(ajs?.length){
+      if(ajs.length > 1) console.warn('ATENÇÃO: múltiplos ajudantes com o mesmo email:', email);
+      USUARIO_LOGADO = {...ajs[0], perfil:'ajudante'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
-    // 3b. Fallback: ajudante aprovado mas ativo pode estar null/false (bug de cadastro)
-    const ajAprv = await supaFetch(`ajudantes?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&status=eq.aprovado&select=*`);
-    if(ajAprv && ajAprv.length > 0){
-      // Corrigir ativo automaticamente
+    if(confs?.length){
+      USUARIO_LOGADO = {...confs[0], perfil: confs[0].perfil||'conferente'};
+      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+      return USUARIO_LOGADO;
+    }
+    // Fallback: ajudante aprovado mas ativo=false (bug de cadastro)
+    const ajAprv = await supaFetch(`ajudantes?email=eq.${e2}&senha=eq.${s2}&status=eq.aprovado&select=*`);
+    if(ajAprv?.length){
       await supaFetch(`ajudantes?id=eq.${ajAprv[0].id}`,{method:'PATCH',body:JSON.stringify({ativo:true})}).catch(()=>{});
       USUARIO_LOGADO = {...ajAprv[0], ativo:true, perfil:'ajudante'};
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
-    }
-    // 4. Tabela conferentes (adm_armazem e conferente)
-    const conf = await supaFetch(`conferentes?email=eq.${encodeURIComponent(email)}&senha=eq.${encodeURIComponent(senha)}&select=*&ativo=eq.true`);
-    if(conf && conf.length > 0){
-      USUARIO_LOGADO = {...conf[0], perfil: conf[0].perfil||'conferente'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
@@ -6970,68 +6989,64 @@ async function syncBaseData(mesFiltro){
 }
 
 async function pushBaseData(records){
-  // ── Estratégia: upsert POR MÊS ──────────────────────────────────────
-  // Deleta apenas os meses presentes no upload atual.
-  // Outros meses ficam intactos no banco (histórico preservado).
-  try{
-    if(!records || records.length === 0){
-      showToast('⚠️ Nenhum registro para enviar.','warning');
-      return;
-    }
-
-    // 1. Identificar meses no upload atual
-    const mesesNoUpload = [...new Set(records.map(r=>r.mes_ano).filter(Boolean))];
-    showToast(`📤 Salvando ${records.length} registros (${mesesNoUpload.join(', ')})...`,'warning');
-
-    // 2. Deletar apenas esses meses no banco (preserva outros meses)
-    for(const mes of mesesNoUpload){
-      try{
-        await supaFetch(`base_data?mes_ano=eq.${mes}`,{
-          method:'DELETE', prefer:'return=minimal'
-        });
-      }catch(delErr){
-        console.warn(`DELETE base_data mes_ano=${mes} erro:`, delErr.message);
-      }
-    }
-
-    // 3. Upsert em lotes de 300 (com data_pedido e peso_kg)
-    const LOTE = 300;
-    let enviados = 0;
-    for(let i=0; i<records.length; i+=LOTE){
-      const lote = records.slice(i,i+LOTE).map(r=>({
-        carga:      Number(r.carga)||null,
-        pedido:     Number(r.pedido)||null,
-        valor:      Number(r.valor)||0,
-        peso_kg:    Number(r.peso_kg||r.peso||0)||0,
-        und:        r.und||'',
-        rire:       r.rire||'',
-        rota:       r.rota||'',
-        placa:      r.placa||'',
-        condutor:   (r.condutor||'').toUpperCase().trim(),
-        ajudante:   r.ajudante||'',
-        ocorrencia: Number(r.ocorrencia)||0,
-        mes_ano:    r.mes_ano||'',
-        semana_mes: Number(r.semana_mes)||0,
-        data_pedido:r.data_pedido||null
-      })).filter(r=>r.carga!=null&&r.pedido!=null);
-
-      await supaFetch('base_data',{
-        method:'POST',
-        prefer:'resolution=merge-duplicates,return=minimal',
-        upsert: true,
-        body: JSON.stringify(lote)
-      });
-      enviados += lote.length;
-      showToast(`📤 Salvando... ${enviados}/${records.length}`,'warning');
-    }
-
-    showToast(`✅ ${records.length} registros salvos! Meses: ${mesesNoUpload.join(', ')}. Disponível em qualquer dispositivo.`,'success');
-    // Atualizar painel de status do banco
-    if(typeof renderBancoStatus==='function') renderBancoStatus();
-  }catch(e){
-    console.warn('pushBaseData erro:', e.message);
-    showToast('⚠️ Erro ao salvar planilha: '+e.message,'warning');
+  // ── Fonte oficial: Supabase. Erros propagam para o chamador. ─────────
+  // Estratégia: DELETE meses presentes no upload → INSERT full batch.
+  if(!records || records.length === 0){
+    showToast('⚠️ Nenhum registro para enviar.','warning');
+    return;
   }
+
+  const mesesNoUpload = [...new Set(records.map(r=>r.mes_ano).filter(Boolean))];
+  showToast(`📤 Gravando ${records.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
+
+  // 1. Deletar meses que serão re-inseridos (preserva histórico de outros meses)
+  for(const mes of mesesNoUpload){
+    await supaFetch(`base_data?mes_ano=eq.${mes}`,{
+      method:'DELETE', prefer:'return=minimal'
+    }); // erro aqui sobe para o chamador
+  }
+
+  // 2. Inserir em lotes
+  const LOTE = 300;
+  let enviados = 0;
+  for(let i=0; i<records.length; i+=LOTE){
+    const lote = records.slice(i,i+LOTE).map(r=>({
+      carga:      Number(r.carga)||null,
+      pedido:     Number(r.pedido)||null,
+      valor:      Number(r.valor)||0,
+      peso_kg:    Number(r.peso_kg||r.peso||0)||0,
+      und:        r.und||'',
+      rire:       r.rire||'',
+      rota:       r.rota||'',
+      placa:      r.placa||'',
+      condutor:   (r.condutor||'').toUpperCase().trim(),
+      ajudante:   r.ajudante||'',
+      ocorrencia: Number(r.ocorrencia)||0,
+      mes_ano:    r.mes_ano||'',
+      semana_mes: Number(r.semana_mes)||0,
+      data_pedido:r.data_pedido||null
+    })).filter(r=>r.carga!=null&&r.pedido!=null);
+
+    await supaFetch('base_data?on_conflict=carga,pedido',{
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify(lote)
+    });
+    enviados += lote.length;
+    showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
+  }
+
+  // 3. Validar: contagem do primeiro mês deve ser > 0
+  const esperadosPorMes = records.filter(r=>r.mes_ano===mesesNoUpload[0]).length;
+  if(esperadosPorMes > 0 && mesesNoUpload[0]){
+    const verificacao = await supaFetch(`base_data?mes_ano=eq.${mesesNoUpload[0]}&select=pedido`).catch(()=>[]);
+    if(!verificacao || verificacao.length === 0){
+      throw new Error(`Validação pós-gravação falhou: 0 registros encontrados no banco para ${mesesNoUpload[0]}`);
+    }
+  }
+
+  showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
+  if(typeof renderBancoStatus==='function') renderBancoStatus();
 }
 
 async function normalizarCondutorBanco(){
@@ -7265,6 +7280,32 @@ function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), w
 // Inclui nomes abreviados E completos; syncConfig() adiciona rotas do banco dinamicamente
 const ROTAS_RI       = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 const ROTAS_CONTAGEM = new Set(['PETRO','JUA','CEASA','PETROLINA','JUAZEIRO']);
+
+// ── Helper: retorna a unidade do usuário logado (admin = '' = sem filtro) ──
+async function _getUnidadeUsuario(){
+  const isAdmin = (USUARIO_LOGADO?.perfil === 'admin');
+  if(isAdmin) return '';
+  let und = (USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
+  if(!und && USUARIO_LOGADO?.id){
+    try{
+      const r = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
+      und = (r?.[0]?.unidade || '').trim();
+      if(und){ USUARIO_LOGADO.unidade = und; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
+    }catch(_){}
+  }
+  return und;
+}
+
+// ── Helper: upserta registro de presença (case-insensitive) ──
+async function _absUpsertPresenca(nome, funcao, data, fonte='manual'){
+  const mesAno = data.slice(0,7);
+  const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${data}&select=id,nome`) || [];
+  if(ex.length){
+    await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte})});
+  } else {
+    await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data,status:'presente',mes_ano:mesAno,fonte,criado_em:new Date().toISOString()})});
+  }
+}
 let CARGA_MAP   = {};
 let CARGAS_BASE = new Set();
 let UNIDADES_MAP = {};
@@ -7592,78 +7633,65 @@ async function carregarCSV(file) {
 async function onFileSelected(event) {
   const file = event.target.files[0];
   if(!file) return;
-  document.getElementById('loading').classList.remove('hidden');
+  _loadingShow('Processando planilha...');
   try {
     const ext = file.name.split('.').pop().toLowerCase();
     const novosRecords = ext === 'csv' ? await carregarCSV(file) : await carregarPlanilha(file);
 
-    // ACUMULAR: manter dados anteriores + adicionar novos sem duplicar
-    // Chave: carga+pedido (só para registros com ambos válidos)
+    // ── Montar array candidato (sem modificar BASE_DATA ainda) ──────────
     const chavesExistentes = new Set(
-      BASE_DATA
-        .filter(r => r.carga && r.pedido)
-        .map(r => Number(r.carga)+'_'+Number(r.pedido))
+      BASE_DATA.filter(r=>r.carga&&r.pedido).map(r=>Number(r.carga)+'_'+Number(r.pedido))
     );
-    const recordsNovos = novosRecords.filter(r => {
-      if(!r.carga || !r.pedido) return true;
+    const recordsNovos = novosRecords.filter(r=>{
+      if(!r.carga||!r.pedido) return true;
       return !chavesExistentes.has(Number(r.carga)+'_'+Number(r.pedido));
     });
-    BASE_DATA = [...BASE_DATA, ...recordsNovos];
-    window._cargaMapCache = null;
+    const candidateBASE = [...BASE_DATA, ...recordsNovos];
 
-    // Verificar integridade: garantir que und está preenchido nos registros novos
-    BASE_DATA.forEach(r => {
-      if(!r.und) {
-        // Tentar pegar und de outro registro da mesma carga
-        const ref = BASE_DATA.find(x => Number(x.carga)===Number(r.carga) && x.und);
-        if(ref) r.und = ref.und;
-      }
+    // Enriquecer candidato (und, rota, rire) antes de gravar
+    candidateBASE.forEach(r=>{
+      if(!r.und){ const ref=candidateBASE.find(x=>Number(x.carga)===Number(r.carga)&&x.und); if(ref) r.und=ref.und; }
     });
-
-    console.log('Acumulando:', recordsNovos.length, 'novos | Total:', BASE_DATA.length);
-
-    // Enriquecer BASE_DATA: preencher rota/rire/und dos registros sem esses campos (ex: CSV)
     const _lancMapEnrich = {};
     lancamentos.forEach(l=>{ const c=Math.round(Number(l.carga)); if(!_lancMapEnrich[c]) _lancMapEnrich[c]=l; });
-    BASE_DATA.forEach(r=>{
-      const c = Math.round(Number(r.carga));
-      const lanc = _lancMapEnrich[c];
-      if(!lanc) return;
-      if(!r.rota || r.rota.trim()==='') r.rota = lanc.rota || '';
-      if(!r.und  || r.und.trim()==='')  r.und  = lanc.und  || '';
-      r.rire = normRire(r.rire) || (r.rota ? getRireFromRota(r.rota) : '');
+    candidateBASE.forEach(r=>{
+      const c=Math.round(Number(r.carga)); const lanc=_lancMapEnrich[c]; if(!lanc) return;
+      if(!r.rota||r.rota.trim()==='') r.rota=lanc.rota||'';
+      if(!r.und ||r.und.trim()==='')  r.und =lanc.und ||'';
+      r.rire=normRire(r.rire)||(r.rota?getRireFromRota(r.rota):'');
     });
 
-    // Salvar BASE_DATA no localStorage para persistir entre sessões
-    try {
-      localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA));
-    } catch(e) {
-      console.warn('BASE_DATA grande demais para localStorage, usando só em memória');
+    // ── GRAVAR NO SUPABASE PRIMEIRO (fonte oficial) ──────────────────────
+    try{
+      await pushBaseData(candidateBASE);
+    }catch(e){
+      _loadingHide();
+      try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
+        mensagem:'Falha ao importar planilha (onFileSelected): '+e.message,
+        contexto:JSON.stringify({arquivo:file.name, registros:recordsNovos.length}),
+        tipo:'import_base_data', criado_em:new Date().toISOString()
+      })}); }catch(_){}
+      showToast('❌ Falha ao gravar no banco. Importação cancelada — nenhum dado foi persistido.','warning');
+      return;
     }
 
-    // Atualizar CARGA_MAP acumulando também
-    if(window._newCargaMap) {
-      Object.entries(window._newCargaMap).forEach(([c,v]) => {
-        if(!CARGA_MAP[c]) CARGA_MAP[c] = v;
-        else {
-          // Merge pedidos únicos
-          const pedidosUnicos = [...new Set([...CARGA_MAP[c].pedidos, ...v.pedidos])];
-          CARGA_MAP[c] = {...v, pedidos: pedidosUnicos, qtd_pedidos: pedidosUnicos.length};
-        }
+    // ── Supabase confirmou: agora atualiza cache local ───────────────────
+    BASE_DATA = candidateBASE;
+    window._cargaMapCache = null;
+    try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
+
+    // Atualizar CARGA_MAP
+    if(window._newCargaMap){
+      Object.entries(window._newCargaMap).forEach(([c,v])=>{
+        if(!CARGA_MAP[c]) CARGA_MAP[c]=v;
+        else{ const pu=[...new Set([...CARGA_MAP[c].pedidos,...v.pedidos])]; CARGA_MAP[c]={...v,pedidos:pu,qtd_pedidos:pu.length}; }
       });
     }
+    try{ localStorage.setItem('carga_map_prod', JSON.stringify(CARGA_MAP)); }catch(_){}
 
-    // Salvar CARGA_MAP no localStorage
-    try {
-      localStorage.setItem('carga_map_prod', JSON.stringify(CARGA_MAP));
-    } catch(e) {}
-
-    // Atualizar sets de cargas base
-    if(window.CARGAS_BASE_DYNAMIC) {
-      window.CARGAS_BASE_DYNAMIC.forEach(c => CARGAS_BASE.add(c));
-    }
-    MOTORISTAS  = window.MOTORISTAS_DYNAMIC  || MOTORISTAS;
-    ROTAS       = window.ROTAS_DYNAMIC       || ROTAS;
+    if(window.CARGAS_BASE_DYNAMIC) window.CARGAS_BASE_DYNAMIC.forEach(c=>CARGAS_BASE.add(c));
+    MOTORISTAS = window.MOTORISTAS_DYNAMIC || MOTORISTAS;
+    ROTAS      = window.ROTAS_DYNAMIC      || ROTAS;
 
     const totalNovos = recordsNovos.length;
     const totalAcum  = BASE_DATA.length;
@@ -7696,16 +7724,14 @@ async function onFileSelected(event) {
     populateSelects();
     renderMot(); renderVeic(); renderLanc(); renderPendentes(); detectarConflitos(); renderGeral();
 
-    // Enviar planilha para o servidor (compartilhar com a equipe)
-    await pushBaseData(BASE_DATA);
-
+    // pushBaseData já foi chamado antes da atualização local (fonte oficial: Supabase)
     const msg = '✅ +' + totalNovos.toLocaleString('pt-BR') + ' novos | Total: ' + totalAcum.toLocaleString('pt-BR') + (resolvidos > 0 ? ' | ' + resolvidos + ' pendente(s) resolvido(s)!' : '');
     showToast(msg, 'success');
   } catch(err) {
     showToast('Erro ao ler planilha: ' + err.message, 'error');
     console.error(err);
   } finally {
-    document.getElementById('loading').classList.add('hidden');
+    _loadingHide();
     event.target.value = '';
   }
 }
@@ -9170,13 +9196,10 @@ function resetarConfig(){
 function getValorRota(rota){
   const r = (rota||'').toUpperCase();
 
-  // Rotas internas conhecidas
-  const rotasRI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
-
   // Buscar no CONFIG (carregado do banco via syncConfig)
   const cfgRota = CONFIG.rotas[r];
   if(cfgRota){
-    const isRI = cfgRota.ri !== undefined ? cfgRota.ri : rotasRI.has(r);
+    const isRI = cfgRota.ri !== undefined ? cfgRota.ri : ROTAS_RI.has(r);
     if(!isRI){
       // Rota externa: motorista NÃO recebe por pedido — recebe por KM
       return { motSem:0, motCom:0, ajud: cfgRota.ajud ?? cfgRota.val_ajudante ?? 0, valorKm: cfgRota.valorKm ?? 0.20, ri:false };
@@ -9191,7 +9214,7 @@ function getValorRota(rota){
   }
 
   // Rota não cadastrada: verificar se é interna pelo nome
-  if(rotasRI.has(r)){
+  if(ROTAS_RI.has(r)){
     return CONFIG.rotas['CEASA'] || { motSem:1.00, motCom:0.50, ajud:0.50, valorKm:0, ri:true };
   }
 
@@ -9358,40 +9381,37 @@ async function calcularPagamentos(){
       return;
     }
 
-    // Para cada ajudante, calcular entregas do mês
-    const linhas = await Promise.all(ajudantes.map(async aj=>{
-      // Buscar lançamentos do ajudante no mês
-      const lancs = await supaFetch(
-        `lancamentos?ajudante=eq.${encodeURIComponent(aj.nome)}&select=carga,rota,ts`
-      );
+    // Buscar TODOS os lançamentos dos ajudantes no mês em 1 query (evita N+1)
+    const mesInicio = `${mes}-01T00:00:00Z`;
+    const mesFim    = `${mes}-31T23:59:59Z`;
+    const nomesAj   = ajudantes.map(a=>encodeURIComponent(a.nome)).join(',');
+    const [todosLancs, todosPags] = await Promise.all([
+      supaFetch(`lancamentos?ajudante=in.(${nomesAj})&ts=gte.${mesInicio}&ts=lte.${mesFim}&select=carga,rota,ajudante`).catch(()=>[]),
+      supaFetch(`pagamentos?mes_ano=eq.${mes}&select=*`).catch(()=>[]),
+    ]);
 
-      // Filtrar pelo mês
-      const lancsMes = (lancs||[]).filter(l=>{
-        const d = new Date(l.ts);
-        const lMes = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
-        return lMes === mes;
-      });
+    // Batch: buscar base_data de todas as cargas únicas de uma vez
+    const cargasUnicas = [...new Set((todosLancs||[]).map(l=>l.carga).filter(Boolean))];
+    let baseByC = {};
+    if(cargasUnicas.length){
+      const baseAll = await supaFetch(`base_data?carga=in.(${cargasUnicas.join(',')})&ocorrencia=neq.1&select=carga,pedido`).catch(()=>[]);
+      (baseAll||[]).forEach(r=>{ if(!baseByC[r.carga]) baseByC[r.carga]=[]; baseByC[r.carga].push(r); });
+    }
+    const pagsByAj = {};
+    (todosPags||[]).forEach(p=>{ pagsByAj[p.ajudante_id] = p; });
 
-      // Contar pedidos e calcular valor
+    // Montar linhas sem mais queries
+    const linhas = ajudantes.map(aj=>{
+      const lancsMes = (todosLancs||[]).filter(l=>(l.ajudante||'').toUpperCase()===(aj.nome||'').toUpperCase());
       let totalEnt=0, totalVal=0;
       for(const l of lancsMes){
-        const base = await supaFetch(
-          `base_data?carga=eq.${l.carga}&ocorrencia=neq.1&select=pedido`
-        );
-        const qtd = (base||[]).length;
+        const qtd = (baseByC[l.carga]||[]).length;
         const cfg = getValorRota(l.rota);
         totalEnt += qtd;
         totalVal += (cfg.ajud||0) * qtd;
       }
-
-      // Verificar se já tem pagamento registrado
-      const pagExist = await supaFetch(
-        `pagamentos?ajudante_id=eq.${aj.id}&mes_ano=eq.${mes}&select=*`
-      );
-      const pag = pagExist&&pagExist[0] ? pagExist[0] : null;
-
-      return {aj, totalEnt, totalVal, pag, lancsMes};
-    }));
+      return {aj, totalEnt, totalVal, pag: pagsByAj[aj.id]||null, lancsMes};
+    });
 
     if(linhas.length===0){
       tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:20px;color:#9ca3af">Nenhum dado</td></tr>';
@@ -10355,8 +10375,7 @@ async function confirmarModalKmCarga(){
       } else {
         const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=rota,veiculo&limit=1`).catch(()=>[]) || [];
         const { rota='', veiculo='' } = dem[0]||{};
-        const _RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
-        const rire = _RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
+        const rire = ROTAS_RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
         await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
           id: Date.now().toString(36)+Math.random().toString(36).slice(2),
           carga:Number(carga), motorista_id:myId, motorista_nome:myNome,
@@ -10427,7 +10446,6 @@ async function carregarKmMotorista(){
   const myNome = (USUARIO_LOGADO.nome||'').toUpperCase();
   const mesStr = new Date().toISOString().slice(0,7);
   const cont   = document.getElementById('mot-km-historico');
-  const ROTAS_RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
   const _isRI  = reg => { const r=(reg.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((reg.rota||'').trim().toUpperCase()); };
   const fmtDt  = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
   const fmtDur = (tsI,tsF) => { if(!tsI||!tsF) return null; const h=Math.floor((new Date(tsF)-new Date(tsI))/3600000); const d=Math.floor(h/24); return d>0?`${d}d ${h%24}h`:`${h}h`; };
@@ -11711,7 +11729,7 @@ async function apagarDemanda(id){
           agends[idx].acao    = '';
           agends[idx].status  = agends[idx].motivo_atraso ? 'atrasado'
             : (agends[idx].data < hojeApagar ? 'atrasado' : 'agendado');
-          saveAgendamentos(agends);
+          await saveAgendamentos(agends);
           showToast('✅ Pré-carga apagada — '+demanda.rota+' voltou ao popup','success');
         } else {
           showToast('✅ Pré-carga apagada','success');
@@ -13792,6 +13810,7 @@ function renderDemandasCards(){
             onclick="abrirVincularCarga('${d.id}')">
             ${temCarga?'🔗 '+d.carga:'📦 Vincular Pré-Carga'}
           </button>
+          ${temCarga?`<button onclick="reenviarCargaSupabase(${d.carga})" title="Reenviar dados desta carga para a nuvem (use se o conferente não ver os pedidos)" style="background:var(--bg-card2);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem;cursor:pointer">☁️</button>`:''}
           ${(()=>{
             const pipeline = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
             const pipeLabels = {pendente:'⏳ Pend.',separacao:'📦 Sep.',carregamento:'🚛 Carg.',aguardando_nf:'📋 NF',aguardando_manifesto:'🛡️ Man.',pronto_viagem:'✅ Pronto',saiu:'🚛 Saiu',fim_viagem:'🏁 Fim',concluido:'✅ Ok'};
@@ -14063,7 +14082,7 @@ async function confirmarSaidaRota(){
         const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
         if(idx >= 0 && arr[idx].status !== 'realizado'){
           Object.assign(arr[idx], payload);
-          saveAgendamentos(arr);
+          await saveAgendamentos(arr);
         }
       }
     }catch(_){}
@@ -14215,21 +14234,17 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
         // Rota: pré-carga usa a cidade principal; padrão usa a rota do primeiro registro
         const rotaDaPlan    = novos._rotaPrincipal || novos[0].rota || '';
 
-        // Salvar no BASE_DATA local (sem duplicar)
-        const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
-        const filtrados  = novos.filter(r=>!chaveExist.has(Number(r.carga)+'_'+String(r.pedido)));
-        BASE_DATA = [...BASE_DATA, ...filtrados];
-        window._cargaMapCache = null;
-        try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
-
-        // Enviar ao Supabase em lote
+        // ── GRAVAR NO SUPABASE PRIMEIRO (fonte oficial) ──────────────────
+        // Base_data local só é atualizada após confirmação do banco.
+        // Qualquer falha aborta a importação sem persistir nada localmente.
         try{
+          showToast(`📤 Gravando ${novos.length} pedidos no banco...`,'warning');
           const LOTE = 200;
-          for(let i=0;i<filtrados.length;i+=LOTE){
-            await supaFetch('base_data',{
+          for(let i=0;i<novos.length;i+=LOTE){
+            await supaFetch('base_data?on_conflict=carga,pedido',{
               method:'POST',
-              prefer:'return=minimal',
-              body: JSON.stringify(filtrados.slice(i,i+LOTE).map(r=>({
+              prefer:'resolution=ignore-duplicates,return=minimal',
+              body: JSON.stringify(novos.slice(i,i+LOTE).map(r=>({
                 carga:r.carga, pedido:r.pedido, valor:r.valor,
                 und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
                 ajudante:r.ajudante, ocorrencia:r.ocorrencia,
@@ -14237,7 +14252,29 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
               })))
             });
           }
-        }catch(e){ console.warn('Erro ao salvar base_data:', e.message); }
+          // Validar: confirmar que os dados chegaram ao banco
+          const gravados = await supaFetch(`base_data?carga=eq.${cargaNum}&select=pedido`).catch(()=>[]);
+          if((!gravados||gravados.length===0) && novos.length>0){
+            throw new Error(`Validação pós-gravação falhou: 0 registros encontrados para carga ${cargaNum}`);
+          }
+          // ✅ Banco confirmou — atualizar cache local
+          const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
+          const filtrados  = novos.filter(r=>!chaveExist.has(Number(r.carga)+'_'+String(r.pedido)));
+          if(filtrados.length){
+            BASE_DATA = [...BASE_DATA, ...filtrados];
+            window._cargaMapCache = null;
+            try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
+          }
+        }catch(e){
+          try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
+            mensagem:'Falha ao importar planilha (expedição): '+e.message,
+            contexto:JSON.stringify({carga:cargaNum, pedidos:novos.length}),
+            tipo:'import_base_data', criado_em:new Date().toISOString()
+          })}); }catch(_){}
+          showToast('❌ Falha ao gravar no banco. Importação cancelada — nenhum dado foi persistido.','warning');
+          resolve(null);
+          return;
+        }
 
         // Atualizar demanda com totais reais — NÃO avança status nem arm_status
         // O fluxo correto é: Armazém confere → arm_status=carregado_ok → status=aguardando_nf → Fiscal
@@ -14372,6 +14409,49 @@ function fecharModalVincular(){
   const carga = document.getElementById('vc-carga');
   if(carga){ carga.value=''; carga.style.borderColor='#e2e8f0'; }
 }
+async function reenviarCargaSupabase(carga){
+  // Tenta BASE_DATA em memória; se vazio, tenta cache localStorage (migração)
+  let registros = BASE_DATA.filter(r=>Number(r.carga)===Number(carga));
+  if(!registros.length){
+    try{
+      const cached = JSON.parse(localStorage.getItem('base_data_prod')||'[]');
+      registros = cached.filter(r=>Number(r.carga)===Number(carga));
+    }catch(_){}
+  }
+  if(!registros.length){
+    showToast(`⚠️ Carga ${carga} não encontrada no cache local. Re-importe a planilha.`,'warning');
+    return;
+  }
+  showToast(`📤 Reenviando ${registros.length} pedidos da carga ${carga} para o banco...`,'warning');
+  try{
+    const LOTE = 200;
+    for(let i=0;i<registros.length;i+=LOTE){
+      await supaFetch('base_data?on_conflict=carga,pedido',{
+        method:'POST',
+        prefer:'resolution=ignore-duplicates,return=minimal',
+        body:JSON.stringify(registros.slice(i,i+LOTE).map(r=>({
+          carga:r.carga, pedido:r.pedido, valor:r.valor,
+          und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
+          ajudante:r.ajudante, ocorrencia:r.ocorrencia,
+          mes_ano:r.mes_ano, semana_mes:r.semana_mes, rire:r.rire
+        })))
+      });
+    }
+    // Confirmar que chegou ao banco
+    const check = await supaFetch(`base_data?carga=eq.${carga}&select=pedido`).catch(()=>[]);
+    if(!check||check.length===0) throw new Error('Validação: banco continua vazio após envio');
+    // Limpar localStorage desta carga (banco é fonte oficial agora)
+    try{
+      const raw = JSON.parse(localStorage.getItem('base_data_prod')||'[]');
+      const sem = raw.filter(r=>Number(r.carga)!==Number(carga));
+      if(sem.length < raw.length) localStorage.setItem('base_data_prod',JSON.stringify(sem));
+    }catch(_){}
+    showToast(`✅ Carga ${carga}: ${registros.length} pedidos gravados no banco!`,'success');
+  }catch(e){
+    showToast(`⚠️ Erro ao reenviar carga ${carga}: ${e.message}`,'warning');
+  }
+}
+
 function abrirVincularCarga(demandaId){
   const modal = document.getElementById('modal-vincular-carga');
   if(!modal) return;
@@ -14492,7 +14572,12 @@ async function salvarVincularCarga(){
       showToast('📊 Processando planilha...','warning');
       // Passa o número da carga para o processador (obrigatório no formato pré-carga)
       const resultado = await processarPlanilhaExpedicao(file, demandaId, carga);
-      if(resultado){
+      if(!resultado){
+        // processarPlanilhaExpedicao já exibiu a mensagem de erro e fez log
+        if(btn){ btn.textContent='🔗 Vincular e Salvar'; btn.disabled=false; }
+        if(feedback){ feedback.textContent=''; feedback.style.display='none'; }
+        return; // aborta — não atualiza demanda nem cria lançamento com dados inválidos
+      }
         // Usar dados reais da planilha
         rotaFinal    = resultado.rota    || rotaFinal;
         pedidosFinal = resultado.pedidos || pedidosFinal;
@@ -14514,17 +14599,16 @@ async function salvarVincularCarga(){
           rotaFinal = d.rota || resultado.rota || rotaFinal;
           // und: pega do primeiro registro já resolvido pelo resolverUnd
           if(!undFinal && linhasDaCarga.length > 0) undFinal = linhasDaCarga[0].und || '';
-          // Atualizar rota dos registros no BASE_DATA para a rota da demanda
-          // Isso garante que renderMot encontre os pedidos ao filtrar por rota
+          // Corrigir rota nos registros no banco (pré-carga usa cidade; demanda tem rota real)
           if(rotaFinal){
-            BASE_DATA.forEach(r => {
-              if(Math.round(Number(r.carga)) === carga) r.rota = rotaFinal;
-            });
-            try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
+            BASE_DATA.forEach(r => { if(Math.round(Number(r.carga)) === carga) r.rota = rotaFinal; });
+            try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
+            supaFetch(`base_data?carga=eq.${carga}`,{
+              method:'PATCH', body:JSON.stringify({rota:rotaFinal})
+            }).catch(e=>console.warn('patch rota base_data:',e.message));
           }
         }
-      }
-    }
+    } // fim if(file)
 
     // Calcular RI/RE pela rota final
     // Rotas internas conhecidas = R.I.; tudo mais (rotas externas, cidades) = R.E.
@@ -14541,33 +14625,22 @@ async function salvarVincularCarga(){
     const lancExiste = lancamentos.find(l => Math.round(Number(l.carga)) === carga);
     if(!lancExiste){
       const tsLanc = new Date().toISOString();
-      // Criar lançamento completo no Supabase — igual ao lançamento manual
-      await supaFetch('lancamentos',{
+      const novoLancData = {
+        carga, motorista: condutorFinal, veiculo: d.veiculo || '',
+        rota: rotaFinal, und: undFinal, rire: rireFinal,
+        vinculado: true, pendente: false, ts: tsLanc
+      };
+      // Captura o _id retornado para que salvarLanc não crie duplicata
+      const resLanc = await supaFetch('lancamentos',{
         method:'POST',
-        body: JSON.stringify({
-          carga,
-          motorista: condutorFinal,
-          veiculo:   d.veiculo || '',
-          rota:      rotaFinal,
-          und:       undFinal,
-          rire:      rireFinal,
-          vinculado: true,
-          pendente:  false,
-          ts:        tsLanc
-        })
+        prefer:'return=representation',
+        body: JSON.stringify(novoLancData)
       });
-      // Atualizar array local de lançamentos — igual ao fluxo da aba Lançamento
-      lancamentos.unshift({
-        carga,
-        motorista: condutorFinal,
-        veiculo:   d.veiculo || '',
-        rota:      rotaFinal,
-        und:       undFinal,
-        rire:      rireFinal,
-        vinculado: true,
-        pendente:  false,
-        ts:        tsLanc
-      });
+      const novoLanc = {
+        ...novoLancData,
+        _id: (Array.isArray(resLanc) && resLanc[0]) ? resLanc[0].id : null
+      };
+      lancamentos.unshift(novoLanc);
       salvarLanc();
       showToast(`✅ Carga ${carga} vinculada e lançada! Motorista: ${condutorFinal} | Rota: ${rotaFinal} | ${pedidosFinal} pedidos`, 'success');
     } else {
@@ -14643,7 +14716,6 @@ async function carregarPortalMotorista(){
   const mesNome= mes.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
   const setKpi = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
   const fmtVal = v=>'R$ '+Number(v||0).toFixed(2).replace('.',',');
-  const ROTAS_RI = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 
   // Labels
   const lblMes = document.getElementById('mot-kpi-mes-label');
@@ -15171,29 +15243,12 @@ async function sincronizarTudo(){
     await syncLancamentos();
     migrarRotasSupabase(); // normaliza PETRO→Petrolina, JUA→Juazeiro (roda 1x)
 
-    // 3. BASE_DATA do Supabase → local
+    // 3. BASE_DATA do Supabase → local (fonte oficial; localStorage não é fallback)
     const temBase = await syncBaseData();
     if(!temBase){
-      try{
-        const saved = localStorage.getItem('base_data_prod');
-        if(saved){
-          const raw = JSON.parse(saved);
-          // Deduplicar ao carregar do localStorage
-          const _sk = new Set();
-          BASE_DATA = raw.filter(r=>{
-            if(!r.carga||!r.pedido) return true;
-            const k=Number(r.carga)+'_'+Number(r.pedido);
-            if(_sk.has(k)) return false;
-            _sk.add(k); return true;
-          });
-          window._cargaMapCache = null;
-        }
-      }catch(e){}
-    }
-
-    // 4. Se temos BASE_DATA local mas servidor está vazio, sobe
-    if(!temBase && BASE_DATA.length > 0){
-      await pushBaseData(BASE_DATA);
+      BASE_DATA = [];
+      window._cargaMapCache = null;
+      showToast('⚠️ Nenhum dado de planilha encontrado no banco. Carregue uma planilha.','warning');
     }
 
     // 5. Salvar lançamentos locais que ainda não estão no servidor
@@ -15259,7 +15314,8 @@ function showPage(name,tab){
 
   if(name==='motoristas') safe(()=>renderMot(),'motoristas');
   else if(name==='veiculos') safe(()=>renderVeic(),'veiculos');
-  else if(name==='lancamento') safe(()=>{
+  else if(name==='lancamento') safe(async ()=>{
+    await syncLancamentos();
     renderLanc();
     atualizarSelectsUnd();
     Promise.all([
@@ -18457,23 +18513,9 @@ async function renderAbsenteismo(){
   const filtMes   = document.getElementById('abs-filtro-mes')?.value||'';
   const filtTipo  = document.getElementById('abs-filtro-tipo')?.value||'';
   const _filtUndEl = document.getElementById('abs-filtro-unidade');
-  // Admin sempre vê tudo — nunca filtra por unidade
-  const _isAdmin = (USUARIO_LOGADO?.perfil === 'admin');
-  console.log('[AbsDist v3.6] perfil:', USUARIO_LOGADO?.perfil, '| isAdmin:', _isAdmin, '| unidade:', USUARIO_LOGADO?.unidade);
-  let undUsuario = _isAdmin ? '' : (USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
-  // Se NÃO for admin e unidade estiver vazia, tenta buscar do banco (com try/catch para não travar a função)
-  if(!_isAdmin && !undUsuario && USUARIO_LOGADO?.id){
-    try{
-      const _fresh = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
-      if(_fresh?.[0]){
-        undUsuario = (_fresh[0].unidade || '').trim();
-        if(undUsuario){ USUARIO_LOGADO.unidade = undUsuario; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
-      }
-    }catch(_){ /* sem unidade — mostra tudo */ }
-  }
-  // Se usuário tem unidade definida e o filtro de UI está vazio, aplica a unidade do usuário automaticamente
+  const undUsuario = await _getUnidadeUsuario();
   if(_filtUndEl && !_filtUndEl.value && undUsuario) _filtUndEl.value = undUsuario;
-  const filtUnd   = _isAdmin ? (document.getElementById('abs-filtro-unidade')?.value||'') : (_filtUndEl?.value || '');
+  const filtUnd   = _filtUndEl?.value || '';
   const filtNome  = document.getElementById('abs-filtro-nome')?.value||'';
 
   try{
@@ -18697,13 +18739,41 @@ async function renderAbsenteismo(){
       emViagem.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
     }catch(e){}
 
-    // Aplicar rota_auto para hoje nos motoristas em viagem (sem lançamento manual)
+    // Aplicar rota_auto para hoje nos motoristas em viagem e auto-salvar no Supabase
+    const rotaAutoParaSalvar = [];
     motoristasEmRotaHoje.forEach(nomeUp=>{
       const match = Object.keys(porFunc).find(n=>n.trim().toUpperCase()===nomeUp);
-      if(match && !porFunc[match].dias[hoje]){
-        porFunc[match].dias[hoje] = 'rota_auto';
+      if(match){
+        if(!porFunc[match].dias[hoje]){
+          porFunc[match].dias[hoje] = 'rota_auto';
+          rotaAutoParaSalvar.push(match);
+        } else if(porFunc[match].dias[hoje] === 'presente'){
+          // Só sobrescreve presença se for automática (gerada pelo sistema)
+          porFunc[match].dias[hoje] = 'rota_auto';
+          rotaAutoParaSalvar.push(match);
+        }
       }
     });
+    // Salvar em background (1x por dia)
+    if(rotaAutoParaSalvar.length > 0){
+      const flagRotaAuto = `abs_rota_auto_${hoje}`;
+      if(!localStorage.getItem(flagRotaAuto)){
+        localStorage.setItem(flagRotaAuto, '1');
+        (async()=>{
+          for(const nmRota of rotaAutoParaSalvar){
+            try{
+              const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nmRota)}&data=eq.${hoje}&select=id,fonte`).catch(()=>[]) || [];
+              if(ex.length){
+                // Só sobrescreve se a fonte for automática (não manual)
+                if((ex[0].fonte||'') !== 'manual') await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'rota',fonte:'automatico'})});
+              } else {
+                await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome:nmRota,funcao:'motorista',data:hoje,status:'rota',mes_ano:hoje.slice(0,7),fonte:'automatico',criado_em:new Date().toISOString()})});
+              }
+            }catch(_){}
+          }
+        })();
+      }
+    }
 
     const pendentesHoje = Object.keys(porFunc).filter(nome=>{
       const diasFuncionario = porFunc[nome].dias;
@@ -18858,7 +18928,10 @@ async function renderAbsenteismo(){
 
       return `<tr style="border-bottom:1px solid var(--border);${rowBg?'background:'+rowBg+';':''}${rowOp}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='${rowBg}'">
         <td style="padding:10px 14px;font-size:.83rem">
-          <span style="${nomeStyle}">${nome}</span>${badges}
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="${nomeStyle}">${nome}</span>${badges}
+            <button onclick="abrirCalFuncionario('${nome.replace(/'/g,"\\'")}','${filtMes}')" title="Calendário individual" style="padding:1px 7px;font-size:.68rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-card2);color:var(--text-muted);cursor:pointer;white-space:nowrap" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card2)'">📅</button>
+          </div>
         </td>
         <td style="padding:10px 14px;font-size:.75rem;color:var(--text-muted)">${d.funcao||'—'}</td>
         <td style="padding:10px 14px;text-align:center"><span style="font-weight:800;color:#059669">${pres}</span></td>
@@ -18913,6 +18986,89 @@ function _absIniciais(nome){
 }
 const _absAvatarCores = ['#1a2e4a','#7c3aed','#0369a1','#065f46','#92400e','#9d174d','#1e40af','#4d7c0f','#b45309','#0f766e'];
 function _absAvatarCor(nome){ return _absAvatarCores[nome.charCodeAt(0) % _absAvatarCores.length]; }
+
+// ══ CALENDÁRIO INDIVIDUAL POR FUNCIONÁRIO ════════════════════════════════════
+let _calFuncNome = '', _calFuncMes = '';
+
+async function abrirCalFuncionario(nome, mes){
+  _calFuncNome = nome;
+  _calFuncMes  = mes || new Date().toISOString().slice(0,7);
+  document.getElementById('abs-cal-nome').textContent = nome;
+  document.getElementById('modal-abs-cal').style.display = 'flex';
+  await renderCalFuncionario();
+}
+
+async function navCalFuncionario(dir){
+  const [a,m] = _calFuncMes.split('-').map(Number);
+  const d = new Date(a, m - 1 + dir, 1);
+  _calFuncMes = d.toISOString().slice(0,7);
+  await renderCalFuncionario();
+}
+
+async function renderCalFuncionario(){
+  const grid   = document.getElementById('abs-cal-grid');
+  const mesNav = document.getElementById('abs-cal-mes-nav');
+  if(!grid) return;
+  grid.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</div>';
+
+  const registros = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(_calFuncNome)}&mes_ano=eq.${_calFuncMes}&select=data,status,observacao,fonte`).catch(()=>[]) || [];
+  const stMap = {};
+  registros.forEach(r=>{ stMap[r.data] = r; });
+
+  const hoje = new Date().toISOString().slice(0,10);
+  const [ano, mes] = _calFuncMes.split('-').map(Number);
+  const primeiro  = new Date(ano, mes-1, 1);
+  const ultimo    = new Date(ano, mes, 0);
+  const nomeMes   = primeiro.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+  if(mesNav) mesNav.textContent = nomeMes.charAt(0).toUpperCase()+nomeMes.slice(1);
+
+  const ds = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  let h = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px">';
+  ds.forEach((d,i)=>{
+    const wk=i===0||i===6;
+    h+=`<div style="text-align:center;font-size:.6rem;font-weight:700;color:${wk?'rgba(239,68,68,.65)':'var(--text-muted)'};padding:4px 0;text-transform:uppercase">${d}</div>`;
+  });
+  h+='</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px">';
+  for(let i=0;i<primeiro.getDay();i++) h+='<div></div>';
+
+  for(let d=1;d<=ultimo.getDate();d++){
+    const dStr = `${_calFuncMes}-${String(d).padStart(2,'0')}`;
+    const reg  = stMap[dStr];
+    const st   = reg?.status;
+    const sc   = st ? (_absStatusCor[st]||{bg:'var(--bg-card2)',color:'var(--text-muted)'}) : null;
+    const eH   = dStr===hoje, pas=dStr<hoje;
+    const clicavel = pas||eH;
+    const bg   = eH ? 'rgba(37,99,235,.07)' : sc ? sc.bg : 'var(--bg-card2)';
+    const bdr  = eH ? '1.5px solid #2563eb' : '1px solid var(--border)';
+    h+=`<div onclick="${clicavel?`editarDiaFuncionario('${dStr}')`:''}" style="border-radius:7px;padding:4px 2px;text-align:center;cursor:${clicavel?'pointer':'default'};background:${bg};border:${bdr};min-height:46px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:opacity .12s" ${clicavel?'onmouseover="this.style.opacity=\'.75\'" onmouseout="this.style.opacity=\'1\'"':''}>
+      <span style="font-size:.72rem;font-weight:${eH?800:600};color:${eH?'#2563eb':'var(--text-muted)'}">${d}</span>
+      ${st?`<span style="font-size:.58rem;font-weight:700;color:${sc.color};line-height:1.1;text-align:center">${(_absStatusCor[st]?.label||st).replace(/^[^\s]+\s/,'')}</span>`:''}
+    </div>`;
+  }
+  h+='</div>';
+  // Legenda
+  h+='<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:5px">';
+  Object.entries(_absStatusCor).forEach(([k,v])=>{
+    h+=`<span style="font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:8px;background:${v.bg};color:${v.color}">${v.label}</span>`;
+  });
+  h+='</div>';
+  grid.innerHTML = h;
+}
+
+async function editarDiaFuncionario(data){
+  const hoje = new Date().toISOString().slice(0,10);
+  if(data > hoje) return;
+  document.getElementById('modal-abs-cal').style.display = 'none';
+  await abrirOutroStatusPara(_calFuncNome, '', data);
+  // Após salvar, reabrir o calendário
+  const origSalvar = window._afterSalvarStatusMs;
+  window._afterSalvarStatusMs = async ()=>{
+    window._afterSalvarStatusMs = origSalvar;
+    document.getElementById('modal-abs-cal').style.display = 'flex';
+    await renderCalFuncionario();
+  };
+}
+// ════════════════════════════════════════════════════════════════════════════
 
 // ── Status: variável global do modal de status ────────────
 let _msNomeAtual = '';
@@ -18974,7 +19130,7 @@ function calcularFimAtestadoMs(){
 }
 
 // ── Abre modal de status para uma pessoa ─────────────────
-async function abrirOutroStatusPara(nome){
+async function abrirOutroStatusPara(nome, statusAtual, dataPreSet){
   _msNomeAtual = nome;
   _msStatusAtual = 'falta';
   // Preencher cabeçalho
@@ -18984,7 +19140,7 @@ async function abrirOutroStatusPara(nome){
   if(nomeEl)   nomeEl.textContent = nome;
   // Reset campos
   document.getElementById('ms-obs').value = '';
-  document.getElementById('ms-data').value = new Date().toISOString().split('T')[0];
+  document.getElementById('ms-data').value = dataPreSet || new Date().toISOString().split('T')[0];
   const ini1 = document.getElementById('ms-ferias-inicio'); if(ini1) ini1.value='';
   const fim1 = document.getElementById('ms-ferias-fim');   if(fim1) fim1.value='';
   const ini2 = document.getElementById('ms-ates-inicio');  if(ini2) ini2.value='';
@@ -18993,13 +19149,14 @@ async function abrirOutroStatusPara(nome){
   // Garantir chip Presente visível antes de selecionar
   const btnPres = document.querySelector('#modal-abs-status [data-ms="presente"]');
   if(btnPres) btnPres.style.display = '';
-  // Reset e selecionar chip "falta" por padrão
+  // Reset e selecionar chip: status atual se existir, senão 'falta'
   document.querySelectorAll('#modal-abs-status [data-ms]').forEach(b=>{ b.style.borderColor='transparent'; b.style.boxShadow=''; b.style.transform=''; });
   document.getElementById('ms-campo-data').style.display = '';
   document.getElementById('ms-campos-ferias').style.display  = 'none';
   document.getElementById('ms-campos-atestado').style.display= 'none';
-  const chipFalta = document.querySelector('[data-ms="falta"]');
-  if(chipFalta) selecionarStatusMs(chipFalta, 'falta');
+  const chipInicial = statusAtual && statusAtual !== 'rota_auto' ? statusAtual : 'falta';
+  const chipSel = document.querySelector(`[data-ms="${chipInicial}"]`) || document.querySelector('[data-ms="falta"]');
+  if(chipSel) selecionarStatusMs(chipSel, chipInicial);
   document.getElementById('modal-abs-status').style.display = 'flex';
   // Verificar se está em rota agora — selecionar "Em Rota" automaticamente
   try{
@@ -19078,6 +19235,7 @@ async function salvarStatusMs(){
     document.getElementById('modal-abs-status').style.display = 'none';
     const _setor = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
     if(_setor==='armazem') renderAbsArmazem(); else renderAbsenteismo();
+    if(typeof window._afterSalvarStatusMs === 'function') window._afterSalvarStatusMs();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
   finally{ if(btn){ btn.disabled=false; btn.textContent='💾 Salvar'; } }
 }
@@ -19164,13 +19322,11 @@ async function renderListaModal(pessoas, registrosHoje){
           onmouseover="this.style.background='#dcfce7';this.style.borderColor='#4ade80'"
           onmouseout="this.style.background='#f0fdf4';this.style.borderColor='#86efac'">✅ Dar Presença</button>`;
 
-    // ⋯ só aparece quando não há nenhum status lançado hoje
-    const btnOutro = !st
-      ? `<button onclick="abrirOutroStatusPara('${p.nome.replace(/'/g,"\\'")}') " title="Outro status"
-          style="width:30px;height:30px;border-radius:8px;border:1.5px solid var(--border-med);background:var(--bg-card2);color:var(--text-muted);cursor:pointer;font-size:.85rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s"
-          onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)';this.style.background='#fff0f0'"
-          onmouseout="this.style.borderColor='var(--border-med)';this.style.color='var(--text-muted)';this.style.background='var(--bg-card2)'">⋯</button>`
-      : '';
+    // ⋯ sempre visível — muda cor se já houver status registrado hoje
+    const btnOutro = `<button onclick="abrirOutroStatusPara('${p.nome.replace(/'/g,"\\'")}','${st||''}')" title="${st?'Alterar status de hoje':'Outro status'}"
+        style="width:30px;height:30px;border-radius:8px;border:1.5px solid ${st?'var(--red)':'var(--border-med)'};background:${st?'rgba(239,68,68,.08)':'var(--bg-card2)'};color:${st?'var(--red)':'var(--text-muted)'};cursor:pointer;font-size:.85rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s"
+        onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)';this.style.background='#fff0f0'"
+        onmouseout="this.style.borderColor='${st?'var(--red)':'var(--border-med)'}';this.style.color='${st?'var(--red)':'var(--text-muted)'}';this.style.background='${st?'rgba(239,68,68,.08)':'var(--bg-card2)'}'">⋯</button>`;
 
     return `<div class="abs-item" data-nome="${p.nome.replace(/"/g,'&quot;')}"
       style="display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--border);transition:background .12s"
@@ -19207,13 +19363,7 @@ async function abrirModalLancarAbsFunc(nome, statusInicial){
 async function lancarPresencaRapida(nome){
   try{
     const hoje = new Date().toISOString().split('T')[0];
-    const mesAno = hoje.slice(0,7);
-    const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id`) || [];
-    if(ex.length){
-      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',fonte:'manual'})});
-    } else {
-      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
-    }
+    await _absUpsertPresenca(nome, 'motorista', hoje, 'manual');
     showToast('✅ '+nome+' — Presença lançada!','success');
     await renderAbsenteismo();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -19229,19 +19379,10 @@ async function abrirModalLancarAbs(){
   const busca = document.getElementById('abs-lista-busca');
   if(busca) busca.value = '';
 
-  // Carregar lista de pessoas — sempre busca unidade atualizada do banco
-  let undUsuario = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
-  if(USUARIO_LOGADO?.id){
-    try{
-      const _fresh = await supaFetch(`usuarios?id=eq.${encodeURIComponent(USUARIO_LOGADO.id)}&select=unidade`);
-      const _undFresh = (_fresh?.[0]?.unidade || '').trim();
-      if(_undFresh){ undUsuario = _undFresh; USUARIO_LOGADO.unidade = _undFresh; localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO)); }
-    }catch(_){}
-  }
-  console.log('[AbrirModalAbs] undUsuario =', undUsuario);
+  // Carregar lista de pessoas filtrada por unidade
+  const undUsuario = await _getUnidadeUsuario();
   let pessoas = [];
   try{
-    if(!undUsuario){ console.warn('[AbrirModalAbs] unidade vazia — buscando sem filtro'); }
     const urlMots = undUsuario
       ? `motoristas?select=nome&ativo=eq.true&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
       : 'motoristas?select=nome&ativo=eq.true&order=nome.asc';
@@ -21283,7 +21424,7 @@ async function renderAbsArmazem(){
   const container = document.getElementById('abs-arm-tbody');
   if(!container){ console.warn('[AbsArm] container abs-arm-tbody não encontrado'); return; }
   // Mostrar loading imediato
-  container.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">
+  container.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">
     <div style="display:inline-block;width:28px;height:28px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:10px"></div>
     Carregando dados do armazém...
   </td></tr>`;
@@ -21308,18 +21449,14 @@ async function renderAbsArmazem(){
   const hoje        = new Date().toISOString().split('T')[0];
 
   try{
-    // 1. Unidade do usuário — admin sempre vê tudo (sem filtro de unidade)
-    const _isAdminArm = (USUARIO_LOGADO?.perfil === 'admin');
-    const undUsuario = _isAdminArm ? '' : (USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
-    console.log('[AbsArm] perfil:', USUARIO_LOGADO?.perfil, '| undUsuario:', JSON.stringify(undUsuario));
+    // 1. Unidade do usuário
+    const undUsuario = await _getUnidadeUsuario();
 
     // 2. Buscar conferentes filtrando por unidade se disponível
     const urlConfsBase = undUsuario
       ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
       : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&limit=500`;
-    console.log('[AbsArm] URL conferentes:', urlConfsBase);
     const confsDB = await supaFetch(urlConfsBase) || [];
-    console.log('[AbsArm] confsDB.length:', confsDB.length);
 
     // 2. Filtrar desligados fora do período
     // Inclui todos sem data_demissao (independente do flag ativo),
@@ -21344,19 +21481,42 @@ async function renderAbsArmazem(){
     });
     console.log('[AbsArm] confsAtivos:', confsAtivos.length, '| confsFiltrados:', confsFiltrados.length, '| filtTipo:', JSON.stringify(filtTipoArm), 'filtNome:', JSON.stringify(filtNomeArm));
 
-    // 3. Buscar lançamentos de absenteísmo do período para essas pessoas
+    // 3. Buscar lançamentos de absenteísmo + abastecimento + conferidos do período
     const nomesSet = new Set(confsFiltrados.map(cf=>cf.nome.trim().toUpperCase()));
     let url = 'absenteismo?select=nome,data,status&order=nome.asc,data.asc';
     if(filtMes) url += `&mes_ano=eq.${filtMes}`;
-    const lancamentos = await supaFetch(url) || [];
+    const periodoInicio = filtMes ? filtMes+'-01' : new Date().toISOString().slice(0,7)+'-01';
+    const periodoFim    = filtMes ? filtMes+'-31' : new Date().toISOString().slice(0,7)+'-31';
+    const [lancamentos, abastRows, confPedRows] = await Promise.all([
+      supaFetch(url).catch(()=>[]),
+      supaFetch(`abastecimento_loja?data_saida=gte.${periodoInicio}&data_saida=lte.${periodoFim}&select=conferente_nome,data_saida`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?conferido_em=gte.${periodoInicio}T00:00:00&conferido_em=lte.${periodoFim}T23:59:59&status=eq.ok&select=conferente_nome,pedido`).catch(()=>[]),
+    ]);
 
     // 4. Agrupar lançamentos por nome (normalizado)
     const lancMap = {};
-    lancamentos.forEach(d=>{
+    (lancamentos||[]).forEach(d=>{
       const nomeUp = (d.nome||'').trim().toUpperCase();
-      if(!nomesSet.has(nomeUp)) return; // ignorar quem não é do armazém
+      if(!nomesSet.has(nomeUp)) return;
       if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
       lancMap[nomeUp][d.data] = d.status;
+    });
+
+    // 4b. Mesclar abastecimento como "presente" (fonte: abastecimento) quando não há registro
+    (abastRows||[]).forEach(r=>{
+      if(!r.data_saida||!r.conferente_nome) return;
+      const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
+      if(!nomesSet.has(nomeUp)) return;
+      if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
+      if(!lancMap[nomeUp][r.data_saida]) lancMap[nomeUp][r.data_saida] = 'presente';
+    });
+
+    // 4c. Contar pedidos conferidos por pessoa no período
+    const pedConf = {};
+    (confPedRows||[]).forEach(r=>{
+      if(!r.conferente_nome) return;
+      const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
+      pedConf[nomeUp] = (pedConf[nomeUp]||0) + 1;
     });
 
     // 5. Montar porFunc com TODOS os cadastrados (mesmo sem lançamento)
@@ -21368,6 +21528,7 @@ async function renderAbsArmazem(){
         perfil: cf.perfil,
         ativo: cf.ativo,
         data_demissao: cf.data_demissao||null,
+        pedidosConf: pedConf[nomeUp]||0,
         dias: lancMap[nomeUp] || {}
       };
     });
@@ -21403,7 +21564,7 @@ async function renderAbsArmazem(){
 
     console.log('[AbsArm] funcs.length:', funcs.length);
     if(!funcs.length){
-      container.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">
+      container.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">
         Nenhum funcionário encontrado.<br>
         <small style="color:#9ca3af">confsDB: ${confsDB.length} | ativos: ${confsAtivos.length} | filtros: tipo="${filtTipoArm}" nome="${filtNomeArm}" mês="${filtMes}" | unidade="${undUsuario}"</small>
       </td></tr>`;
@@ -21458,11 +21619,16 @@ async function renderAbsArmazem(){
             : `<span style="font-weight:800;color:var(--text-muted)">0</span>`}
         </td>
         <td style="padding:10px 14px;text-align:center">
+          ${d.pedidosConf>0
+            ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:.78rem;font-weight:800;padding:2px 9px;border-radius:5px">${d.pedidosConf}</span>`
+            : `<span style="font-weight:800;color:var(--text-muted)">—</span>`}
+        </td>
+        <td style="padding:10px 14px;text-align:center">
           <span style="background:${corF}22;color:${corF};font-size:.78rem;font-weight:800;padding:2px 8px;border-radius:5px">${pctF}%</span>
         </td>
       </tr>`;
     }).join('');
-  }catch(e){ console.error('[AbsArm] ERRO:', e); container.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:20px;color:#ef4444">Erro: ${e.message}</td></tr>`; }
+  }catch(e){ console.error('[AbsArm] ERRO:', e); container.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:20px;color:#ef4444">Erro: ${e.message}</td></tr>`; }
 }
 
 async function abrirModalLancarAbsArm(){
@@ -21923,6 +22089,7 @@ async function carregarDemandasArmazemAdm(){
           <div style="display:flex;gap:8px;align-items:center">
             <span style="font-size:.82rem;font-weight:700;color:var(--green)">${fv(d.valor_total||0)}</span>
             <span style="font-size:.78rem;color:var(--text-muted)">${total} pedidos</span>
+            ${total===0?'<span style="background:rgba(239,68,68,.15);color:#ef4444;font-size:.7rem;font-weight:700;padding:2px 9px;border-radius:10px">⚠️ Sem planilha</span>':''}
           </div>
         </div>
 
@@ -21968,6 +22135,13 @@ async function vincularConferente(demandaId, carga){
   if(!confId){ showToast('Selecione um conferente','warning'); return; }
 
   try{
+    // Verificar se existe planilha para esta carga
+    const bdCheck = await supaFetch(`base_data?carga=eq.${carga}&select=pedido&limit=1`).catch(()=>[]);
+    if(!bdCheck || bdCheck.length===0){
+      const ok = confirm(`⚠️ A carga ${carga} não tem planilha importada!\n\nO conferente não verá pedidos até a planilha ser importada.\n\nDeseja vincular mesmo assim?`);
+      if(!ok) return;
+    }
+
     // Verificar vínculos existentes
     const jaVinculados = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id,conferente_nome`) || [];
 
@@ -22282,7 +22456,9 @@ async function carregarPortalConferente(){
           </div>
         </div>
         <div style="padding:12px 18px">
-          ${pUnicos.map(ped=>{
+          ${pUnicos.length===0
+            ? '<div style="text-align:center;padding:22px 12px;color:#f59e0b"><div style="font-size:1.6rem;margin-bottom:6px">⚠️</div><div style="font-size:.88rem;font-weight:700;color:#f59e0b">Planilha não importada</div><div style="font-size:.75rem;color:var(--text-muted);margin-top:5px">Os pedidos desta carga ainda não foram registrados no sistema.<br>Aguarde o supervisor importar a planilha.</div></div>'
+            : pUnicos.map(ped=>{
             const pedData = pedidos.find(r=>r.pedido===ped)||{};
             const conf = confMap[ped];
             const st = conf?.status||'pendente';
@@ -22971,7 +23147,7 @@ async function carregarPaginaFiscal(){
       supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor&order=carga.asc,pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
-      supaFetch('atribuicoes_fiscal?select=*').catch(()=>[]),
+      supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([])
     ]);
     // Montar Set de alertas ativos: "carga_pedido"
@@ -24561,7 +24737,6 @@ function renderTabelaFinanceiro(){
     pago:    '<span class="fin-status pago">✅ Pago</span>',
     parcial: '<span class="fin-status parcial">🔶 Parcial</span>',
   };
-  const riRotas = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 
   function buildRow(d, i){
     const rank = i===0?'gold':i===1?'silver':i===2?'bronze':'other';
@@ -24884,42 +25059,9 @@ popularMotoristas();
 
 const now=new Date();
 const _ut=document.getElementById('update-time'); if(_ut) _ut.textContent='Atualizado: '+now.toLocaleDateString('pt-BR')+' '+now.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-// Recuperar BASE_DATA salvo anteriormente
-(function(){
-  try {
-    const savedBase = localStorage.getItem('base_data_prod');
-    if(savedBase) {
-      const parsed = JSON.parse(savedBase);
-      // Deduplicar ao recuperar
-      const chaves = new Set();
-      BASE_DATA = parsed.filter(r => {
-        if(!r.carga || !r.pedido) return true;
-        const k = Number(r.carga)+'_'+Number(r.pedido);
-        if(chaves.has(k)) return false;
-        chaves.add(k);
-        return true;
-      });
-      window._cargaMapCache = null;
-      // Garantir und preenchido
-      BASE_DATA.forEach(r => {
-        if(!r.und) {
-          const ref = BASE_DATA.find(x => Number(x.carga)===Number(r.carga) && x.und);
-          if(ref) r.und = ref.und;
-        }
-      });
-      // Enriquecer rota/rire/und com dados dos lançamentos
-      const _lmRec = {};
-      lancamentos.forEach(l=>{ const c=Math.round(Number(l.carga)); if(!_lmRec[c]) _lmRec[c]=l; });
-      BASE_DATA.forEach(r=>{
-        const c=Math.round(Number(r.carga)); const lanc=_lmRec[c]; if(!lanc) return;
-        if(!r.rota||r.rota.trim()==='') r.rota=lanc.rota||'';
-        if(!r.und ||r.und.trim()==='')  r.und =lanc.und ||'';
-        r.rire = normRire(r.rire) || (r.rota?getRireFromRota(r.rota):'');
-      });
-      console.log('BASE_DATA recuperado e deduplicado:', BASE_DATA.length, 'registros');
-    }
-  } catch(e) { console.error('Erro ao recuperar BASE_DATA:', e); }
-})();
+// BASE_DATA é carregado do Supabase em iniciarApp() via syncBaseData().
+// O localStorage serve apenas como cache write-through — não é carregado aqui.
+// (bloco de carga antigo removido — fonte oficial = Supabase)
 
 // Recuperar CARGA_MAP salvo
 (function(){
@@ -24957,13 +25099,8 @@ const _ut=document.getElementById('update-time'); if(_ut) _ut.textContent='Atual
 // ── SISTEMA ANTI-TELA BRANCA ────────────────────────────
 // Wrapper que adiciona timeout, retry e loading para qualquer função async
 async function safeLoad(fn, label, timeoutMs=15000){
-  const loadEl = document.getElementById('loading');
-  const loadTxt = document.getElementById('loading-text');
+  _loadingShow(label||'Carregando...');
   try{
-    if(loadEl) loadEl.classList.remove('hidden');
-    if(loadTxt) loadTxt.textContent = label||'Carregando...';
-
-    // Timeout automático
     const resultado = await Promise.race([
       fn(),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error('Timeout: '+timeoutMs/1000+'s')), timeoutMs))
@@ -24971,9 +25108,7 @@ async function safeLoad(fn, label, timeoutMs=15000){
     return resultado;
   }catch(e){
     console.error('[safeLoad] '+label+': ', e);
-    // Mostrar opção de retry se demorar demais
-    showToast('⚠️ '+( label||'Aba')+'  lenta ou sem resposta. Tentando novamente...','warning');
-    // Uma tentativa automática
+    showToast('⚠️ '+(label||'Aba')+' lenta ou sem resposta. Tentando novamente...','warning');
     try{
       const resultado2 = await Promise.race([
         fn(),
@@ -24985,16 +25120,41 @@ async function safeLoad(fn, label, timeoutMs=15000){
       throw e2;
     }
   }finally{
-    if(loadEl) loadEl.classList.add('hidden');
+    _loadingHide();
   }
 }
 
-// supaFetch com timeout e retry automático
+// ── Loading global: referência contada + debounce ────────────────────────────
+// Qualquer supaFetch ativa o relógio; só some quando TODAS as chamadas terminam.
+// Debounce de 150ms evita piscar em chamadas rápidas.
+let _loadingCount = 0;
+let _loadingTimer = null;
+function _loadingShow(txt){
+  _loadingCount++;
+  const loadTxt = document.getElementById('loading-text');
+  if(loadTxt && txt) loadTxt.textContent = txt;
+  if(!_loadingTimer){
+    _loadingTimer = setTimeout(()=>{
+      if(_loadingCount > 0) document.getElementById('loading')?.classList.remove('hidden');
+    }, 150);
+  }
+}
+function _loadingHide(){
+  _loadingCount = Math.max(0, _loadingCount - 1);
+  if(_loadingCount === 0){
+    clearTimeout(_loadingTimer); _loadingTimer = null;
+    document.getElementById('loading')?.classList.add('hidden');
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+// supaFetch com timeout, retry automático e loading global
 const _supaFetchOrig = supaFetch;
 async function supaFetch(path, opts={}, _tentativa=1){
   const TIMEOUT_MS = 35000; // 35s — aguenta cold start do Supabase
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), TIMEOUT_MS);
+  _loadingShow();
   try{
     const res = await fetch(SUPA_URL+'/rest/v1/'+path, {
       signal: controller.signal,
@@ -25018,6 +25178,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
       if(_tentativa < 2){
         console.warn('[supaFetch] Timeout na tentativa 1 — retentando:', path.slice(0,80));
         clearTimeout(tid);
+        _loadingHide(); // decrementa antes do retry (o retry vai incrementar de novo)
         return supaFetch(path, opts, 2);
       }
       throw new Error('Timeout na query: '+path.slice(0,120));
@@ -25025,6 +25186,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
     throw e;
   }finally{
     clearTimeout(tid);
+    _loadingHide();
   }
 }
 // ────────────────────────────────────────────────────────
@@ -25325,6 +25487,55 @@ async function iniciarApp(){
     showToast('⚠️ Carregue a planilha para ver os dados','warning');
   }
 
+  // ── Auto-sync: sobe cargas do localStorage que ainda não chegaram ao banco ──
+  // Roda silenciosamente em background; não bloqueia o restante do startup.
+  (async function _autoSyncLocalParaSupabase(){
+    try{
+      const cached = JSON.parse(localStorage.getItem('base_data_prod')||'[]');
+      if(!cached.length){ localStorage.removeItem('base_data_prod'); return; }
+
+      // Cargas que estão no cache local mas não no BASE_DATA (Supabase)
+      const cargasNoSupabase = new Set(BASE_DATA.map(r=>Number(r.carga)));
+      const cargasSoLocal = [...new Set(
+        cached.map(r=>Number(r.carga)).filter(c=>c && !cargasNoSupabase.has(c))
+      )];
+
+      if(!cargasSoLocal.length){
+        localStorage.removeItem('base_data_prod'); // cache limpo, banco tem tudo
+        return;
+      }
+
+      console.log('[auto-sync] Cargas no cache local não encontradas no banco:', cargasSoLocal);
+      showToast(`🔄 Sincronizando ${cargasSoLocal.length} carga(s) pendente(s) com o banco...`,'warning');
+
+      const LOTE = 200;
+      for(const carga of cargasSoLocal){
+        const registros = cached.filter(r=>Number(r.carga)===carga);
+        for(let i=0;i<registros.length;i+=LOTE){
+          await supaFetch('base_data?on_conflict=carga,pedido',{
+            method:'POST',
+            prefer:'resolution=ignore-duplicates,return=minimal',
+            body:JSON.stringify(registros.slice(i,i+LOTE).map(r=>({
+              carga:r.carga, pedido:r.pedido, valor:r.valor,
+              und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
+              ajudante:r.ajudante, ocorrencia:r.ocorrencia,
+              mes_ano:r.mes_ano, semana_mes:r.semana_mes, rire:r.rire
+            })))
+          });
+        }
+      }
+
+      // Recarregar BASE_DATA do banco para incluir os novos registros
+      await syncBaseData();
+      localStorage.removeItem('base_data_prod');
+      window._cargaMapCache = null;
+      populateSelects(); renderMot(); renderVeic(); renderGeral(); renderLanc();
+      showToast(`✅ ${cargasSoLocal.length} carga(s) sincronizada(s) automaticamente com o banco!`,'success');
+    }catch(e){
+      console.warn('[auto-sync] Falha ao subir cache local:', e.message);
+    }
+  })();
+
   // Enriquecer BASE_DATA com dados dos lançamentos
   const _lmE={};
   lancamentos.forEach(l=>{ const cx=Math.round(Number(l.carga)); if(!_lmE[cx]) _lmE[cx]=l; });
@@ -25529,13 +25740,13 @@ function getAgendamentos(){
   try{ return JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]'); }catch(e){ return []; }
 }
 
-function saveAgendamentos(arr){
+async function saveAgendamentos(arr){
   const antigos = _agendCache !== null ? _agendCache : getAgendamentos();
   const idsNovos = new Set(arr.map(a=>a.id));
   const deletados = antigos.filter(a=>!idsNovos.has(a.id)).map(a=>a.id);
   _agendCache = arr;
-  localStorage.setItem('agendamentos_rotas', JSON.stringify(arr));
-  _syncAgendSupabase(arr, deletados);
+  localStorage.setItem('agendamentos_rotas', JSON.stringify(arr)); // cache
+  await _syncAgendSupabase(arr, deletados); // fonte verdadeira
 }
 
 async function _syncAgendSupabase(arr, deletados=[]){
@@ -25623,7 +25834,7 @@ function initAgendMes(){
   setTimeout(function(){ if(typeof verificarRotasSemMotivo==='function') verificarRotasSemMotivo(); }, 400);
 }
 
-function carregarCalendarioMaio2026(){
+async function carregarCalendarioMaio2026(){
   // ── Idempotente: verifica entrada por entrada pelo id fixo ────────────────
   // Não usa chave global — se uma entrada foi apagada, ela volta na próxima visita.
   const ROTAS = [
@@ -25673,7 +25884,7 @@ function carregarCalendarioMaio2026(){
     }
   });
 
-  if(added) saveAgendamentos(arr);
+  if(added) await saveAgendamentos(arr);
 }
 
 function abrirModalAgendamento(id){
@@ -25706,7 +25917,7 @@ function abrirModalAgendamento(id){
   modal.style.display='flex';
 }
 
-function salvarAgendamento(){
+async function salvarAgendamento(){
   const id   = document.getElementById('agend-id').value;
   const rota = document.getElementById('agend-rota').value.trim();
   const data = document.getElementById('agend-data').value;
@@ -25720,24 +25931,24 @@ function salvarAgendamento(){
   } else {
     arr.push({id:'agend_'+Date.now(), rota, data, obs, mes_ano, status:'agendado', criado_em:new Date().toISOString()});
   }
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   document.getElementById('modal-agendamento').style.display='none';
   showToast('✅ Agendamento salvo','success');
   renderAgendamentos();
 }
 
-function excluirAgendamento(id){
+async function excluirAgendamento(id){
   if(!confirm('Excluir este agendamento?')) return;
-  saveAgendamentos(getAgendamentos().filter(a=>a.id!==id));
+  await saveAgendamentos(getAgendamentos().filter(a=>a.id!==id));
   showToast('Agendamento excluído','success');
   renderAgendamentos();
 }
 
-function marcarAgendamentoRealizado(id){
+async function marcarAgendamentoRealizado(id){
   const arr = getAgendamentos();
   const idx = arr.findIndex(a=>a.id===id);
   if(idx>=0){ arr[idx].status = arr[idx].status==='realizado' ? 'agendado' : 'realizado'; }
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   renderAgendamentos();
 }
 
@@ -25774,8 +25985,8 @@ async function renderAgendamentos(){
 
   // ── 4. Mapas de motivo ─────────────────────────────────────────────────────
   // Compatibilidade: fluxo antigo usa a.acao; fluxo novo usa a.motivo_atraso
-  const MCORES = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#6b7280'};
-  const MLABEL = {comercial:'💰 Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento'};
+  const MCORES = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#6b7280',saiu_data_correta:'#059669'};
+  const MLABEL = {comercial:'💰 Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento',saiu_data_correta:'✅ Saiu no prazo'};
   const ATOM   = {sem_veiculo:'veiculo',sem_motorista:'motorista',valor:'comercial',atraso_rota:'atraso_rota'};
   const getMKey = a => a.motivo_atraso || ATOM[a.acao] || '';
 
@@ -25873,7 +26084,7 @@ async function renderAgendamentos(){
   var _ultDia=new Date(_priDia.getFullYear(),_priDia.getMonth()+1,0).getDate();
   var _iniSem=_priDia.getDay(); // 0=Dom
   var _DS=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  var _MOPTS=[{k:'comercial',l:'💰 Comercial'},{k:'veiculo',l:'🚛 Sem Veículo'},{k:'motorista',l:'🚗 Sem Motorista'},{k:'atraso_rota',l:'⏱️ Atraso de Rota'},{k:'atraso_carregamento',l:'📦 Atraso Carregamento'}];
+  var _MOPTS=[{k:'comercial',l:'💰 Comercial'},{k:'veiculo',l:'🚛 Sem Veículo'},{k:'motorista',l:'🚗 Sem Motorista'},{k:'atraso_rota',l:'⏱️ Atraso de Rota'},{k:'atraso_carregamento',l:'📦 Atraso Carregamento'},{k:'saiu_data_correta',l:'✅ Saiu no prazo'}];
 
   function _mkCal(mapDia, tipo){
     var s='<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">';
@@ -25905,10 +26116,11 @@ async function renderAgendamentos(){
           var demSt=_demMap[(a.rota||'').trim().toUpperCase()+'|'+a.data];
           var saiu=a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(demSt);
           var naoSaiu=!saiu&&pas&&!eH;
+          var fechVencido=!saiu&&!pas&&!eH&&_diasUteisAntes(a.data,2)<=hoje;
           var cor=_rotaCor(a.rota||'');
-          var chipBg=saiu?'rgba(5,150,105,.14)':naoSaiu?'rgba(239,68,68,.12)':cor+'18';
-          var chipCor=saiu?'#059669':naoSaiu?'#dc2626':cor;
-          var icone=saiu?'✅':naoSaiu?'❌':(eH?'⏳':'');
+          var chipBg=saiu?'rgba(5,150,105,.14)':naoSaiu?'rgba(239,68,68,.12)':fechVencido?'rgba(234,88,12,.12)':cor+'18';
+          var chipCor=saiu?'#059669':naoSaiu?'#dc2626':fechVencido?'#ea580c':cor;
+          var icone=saiu?'✅':naoSaiu?'❌':fechVencido?'⚠️':(eH?'⏳':'');
           var rotaC=(a.rota||'').length>13?(a.rota||'').slice(0,13)+'…':(a.rota||'');
           var mBtns='';
           if(!saiu){
@@ -25918,8 +26130,9 @@ async function renderAgendamentos(){
             });
             if(mKey) mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\'\')" style="background:rgba(107,114,128,.1);color:#9ca3af;border:1px solid rgba(107,114,128,.2);border-radius:4px;padding:2px 7px;font-size:.62rem;cursor:pointer">✕</button>';
           }
+          var podeToggle=(!saiu)&&(naoSaiu||eH||fechVencido);
           s+='<div style="margin-bottom:3px">'
-            +'<div onclick="'+((!saiu)&&(naoSaiu||eH)?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+((!saiu)&&(naoSaiu||eH)?'pointer':'default')+';background:'+chipBg+';color:'+chipCor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px">'
+            +'<div onclick="'+(podeToggle?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+(podeToggle?'pointer':'default')+';background:'+chipBg+';color:'+chipCor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px">'
               +(icone?'<span>'+icone+'</span>':'')
               +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rotaC+'</span>'
               +(mKey?'<span style="font-size:.58rem" title="'+(MLABEL[mKey]||mKey)+'">⚠</span>':'')
@@ -26012,14 +26225,16 @@ async function renderAgendamentos(){
     veiculo:'🚛 Sem Veículo',
     motorista:'🚗 Sem Motorista',
     atraso_rota:'⏱️ Atraso de Rota',
-    atraso_carregamento:'📦 Atraso no Carregamento'
+    atraso_carregamento:'📦 Atraso no Carregamento',
+    saiu_data_correta:'✅ Saiu na data correta'
   };
   var MOTIVOS_POP = [
     {k:'comercial',           l:'💰 Comercial'},
     {k:'veiculo',             l:'🚛 Sem Veículo'},
     {k:'motorista',           l:'🚗 Sem Motorista'},
     {k:'atraso_rota',         l:'⏱️ Atraso de Rota'},
-    {k:'atraso_carregamento', l:'📦 Atraso no Carregamento'}
+    {k:'atraso_carregamento', l:'📦 Atraso no Carregamento'},
+    {k:'saiu_data_correta',   l:'✅ Saiu na data correta'}
   ];
 
   function mostrarItem(){
@@ -26058,14 +26273,14 @@ async function renderAgendamentos(){
     modal.style.display = 'flex';
   }
 
-  window._salvarMotivoPendente = function(id, motivo){
+  window._salvarMotivoPendente = async function(id, motivo){
     var arr  = getAgendamentos();
     var idx  = arr.findIndex(function(a){ return a.id===id; });
     if(idx>=0){
       arr[idx].motivo_atraso = motivo;
       arr[idx].motivo_label  = LABELS_POP[motivo]||motivo;
-      arr[idx].status        = 'atrasado';
-      saveAgendamentos(arr);
+      arr[idx].status        = motivo === 'saiu_data_correta' ? 'realizado' : 'atrasado';
+      await saveAgendamentos(arr);
     }
     _idxAtual++;
     mostrarItem();
@@ -26099,12 +26314,12 @@ async function renderAgendamentos(){
 })();
 
 // ── Reabrir agendamento (resetar lancado:true) ────────────────────────────
-function reabrirAgendamento(id){
+async function reabrirAgendamento(id){
   var arr = getAgendamentos(), idx = arr.findIndex(function(a){return a.id===id;});
   if(idx<0){ showToast('Agendamento não encontrado','warning'); return; }
   arr[idx].lancado = false;
   arr[idx].status  = arr[idx].motivo_atraso ? 'atrasado' : 'agendado';
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   showToast('🔄 Rota reaberta — aparece novamente no popup da Expedição','success');
   renderAgendamentos();
 }
@@ -26120,12 +26335,17 @@ function toggleMotivoAgend(id){
 // IDs cujo motivo está sendo editado no popup — evita delete prematuro no banco
 const _editandoMotivo = new Set();
 
-function salvarMotivoAgend(id, motivo){
-  _editandoMotivo.delete(id); // limpa flag de edição após salvar
-  var LABELS={comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento'};
+async function salvarMotivoAgend(id, motivo){
+  _editandoMotivo.delete(id);
+  var LABELS={comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento',saiu_data_correta:'✅ Saiu no prazo'};
   var arr = getAgendamentos(), idx = arr.findIndex(function(a){return a.id===id;});
   if(idx<0){ showToast('Agendamento não encontrado (id: '+id+')','warning'); return; }
-  if(motivo){
+  if(motivo === 'saiu_data_correta'){
+    delete arr[idx].motivo_atraso;
+    delete arr[idx].motivo_label;
+    arr[idx].status = 'realizado';
+    showToast('✅ Rota confirmada como saída no prazo','success');
+  } else if(motivo){
     arr[idx].motivo_atraso = motivo;
     arr[idx].motivo_label  = LABELS[motivo]||motivo;
     arr[idx].status        = 'atrasado';
@@ -26136,7 +26356,7 @@ function salvarMotivoAgend(id, motivo){
     if(arr[idx].status==='atrasado') arr[idx].status='agendado';
     showToast('✅ Motivo removido','success');
   }
-  saveAgendamentos(arr);
+  await saveAgendamentos(arr);
   renderAgendamentos();
 }
 
@@ -26147,7 +26367,7 @@ function limparMotivoAtraso(id){
 }
 
 // ══ POPUP UNIFICADO — ROTAS DA SEMANA (EXPEDIÇÃO) ═══════════════════════
-function abrirPopupRotasExpedicao(){
+async function abrirPopupRotasExpedicao(){
   // Não exibir para Expedição Operador — apenas gestores/admins
   if((USUARIO_LOGADO?.perfil||'') === 'operador') return;
 
@@ -26191,7 +26411,7 @@ function abrirPopupRotasExpedicao(){
       mudou = true;
     }
   });
-  if(mudou) saveAgendamentos(agends);
+  if(mudou) await saveAgendamentos(agends);
 
   // Rotas a exibir: fechamento nos próximos 7 dias (= saída em 2 dias úteis a partir de cada dia)
   // Calcula a data de fechamento de cada agendamento e filtra pelos próximos 7 dias
@@ -26204,7 +26424,10 @@ function abrirPopupRotasExpedicao(){
   const rotasSemana = agends
     .filter(a => {
       const fdt = calcFech(a.data);
-      if(!datas.includes(fdt)) return false;
+      // Inclui rotas cujo fechamento está nos próximos 7 dias OU já venceu mas a saída ainda não ocorreu
+      const noJanela  = datas.includes(fdt);
+      const vencido   = fdt < hojeStr && a.data >= hojeStr;
+      if(!noJanela && !vencido) return false;
       if(a.status === 'concluido') return false;
       // Mantém realizado no popup se tiver motivo registrado (histórico visível)
       if(a.status === 'realizado' && !a.motivo_atraso) return false;
@@ -26352,7 +26575,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
         arr[idx].acao    = 'lancar';
         // Mantém status='atrasado' se tinha motivo; senão mantém o status atual
         // (NÃO marca realizado — só marca realizado quando o motorista confirma saída)
-        saveAgendamentos(arr);
+        await saveAgendamentos(arr);
       }
       showToast('✅ Pré-carga criada: '+rota,'success');
       carregarDemandas();
@@ -26368,7 +26591,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
     arr[idx].motivo_atraso = motivo;
     arr[idx].motivo_label  = LABELS[motivo];
     arr[idx].status        = 'atrasado'; // fica visível no popup E no card da demanda
-    saveAgendamentos(arr);
+    await saveAgendamentos(arr);
     showToast('📌 Motivo registrado — '+rota+' permanece pendente','warning');
     abrirPopupRotasExpedicao(); // re-renderiza o popup (card fica visível com motivo)
     renderDemandasCards();      // atualiza badge nos cards da expedição
@@ -26380,7 +26603,7 @@ async function confirmarOutroUnificado(id, rota, data){
   if(!texto){ showToast('Descreva o motivo','warning'); return; }
   _editandoMotivo.delete(id);
   const arr=getAgendamentos(), idx=arr.findIndex(a=>a.id===id);
-  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; saveAgendamentos(arr); }
+  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=texto; await saveAgendamentos(arr); }
   showToast('📌 Motivo registrado — rota permanece pendente','warning');
   abrirPopupRotasExpedicao();
   renderDemandasCards();
@@ -26434,7 +26657,7 @@ async function acaoRotaDia(id, rota, acao){
     // Marcar agendamento como realizado automaticamente
     const arr = getAgendamentos();
     const idx = arr.findIndex(a=>a.id===id);
-    if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao=acao; saveAgendamentos(arr); }
+    if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao=acao; await saveAgendamentos(arr); }
     carregarDemandas();
   }
 
@@ -26686,7 +26909,7 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
         motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO',
         usuario_id:USUARIO_LOGADO?.id||null
       })});
-      if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao='lancar'; saveAgendamentos(arr); }
+      if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao='lancar'; await saveAgendamentos(arr); }
       if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#059669;font-weight:700">✅ Pré-carga criada — aparecerá na Expedição</div>';
       showToast('✅ Pré-carga criada para '+rota,'success');
       renderDemandasCards();
@@ -26720,12 +26943,12 @@ async function acaoRotaSemana(id, rota, data, tipo, motivo){
   }
 }
 
-function confirmarOutro(id, rota, data){
+async function confirmarOutro(id, rota, data){
   const obs = document.getElementById('inp-outro-'+id)?.value.trim();
   if(!obs){ showToast('Descreva o motivo','warning'); return; }
   const arr = getAgendamentos();
   const idx = arr.findIndex(a=>a.id===id);
-  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=obs; saveAgendamentos(arr); }
+  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=obs; await saveAgendamentos(arr); }
   const card = document.getElementById('popup-rota-'+id);
   if(card) card.innerHTML=`<div style="text-align:center;padding:12px;color:#b91c1c;font-weight:700">⏳ Atraso registrado — ${obs}</div>`;
   showToast('⏳ Atraso registrado: '+rota,'warning');
@@ -27070,6 +27293,9 @@ async function salvarAbastecimento(){
       confirmado_em: null
     })});
     showToast('✅ Abastecimento registrado!','success');
+    // Auto-registrar presença do conferente no dia de saída
+    if(confNome && dataSaida)
+      _absUpsertPresenca(confNome, 'conferente', dataSaida, 'abastecimento').catch(()=>{});
     // Fechar popup e limpar campos
     document.getElementById('modal-abastecimento').style.display = 'none';
     document.getElementById('abast-carga').value='';
@@ -27900,23 +28126,33 @@ async function carregarTV(){
     });
     const otifPct = otifTotal>0 ? Math.round(otifNoPrazo/otifTotal*100) : null;
     const otifCor = otifPct==null?'#64748b':otifPct>=85?'#34d399':otifPct>=70?'#f59e0b':'#ef4444';
-    const otifEl  = document.getElementById('tv-otif-pct');
-    const otifFill= document.getElementById('tv-otif-fill');
-    const otifSub = document.getElementById('tv-otif-sub');
-    const prazoList= document.getElementById('tv-prazo-list');
+    const otifEl      = document.getElementById('tv-otif-pct');
+    const otifFill    = document.getElementById('tv-otif-fill');
+    const otifRing    = document.getElementById('tv-otif-ring');
+    const otifOkNum   = document.getElementById('tv-otif-ok-num');
+    const otifTotNum  = document.getElementById('tv-otif-total-num');
+    const otifRiscoNum= document.getElementById('tv-otif-risco-num');
+    const prazoList   = document.getElementById('tv-prazo-list');
     if(otifEl){ otifEl.textContent=otifPct!=null?otifPct+'%':'—'; otifEl.style.color=otifCor; }
     if(otifFill){ otifFill.style.width=(otifPct||0)+'%'; otifFill.style.background=otifCor; }
-    if(otifSub) otifSub.textContent=otifTotal>0?`${otifNoPrazo} de ${otifTotal} cargas no prazo`:'Aguardando conclusões do mês';
+    if(otifRing){ const deg=Math.round((otifPct||0)*3.6); otifRing.style.background=`conic-gradient(${otifCor} ${deg}deg, rgba(255,255,255,.07) ${deg}deg)`; }
+    if(otifOkNum)  otifOkNum.textContent  = otifTotal>0 ? otifNoPrazo : '—';
+    if(otifTotNum) otifTotNum.textContent = otifTotal>0 ? otifTotal   : '—';
+    if(otifRiscoNum){ otifRiscoNum.textContent=emTransito.length; otifRiscoNum.style.color=emTransito.length>0?'#f59e0b':'#34d399'; }
     if(prazoList){
       emTransito.sort((a,b)=>b.prazoPct-a.prazoPct);
-      const criticas=emTransito.slice(0,4);
-      prazoList.innerHTML=criticas.length?criticas.map(d=>{
+      const criticas=emTransito.slice(0,3);
+      prazoList.innerHTML=criticas.length?`<div style="border-top:1px solid rgba(255,255,255,.08);padding-top:7px;display:flex;flex-direction:column;gap:5px">`+criticas.map(d=>{
         const cor=d.prazoPct>=100?'#ef4444':d.prazoPct>=85?'#f59e0b':'#fbbf24';
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-top:1px solid rgba(255,255,255,.07)">
-          <span style="font-size:.67rem;color:rgba(255,255,255,.55)">#${d.carga} ${d.rota}</span>
-          <span style="font-size:.67rem;font-weight:800;color:${cor}">${d.prazoPct>=100?'⚠️ Vencido':d.prazoPct+'%'}</span>
+        const barW=Math.min(d.prazoPct,100);
+        return `<div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+            <span style="font-size:.63rem;color:rgba(255,255,255,.5)">#${d.carga} ${d.rota}</span>
+            <span style="font-size:.65rem;font-weight:800;color:${cor}">${d.prazoPct>=100?'⚠️ Vencido':d.prazoPct+'%'}</span>
+          </div>
+          <div style="height:4px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${barW}%;background:${cor};border-radius:2px"></div></div>
         </div>`;
-      }).join(''):'';
+      }).join('')+'</div>':'';
     }
 
     // ── Frota ──
@@ -28903,5 +29139,25 @@ function _tvRenderTicker(demandas){
     </div>
   </div>
 </div>
+
+<!-- Modal: Calendário Individual de Absenteísmo -->
+<div id="modal-abs-cal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10001;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card);border-radius:18px;padding:24px;width:min(480px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 70px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:0">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+      <div>
+        <div id="abs-cal-nome" style="font-size:.95rem;font-weight:800;color:var(--text-primary)">—</div>
+        <div style="font-size:.73rem;color:var(--text-muted);margin-top:2px">Clique em qualquer dia para corrigir o status</div>
+      </div>
+      <button onclick="document.getElementById('modal-abs-cal').style.display='none'" style="background:var(--bg-hover);border:none;border-radius:8px;padding:6px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer">✕ Fechar</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <button onclick="navCalFuncionario(-1)" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer">◀</button>
+      <span id="abs-cal-mes-nav" style="font-size:.85rem;font-weight:700;color:var(--text-primary)">—</span>
+      <button onclick="navCalFuncionario(1)" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer">▶</button>
+    </div>
+    <div id="abs-cal-grid"></div>
+  </div>
+</div>
+
 </body>
 </html>
