@@ -18739,13 +18739,41 @@ async function renderAbsenteismo(){
       emViagem.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
     }catch(e){}
 
-    // Aplicar rota_auto para hoje nos motoristas em viagem (sem lançamento manual)
+    // Aplicar rota_auto para hoje nos motoristas em viagem e auto-salvar no Supabase
+    const rotaAutoParaSalvar = [];
     motoristasEmRotaHoje.forEach(nomeUp=>{
       const match = Object.keys(porFunc).find(n=>n.trim().toUpperCase()===nomeUp);
-      if(match && !porFunc[match].dias[hoje]){
-        porFunc[match].dias[hoje] = 'rota_auto';
+      if(match){
+        if(!porFunc[match].dias[hoje]){
+          porFunc[match].dias[hoje] = 'rota_auto';
+          rotaAutoParaSalvar.push(match);
+        } else if(porFunc[match].dias[hoje] === 'presente'){
+          // Só sobrescreve presença se for automática (gerada pelo sistema)
+          porFunc[match].dias[hoje] = 'rota_auto';
+          rotaAutoParaSalvar.push(match);
+        }
       }
     });
+    // Salvar em background (1x por dia)
+    if(rotaAutoParaSalvar.length > 0){
+      const flagRotaAuto = `abs_rota_auto_${hoje}`;
+      if(!localStorage.getItem(flagRotaAuto)){
+        localStorage.setItem(flagRotaAuto, '1');
+        (async()=>{
+          for(const nmRota of rotaAutoParaSalvar){
+            try{
+              const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nmRota)}&data=eq.${hoje}&select=id,fonte`).catch(()=>[]) || [];
+              if(ex.length){
+                // Só sobrescreve se a fonte for automática (não manual)
+                if((ex[0].fonte||'') !== 'manual') await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'rota',fonte:'automatico'})});
+              } else {
+                await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome:nmRota,funcao:'motorista',data:hoje,status:'rota',mes_ano:hoje.slice(0,7),fonte:'automatico',criado_em:new Date().toISOString()})});
+              }
+            }catch(_){}
+          }
+        })();
+      }
+    }
 
     const pendentesHoje = Object.keys(porFunc).filter(nome=>{
       const diasFuncionario = porFunc[nome].dias;
@@ -18900,7 +18928,10 @@ async function renderAbsenteismo(){
 
       return `<tr style="border-bottom:1px solid var(--border);${rowBg?'background:'+rowBg+';':''}${rowOp}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='${rowBg}'">
         <td style="padding:10px 14px;font-size:.83rem">
-          <span style="${nomeStyle}">${nome}</span>${badges}
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="${nomeStyle}">${nome}</span>${badges}
+            <button onclick="abrirCalFuncionario('${nome.replace(/'/g,"\\'")}','${filtMes}')" title="Calendário individual" style="padding:1px 7px;font-size:.68rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-card2);color:var(--text-muted);cursor:pointer;white-space:nowrap" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card2)'">📅</button>
+          </div>
         </td>
         <td style="padding:10px 14px;font-size:.75rem;color:var(--text-muted)">${d.funcao||'—'}</td>
         <td style="padding:10px 14px;text-align:center"><span style="font-weight:800;color:#059669">${pres}</span></td>
@@ -18955,6 +18986,89 @@ function _absIniciais(nome){
 }
 const _absAvatarCores = ['#1a2e4a','#7c3aed','#0369a1','#065f46','#92400e','#9d174d','#1e40af','#4d7c0f','#b45309','#0f766e'];
 function _absAvatarCor(nome){ return _absAvatarCores[nome.charCodeAt(0) % _absAvatarCores.length]; }
+
+// ══ CALENDÁRIO INDIVIDUAL POR FUNCIONÁRIO ════════════════════════════════════
+let _calFuncNome = '', _calFuncMes = '';
+
+async function abrirCalFuncionario(nome, mes){
+  _calFuncNome = nome;
+  _calFuncMes  = mes || new Date().toISOString().slice(0,7);
+  document.getElementById('abs-cal-nome').textContent = nome;
+  document.getElementById('modal-abs-cal').style.display = 'flex';
+  await renderCalFuncionario();
+}
+
+async function navCalFuncionario(dir){
+  const [a,m] = _calFuncMes.split('-').map(Number);
+  const d = new Date(a, m - 1 + dir, 1);
+  _calFuncMes = d.toISOString().slice(0,7);
+  await renderCalFuncionario();
+}
+
+async function renderCalFuncionario(){
+  const grid   = document.getElementById('abs-cal-grid');
+  const mesNav = document.getElementById('abs-cal-mes-nav');
+  if(!grid) return;
+  grid.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</div>';
+
+  const registros = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(_calFuncNome)}&mes_ano=eq.${_calFuncMes}&select=data,status,observacao,fonte`).catch(()=>[]) || [];
+  const stMap = {};
+  registros.forEach(r=>{ stMap[r.data] = r; });
+
+  const hoje = new Date().toISOString().slice(0,10);
+  const [ano, mes] = _calFuncMes.split('-').map(Number);
+  const primeiro  = new Date(ano, mes-1, 1);
+  const ultimo    = new Date(ano, mes, 0);
+  const nomeMes   = primeiro.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+  if(mesNav) mesNav.textContent = nomeMes.charAt(0).toUpperCase()+nomeMes.slice(1);
+
+  const ds = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  let h = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px">';
+  ds.forEach((d,i)=>{
+    const wk=i===0||i===6;
+    h+=`<div style="text-align:center;font-size:.6rem;font-weight:700;color:${wk?'rgba(239,68,68,.65)':'var(--text-muted)'};padding:4px 0;text-transform:uppercase">${d}</div>`;
+  });
+  h+='</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px">';
+  for(let i=0;i<primeiro.getDay();i++) h+='<div></div>';
+
+  for(let d=1;d<=ultimo.getDate();d++){
+    const dStr = `${_calFuncMes}-${String(d).padStart(2,'0')}`;
+    const reg  = stMap[dStr];
+    const st   = reg?.status;
+    const sc   = st ? (_absStatusCor[st]||{bg:'var(--bg-card2)',color:'var(--text-muted)'}) : null;
+    const eH   = dStr===hoje, pas=dStr<hoje;
+    const clicavel = pas||eH;
+    const bg   = eH ? 'rgba(37,99,235,.07)' : sc ? sc.bg : 'var(--bg-card2)';
+    const bdr  = eH ? '1.5px solid #2563eb' : '1px solid var(--border)';
+    h+=`<div onclick="${clicavel?`editarDiaFuncionario('${dStr}')`:''}" style="border-radius:7px;padding:4px 2px;text-align:center;cursor:${clicavel?'pointer':'default'};background:${bg};border:${bdr};min-height:46px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:opacity .12s" ${clicavel?'onmouseover="this.style.opacity=\'.75\'" onmouseout="this.style.opacity=\'1\'"':''}>
+      <span style="font-size:.72rem;font-weight:${eH?800:600};color:${eH?'#2563eb':'var(--text-muted)'}">${d}</span>
+      ${st?`<span style="font-size:.58rem;font-weight:700;color:${sc.color};line-height:1.1;text-align:center">${(_absStatusCor[st]?.label||st).replace(/^[^\s]+\s/,'')}</span>`:''}
+    </div>`;
+  }
+  h+='</div>';
+  // Legenda
+  h+='<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:5px">';
+  Object.entries(_absStatusCor).forEach(([k,v])=>{
+    h+=`<span style="font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:8px;background:${v.bg};color:${v.color}">${v.label}</span>`;
+  });
+  h+='</div>';
+  grid.innerHTML = h;
+}
+
+async function editarDiaFuncionario(data){
+  const hoje = new Date().toISOString().slice(0,10);
+  if(data > hoje) return;
+  document.getElementById('modal-abs-cal').style.display = 'none';
+  await abrirOutroStatusPara(_calFuncNome, '', data);
+  // Após salvar, reabrir o calendário
+  const origSalvar = window._afterSalvarStatusMs;
+  window._afterSalvarStatusMs = async ()=>{
+    window._afterSalvarStatusMs = origSalvar;
+    document.getElementById('modal-abs-cal').style.display = 'flex';
+    await renderCalFuncionario();
+  };
+}
+// ════════════════════════════════════════════════════════════════════════════
 
 // ── Status: variável global do modal de status ────────────
 let _msNomeAtual = '';
@@ -19016,7 +19130,7 @@ function calcularFimAtestadoMs(){
 }
 
 // ── Abre modal de status para uma pessoa ─────────────────
-async function abrirOutroStatusPara(nome){
+async function abrirOutroStatusPara(nome, statusAtual, dataPreSet){
   _msNomeAtual = nome;
   _msStatusAtual = 'falta';
   // Preencher cabeçalho
@@ -19026,7 +19140,7 @@ async function abrirOutroStatusPara(nome){
   if(nomeEl)   nomeEl.textContent = nome;
   // Reset campos
   document.getElementById('ms-obs').value = '';
-  document.getElementById('ms-data').value = new Date().toISOString().split('T')[0];
+  document.getElementById('ms-data').value = dataPreSet || new Date().toISOString().split('T')[0];
   const ini1 = document.getElementById('ms-ferias-inicio'); if(ini1) ini1.value='';
   const fim1 = document.getElementById('ms-ferias-fim');   if(fim1) fim1.value='';
   const ini2 = document.getElementById('ms-ates-inicio');  if(ini2) ini2.value='';
@@ -19035,13 +19149,14 @@ async function abrirOutroStatusPara(nome){
   // Garantir chip Presente visível antes de selecionar
   const btnPres = document.querySelector('#modal-abs-status [data-ms="presente"]');
   if(btnPres) btnPres.style.display = '';
-  // Reset e selecionar chip "falta" por padrão
+  // Reset e selecionar chip: status atual se existir, senão 'falta'
   document.querySelectorAll('#modal-abs-status [data-ms]').forEach(b=>{ b.style.borderColor='transparent'; b.style.boxShadow=''; b.style.transform=''; });
   document.getElementById('ms-campo-data').style.display = '';
   document.getElementById('ms-campos-ferias').style.display  = 'none';
   document.getElementById('ms-campos-atestado').style.display= 'none';
-  const chipFalta = document.querySelector('[data-ms="falta"]');
-  if(chipFalta) selecionarStatusMs(chipFalta, 'falta');
+  const chipInicial = statusAtual && statusAtual !== 'rota_auto' ? statusAtual : 'falta';
+  const chipSel = document.querySelector(`[data-ms="${chipInicial}"]`) || document.querySelector('[data-ms="falta"]');
+  if(chipSel) selecionarStatusMs(chipSel, chipInicial);
   document.getElementById('modal-abs-status').style.display = 'flex';
   // Verificar se está em rota agora — selecionar "Em Rota" automaticamente
   try{
@@ -19120,6 +19235,7 @@ async function salvarStatusMs(){
     document.getElementById('modal-abs-status').style.display = 'none';
     const _setor = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
     if(_setor==='armazem') renderAbsArmazem(); else renderAbsenteismo();
+    if(typeof window._afterSalvarStatusMs === 'function') window._afterSalvarStatusMs();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
   finally{ if(btn){ btn.disabled=false; btn.textContent='💾 Salvar'; } }
 }
@@ -19206,13 +19322,11 @@ async function renderListaModal(pessoas, registrosHoje){
           onmouseover="this.style.background='#dcfce7';this.style.borderColor='#4ade80'"
           onmouseout="this.style.background='#f0fdf4';this.style.borderColor='#86efac'">✅ Dar Presença</button>`;
 
-    // ⋯ só aparece quando não há nenhum status lançado hoje
-    const btnOutro = !st
-      ? `<button onclick="abrirOutroStatusPara('${p.nome.replace(/'/g,"\\'")}') " title="Outro status"
-          style="width:30px;height:30px;border-radius:8px;border:1.5px solid var(--border-med);background:var(--bg-card2);color:var(--text-muted);cursor:pointer;font-size:.85rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s"
-          onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)';this.style.background='#fff0f0'"
-          onmouseout="this.style.borderColor='var(--border-med)';this.style.color='var(--text-muted)';this.style.background='var(--bg-card2)'">⋯</button>`
-      : '';
+    // ⋯ sempre visível — muda cor se já houver status registrado hoje
+    const btnOutro = `<button onclick="abrirOutroStatusPara('${p.nome.replace(/'/g,"\\'")}','${st||''}')" title="${st?'Alterar status de hoje':'Outro status'}"
+        style="width:30px;height:30px;border-radius:8px;border:1.5px solid ${st?'var(--red)':'var(--border-med)'};background:${st?'rgba(239,68,68,.08)':'var(--bg-card2)'};color:${st?'var(--red)':'var(--text-muted)'};cursor:pointer;font-size:.85rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s"
+        onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)';this.style.background='#fff0f0'"
+        onmouseout="this.style.borderColor='${st?'var(--red)':'var(--border-med)'}';this.style.color='${st?'var(--red)':'var(--text-muted)'}';this.style.background='${st?'rgba(239,68,68,.08)':'var(--bg-card2)'}'">⋯</button>`;
 
     return `<div class="abs-item" data-nome="${p.nome.replace(/"/g,'&quot;')}"
       style="display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--border);transition:background .12s"
@@ -29025,5 +29139,25 @@ function _tvRenderTicker(demandas){
     </div>
   </div>
 </div>
+
+<!-- Modal: Calendário Individual de Absenteísmo -->
+<div id="modal-abs-cal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10001;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card);border-radius:18px;padding:24px;width:min(480px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 70px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:0">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+      <div>
+        <div id="abs-cal-nome" style="font-size:.95rem;font-weight:800;color:var(--text-primary)">—</div>
+        <div style="font-size:.73rem;color:var(--text-muted);margin-top:2px">Clique em qualquer dia para corrigir o status</div>
+      </div>
+      <button onclick="document.getElementById('modal-abs-cal').style.display='none'" style="background:var(--bg-hover);border:none;border-radius:8px;padding:6px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer">✕ Fechar</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <button onclick="navCalFuncionario(-1)" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer">◀</button>
+      <span id="abs-cal-mes-nav" style="font-size:.85rem;font-weight:700;color:var(--text-primary)">—</span>
+      <button onclick="navCalFuncionario(1)" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer">▶</button>
+    </div>
+    <div id="abs-cal-grid"></div>
+  </div>
+</div>
+
 </body>
 </html>
