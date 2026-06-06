@@ -6451,7 +6451,7 @@ const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 // ══ MONITOR DE ERROS — badge + viewer ═════════════════
 async function atualizarBadgeErros(){
   try{
-    var dados = await supaFetch('erros_sistema?resolvido=eq.false&select=id') || [];
+    var dados = await supaFetch('erros_sistema?resolvido=eq.false&select=id', {_quiet:true}) || [];
     var count = Array.isArray(dados) ? dados.length : 0;
     var btn = document.getElementById('log-btn-flutuante');
     var cnt = document.getElementById('log-btn-count');
@@ -23460,11 +23460,11 @@ async function _checkAlertasFiscal(){
   if(!['fiscal_admin','fiscal_op','opedor_fiscal','adm_fiscal','admin'].includes(USUARIO_LOGADO?.perfil||'')) return;
   try{
     // Buscar alertas pendentes deste usuário
-    const alertas = await supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=id,carga,pedido,rota`).catch(()=>[]);
+    const alertas = await supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=id,carga,pedido,rota`,{_quiet:true}).catch(()=>[]);
     if(!(alertas||[]).length) return;
     // Verificar se alguma dessas cargas está concluída ou fim_viagem
     const cargas = [...new Set(alertas.map(a=>a.carga))];
-    const demandas = await supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&status=in.(concluido,fim_viagem)&select=carga,status,rota`).catch(()=>[]);
+    const demandas = await supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&status=in.(concluido,fim_viagem)&select=carga,status,rota`,{_quiet:true}).catch(()=>[]);
     if(!(demandas||[]).length) return;
     const cargasConcluidas = new Set(demandas.map(d=>d.carga));
     const rotaMap = {};
@@ -23474,7 +23474,7 @@ async function _checkAlertasFiscal(){
     if(!paraNotificar.length) return;
     // Marcar como notificado
     const ids = paraNotificar.map(a=>a.id);
-    await supaFetch(`alertas_fiscal?id=in.(${ids.join(',')})`,{method:'PATCH',body:JSON.stringify({status:'notificado',notificado_em:new Date().toISOString()})}).catch(()=>{});
+    await supaFetch(`alertas_fiscal?id=in.(${ids.join(',')})`,{_quiet:true,method:'PATCH',body:JSON.stringify({status:'notificado',notificado_em:new Date().toISOString()})}).catch(()=>{});
     // Remover do Set local
     paraNotificar.forEach(a=>{ if(window._meusAlertas) window._meusAlertas.delete(`${a.carga}_${a.pedido}`); });
     // Mostrar pop-ups
@@ -25520,9 +25520,10 @@ function _loadingHide(){
 const _supaFetchOrig = supaFetch;
 async function supaFetch(path, opts={}, _tentativa=1){
   const TIMEOUT_MS = 35000; // 35s — aguenta cold start do Supabase
+  const {_quiet=false, prefer, headers:extraHeaders, ...restOpts} = opts;
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), TIMEOUT_MS);
-  _loadingShow();
+  if(!_quiet) _loadingShow();
   try{
     const res = await fetch(SUPA_URL+'/rest/v1/'+path, {
       signal: controller.signal,
@@ -25530,10 +25531,10 @@ async function supaFetch(path, opts={}, _tentativa=1){
         'apikey': SUPA_KEY,
         'Authorization': 'Bearer '+SUPA_KEY,
         'Content-Type': 'application/json',
-        'Prefer': opts.prefer || 'return=representation',
-        ...(opts.headers||{})
+        'Prefer': prefer || 'return=representation',
+        ...(extraHeaders||{})
       },
-      ...opts
+      ...restOpts
     });
     if(!res.ok){
       const err = await res.text();
@@ -25546,7 +25547,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
       if(_tentativa < 2){
         console.warn('[supaFetch] Timeout na tentativa 1 — retentando:', path.slice(0,80));
         clearTimeout(tid);
-        _loadingHide(); // decrementa antes do retry (o retry vai incrementar de novo)
+        if(!_quiet) _loadingHide();
         return supaFetch(path, opts, 2);
       }
       throw new Error('Timeout na query: '+path.slice(0,120));
@@ -25554,7 +25555,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
     throw e;
   }finally{
     clearTimeout(tid);
-    _loadingHide();
+    if(!_quiet) _loadingHide();
   }
 }
 // ────────────────────────────────────────────────────────
@@ -27772,7 +27773,7 @@ async function checarConexaoSupabase(){
   const el = document.getElementById('conn-status');
   try{
     const inicio = Date.now();
-    const rows = await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1');
+    const rows = await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1', {_quiet:true});
     const ms = Date.now() - inicio;
     _connOk = true;
     if(el){
