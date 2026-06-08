@@ -28518,8 +28518,11 @@ async function carregarTV(){
 
   try{
     const mesStr = hoje.slice(0,7);
+    const [_y,_m] = mesStr.split('-').map(Number);
+    const _prox = _m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
     const [banners, demRota,
-           veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, bdRows, entRows] = await Promise.all([
+           veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, bdRows, entRows,
+           lancRows, demSaida] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.(pronto_viagem,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida&order=data_saida.desc&limit=60`).catch(()=>[]),
       supaFetch(`veiculos?ativo=eq.true&select=placa`).catch(()=>[]),
@@ -28529,8 +28532,10 @@ async function carregarTV(){
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=in.(saiu,fim_viagem)&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
-      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=pedido,rota,rire,ocorrencia`).catch(()=>[]),
+      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=pedido,carga,rota,rire,ocorrencia`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
+      supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,ts`).catch(()=>[]),
+      supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&data_saida=lt.${_prox}-01&select=carga,data_saida`).catch(()=>[]),
     ]);
 
     // ── Carrossel ──
@@ -28547,16 +28552,23 @@ async function carregarTV(){
       if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome);
     });
 
-    // Pedidos únicos
+    // Pedidos únicos (inclui carga para ligar ao lançamento)
     const pedMap={};
     (bdRows||[]).forEach(b=>{
       const k=String(b.pedido);
       if(pedMap[k]) return;
       const rireNorm = normRire(b.rire) || getRireFromRota(b.rota) || 'R.E.';
-      pedMap[k]={ rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
+      pedMap[k]={ carga:b.carga, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
     });
+    // entrega_datas → data de entrega/saída por pedido (fonte principal, usada para R.E.)
     const entMap={};
     (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
+    // lancamentos → data de lançamento por carga (fonte R.I. enquanto planilha não é subida)
+    const lancMap={};
+    (lancRows||[]).forEach(l=>{ const c=String(l.carga); if(!lancMap[c]&&l.ts) lancMap[c]=l.ts.split('T')[0]; });
+    // data_saida por carga (fallback para R.I. sem entrega_datas)
+    const cargaSaidaMap={};
+    (demSaida||[]).forEach(d=>{ const c=String(d.carga); if(!cargaSaidaMap[c]&&d.data_saida) cargaSaidaMap[c]=d.data_saida; });
 
     const _calcOtifPed = (tipoFiltro) => {
       let total=0, noPrazo=0;
@@ -28566,9 +28578,14 @@ async function carregarTV(){
         total++;
         const ent=entMap[ped]||{};
         const prazoD=prazoMap[bd.rota]??((bd.rire==='R.I.')?1:8);
-        const isEntregue=!!ent.entrega;
+        const isRI = tipoFiltro==='RI';
+        const cargaStr = bd.carga ? String(bd.carga) : null;
+        // R.I.: usa lancamentos.ts como entrega quando entrega_datas ainda não tem data_entrega
+        const entregaDate = ent.entrega || (isRI && cargaStr ? lancMap[cargaStr] : null);
+        const saidaDate   = ent.saida   || (isRI && cargaStr ? cargaSaidaMap[cargaStr] : null);
+        const isEntregue=!!entregaDate;
         let isOnTime=false;
-        if(isEntregue&&ent.saida){ isOnTime=(new Date(ent.entrega)-new Date(ent.saida))/(864e5)<=prazoD; }
+        if(isEntregue&&saidaDate){ isOnTime=(new Date(entregaDate)-new Date(saidaDate))/(864e5)<=prazoD; }
         const isInFull=isEntregue&&(bd.ocorrencia==null||bd.ocorrencia===0);
         if(isOnTime&&isInFull) noPrazo++;
       }
