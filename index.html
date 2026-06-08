@@ -13113,8 +13113,9 @@ function renderGestaoFrotaKPIs(){
   const mesAtual = new Date().toISOString().slice(0,7);
   const META_DISP = 80;
 
-  // Veículos únicos que aparecem nas manutenções + frota total do cache
-  const totalFrota = Math.max(VEICULOS_CACHE.length, 1);
+  // Veículos únicos — exclui veículos do tipo FRETE (não são frota própria)
+  const _isFretePlaca = p => (p||'').toUpperCase().includes('FRETE') || (VEICULOS_CACHE.find(v=>v.placa===p)?.tipo||'').toUpperCase().includes('FRETE');
+  const totalFrota = Math.max(VEICULOS_CACHE.filter(v=>!_isFretePlaca(v.placa)).length, 1);
 
   // Em manutenção AGORA:
   // • Corretiva: qualquer manutenção ativa (iniciada, não concluída) → indisponível
@@ -13157,8 +13158,8 @@ function renderGestaoFrotaKPIs(){
       ${sub?`<div style="font-size:.72rem;color:var(--text-muted);margin-top:4px">${sub}</div>`:''}
     </div>`;
 
-  // ── Utilização de Frota: veículos em viagem agora ────────────────
-  const emViagemSet = new Set((_GF_DEMANDAS_ATIVAS||[]).map(d=>d.veiculo).filter(Boolean));
+  // ── Utilização de Frota: veículos em viagem agora (exclui FRETE) ────────────────
+  const emViagemSet = new Set((_GF_DEMANDAS_ATIVAS||[]).map(d=>d.veiculo).filter(v=>v && !_isFretePlaca(v)));
   const emViagem    = emViagemSet.size;
   const pctUtil     = totalFrota > 0 ? Math.round(emViagem/totalFrota*100) : 0;
   // ─────────────────────────────────────────────────────────────────
@@ -26151,7 +26152,10 @@ async function _syncAgendSupabase(arr, deletados=[]){
         })))
       });
     }
-  }catch(e){ console.warn('[Agend] Sync Supabase falhou:',e.message); }
+  }catch(e){
+    console.warn('[Agend] Sync Supabase falhou:',e.message);
+    showToast('⚠️ Salvo localmente, mas falhou ao sincronizar com o banco: '+e.message,'warning');
+  }
 }
 
 async function loadAgendamentosFromDB(){
@@ -26307,7 +26311,7 @@ async function salvarAgendamento(){
     const idx = arr.findIndex(a=>a.id===id);
     if(idx>=0) arr[idx] = {...arr[idx], rota, data, obs, mes_ano};
   } else {
-    arr.push({id:'agend_'+Date.now(), rota, data, obs, mes_ano, status:'agendado', criado_em:new Date().toISOString()});
+    arr.push({id:(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'agend_'+Date.now()), rota, data, obs, mes_ano, status:'agendado', criado_em:new Date().toISOString()});
   }
   await saveAgendamentos(arr);
   document.getElementById('modal-agendamento').style.display='none';
@@ -26344,7 +26348,8 @@ async function renderAgendamentos(){
   // ── 2. Extras (pré-cargas sem agendamento correspondente) ──────────────────
   let demandasMes = [];
   try{
-    demandasMes = await supaFetch('demandas_rota?select=rota,data_saida,status&data_saida=gte.'+mesFiltro+'-01&data_saida=lte.'+mesFiltro+'-31&order=data_saida.asc') || [];
+    const [_y,_m]=mesFiltro.split('-').map(Number);const _prox=_m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
+    demandasMes = await supaFetch('demandas_rota?select=rota,data_saida,status&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
   }catch(e){}
   const agendKeys = new Set(arr.map(a=>(a.rota||'').trim().toUpperCase()+'|'+a.data));
   const extras = demandasMes.filter(d=>!agendKeys.has((d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')));
