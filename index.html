@@ -18299,71 +18299,74 @@ async function renderDashInterna(){
   }catch(e){ if(container) container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; console.error('renderDashInterna:', e); }
 }
 
+// Cálculo OTIF unificado — usado pelo Dashboard Interno e pela TV
+// Prioridade data_entrega: entrega_datas (planilha real) → lancamentos.ts → demandas_rota.data_saida (mesmo dia = no prazo)
+function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
+  const prazoMap={};
+  (rotasRows||[]).forEach(r=>{
+    const nome=(r.nome||'').toUpperCase();
+    prazoMap[nome]=r.prazo_otif?r.prazo_otif/24:((r.tipo==='RI'||r.tipo==='R.I.')?1:8);
+  });
+  const saidaMap={};
+  (saidaRows||[]).forEach(d=>{ if(d.carga!=null&&d.data_saida) saidaMap[String(d.carga)]=d.data_saida; });
+  const lancDtMap={};
+  (lancRows||[]).forEach(l=>{ if(l.carga!=null&&l.ts) lancDtMap[String(l.carga)]=l.ts.slice(0,10); });
+  const pedMap={};
+  (bdRows||[]).forEach(b=>{
+    const k=String(b.pedido);
+    if(pedMap[k]) return;
+    const rireNorm=normRire(b.rire)||getRireFromRota(b.rota)||'R.E.';
+    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
+  });
+  const entMap={};
+  (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
+  let total=0,riTotal=0,reTotal=0;
+  let entG=0,onTimeG=0,inFullG=0,otifG=0;
+  let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
+  let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
+  for(const [ped,bd] of Object.entries(pedMap)){
+    const ent=entMap[ped]||{};
+    const carga=bd.carga;
+    const prazoD=prazoMap[bd.rota]??(bd.rire==='R.I.'?1:8);
+    let dataEntrega=ent.entrega||null;
+    if(!dataEntrega&&carga&&lancDtMap[carga]) dataEntrega=lancDtMap[carga];
+    if(!dataEntrega&&carga&&saidaMap[carga]) dataEntrega=saidaMap[carga];
+    const dataSaida=ent.saida||(carga?saidaMap[carga]:null)||null;
+    const isEntregue=!!dataEntrega;
+    let isOnTime=false;
+    if(isEntregue&&dataSaida) isOnTime=(new Date(dataEntrega)-new Date(dataSaida))/(864e5)<=prazoD;
+    const isInFull=isEntregue&&(bd.ocorrencia==null||bd.ocorrencia===0);
+    const isOTIF=isOnTime&&isInFull;
+    total++;
+    if(isEntregue)entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
+    if(bd.rire==='R.I.'){ riTotal++; if(isEntregue)entRI++; if(isOnTime)onTimeRI++; if(isInFull)inFullRI++; if(isOTIF)otifRI++; }
+    else { reTotal++; if(isEntregue)entRE++; if(isOnTime)onTimeRE++; if(isInFull)inFullRE++; if(isOTIF)otifRE++; }
+  }
+  return { prazoMap, total, riTotal, reTotal,
+           entG, onTimeG, inFullG, otifG,
+           entRI, onTimeRI, inFullRI, otifRI,
+           entRE, onTimeRE, inFullRE, otifRE };
+}
+
 async function renderDashOtif(){
   const el = document.getElementById('dash-otif');
   if(!el) return;
   try{
     const mesAtual = new Date().toISOString().slice(0,7);
 
-    // Fonte única — tudo direto do Supabase, nunca da memória
-    const [bdRows, entRows, rotasRows] = await Promise.all([
-      supaFetch(`base_data?mes_ano=eq.${mesAtual}&select=pedido,rota,rire,ocorrencia`).catch(()=>[]),
+    const [bdRows, entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
+      supaFetch(`base_data?mes_ano=eq.${mesAtual}&select=pedido,carga,rota,rire,ocorrencia`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesAtual}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
-      supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[])
+      supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
+      supaFetch(`lancamentos?mes_ano=eq.${mesAtual}&select=carga,ts`).catch(()=>[]),
+      supaFetch(`demandas_rota?data_saida=gte.${mesAtual}-01&data_saida=lte.${mesAtual}-31&select=carga,data_saida`).catch(()=>[]),
     ]);
 
     if(!(bdRows||[]).length){ el.innerHTML=''; return; }
 
-    // Prazo por rota em dias (horas ÷ 24)
-    const prazoMap={};
-    (rotasRows||[]).forEach(r=>{ prazoMap[(r.nome||'').toUpperCase()] = r.prazo_otif ? r.prazo_otif/24 : (r.tipo==='RI'?1:8); });
-
-    // Pedidos únicos do mês — mesma fonte e mesma classificação RI/RE da Análise Geral
-    const pedMap={};
-    (bdRows||[]).forEach(b=>{
-      const k=String(b.pedido);
-      if(pedMap[k]) return;
-      const rireNorm = normRire(b.rire) || getRireFromRota(b.rota) || 'R.E.';
-      pedMap[k]={ rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
-    });
-
-    // Entregas do mês
-    const entMap={};
-    (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
-
-    let total=0,riTotal=0,reTotal=0;
-    let entG=0,onTimeG=0,inFullG=0,otifG=0;
-    let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
-    let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
-
-    for(const [ped,bd] of Object.entries(pedMap)){
-      const ent = entMap[ped]||{};
-      const prazoD = prazoMap[bd.rota] ?? (bd.rire==='R.I.'?1:8);
-      const isRI = bd.rire==='R.I.';
-      // R.I. sem data_entrega real: usa data_saida como proxy (mesmo dia = no prazo)
-      const entregaDate = ent.entrega || (isRI ? ent.saida : null);
-      const saidaDate   = ent.saida;
-      const isEntregue = !!entregaDate;
-      let isOnTime=false;
-      if(isEntregue && saidaDate){
-        const dias=(new Date(entregaDate)-new Date(saidaDate))/(864e5);
-        isOnTime = dias<=prazoD;
-      }
-      const isInFull = isEntregue && (bd.ocorrencia==null||bd.ocorrencia===0);
-      const isOTIF   = isOnTime && isInFull;
-
-      total++;
-      if(isEntregue)entG++;
-      if(isOnTime)onTimeG++;
-      if(isInFull)inFullG++;
-      if(isOTIF)otifG++;
-
-      if(bd.rire==='R.I.'){
-        riTotal++; if(isEntregue)entRI++; if(isOnTime)onTimeRI++; if(isInFull)inFullRI++; if(isOTIF)otifRI++;
-      } else {
-        reTotal++; if(isEntregue)entRE++; if(isOnTime)onTimeRE++; if(isInFull)inFullRE++; if(isOTIF)otifRE++;
-      }
-    }
+    const s=_computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
+    const { total, riTotal, reTotal, entG, onTimeG, inFullG, otifG,
+            entRI, onTimeRI, inFullRI, otifRI, entRE, onTimeRE, inFullRE, otifRE } = s;
 
     if(!total){ el.innerHTML=''; return; }
     const pct=(n,d)=>d>0?Math.round(n*100/d):0;
@@ -28548,66 +28551,25 @@ async function carregarTV(){
     // ── Ticker ──
     _tvRenderTicker(demRota||[]);
 
-    // ── OTIF do Mês por pedidos (mesma lógica do Dashboard Interno) ──
-    const prazoMap={};
-    (rotasOtif||[]).forEach(r=>{
-      const nome=(r.nome||'').toUpperCase();
-      prazoMap[nome] = r.prazo_otif ? r.prazo_otif/24 : ((r.tipo||'').toUpperCase().includes('RI')?1:8);
-      if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome);
-    });
+    // ── OTIF do Mês — mesma lógica do Dashboard Interno via _computeOtifStats ──
+    (rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
 
-    // Pedidos únicos (inclui carga para ligar ao lançamento)
-    const pedMap={};
-    (bdRows||[]).forEach(b=>{
-      const k=String(b.pedido);
-      if(pedMap[k]) return;
-      const rireNorm = normRire(b.rire) || getRireFromRota(b.rota) || 'R.E.';
-      pedMap[k]={ carga:b.carga, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
-    });
-    // entrega_datas → data de entrega/saída por pedido (fonte principal, usada para R.E.)
-    const entMap={};
-    (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
-    // lancamentos → data de lançamento por carga (fallback R.I.)
-    const lancMap={};
-    (lancRows||[]).forEach(l=>{ const c=String(l.carga); if(!lancMap[c]&&l.ts) lancMap[c]=l.ts.split('T')[0]; });
-    // data_saida por carga (fallback R.I. sem entrega_datas)
-    const cargaSaidaMap={};
-    (demSaida||[]).forEach(d=>{ const c=String(d.carga); if(!cargaSaidaMap[c]&&d.data_saida) cargaSaidaMap[c]=d.data_saida; });
+    const otifStats=_computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif);
+    const { prazoMap } = otifStats;
 
-    const _calcOtifPed = (tipoFiltro) => {
-      let total=0, noPrazo=0;
-      for(const [ped,bd] of Object.entries(pedMap)){
-        if(tipoFiltro==='RI' && bd.rire!=='R.I.') continue;
-        if(tipoFiltro==='RE' && bd.rire!=='R.E.') continue;
-        total++;
-        const ent=entMap[ped]||{};
-        const prazoD=prazoMap[bd.rota]??((bd.rire==='R.I.')?1:8);
-        const isRI = tipoFiltro==='RI';
-        const cargaStr = bd.carga ? String(bd.carga) : null;
-        const saidaDate   = ent.saida || (isRI && cargaStr ? cargaSaidaMap[cargaStr] : null);
-        // R.I.: 1º entrega real; 2º lançamento; 3º data_saida (sem planilha = no prazo)
-        const entregaDate = ent.entrega
-                         || (isRI && cargaStr ? lancMap[cargaStr] : null)
-                         || (isRI ? saidaDate : null);
-        const isEntregue=!!entregaDate;
-        let isOnTime=false;
-        if(isEntregue&&saidaDate){ isOnTime=(new Date(entregaDate)-new Date(saidaDate))/(864e5)<=prazoD; }
-        const isInFull=isEntregue&&(bd.ocorrencia==null||bd.ocorrencia===0);
-        if(isOnTime&&isInFull) noPrazo++;
-      }
-      // Em Risco: cargas em rota que se aproximam do prazo
+    const _buildTvOtif = (tipoFiltro) => {
+      const total  = tipoFiltro==='RI' ? otifStats.riTotal : otifStats.reTotal;
+      const noPrazo= tipoFiltro==='RI' ? otifStats.otifRI  : otifStats.otifRE;
       const emTransito=(cargasEmRota||[]).filter(d=>{
         const k=(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]?prazoMap[k]*24:null;
         if(!prazoH||!d.ts_saiu) return false;
-        const isRI=(d.rota||'').toUpperCase()==='RI';
         if(tipoFiltro==='RI' && getRireFromRota(d.rota)!=='R.I.') return false;
         if(tipoFiltro==='RE' && getRireFromRota(d.rota)!=='R.E.') return false;
-        const pct=Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100);
-        return pct>=70;
-      }).map(d=>{ const prazoH=prazoMap[(d.rota||'').toUpperCase()]?prazoMap[(d.rota||'').toUpperCase()]*24:24; return {carga:d.carga,rota:d.rota,prazoPct:Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)}; });
+        return Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)>=70;
+      }).map(d=>{ const prazoH=(prazoMap[(d.rota||'').toUpperCase()]||1)*24; return {carga:d.carga,rota:d.rota,prazoPct:Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)}; });
       return {total,noPrazo,pct:total>0?Math.round(noPrazo/total*100):null,emTransito};
     };
-    _tvOtifCache = { ri:_calcOtifPed('RI'), re:_calcOtifPed('RE') };
+    _tvOtifCache = { ri:_buildTvOtif('RI'), re:_buildTvOtif('RE') };
     // Exibir RI primeiro e iniciar rotação a cada 10s
     _tvOtifMode = 0;
     _tvOtifApply(_tvOtifCache.ri,'🔵 INTERNA — R.I.');
