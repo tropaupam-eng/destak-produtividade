@@ -18339,10 +18339,14 @@ async function renderDashOtif(){
     for(const [ped,bd] of Object.entries(pedMap)){
       const ent = entMap[ped]||{};
       const prazoD = prazoMap[bd.rota] ?? (bd.rire==='R.I.'?1:8);
-      const isEntregue = !!ent.entrega;
+      const isRI = bd.rire==='R.I.';
+      // R.I. sem data_entrega real: usa data_saida como proxy (mesmo dia = no prazo)
+      const entregaDate = ent.entrega || (isRI ? ent.saida : null);
+      const saidaDate   = ent.saida;
+      const isEntregue = !!entregaDate;
       let isOnTime=false;
-      if(isEntregue && ent.saida){
-        const dias=(new Date(ent.entrega)-new Date(ent.saida))/(864e5);
+      if(isEntregue && saidaDate){
+        const dias=(new Date(entregaDate)-new Date(saidaDate))/(864e5);
         isOnTime = dias<=prazoD;
       }
       const isInFull = isEntregue && (bd.ocorrencia==null||bd.ocorrencia===0);
@@ -28558,17 +28562,31 @@ async function carregarTV(){
     const entMap={};
     (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
 
+    // lancamentos → data de lançamento por carga (fallback RI)
+    const lancMap={};
+    (lancRows||[]).forEach(l=>{ const c=String(l.carga); if(!lancMap[c]&&l.ts) lancMap[c]=l.ts.split('T')[0]; });
+    // data_saida por carga (fallback RI sem entrega_datas)
+    const cargaSaidaMap={};
+    (demSaida||[]).forEach(d=>{ const c=String(d.carga); if(!cargaSaidaMap[c]&&d.data_saida) cargaSaidaMap[c]=d.data_saida; });
+
     const _calcOtifPed = (tipoFiltro) => {
       let total=0, noPrazo=0;
       for(const [ped,bd] of Object.entries(pedMap)){
         if(tipoFiltro==='RI' && bd.rire!=='R.I.') continue;
         if(tipoFiltro==='RE' && bd.rire!=='R.E.') continue;
-        total++; // conta todos os pedidos do tipo, igual ao Dashboard
+        total++;
         const ent=entMap[ped]||{};
         const prazoD=prazoMap[bd.rota]??((bd.rire==='R.I.')?1:8);
-        const isEntregue=!!ent.entrega;
+        const isRI = tipoFiltro==='RI';
+        const cargaStr = bd.carga ? String(bd.carga) : null;
+        const saidaDate   = ent.saida || (isRI && cargaStr ? cargaSaidaMap[cargaStr] : null);
+        // R.I.: 1º entrega real; 2º lançamento; 3º data_saida (sem planilha = no prazo)
+        const entregaDate = ent.entrega
+                         || (isRI && cargaStr ? lancMap[cargaStr] : null)
+                         || (isRI ? saidaDate : null);
+        const isEntregue=!!entregaDate;
         let isOnTime=false;
-        if(isEntregue&&ent.saida){ isOnTime=(new Date(ent.entrega)-new Date(ent.saida))/(864e5)<=prazoD; }
+        if(isEntregue&&saidaDate){ isOnTime=(new Date(entregaDate)-new Date(saidaDate))/(864e5)<=prazoD; }
         const isInFull=isEntregue&&(bd.ocorrencia==null||bd.ocorrencia===0);
         if(isOnTime&&isInFull) noPrazo++;
       }
