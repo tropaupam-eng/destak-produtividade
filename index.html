@@ -26278,8 +26278,16 @@ async function carregarCalendarioMaio2026(){
 }
 
 function vincularExtraComoAgendamento(rota, data){
-  // Abre o modal de novo agendamento pré-preenchido com rota+data do extra
   abrirModalAgendamento(null, rota, data);
+}
+
+async function cancelarExtraDemanda(id, rota){
+  if(!confirm('Cancelar a pré-carga extra de "'+rota+'"?\n\nEsta ação marca a demanda como cancelada no sistema.')) return;
+  try{
+    await supaFetch('demandas_rota?id=eq.'+id, { method:'PATCH', body: JSON.stringify({status:'cancelado'}) });
+    showToast('🗑 Pré-carga extra cancelada','success');
+    renderAgendamentos();
+  }catch(e){ showToast('Erro ao cancelar: '+e.message,'warning'); }
 }
 
 function abrirModalAgendamento(id, _preRota, _preData){
@@ -26367,10 +26375,14 @@ async function renderAgendamentos(){
   let demandasMes = [];
   try{
     const [_y,_m]=mesFiltro.split('-').map(Number);const _prox=_m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
-    demandasMes = await supaFetch('demandas_rota?select=rota,data_saida,status&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
+    demandasMes = await supaFetch('demandas_rota?select=id,carga,rota,data_saida,status&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
   }catch(e){}
-  const agendKeys = new Set(arr.map(a=>(a.rota||'').trim().toUpperCase()+'|'+a.data));
-  const extras = demandasMes.filter(d=>!agendKeys.has((d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')));
+  const agendKeys   = new Set(arr.map(a=>(a.rota||'').trim().toUpperCase()+'|'+a.data));
+  const agendCargas = new Set(arr.filter(a=>a.carga).map(a=>String(a.carga)));
+  const extras = demandasMes.filter(d=>
+    !agendKeys.has((d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')) &&
+    !(d.carga && agendCargas.has(String(d.carga)))
+  );
 
   // ── 3. KPIs — mesma lógica de "saiu" do calendário ────────────────────────
   // Helper: rota saiu = realizado OU lancado OU pré-carga com status saiu/fim_viagem/concluido
@@ -26552,10 +26564,13 @@ async function renderAgendamentos(){
             +'</div>':'')
           +'</div>';
         });
-        // Extras — clique para converter em agendamento
+        // Extras — clique para vincular como agendamento; 🗑 para cancelar
         exts.forEach(function(d){
-          var rc=(d.rota||'').length>13?(d.rota||'').slice(0,13)+'…':(d.rota||'');
-          s+='<div onclick="vincularExtraComoAgendamento(\''+d.rota+'\',\''+d.data_saida+'\')" style="margin-bottom:3px;background:rgba(245,158,11,.12);color:#d97706;border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer" title="Clique para vincular como rota agendada">⚡ '+rc+'</div>';
+          var rc=(d.rota||'').length>11?(d.rota||'').slice(0,11)+'…':(d.rota||'');
+          s+='<div style="margin-bottom:3px;display:flex;align-items:center;gap:2px">'
+            +'<div onclick="vincularExtraComoAgendamento(\''+d.rota+'\',\''+d.data_saida+'\')" style="background:rgba(245,158,11,.12);color:#d97706;border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;flex:1" title="⚡ Extra: '+d.rota+(d.carga?' #'+d.carga:'')+' — Clique para vincular como agendado">⚡ '+rc+(d.carga?'<span style="font-size:.55rem;opacity:.8"> #'+d.carga+'</span>':'')+'</div>'
+            +'<button onclick="cancelarExtraDemanda(\''+d.id+'\',\''+d.rota+'\')" title="Cancelar esta pré-carga extra" style="background:rgba(239,68,68,.12);color:#f87171;border:none;border-radius:4px;padding:1px 4px;font-size:.58rem;cursor:pointer;flex-shrink:0;line-height:1.5">🗑</button>'
+          +'</div>';
         });
       } else {
         // Fechamento: chips com seta para a data de saída
