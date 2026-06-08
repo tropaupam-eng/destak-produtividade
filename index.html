@@ -6041,8 +6041,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <div id="tv-kpi-row1">
         <!-- OTIF do Mês -->
         <div class="tv-card">
-          <div class="tv-card-title">📊 OTIF — Mês Atual</div>
-          <div id="tv-otif-content">
+          <div class="tv-card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>📊 OTIF — Mês Atual</span>
+            <span id="tv-otif-tipo" style="font-size:.58rem;font-weight:700;padding:2px 8px;border-radius:10px;background:rgba(255,255,255,.08);color:rgba(255,255,255,.5);letter-spacing:.4px;transition:all .4s">—</span>
+          </div>
+          <div id="tv-otif-content" style="transition:opacity .35s ease">
             <!-- Anel + Stats -->
             <div style="display:flex;align-items:center;gap:14px;padding:2px 0 8px">
               <!-- Anel de progresso -->
@@ -28461,6 +28464,9 @@ let _tvCountdown    = 60;
 let _tvSlideIdx     = 0;
 let _tvSlideTotal   = 0;
 let _tvSlideTimer   = null;
+let _tvOtifTimer    = null;
+let _tvOtifMode     = 0;   // 0 = RI, 1 = RE
+let _tvOtifCache    = null;
 
 function iniciarTV(){
   _tvStopAll();
@@ -28479,7 +28485,8 @@ function _tvStopAll(){
   clearInterval(_tvClockTimer);
   clearInterval(_tvRefreshTimer);
   clearInterval(_tvSlideTimer);
-  _tvClockTimer=null; _tvRefreshTimer=null; _tvSlideTimer=null;
+  clearInterval(_tvOtifTimer);
+  _tvClockTimer=null; _tvRefreshTimer=null; _tvSlideTimer=null; _tvOtifTimer=null;
   _tvCountdown=60;
 }
 
@@ -28517,7 +28524,7 @@ async function carregarTV(){
       supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status`).catch(()=>[]),
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=not.in.(cancelado,pendente)&select=carga,rota,status,ts_saiu,ts_concluido`).catch(()=>[]),
-      supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif`).catch(()=>[]),
+      supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
     ]);
 
     // ── Carrossel ──
@@ -28526,55 +28533,37 @@ async function carregarTV(){
     // ── Ticker ──
     _tvRenderTicker(demRota||[]);
 
-    // ── OTIF do Mês ──
-    const rotasPrazo = {};
-    (rotasOtif||[]).forEach(r=>{ if(r.prazo_otif) rotasPrazo[(r.nome||'').toUpperCase()]=r.prazo_otif; });
-
-    let otifTotal=0, otifNoPrazo=0, emTransito=[];
-    (cargasMes||[]).forEach(d=>{
-      const prazo = rotasPrazo[(d.rota||'').toUpperCase()];
-      if(!prazo) return;
-      if(d.status==='concluido'){
-        otifTotal++;
-        if(d.ts_saiu&&d.ts_concluido){
-          const ms=new Date(d.ts_concluido)-new Date(d.ts_saiu);
-          if(ms<=prazo*3600000) otifNoPrazo++;
-        }
-      } else if(d.ts_saiu){
-        const prazoPct=Math.round((Date.now()-new Date(d.ts_saiu))/(prazo*3600000)*100);
-        if(prazoPct>=70) emTransito.push({carga:d.carga, rota:d.rota, prazoPct});
-      }
+    // ── OTIF do Mês (R.I. e R.E. separados, com rotação automática) ──
+    const rotasPrazo = {}, rotasTipo = {};
+    (rotasOtif||[]).forEach(r=>{
+      const k=(r.nome||'').toUpperCase();
+      if(r.prazo_otif) rotasPrazo[k]=r.prazo_otif;
+      rotasTipo[k] = (r.tipo||'').toUpperCase().includes('RI') ? 'RI' : 'RE';
     });
-    const otifPct = otifTotal>0 ? Math.round(otifNoPrazo/otifTotal*100) : null;
-    const otifCor = otifPct==null?'#64748b':otifPct>=85?'#34d399':otifPct>=70?'#f59e0b':'#ef4444';
-    const otifEl      = document.getElementById('tv-otif-pct');
-    const otifFill    = document.getElementById('tv-otif-fill');
-    const otifRing    = document.getElementById('tv-otif-ring');
-    const otifOkNum   = document.getElementById('tv-otif-ok-num');
-    const otifTotNum  = document.getElementById('tv-otif-total-num');
-    const otifRiscoNum= document.getElementById('tv-otif-risco-num');
-    const prazoList   = document.getElementById('tv-prazo-list');
-    if(otifEl){ otifEl.textContent=otifPct!=null?otifPct+'%':'—'; otifEl.style.color=otifCor; }
-    if(otifFill){ otifFill.style.width=(otifPct||0)+'%'; otifFill.style.background=otifCor; }
-    if(otifRing){ const deg=Math.round((otifPct||0)*3.6); otifRing.style.background=`conic-gradient(${otifCor} ${deg}deg, rgba(255,255,255,.07) ${deg}deg)`; }
-    if(otifOkNum)  otifOkNum.textContent  = otifTotal>0 ? otifNoPrazo : '—';
-    if(otifTotNum) otifTotNum.textContent = otifTotal>0 ? otifTotal   : '—';
-    if(otifRiscoNum){ otifRiscoNum.textContent=emTransito.length; otifRiscoNum.style.color=emTransito.length>0?'#f59e0b':'#34d399'; }
-    if(prazoList){
-      emTransito.sort((a,b)=>b.prazoPct-a.prazoPct);
-      const criticas=emTransito.slice(0,3);
-      prazoList.innerHTML=criticas.length?`<div style="border-top:1px solid rgba(255,255,255,.08);padding-top:7px;display:flex;flex-direction:column;gap:5px">`+criticas.map(d=>{
-        const cor=d.prazoPct>=100?'#ef4444':d.prazoPct>=85?'#f59e0b':'#fbbf24';
-        const barW=Math.min(d.prazoPct,100);
-        return `<div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-            <span style="font-size:.63rem;color:rgba(255,255,255,.5)">#${d.carga} ${d.rota}</span>
-            <span style="font-size:.65rem;font-weight:800;color:${cor}">${d.prazoPct>=100?'⚠️ Vencido':d.prazoPct+'%'}</span>
-          </div>
-          <div style="height:4px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${barW}%;background:${cor};border-radius:2px"></div></div>
-        </div>`;
-      }).join('')+'</div>':'';
-    }
+    const _calcOtifTV = (cargas, tipoFiltro) => {
+      let total=0, noPrazo=0, emTransito=[];
+      (cargas||[]).forEach(d=>{
+        const k=(d.rota||'').toUpperCase(), prazo=rotasPrazo[k];
+        if(!prazo) return;
+        if(tipoFiltro && rotasTipo[k]!==tipoFiltro) return;
+        if(d.status==='concluido'){
+          total++;
+          if(d.ts_saiu&&d.ts_concluido){
+            if(new Date(d.ts_concluido)-new Date(d.ts_saiu)<=prazo*3600000) noPrazo++;
+          }
+        } else if(d.ts_saiu){
+          const pct=Math.round((Date.now()-new Date(d.ts_saiu))/(prazo*3600000)*100);
+          if(pct>=70) emTransito.push({carga:d.carga,rota:d.rota,prazoPct:pct});
+        }
+      });
+      return {total,noPrazo,pct:total>0?Math.round(noPrazo/total*100):null,emTransito};
+    };
+    _tvOtifCache = { ri:_calcOtifTV(cargasMes,'RI'), re:_calcOtifTV(cargasMes,'RE') };
+    // Exibir RI primeiro e iniciar rotação a cada 10s
+    _tvOtifMode = 0;
+    _tvOtifApply(_tvOtifCache.ri,'🔵 INTERNA — R.I.');
+    clearInterval(_tvOtifTimer);
+    _tvOtifTimer = setInterval(_tvOtifRotate, 10000);
 
     // ── Frota ──
     const totalVeic = (veiculos||[]).length;
@@ -28624,6 +28613,56 @@ async function carregarTV(){
     }
 
   }catch(e){ console.error('[TV]',e); }
+}
+
+// ── OTIF TV: aplicar dados e badge ─────────────────────
+function _tvOtifApply(data, label){
+  const cor = data.pct==null?'#64748b':data.pct>=85?'#34d399':data.pct>=70?'#f59e0b':'#ef4444';
+  const isRI = label.includes('RI');
+  const content = document.getElementById('tv-otif-content');
+  const badge   = document.getElementById('tv-otif-tipo');
+
+  // Fade out
+  if(content) content.style.opacity='0';
+  setTimeout(()=>{
+    // Atualiza badge
+    if(badge){
+      badge.textContent = label;
+      badge.style.background = isRI ? 'rgba(37,99,235,.25)' : 'rgba(245,158,11,.25)';
+      badge.style.color       = isRI ? '#93c5fd' : '#fcd34d';
+    }
+    // Ring
+    const ring = document.getElementById('tv-otif-ring');
+    if(ring){ const deg=Math.round((data.pct||0)*3.6); ring.style.background=`conic-gradient(${cor} ${deg}deg,rgba(255,255,255,.07) ${deg}deg)`; }
+    // Texto %
+    const pctEl = document.getElementById('tv-otif-pct');
+    if(pctEl){ pctEl.textContent=data.pct!=null?data.pct+'%':'—'; pctEl.style.color=cor; }
+    // Barra
+    const fill = document.getElementById('tv-otif-fill');
+    if(fill){ fill.style.width=(data.pct||0)+'%'; fill.style.background=cor; }
+    // Números
+    const ok=document.getElementById('tv-otif-ok-num'); if(ok) ok.textContent=data.total>0?data.noPrazo:'—';
+    const tot=document.getElementById('tv-otif-total-num'); if(tot) tot.textContent=data.total>0?data.total:'—';
+    const risco=document.getElementById('tv-otif-risco-num'); if(risco){ risco.textContent=data.emTransito.length; risco.style.color=data.emTransito.length>0?'#f59e0b':'#34d399'; }
+    // Lista críticos
+    const pl=document.getElementById('tv-prazo-list');
+    if(pl){
+      const criticas=data.emTransito.slice().sort((a,b)=>b.prazoPct-a.prazoPct).slice(0,3);
+      pl.innerHTML=criticas.length?'<div style="border-top:1px solid rgba(255,255,255,.08);padding-top:7px;display:flex;flex-direction:column;gap:5px">'+criticas.map(d=>{
+        const c=d.prazoPct>=100?'#ef4444':d.prazoPct>=85?'#f59e0b':'#fbbf24';
+        return `<div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px"><span style="font-size:.63rem;color:rgba(255,255,255,.5)">#${d.carga} ${d.rota}</span><span style="font-size:.65rem;font-weight:800;color:${c}">${d.prazoPct>=100?'⚠️ Vencido':d.prazoPct+'%'}</span></div><div style="height:4px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${Math.min(d.prazoPct,100)}%;background:${c};border-radius:2px"></div></div></div>`;
+      }).join('')+'</div>':'';
+    }
+    // Fade in
+    if(content) content.style.opacity='1';
+  }, 350);
+}
+
+function _tvOtifRotate(){
+  if(!_tvOtifCache) return;
+  _tvOtifMode = (_tvOtifMode+1)%2;
+  if(_tvOtifMode===0) _tvOtifApply(_tvOtifCache.ri,'🔵 INTERNA — R.I.');
+  else                _tvOtifApply(_tvOtifCache.re,'🟠 EXTERNA — R.E.');
 }
 
 // ── Carrossel TV ───────────────────────────────────────
