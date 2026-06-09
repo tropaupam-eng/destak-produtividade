@@ -18824,21 +18824,35 @@ async function gerarPresencasAutomaticas(mes, manual = false){
     if(!funcionarios.length){ if(manual) showToast('Nenhum funcionário ativo encontrado','warning'); return; }
 
     // Buscar todos os registros já existentes no mês (1 query)
-    const existentes = await supaFetch(`absenteismo?mes_ano=eq.${mes}&select=nome,data`).catch(()=>[]) || [];
+    const existentes = await supaFetch(`absenteismo?mes_ano=eq.${mes}&select=nome,data&limit=5000`).catch(()=>[]) || [];
     // existSet normaliza para uppercase para comparação case-insensitive
     const existSet = new Set(existentes.map(e => `${(e.nome||'').trim().toUpperCase()}__${e.data}`));
 
-    // Gerar lista de registros faltando
+    // Feriados nacionais — não criar 'presente' automático nesses dias
+    const _feriadosNac = new Set([
+      '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
+      '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
+      '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
+      '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
+      '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
+      '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
+    ]);
+
+    // Gerar lista de registros faltando — pula domingos e feriados nacionais
     const novos = [];
     const cur = new Date(primeiroDia + 'T12:00:00');
     const fim = new Date(ultimoDia + 'T12:00:00');
     while(cur <= fim){
       const dataStr = cur.toISOString().split('T')[0];
-      for(const f of funcionarios){
-        if(!existSet.has(`${f.nome.toUpperCase()}__${dataStr}`)){
-          novos.push({ nome:f.nome, funcao:f.funcao, data:dataStr,
-            status:'presente', mes_ano:mes, fonte:'automatico',
-            criado_em: new Date().toISOString() });
+      const diaSemana = cur.getDay();
+      // Domingo (0) e feriados nacionais não são dias úteis — não criar presente automático
+      if(diaSemana !== 0 && !_feriadosNac.has(dataStr)){
+        for(const f of funcionarios){
+          if(!existSet.has(`${f.nome.toUpperCase()}__${dataStr}`)){
+            novos.push({ nome:f.nome, funcao:f.funcao, data:dataStr,
+              status:'presente', mes_ano:mes, fonte:'automatico',
+              criado_em: new Date().toISOString() });
+          }
         }
       }
       cur.setDate(cur.getDate() + 1);
@@ -18847,6 +18861,8 @@ async function gerarPresencasAutomaticas(mes, manual = false){
     if(!novos.length){
       if(manual) showToast('✅ Todos os dias já têm registro — nenhuma presença pendente!','success');
       localStorage.setItem(flagKey, '1');
+      // Re-render na 1ª execução do dia: tabela pode ter sido montada antes dos dados existirem
+      if(!manual) renderAbsenteismo().catch(()=>{});
       return;
     }
 
@@ -18863,7 +18879,7 @@ async function gerarPresencasAutomaticas(mes, manual = false){
       showToast(`✅ ${novos.length} presenças automáticas geradas!`, 'success');
       await renderAbsenteismo();
     } else {
-      // Re-render silencioso: tabela foi montada antes das presenças existirem no banco
+      // Re-render silencioso: atualiza tabela após criar presenças em background
       renderAbsenteismo().catch(()=>{});
     }
   }catch(e){
@@ -18908,7 +18924,7 @@ async function renderAbsenteismo(){
 
   try{
     // Incluir datas futuras do mês (folgas programadas, férias, feriados)
-    let url = 'absenteismo?select=*&order=nome.asc,data.asc';
+    let url = 'absenteismo?select=*&order=nome.asc,data.asc&limit=5000';
     if(filtMes){
       url += `&mes_ano=eq.${filtMes}`;
     } else {
@@ -19070,21 +19086,24 @@ async function renderAbsenteismo(){
       label.style.color = absNum <= 2 ? '#059669' : '#E8000D';
     }
 
-    // Remover domingos e feriados (folga geral) do cálculo
-    // Domingos: dia da semana 0
-    // Feriados: registros com status='folga' e fonte='manual' para todos
-    const feriados = new Set(
-      filtrados.filter(d=>d.status==='folga'&&d.fonte==='manual').map(d=>d.data)
-    );
+    // Feriados nacionais fixos — definidos aqui para uso tanto na exclusão de presença quanto em folgas devidas
+    const feriadosNacionais = new Set([
+      '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
+      '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
+      '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
+      '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
+      '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
+      '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
+    ]);
 
+    // Remover domingos e feriados nacionais do cálculo de presença
+    // IMPORTANTE: NÃO usar folgas individuais como feriados — isso apagava presença de outros funcionários
     Object.keys(porFunc).forEach(nome=>{
       const dias = porFunc[nome].dias;
       Object.keys(dias).forEach(data=>{
         const dt = new Date(data+'T00:00:00');
-        // Remover domingos do contagem
         if(dt.getDay()===0) delete dias[data];
-        // Feriados gerais não contam (só contam se estiver em rota)
-        if(feriados.has(data) && dias[data]!=='rota' && dias[data]!=='rota_auto'){
+        if(feriadosNacionais.has(data) && dias[data]!=='rota' && dias[data]!=='rota_auto'){
           delete dias[data];
         }
       });
@@ -19215,17 +19234,8 @@ async function renderAbsenteismo(){
       ) || [];
     }catch(e){}
 
-    // Feriados nacionais fixos (apenas os mais comuns — expandir conforme necessidade)
-    const feriadosNacionais = new Set([
-      '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
-      '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
-      '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
-      '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
-      '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
-      '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
-    ]);
-
-    // Feriados lançados manualmente no absenteísmo (fonte='manual', status='folga', todos)
+    // feriadosNacionais já definido acima — reutilizado aqui para cálculo de folgas devidas
+    // Feriados declarados manualmente no absenteísmo (folga individual de um funcionário específico)
     const feriadosManuais = new Set(
       dados.filter(d=>d.fonte==='manual'&&d.status==='folga').map(d=>d.data)
     );
