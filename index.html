@@ -3246,6 +3246,22 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Observação</label>
           <input id="agend-obs" placeholder="Observação opcional..." style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box">
         </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Motivo de Atraso <span style="font-weight:400;text-transform:none;font-size:.7rem">(opcional — editável a qualquer momento)</span></label>
+          <select id="agend-motivo" onchange="document.getElementById('agend-motivo-outro-wrap').style.display=this.value==='outro'?'block':'none'" style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box">
+            <option value="">— Sem motivo de atraso —</option>
+            <option value="comercial">💰 Comercial</option>
+            <option value="veiculo">🚛 Sem Veículo</option>
+            <option value="motorista">🚗 Sem Motorista</option>
+            <option value="atraso_rota">⏱️ Atraso de Rota</option>
+            <option value="atraso_carregamento">📦 Atraso no Carregamento</option>
+            <option value="saiu_data_correta">✅ Saiu no prazo</option>
+            <option value="outro">📝 Outro (descrever)</option>
+          </select>
+          <div id="agend-motivo-outro-wrap" style="display:none;margin-top:6px">
+            <input id="agend-motivo-outro" placeholder="Descreva o motivo..." style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box">
+          </div>
+        </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:20px">
         <button onclick="document.getElementById('modal-agendamento').style.display='none'" style="flex:1;background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.88rem;cursor:pointer">Cancelar</button>
@@ -26378,6 +26394,15 @@ function abrirModalAgendamento(id, _preRota, _preData){
   const modal = document.getElementById('modal-agendamento');
   const titulo = document.getElementById('agend-modal-titulo');
   const mesSel = document.getElementById('agend-mes-atual')?.value || new Date().toISOString().slice(0,7);
+  const _setMotivo = function(mot, label){
+    const sel = document.getElementById('agend-motivo');
+    const outraWrap = document.getElementById('agend-motivo-outro-wrap');
+    const outraInp  = document.getElementById('agend-motivo-outro');
+    if(!sel) return;
+    sel.value = mot||'';
+    if(mot==='outro'){ outraWrap.style.display='block'; if(outraInp) outraInp.value=label||''; }
+    else{ outraWrap.style.display='none'; if(outraInp) outraInp.value=''; }
+  };
   if(!id){
     document.getElementById('agend-id').value='';
     document.getElementById('agend-rota').value=_preRota||'';
@@ -26385,6 +26410,7 @@ function abrirModalAgendamento(id, _preRota, _preData){
     document.getElementById('agend-data').value = _preData || (mesSel ? mesSel+'-01' : hoje);
     document.getElementById('agend-obs').value='';
     document.getElementById('agend-carga').value='';
+    _setMotivo('','');
     if(titulo) titulo.textContent = '🗓️ Novo Agendamento';
   } else {
     const item = getAgendamentos().find(a=>a.id===id);
@@ -26394,6 +26420,7 @@ function abrirModalAgendamento(id, _preRota, _preData){
     document.getElementById('agend-data').value=item.data||'';
     document.getElementById('agend-obs').value=item.obs||'';
     document.getElementById('agend-carga').value=item.carga||'';
+    _setMotivo(item.motivo_atraso||'', item.motivo_label||'');
     if(titulo) titulo.textContent = '✏️ Editar Agendamento';
   }
   // Popular rotas datalist
@@ -26412,12 +26439,23 @@ async function salvarAgendamento(){
   const data  = document.getElementById('agend-data').value;
   const obs   = document.getElementById('agend-obs').value.trim();
   const carga = parseInt(document.getElementById('agend-carga').value)||null;
+  const motivoSel   = document.getElementById('agend-motivo')?.value||'';
+  const motivoOutro = (document.getElementById('agend-motivo-outro')?.value||'').trim();
+  const motivo      = motivoSel==='outro' ? (motivoOutro||'outro') : motivoSel;
+  const _MLABELS    = {comercial:'💰 Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',saiu_data_correta:'✅ Saiu no prazo',outro:'📝 Outro'};
+  const motivoLabel = motivoSel==='outro' ? (motivoOutro||'Outro') : (_MLABELS[motivoSel]||null);
   if(!rota||!data){ showToast('Preencha rota e data','warning'); return; }
   const mes_ano = data.slice(0,7);
   const arr = getAgendamentos();
   if(id){
     const idx = arr.findIndex(a=>a.id===id);
-    if(idx>=0) arr[idx] = {...arr[idx], rota, data, obs, mes_ano, carga};
+    if(idx>=0){
+      const statusAtual = arr[idx].status;
+      let novoStatus = statusAtual;
+      if(motivo && motivo!=='saiu_data_correta' && statusAtual!=='realizado' && statusAtual!=='concluido') novoStatus='atrasado';
+      else if(!motivo && statusAtual==='atrasado') novoStatus='agendado';
+      arr[idx] = {...arr[idx], rota, data, obs, mes_ano, carga, motivo_atraso:motivo||null, motivo_label:motivoLabel||null, status:novoStatus};
+    }
   } else {
     arr.push({id:(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'agend_'+Date.now()), rota, data, obs, mes_ano, status:'agendado', criado_em:new Date().toISOString()});
   }
