@@ -9475,7 +9475,8 @@ const CONFIG_DEFAULT = {
   }
 };
 
-let CONFIG = JSON.parse(localStorage.getItem('config_prod') || 'null') || JSON.parse(JSON.stringify(CONFIG_DEFAULT));
+let CONFIG; try{ CONFIG = JSON.parse(localStorage.getItem('config_prod')||'null'); }catch(e){ localStorage.removeItem('config_prod'); }
+CONFIG = CONFIG || JSON.parse(JSON.stringify(CONFIG_DEFAULT));
 
 async function salvarConfig(){
   Object.keys(CONFIG.rotas).forEach(rota=>{
@@ -25644,21 +25645,48 @@ async function supaFetch(path, opts={}, _tentativa=1){
 
 // ── Monitor de Erros — captura automática ──────────────────────────────────
 (function(){
-  // Evita logar erros do próprio logger (recursão infinita)
   var _logando = false;
+  // Deduplicação: chave "tipo|mensagem" → timestamp do último log
+  var _ultimosErros = {};
+  var _contagemErros = {};
+  var DEDUP_MS = 60000; // mesmo erro em < 60s → ignora
+  var MAX_MESMO_ERRO = 3; // máximo de logs do mesmo erro por sessão
 
-  async function logErro(mensagem, stack, tipo, contexto){
+  function _deveLogar(tipo, mensagem){
+    var chave = tipo + '|' + String(mensagem).slice(0, 120);
+    var agora = Date.now();
+    if(_contagemErros[chave] >= MAX_MESMO_ERRO) return false;
+    if(_ultimosErros[chave] && (agora - _ultimosErros[chave]) < DEDUP_MS) return false;
+    _ultimosErros[chave] = agora;
+    _contagemErros[chave] = (_contagemErros[chave] || 0) + 1;
+    return true;
+  }
+
+  async function logErro(mensagem, stack, tipo, contextoExtra){
     if(_logando) return;
+    if(!_deveLogar(tipo||'js_error', mensagem)) return;
     _logando = true;
     try{
+      // Contexto rico — tudo que ajuda a reproduzir o erro
+      var ctx = {
+        url:        window.location.href,
+        userAgent:  navigator.userAgent,
+        appVersion: localStorage.getItem('app_version') || 'desconhecida',
+        pagina:     localStorage.getItem('destak_pagina_atual') || 'desconhecida',
+        hora:       new Date().toISOString(),
+        tela:       window.innerWidth + 'x' + window.innerHeight,
+        online:     navigator.onLine
+      };
+      if(contextoExtra) Object.assign(ctx, contextoExtra);
+
       var body = {
         usuario_id:   (typeof USUARIO_LOGADO!=='undefined' && USUARIO_LOGADO) ? (USUARIO_LOGADO.id||null) : null,
         usuario_nome: (typeof USUARIO_LOGADO!=='undefined' && USUARIO_LOGADO) ? (USUARIO_LOGADO.nome||'anônimo') : 'anônimo',
-        pagina:       localStorage.getItem('destak_pagina_atual')||'desconhecida',
+        pagina:       ctx.pagina,
         tipo:         tipo||'js_error',
         mensagem:     String(mensagem).slice(0,500),
-        stack:        stack ? String(stack).slice(0,2000) : null,
-        contexto:     contexto||null
+        stack:        stack ? String(stack).slice(0,4000) : null,
+        contexto:     JSON.stringify(ctx)
       };
       await fetch(
         'https://hiydkyslgiomdyginfdx.supabase.co/rest/v1/erros_sistema',
@@ -25673,20 +25701,20 @@ async function supaFetch(path, opts={}, _tentativa=1){
           body:JSON.stringify(body)
         }
       );
-      // Atualizar badge se a função já estiver disponível
       if(typeof atualizarBadgeErros === 'function') atualizarBadgeErros();
-    }catch(e){ /* silencioso — não queremos erros no logger de erros */ }
+    }catch(e){ /* silencioso */ }
     finally{ _logando = false; }
   }
 
-  // Expõe para uso manual em qualquer parte do código
   window._logErro = logErro;
 
-  // Captura erros JS globais
+  // Captura erros JS globais — inclui arquivo:linha:coluna SEMPRE
   window.onerror = function(msg, src, line, col, err){
-    console.error('Erro global:', msg, 'linha:', line, err);
-    logErro(msg, err ? err.stack : ('linha '+line+':'+col+' | '+src), 'js_error');
-    // Se página ativa ficou vazia após o erro, mostrar aviso de recuperação
+    console.error('Erro global:', msg, 'em', src, 'linha', line, err);
+    var localizacao = '\n[' + (src||'?') + ':' + line + ':' + col + ']';
+    var stackFinal = err ? (err.stack + localizacao) : ('linha ' + line + ':' + col + ' | ' + src);
+    logErro(msg, stackFinal, 'js_error');
+    // Aviso de recuperação na página ativa vazia
     var ativas = document.querySelectorAll('.page.active');
     ativas.forEach(function(p){
       var cont = p.querySelector('.container');
