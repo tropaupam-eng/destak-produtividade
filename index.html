@@ -23644,136 +23644,205 @@ async function carregarPaginaFiscal(){
       return ' (+' + (m<60 ? m+'min' : Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')) + ')';
     };
 
-    container.innerHTML = cargas.map(carga=>{
-      const dados   = cargasMap[carga];
-      if(!dados) return '';
-      const dem     = dados.demanda;
-      const nfsCarga= dados.nfs;
-      const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
-      const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
-      const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+    // Store context so drawer can read fresh data after re-renders
+    window._fiscalDados = { cargasMap, atribs, podeAdmin, podeUpload, isAdminFiscal, perfilUsuario, _valMapFiscal, _fT, _dMin };
 
-      const cardBorder = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
-      const cardBg     = euAtribuido?'rgba(5,150,105,.06)':outroFiscal?'rgba(245,158,11,.06)':'var(--bg-card)';
-      const headerBg   = euAtribuido?'rgba(5,150,105,.1)':outroFiscal?'rgba(245,158,11,.08)':'rgba(5,150,105,.05)';
-
-      const totalPedCarga = pedidos.length;
-      const pedOK   = pedidos.filter(ped=>dados.confMap[ped]?.status==='ok').length;
-      const pedNOK  = pedidos.filter(ped=>dados.confMap[ped]?.status==='nok').length;
-      const pedPend = pedidos.filter(ped=>!dados.confMap[ped]).length;
-
-      return `<div id="fiscal-wrap-${carga}" style="background:${cardBg};border:1.5px solid ${cardBorder};border-radius:14px;margin-bottom:12px;overflow:hidden">
-        <div onclick="toggleFiscalCard(${carga})" style="cursor:pointer;padding:14px 20px;background:${headerBg};display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;user-select:none">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span style="background:#059669;color:#fff;font-size:.8rem;font-weight:800;padding:3px 12px;border-radius:20px">📋 Carga ${carga}</span>
-            <span style="font-size:.85rem;font-weight:700;color:var(--text-primary)">${dem.rota||'—'}</span>
-            <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
+    // Compact grid of summary cards — clicking opens the detail drawer
+    container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;padding:4px 0">${
+      cargas.map(carga=>{
+        const dados = cargasMap[carga];
+        if(!dados) return '';
+        const dem = dados.demanda;
+        const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
+        const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+        const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+        const borderCol = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
+        const bgCol = euAtribuido?'rgba(5,150,105,.08)':outroFiscal?'rgba(245,158,11,.08)':'var(--bg-card)';
+        const pedOK = pedidos.filter(p=>dados.confMap[p]?.status==='ok').length;
+        const pedNOK = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
+        const pedPend = pedidos.filter(p=>!dados.confMap[p]).length;
+        return `<div onclick="abrirModalFiscalDrawer(${carga})" style="background:${bgCol};border:2px solid ${borderCol};border-radius:12px;padding:14px 12px;cursor:pointer;transition:transform .15s,box-shadow .15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 14px rgba(0,0,0,.18)'" onmouseleave="this.style.transform='';this.style.boxShadow=''">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+            <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">📋 ${carga}</span>
+            <span style="font-size:.68rem;color:var(--text-muted)">${dados.nfs.length} NF(s)</span>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">✅ ${pedOK} OK</span>
-            ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">❌ ${pedNOK} NOK</span>`:''}
-            ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">⏳ ${pedPend} s/ conf.</span>`:''}
-            <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
-            ${isAdminFiscal?(()=>{
-              const confs = pedidos.map(p=>dados.confMap[p]?.conferido_em).filter(Boolean);
-              const nfTimes = nfsCarga.map(n=>n.criado_em).filter(Boolean);
-              const fc = confs.length ? confs.reduce((a,b)=>a<b?a:b) : null;
-              const ln = nfTimes.length ? nfTimes.reduce((a,b)=>a>b?a:b) : null;
-              if(!fc) return '';
-              return '<span style="font-size:.68rem;color:var(--text-muted);background:rgba(255,255,255,.06);padding:2px 8px;border-radius:4px">⏱ '+_fT(fc)+(ln?' → '+_fT(ln)+_dMin(fc,ln):'...')+'</span>';
-            })():''}
+          <div style="font-size:.8rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${(dem.rota||'').replace(/"/g,'&quot;')}">${dem.rota||'—'}</div>
+          <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🚗 ${dem.motorista||'—'}</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:700">✅ ${pedOK}</span>
+            ${pedNOK?`<span style="font-size:.65rem;background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:4px;font-weight:700">❌ ${pedNOK}</span>`:''}
+            ${pedPend?`<span style="font-size:.65rem;background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700">⏳ ${pedPend}</span>`:''}
+            <span style="font-size:.65rem;color:var(--text-muted);padding:1px 4px">${pedidos.length} ped.</span>
           </div>
-          <span id="fiscal-arrow-${carga}" style="font-size:.85rem;color:var(--text-muted);flex-shrink:0;transition:transform .2s">▼</span>
-        </div>
-        <div id="fiscal-card-${carga}" style="display:none;padding:14px 20px;border-top:1px solid ${cardBorder}">
-          ${pedidos.map(ped=>{
-            const conf      = dados.confMap[ped];
-            const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
-            const stConf    = conf?.status;
-            const atribPed  = (atribs||[]).find(a=>a.carga===carga&&a.pedido===ped&&a.status==='em_andamento');
-            const euPeguei  = atribPed?.fiscal_id===USUARIO_LOGADO?.id;
-            const outroPegou= atribPed && !euPeguei;
-            const podeTrabalhar = euPeguei || podeAdmin;
+          ${euAtribuido?`<div style="margin-top:8px;font-size:.65rem;color:#059669;font-weight:700">✍️ Você está aqui</div>`:outroFiscal?`<div style="margin-top:8px;font-size:.65rem;color:#f59e0b;font-weight:700">🔒 ${outroFiscal.fiscal_nome||'Outro'}</div>`:''}
+        </div>`;
+      }).join('')
+    }</div>`;
 
-            const confBg     = outroPegou?'rgba(245,158,11,.05)':euPeguei?'rgba(5,150,105,.06)':stConf==='nok'?'rgba(239,68,68,.06)':'var(--bg-card2)';
-            const confBorder = outroPegou?'#fcd34d':euPeguei?'rgba(5,150,105,.3)':stConf==='nok'?'rgba(239,68,68,.2)':'var(--border)';
-            const confBadge  = stConf==='ok'
-              ? `<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✅ Conferido</span>`
-              : stConf==='nok'
-              ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700">❌ NOK</span>`
-              : `<span style="font-size:.7rem;background:#fef9c3;color:#92400e;padding:1px 7px;border-radius:5px;font-weight:700">⏳ Sem conf.</span>`;
-            const emissores=[...new Set(nfsPed.map(n=>n.fiscal_nome).filter(Boolean))];
-            // Verificar divergência de valor: NF emitida com valor ≠ valor atual em base_data
-            const _nfComValor = nfsPed.find(n=>n.valor!=null);
-            const _valAtualFisc = (_valMapFiscal[carga]??{})[ped]??null;
-            const _temDivFisc = _nfComValor && _valAtualFisc!==null &&
-              Math.abs(_valAtualFisc - _nfComValor.valor) > 0.01;
-            const _divBadge = _temDivFisc
-              ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700;cursor:help" title="NF emitida: R$ ${Number(_nfComValor.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})} | Atual: R$ ${Number(_valAtualFisc).toLocaleString('pt-BR',{minimumFractionDigits:2})}">⚠️ Valor divergente!</span>`
-              : '';
-
-            return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                  <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
-                  ${confBadge}
-                  ${_divBadge}
-                  ${euPeguei?`<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✍️ Você</span>`:''}
-                  ${outroPegou?`<span style="font-size:.7rem;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">🔒 ${atribPed.fiscal_nome}</span>`:''}
-                  ${conf?.conferente_nome?`<span style="font-size:.7rem;color:var(--text-muted)">${conf.conferente_nome}</span>`:''}
-                  ${emissores.length?`<span style="font-size:.7rem;background:rgba(5,150,105,.1);color:#059669;padding:1px 7px;border-radius:5px;font-weight:600">📋 ${emissores.join(', ')}</span>`:''}
-                  ${conf?.observacao?`<span style="font-size:.7rem;color:#ef4444">⚠️ ${conf.observacao}</span>`:''}
-                </div>
-                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                  <span style="font-size:.72rem;background:${nfsPed.length?'#d1fae5':'#fef9c3'};color:${nfsPed.length?'#065f46':'#92400e'};padding:2px 8px;border-radius:5px;font-weight:700">
-                    ${nfsPed.length?nfsPed.length+' NF(s)':'Sem NF'}
-                  </span>
-                  ${!atribPed?`<button onclick="pegarPedidoFiscal(${carga},${ped})" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🔒 Pegar</button>`:''}
-                  ${euPeguei?`<button onclick="liberarPedidoFiscal(${carga},${ped})" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer">🔓 Liberar</button>`:''}
-                  ${(outroPegou&&['fiscal_admin','admin','adm_fiscal'].includes(perfilUsuario))?`<button onclick="soltarPedidoFiscalADM(${carga},${ped},'${(atribPed?.fiscal_nome||'').replace(/'/g,"\\'")}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">🔓 Soltar (ADM)</button>`:''}
-                  ${stConf==='ok'?`<span style="font-size:.7rem;background:#dcfce7;color:#166534;padding:2px 9px;border-radius:5px;font-weight:700;cursor:default" title="Pedido já conferido — não pode ser cancelado">✅ Conferido</span>`:`<button onclick="abrirModalCancelarPedido(${carga},${ped},'${(dem?.rota||'').replace(/'/g,"\\'")}','${(dem?.motorista||'').replace(/'/g,"\\'")}','page')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">❌ Cancelar</button>`}
-                  ${(()=>{const _ak=`${carga}_${ped}`;const _ativo=(window._meusAlertas||new Set()).has(_ak);return`<button onclick="toggleAlertaFiscal(${carga},${ped},'${(dem?.rota||'').replace(/'/g,"\\'")}',this)" title="${_ativo?'Remover alerta desta rota':'Ser notificado quando esta rota finalizar'}" style="background:${_ativo?'rgba(251,191,36,.2)':'rgba(107,114,128,.1)'};color:${_ativo?'#f59e0b':'#6b7280'};border:1px solid ${_ativo?'rgba(251,191,36,.4)':'rgba(107,114,128,.2)'};border-radius:6px;padding:3px 8px;font-size:.82rem;cursor:pointer;transition:all .2s">${_ativo?'🔔':'🔕'}</button>`;})()}
-                </div>
-              </div>
-              ${nfsPed.map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:5px 10px;margin-bottom:3px">
-                <span style="font-size:.78rem;color:#065f46;font-weight:600">📄 ${n.nome_arquivo}</span>
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:.7rem;color:#6b7280">${n.tipo==='boleto'?'💰 Boleto':'📋 NF'}</span>
-                  ${podeAdmin?`<button onclick="removerNFInline(this)" data-nfid="${n.id||''}" data-nome="${(n.nome_arquivo||'').replace(/"/g,'&quot;')}" data-carga="${carga}" data-status="${dem.status||''}" title="Remover" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:.85rem;padding:1px 4px">🗑</button>`:''}
-                </div>
-              </div>`).join('')}
-              ${isAdminFiscal?(()=>{
-                const cTs = conf?.conferido_em||null;
-                const nfTs = (nfsPed.filter(n=>n.tipo==='nf').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
-                const bTs  = (nfsPed.filter(n=>n.tipo==='boleto').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
-                if(!cTs&&!nfTs&&!bTs) return '';
-                let row = '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 8px;background:rgba(255,255,255,.04);border-radius:6px;font-size:.68rem;color:var(--text-muted);margin-bottom:5px">';
-                if(cTs) row += '<span title="Conferido pelo armazém">📦 conf. '+_fT(cTs)+'</span>';
-                if(nfTs) row += '<span title="NF emitida">📋 NF '+_fT(nfTs)+'<b style="color:#22c55e">'+_dMin(cTs,nfTs)+'</b></span>';
-                if(bTs)  row += '<span title="Boleto emitido">💰 Boleto '+_fT(bTs)+'<b style="color:#3b82f6">'+_dMin(cTs,bTs)+'</b></span>';
-                row += '</div>';
-                return row;
-              })():''}
-              ${podeTrabalhar?`<div style="margin-top:6px">
-                ${stConf!=='ok'?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:5px 10px;margin-bottom:6px;font-size:.75rem;color:#92400e;font-weight:600">⚠️ Pedido ainda não conferido pelo armazém — envie assim mesmo com cautela.</div>`:''}
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <input type="file" id="nfi-${carga}-${ped}" accept=".pdf,.xml,.png,.jpg" multiple style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.75rem;flex:1;min-width:0"/>
-                  <button onclick="uploadNFInline(${carga},${ped})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 14px;font-size:.78rem;font-weight:700;cursor:pointer">📤 Enviar</button>
-                </div>
-                <span style="font-size:.67rem;color:var(--text-muted)">"boleto" no nome → 💰 Boleto; outros → 📋 NF</span>
-              </div>`:outroPegou?`<p style="font-size:.72rem;color:#92400e;margin-top:6px">🔒 Em uso por ${atribPed?.fiscal_nome}</p>`:''}
-            </div>`;
-          }).join('')}
-          ${podeAdmin?`<div style="display:flex;gap:8px;margin-top:10px">
-            <button onclick="concluirFiscal(${carga},'${dem?.id||''}')"
-              style="background:#059669;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:.8rem;font-weight:700;cursor:pointer">
-              ✅ Concluir Fiscal — Enviar para Seguros e Caixa
-            </button>
-          </div>`:''}
-        </div>
-      </div>`;
-    }).join('');
+    // Re-open drawer if it was open before this refresh
+    if(window._fiscalModalCargaAberta && cargasMap[window._fiscalModalCargaAberta]){
+      abrirModalFiscalDrawer(window._fiscalModalCargaAberta);
+    }
   }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; }
+}
+
+function abrirModalFiscalDrawer(carga){
+  window._fiscalModalCargaAberta = carga;
+  const fd = window._fiscalDados;
+  if(!fd){ showToast('Dados não carregados — recarregue a página','warning'); return; }
+  const { cargasMap, atribs, podeAdmin, podeUpload, isAdminFiscal, perfilUsuario, _valMapFiscal, _fT, _dMin } = fd;
+  const dados = cargasMap[carga];
+  if(!dados){ showToast('Carga não encontrada','warning'); return; }
+  const dem = dados.demanda;
+  const nfsCarga = dados.nfs;
+  const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
+  const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+  const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+  const cardBorder = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
+  const pedOK  = pedidos.filter(p=>dados.confMap[p]?.status==='ok').length;
+  const pedNOK = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
+  const pedPend= pedidos.filter(p=>!dados.confMap[p]).length;
+  const _rotaEsc  = (dem?.rota||'').replace(/'/g,"\\'");
+  const _motorEsc = (dem?.motorista||'').replace(/'/g,"\\'");
+
+  const pedidosHTML = pedidos.map(ped=>{
+    const conf      = dados.confMap[ped];
+    const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
+    const stConf    = conf?.status;
+    const atribPed  = (atribs||[]).find(a=>a.carga===carga&&a.pedido===ped&&a.status==='em_andamento');
+    const euPeguei  = atribPed?.fiscal_id===USUARIO_LOGADO?.id;
+    const outroPegou= atribPed && !euPeguei;
+    const podeTrabalhar = euPeguei || podeAdmin;
+    const confBg    = outroPegou?'rgba(245,158,11,.05)':euPeguei?'rgba(5,150,105,.06)':stConf==='nok'?'rgba(239,68,68,.06)':'var(--bg-card2)';
+    const confBorder= outroPegou?'#fcd34d':euPeguei?'rgba(5,150,105,.3)':stConf==='nok'?'rgba(239,68,68,.2)':'var(--border)';
+    const confBadge = stConf==='ok'
+      ? `<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✅ Conferido</span>`
+      : stConf==='nok'
+      ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700">❌ NOK</span>`
+      : `<span style="font-size:.7rem;background:#fef9c3;color:#92400e;padding:1px 7px;border-radius:5px;font-weight:700">⏳ Sem conf.</span>`;
+    const emissores = [...new Set(nfsPed.map(n=>n.fiscal_nome).filter(Boolean))];
+    const _nfComValor = nfsPed.find(n=>n.valor!=null);
+    const _valAtualFisc = (_valMapFiscal[carga]??{})[ped]??null;
+    const _temDivFisc = _nfComValor && _valAtualFisc!==null && Math.abs(_valAtualFisc - _nfComValor.valor) > 0.01;
+    const _divBadge = _temDivFisc
+      ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700;cursor:help" title="NF emitida: R$ ${Number(_nfComValor.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})} | Atual: R$ ${Number(_valAtualFisc).toLocaleString('pt-BR',{minimumFractionDigits:2})}">⚠️ Valor divergente!</span>` : '';
+    const _nomeAtribEsc = (atribPed?.fiscal_nome||'').replace(/'/g,"\\'");
+
+    let timingRow = '';
+    if(isAdminFiscal){
+      const cTs = conf?.conferido_em||null;
+      const nfTs= (nfsPed.filter(n=>n.tipo==='nf').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
+      const bTs = (nfsPed.filter(n=>n.tipo==='boleto').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
+      if(cTs||nfTs||bTs){
+        timingRow = '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 8px;background:rgba(255,255,255,.04);border-radius:6px;font-size:.68rem;color:var(--text-muted);margin-bottom:5px">';
+        if(cTs)  timingRow += '<span title="Conferido pelo armazém">📦 conf. '+_fT(cTs)+'</span>';
+        if(nfTs) timingRow += '<span title="NF emitida">📋 NF '+_fT(nfTs)+'<b style="color:#22c55e">'+_dMin(cTs,nfTs)+'</b></span>';
+        if(bTs)  timingRow += '<span title="Boleto emitido">💰 Boleto '+_fT(bTs)+'<b style="color:#3b82f6">'+_dMin(cTs,bTs)+'</b></span>';
+        timingRow += '</div>';
+      }
+    }
+
+    const nfsHTML = nfsPed.map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:5px 10px;margin-bottom:3px">
+      <span style="font-size:.78rem;color:#065f46;font-weight:600">📄 ${n.nome_arquivo}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:.7rem;color:#6b7280">${n.tipo==='boleto'?'💰 Boleto':'📋 NF'}</span>
+        ${podeAdmin?`<button onclick="removerNFInline(this)" data-nfid="${n.id||''}" data-nome="${(n.nome_arquivo||'').replace(/"/g,'&quot;')}" data-carga="${carga}" data-status="${dem.status||''}" title="Remover" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:.85rem;padding:1px 4px">🗑</button>`:''}
+      </div>
+    </div>`).join('');
+
+    const uploadHTML = podeTrabalhar
+      ? `<div style="margin-top:6px">
+          ${stConf!=='ok'?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:5px 10px;margin-bottom:6px;font-size:.75rem;color:#92400e;font-weight:600">⚠️ Pedido ainda não conferido pelo armazém — envie assim mesmo com cautela.</div>`:''}
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <input type="file" id="nfi-${carga}-${ped}" accept=".pdf,.xml,.png,.jpg" multiple style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.75rem;flex:1;min-width:0"/>
+            <button onclick="uploadNFInline(${carga},${ped})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 14px;font-size:.78rem;font-weight:700;cursor:pointer">📤 Enviar</button>
+          </div>
+          <span style="font-size:.67rem;color:var(--text-muted)">"boleto" no nome → 💰 Boleto; outros → 📋 NF</span>
+        </div>`
+      : outroPegou ? `<p style="font-size:.72rem;color:#92400e;margin-top:6px">🔒 Em uso por ${atribPed?.fiscal_nome}</p>` : '';
+
+    const _alertaKey = `${carga}_${ped}`;
+    const _ativo = (window._meusAlertas||new Set()).has(_alertaKey);
+
+    return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
+          ${confBadge}${_divBadge}
+          ${euPeguei?`<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✍️ Você</span>`:''}
+          ${outroPegou?`<span style="font-size:.7rem;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">🔒 ${atribPed.fiscal_nome}</span>`:''}
+          ${conf?.conferente_nome?`<span style="font-size:.7rem;color:var(--text-muted)">${conf.conferente_nome}</span>`:''}
+          ${emissores.length?`<span style="font-size:.7rem;background:rgba(5,150,105,.1);color:#059669;padding:1px 7px;border-radius:5px;font-weight:600">📋 ${emissores.join(', ')}</span>`:''}
+          ${conf?.observacao?`<span style="font-size:.7rem;color:#ef4444">⚠️ ${conf.observacao}</span>`:''}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:.72rem;background:${nfsPed.length?'#d1fae5':'#fef9c3'};color:${nfsPed.length?'#065f46':'#92400e'};padding:2px 8px;border-radius:5px;font-weight:700">${nfsPed.length?nfsPed.length+' NF(s)':'Sem NF'}</span>
+          ${!atribPed?`<button onclick="pegarPedidoFiscal(${carga},${ped})" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🔒 Pegar</button>`:''}
+          ${euPeguei?`<button onclick="liberarPedidoFiscal(${carga},${ped})" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer">🔓 Liberar</button>`:''}
+          ${outroPegou&&['fiscal_admin','admin','adm_fiscal'].includes(perfilUsuario)?`<button onclick="soltarPedidoFiscalADM(${carga},${ped},'${_nomeAtribEsc}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">🔓 Soltar (ADM)</button>`:''}
+          ${stConf==='ok'
+            ? `<span style="font-size:.7rem;background:#dcfce7;color:#166534;padding:2px 9px;border-radius:5px;font-weight:700;cursor:default" title="Pedido já conferido — não pode ser cancelado">✅ Conferido</span>`
+            : `<button onclick="abrirModalCancelarPedido(${carga},${ped},'${_rotaEsc}','${_motorEsc}','page')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">❌ Cancelar</button>`}
+          <button onclick="toggleAlertaFiscal(${carga},${ped},'${_rotaEsc}',this)" title="${_ativo?'Remover alerta desta rota':'Ser notificado quando esta rota finalizar'}" style="background:${_ativo?'rgba(251,191,36,.2)':'rgba(107,114,128,.1)'};color:${_ativo?'#f59e0b':'#6b7280'};border:1px solid ${_ativo?'rgba(251,191,36,.4)':'rgba(107,114,128,.2)'};border-radius:6px;padding:3px 8px;font-size:.82rem;cursor:pointer;transition:all .2s">${_ativo?'🔔':'🔕'}</button>
+        </div>
+      </div>
+      ${nfsHTML}${timingRow}${uploadHTML}
+    </div>`;
+  }).join('');
+
+  let timeInfo = '';
+  if(isAdminFiscal){
+    const confs = pedidos.map(p=>dados.confMap[p]?.conferido_em).filter(Boolean);
+    const nfTimes = nfsCarga.map(n=>n.criado_em).filter(Boolean);
+    const fc = confs.length ? confs.reduce((a,b)=>a<b?a:b) : null;
+    const ln = nfTimes.length ? nfTimes.reduce((a,b)=>a>b?a:b) : null;
+    if(fc) timeInfo = `<span style="font-size:.68rem;color:var(--text-muted);background:rgba(255,255,255,.06);padding:2px 8px;border-radius:4px">⏱ ${_fT(fc)}${ln?' → '+_fT(ln)+_dMin(fc,ln):'...'}</span>`;
+  }
+
+  if(!document.getElementById('_css_fiscalDrawer')){
+    const s = document.createElement('style');
+    s.id = '_css_fiscalDrawer';
+    s.textContent = '@keyframes _slideInRight{from{transform:translateX(100%)}to{transform:translateX(0)}} @keyframes _fadeInBg{from{opacity:0}to{opacity:1}}';
+    document.head.appendChild(s);
+  }
+
+  const existing = document.getElementById('fiscal-drawer-overlay');
+  if(existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'fiscal-drawer-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9000;display:flex;justify-content:flex-end;animation:_fadeInBg .2s';
+  overlay.innerHTML = `<div style="width:min(700px,100vw);height:100%;background:var(--bg-card);display:flex;flex-direction:column;box-shadow:-4px 0 24px rgba(0,0,0,.3);animation:_slideInRight .25s">
+    <div style="padding:16px 20px;border-bottom:1.5px solid ${cardBorder};background:var(--bg-card);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="background:#059669;color:#fff;font-size:.85rem;font-weight:800;padding:3px 14px;border-radius:20px">📋 Carga ${carga}</span>
+        <span style="font-size:.9rem;font-weight:700;color:var(--text-primary)">${dem.rota||'—'}</span>
+        <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">✅ ${pedOK} OK</span>
+        ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">❌ ${pedNOK} NOK</span>`:''}
+        ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">⏳ ${pedPend} s/ conf.</span>`:''}
+        <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
+        ${timeInfo}
+        <button onclick="fecharModalFiscalDrawer()" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer">✕ Fechar</button>
+      </div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:16px 20px">
+      ${pedidosHTML}
+      ${podeAdmin?`<div style="display:flex;gap:8px;margin-top:10px">
+        <button onclick="concluirFiscal(${carga},'${dem?.id||''}')" style="background:#059669;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:.8rem;font-weight:700;cursor:pointer">✅ Concluir Fiscal — Enviar para Seguros e Caixa</button>
+      </div>`:''}
+    </div>
+  </div>`;
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) fecharModalFiscalDrawer(); });
+  document.body.appendChild(overlay);
+}
+
+function fecharModalFiscalDrawer(){
+  window._fiscalModalCargaAberta = null;
+  const el = document.getElementById('fiscal-drawer-overlay');
+  if(el) el.remove();
 }
 
 
