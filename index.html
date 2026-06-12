@@ -15712,7 +15712,7 @@ function showPage(name,tab){
     Promise.all([
       MOTORISTAS_CACHE.length ? Promise.resolve() : carregarMotoristas(),
       VEICULOS_CACHE.length   ? Promise.resolve() : carregarVeiculos(),
-      ROTAS_CAD_CACHE.length  ? Promise.resolve() : carregarRotasExp(),
+      ROTAS_CAD_CACHE.length  ? Promise.resolve() : cadCarregarRotas(),
     ]).then(()=>popularFormLancamento()).catch(()=>popularFormLancamento());
   },'lancamento');
   else if(name==='geral'){ safe(()=>renderGeral(),'geral'); initRelSemanal(); }
@@ -17987,28 +17987,16 @@ async function renderDashInterna(){
       if(l.ajudante  && !cargaAjudante[c])  cargaAjudante[c]  = (l.ajudante||'').toUpperCase().trim();
     });
 
-    // Buscar base_data do mês — inclui valor e ajudante; semana calculada de data_pedido
-    // Estratégia dupla: lancamentos (und confiável) + base_data.und direto
-    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor';
+    // Buscar base_data pelas cargas que saíram no mês (não por mes_ano do pedido)
+    // Motivo: pedido criado no mês anterior mas entregue neste mês deve contar aqui
+    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor,ocorrencia';
     let baseDataSupa;
-    if(undFiltro){
-      const [bdLanc, bdUnd] = await Promise.all([
-        cargasUndLanc.size > 0
-          ? supaFetch(`base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=${BD_SELECT}&limit=20000`).catch(()=>[])
-          : Promise.resolve([]),
-        supaFetch(`base_data?mes_ano=eq.${mesFiltro}&und=eq.${encodeURIComponent(undFiltro)}&select=${BD_SELECT}&limit=20000`).catch(()=>[])
-      ]);
-      const _seen = new Set();
-      baseDataSupa = [...(bdLanc||[]), ...(bdUnd||[])].filter(r => {
-        const k = `${r.carga}_${r.pedido}`;
-        if(_seen.has(k)) return false;
-        _seen.add(k);
-        return true;
-      });
+    if(!cargasUndLanc.size){
+      baseDataSupa = [];
     } else {
       baseDataSupa = await supaFetch(
-        `base_data?mes_ano=eq.${mesFiltro}&select=${BD_SELECT}&limit=20000`
-      ) || [];
+        `base_data?carga=in.(${[...cargasUndLanc].join(',')})&select=${BD_SELECT}&limit=20000`
+      ).catch(()=>[]) || [];
     }
 
     // Filtrar por RI/RE/Todos conforme seleção do usuário
@@ -18156,8 +18144,9 @@ async function renderDashInterna(){
         const isRI_c = cargaIsRI.hasOwnProperty(c) ? cargaIsRI[c] : (cfgRota?.ri ?? true);
         prazo = isRI_c ? 24 : 192;
       }
+      const isInFull = p.ocorrencia == null || p.ocorrencia === 0;
       otifTot++;
-      if(diffHoras <= prazo) otifOk++;
+      if(diffHoras <= prazo && isInFull) otifOk++;
     });
 
     const pctOtif = otifTot ? Math.round((otifOk/otifTot)*100) : null;
@@ -18329,11 +18318,13 @@ async function renderDashInterna(){
 
 // Cálculo OTIF unificado — usado pelo Dashboard Interno e pela TV
 // Prioridade data_entrega: entrega_datas (planilha real) → lancamentos.ts → demandas_rota.data_saida (mesmo dia = no prazo)
+// OTIF unificado — início: data_pedido; fim: data_entrega real ou data_saida provisória; prazoMap em horas
 function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
+  // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
   (rotasRows||[]).forEach(r=>{
     const nome=(r.nome||'').toUpperCase();
-    prazoMap[nome]=r.prazo_otif?r.prazo_otif/24:((r.tipo==='RI'||r.tipo==='R.I.')?1:8);
+    prazoMap[nome]=r.prazo_otif; // null do banco = sem prazo; número = horas
   });
   const saidaMap={};
   (saidaRows||[]).forEach(d=>{ if(d.carga!=null&&d.data_saida) saidaMap[String(d.carga)]=d.data_saida; });
@@ -18344,7 +18335,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
     const k=String(b.pedido);
     if(pedMap[k]) return;
     const rireNorm=normRire(b.rire)||getRireFromRota(b.rota)||'R.E.';
-    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
+    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia, dataPedido:b.data_pedido||null };
   });
   const entMap={};
   (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
@@ -18353,27 +18344,33 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
   let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
   let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
   for(const [ped,bd] of Object.entries(pedMap)){
+    if(!bd.dataPedido) continue; // sem data_pedido não entra no cálculo
     const ent=entMap[ped]||{};
     const carga=bd.carga;
-    const prazoD=prazoMap[bd.rota]??(bd.rire==='R.I.'?1:8);
-    let dataEntrega=ent.entrega||null;
-    if(!dataEntrega&&carga&&lancDtMap[carga]) dataEntrega=lancDtMap[carga];
-    if(!dataEntrega&&carga&&saidaMap[carga]) dataEntrega=saidaMap[carga];
-    const dataSaida=ent.saida||(carga?saidaMap[carga]:null)||null;
-    const isEntregue=!!dataEntrega;
-    let isOnTime=false;
-    if(isEntregue&&dataSaida) isOnTime=(new Date(dataEntrega)-new Date(dataSaida))/(864e5)<=prazoD;
-    const isInFull=isEntregue&&(bd.ocorrencia==null||bd.ocorrencia===0);
+    // Prazo em horas: cadastro tem prioridade; null = rota sem OTIF; undefined = usa padrão RI/RE
+    const prazoEntry=Object.prototype.hasOwnProperty.call(prazoMap,bd.rota)?prazoMap[bd.rota]:undefined;
+    if(prazoEntry===null) continue; // rota sem prazo (ex: CEASA)
+    const prazoH=prazoEntry!=null?prazoEntry:(bd.rire==='R.I.'?24:192);
+    // Data final: entrega real → saida por pedido → saida por carga → ts lançamento
+    let dataFim=ent.entrega||null;
+    if(!dataFim&&ent.saida) dataFim=ent.saida;
+    if(!dataFim&&carga&&saidaMap[carga]) dataFim=saidaMap[carga];
+    if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancDtMap[carga];
+    if(!dataFim) continue; // sem data de referência — não entra no cálculo
+    const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
+    if(diffHoras<0) continue; // data inconsistente — ignorar
+    const isOnTime=diffHoras<=prazoH;
+    const isInFull=bd.ocorrencia==null||bd.ocorrencia===0;
     const isOTIF=isOnTime&&isInFull;
     total++;
-    if(isEntregue)entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
-    if(bd.rire==='R.I.'){ riTotal++; if(isEntregue)entRI++; if(isOnTime)onTimeRI++; if(isInFull)inFullRI++; if(isOTIF)otifRI++; }
-    else { reTotal++; if(isEntregue)entRE++; if(isOnTime)onTimeRE++; if(isInFull)inFullRE++; if(isOTIF)otifRE++; }
+    entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
+    if(bd.rire==='R.I.'){ riTotal++; onTimeRI+=isOnTime?1:0; inFullRI+=isInFull?1:0; if(isOTIF)otifRI++; }
+    else { reTotal++; onTimeRE+=isOnTime?1:0; inFullRE+=isInFull?1:0; if(isOTIF)otifRE++; }
   }
   return { prazoMap, total, riTotal, reTotal,
-           entG, onTimeG, inFullG, otifG,
-           entRI, onTimeRI, inFullRI, otifRI,
-           entRE, onTimeRE, inFullRE, otifRE };
+           entG:total, onTimeG, inFullG, otifG,
+           entRI:riTotal, onTimeRI, inFullRI, otifRI,
+           entRE:reTotal, onTimeRE, inFullRE, otifRE };
 }
 
 async function renderDashOtif(){
@@ -18382,15 +18379,27 @@ async function renderDashOtif(){
   try{
     const mesAtual = new Date().toISOString().slice(0,7);
 
-    const [bdRows, entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
-      supaFetch(`base_data?mes_ano=eq.${mesAtual}&select=pedido,carga,rota,rire,ocorrencia`).catch(()=>[]),
+    // 1ª fase: cargas do mês + configs + entregas (paralelo)
+    const [entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
       supaFetch(`entrega_datas?mes_ano=eq.${mesAtual}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
       supaFetch(`lancamentos?mes_ano=eq.${mesAtual}&select=carga,ts`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesAtual}-01&data_saida=lt.${_proximoMes(mesAtual)}-01&select=carga,data_saida`).catch(()=>[]),
     ]);
 
-    if(!(bdRows||[]).length){ el.innerHTML=''; return; }
+    // Cargas que saíram no mês (fonte: lancamentos + demandas_rota)
+    const _cargasMes = new Set([
+      ...(lancRows||[]).map(l=>String(l.carga)).filter(Boolean),
+      ...(saidaRows||[]).map(d=>String(d.carga)).filter(Boolean),
+    ]);
+    if(!_cargasMes.size){ el.innerHTML=''; return; }
+
+    // 2ª fase: pedidos dessas cargas (sem filtro mes_ano — pedido pode ser de outro mês)
+    const bdRows = await supaFetch(
+      `base_data?carga=in.(${[..._cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`
+    ).catch(()=>[]) || [];
+
+    if(!bdRows.length){ el.innerHTML=''; return; }
 
     const s=_computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
     const { total, riTotal, reTotal, entG, onTimeG, inFullG, otifG,
@@ -19340,11 +19349,17 @@ async function renderAbsenteismo(){
       if(estaDeFerias){
         nomeStyle = 'color:#be185d;font-weight:800';
         badges += `<span style="font-size:.65rem;background:#fce7f3;color:#be185d;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🏖 Férias</span>`;
+        badges += ` <button onclick="registrarRetornoFerias('${nome.replace(/'/g,"\\'")}','${filtMes}','distribuicao')" title="Registrar retorno de férias" style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:10px;font-weight:700;border:1px solid #a7f3d0;cursor:pointer">✓ Retornou</button>`;
       } else if(estaAtestado){
         nomeStyle = 'color:#92400e;font-weight:800';
         badges += `<span style="font-size:.65rem;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🩺 Atestado</span>`;
       } else if(ferias > 0){
-        badges += `<span style="font-size:.65rem;background:#fce7f3;color:#be185d;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🏖 ${ferias}d férias</span>`;
+        const ultimaDiaFerias = Object.entries(d.dias).filter(([,s])=>s==='ferias').map(([dt])=>dt).sort().pop();
+        if(ultimaDiaFerias && ultimaDiaFerias < hoje){
+          badges += `<span style="font-size:.65rem;background:#f3f4f6;color:#6b7280;padding:1px 6px;border-radius:10px;font-weight:600;margin-left:6px">🏖 voltou</span>`;
+        } else {
+          badges += `<span style="font-size:.65rem;background:#fce7f3;color:#be185d;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🏖 ${ferias}d férias</span>`;
+        }
       }
 
       const rowBg = afastadoHoje ? (estaDeFerias ? 'rgba(190,24,93,.04)' : 'rgba(245,158,11,.04)') : '';
@@ -19967,6 +19982,19 @@ async function salvarAbsenteismo(){
 // ── EDITAR FÉRIAS ────────────────────────────────────────
 let _feriasEditNome = '';
 let _feriasEditMes  = '';
+
+async function registrarRetornoFerias(nome, mesFiltro, setor){
+  if(!confirm(`Registrar retorno de férias de ${nome} a partir de hoje?\nIsso removerá os registros de férias de hoje em diante.`)) return;
+  const hoje = new Date().toISOString().split('T')[0];
+  try{
+    await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&status=eq.ferias&data=gte.${hoje}`, {method:'DELETE'});
+    showToast(`Retorno de ${nome} registrado com sucesso`, 'success');
+    if(setor === 'armazem') renderAbsArmazem();
+    else renderAbsenteismo();
+  }catch(e){
+    showToast('Erro ao registrar retorno: ' + e.message, 'error');
+  }
+}
 
 async function abrirEditarFerias(nome, mes){
   _feriasEditNome = nome;
@@ -22025,19 +22053,28 @@ async function renderAbsArmazem(){
       if(estaDeFerias){
         nomeStyle = 'color:#be185d;font-weight:800';
         badges += `<span style="font-size:.65rem;background:#fce7f3;color:#be185d;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🏖 Férias</span>`;
+        badges += ` <button onclick="registrarRetornoFerias('${d.nome.replace(/'/g,"\\'")}','${filtMes}','armazem')" title="Registrar retorno de férias" style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:10px;font-weight:700;border:1px solid #a7f3d0;cursor:pointer">✓ Retornou</button>`;
       } else if(estaAtestado){
         nomeStyle = 'color:#92400e;font-weight:800';
         badges += `<span style="font-size:.65rem;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🩺 Atestado</span>`;
       } else if(ferias>0){
-        badges += `<span style="font-size:.65rem;background:#fce7f3;color:#be185d;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🏖 ${ferias}d férias</span>`;
+        const ultimaDiaFerias = Object.entries(d.dias).filter(([,s])=>s==='ferias').map(([dt])=>dt).sort().pop();
+        if(ultimaDiaFerias && ultimaDiaFerias < hoje){
+          badges += `<span style="font-size:.65rem;background:#f3f4f6;color:#6b7280;padding:1px 6px;border-radius:10px;font-weight:600;margin-left:6px">🏖 voltou</span>`;
+        } else {
+          badges += `<span style="font-size:.65rem;background:#fce7f3;color:#be185d;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">🏖 ${ferias}d férias</span>`;
+        }
       }
       if(d.data_demissao) badges += `<span style="font-size:.65rem;background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:10px;font-weight:700;margin-left:6px">Desligado ${new Date(d.data_demissao+'T00:00:00').toLocaleDateString('pt-BR')}</span>`;
 
       const rowBg = estaDeFerias?'rgba(190,24,93,.04)':estaAtestado?'rgba(245,158,11,.04)':'';
 
       return `<tr style="border-bottom:1px solid var(--border);${rowBg?'background:'+rowBg+';':''}${d.data_demissao?'opacity:.7':''}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='${rowBg}'">
-        <td style="padding:10px 14px">
-          <span style="${nomeStyle}">${d.nome}</span>${badges}
+        <td style="padding:10px 14px;font-size:.83rem">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="${nomeStyle}">${d.nome}</span>${badges}
+            <button onclick="abrirCalFuncionario('${d.nome.replace(/'/g,"\\'")}','${filtMes}')" title="Calendário individual" style="padding:1px 7px;font-size:.68rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-card2);color:var(--text-muted);cursor:pointer;white-space:nowrap" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='var(--bg-card2)'">📅</button>
+          </div>
         </td>
         <td style="padding:10px 14px;font-size:.75rem;color:var(--text-muted)">${perfilLabel[d.perfil]||d.perfil||'—'}</td>
         <td style="padding:10px 14px;text-align:center;font-weight:800;color:#059669">${pres}</td>
@@ -22046,7 +22083,7 @@ async function renderAbsArmazem(){
         <td style="padding:10px 14px;text-align:center;font-weight:800;color:#6b7280">${folga}</td>
         <td style="padding:10px 14px;text-align:center">
           ${ferias>0
-            ? `<button onclick="abrirEditarFerias('${d.nome.replace(/'/g,"\\'")}','${filtMes}')" style="background:#fce7f3;color:#be185d;border:1px solid #fbcfe8;border-radius:6px;padding:2px 10px;font-size:.78rem;font-weight:800;cursor:pointer">🏖 ${ferias}</button>`
+            ? `<button onclick="abrirEditarFerias('${d.nome.replace(/'/g,"\\'")}','${filtMes}')" style="background:#fce7f3;color:#be185d;border:1px solid #fbcfe8;border-radius:6px;padding:2px 10px;font-size:.78rem;font-weight:800;cursor:pointer">🏖 ${ferias} dia(s)</button>`
             : `<span style="font-weight:800;color:var(--text-muted)">0</span>`}
         </td>
         <td style="padding:10px 14px;text-align:center">
@@ -23644,136 +23681,205 @@ async function carregarPaginaFiscal(){
       return ' (+' + (m<60 ? m+'min' : Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')) + ')';
     };
 
-    container.innerHTML = cargas.map(carga=>{
-      const dados   = cargasMap[carga];
-      if(!dados) return '';
-      const dem     = dados.demanda;
-      const nfsCarga= dados.nfs;
-      const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
-      const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
-      const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+    // Store context so drawer can read fresh data after re-renders
+    window._fiscalDados = { cargasMap, atribs, podeAdmin, podeUpload, isAdminFiscal, perfilUsuario, _valMapFiscal, _fT, _dMin };
 
-      const cardBorder = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
-      const cardBg     = euAtribuido?'rgba(5,150,105,.06)':outroFiscal?'rgba(245,158,11,.06)':'var(--bg-card)';
-      const headerBg   = euAtribuido?'rgba(5,150,105,.1)':outroFiscal?'rgba(245,158,11,.08)':'rgba(5,150,105,.05)';
-
-      const totalPedCarga = pedidos.length;
-      const pedOK   = pedidos.filter(ped=>dados.confMap[ped]?.status==='ok').length;
-      const pedNOK  = pedidos.filter(ped=>dados.confMap[ped]?.status==='nok').length;
-      const pedPend = pedidos.filter(ped=>!dados.confMap[ped]).length;
-
-      return `<div id="fiscal-wrap-${carga}" style="background:${cardBg};border:1.5px solid ${cardBorder};border-radius:14px;margin-bottom:12px;overflow:hidden">
-        <div onclick="toggleFiscalCard(${carga})" style="cursor:pointer;padding:14px 20px;background:${headerBg};display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;user-select:none">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span style="background:#059669;color:#fff;font-size:.8rem;font-weight:800;padding:3px 12px;border-radius:20px">📋 Carga ${carga}</span>
-            <span style="font-size:.85rem;font-weight:700;color:var(--text-primary)">${dem.rota||'—'}</span>
-            <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
+    // Compact grid of summary cards — clicking opens the detail drawer
+    container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;padding:4px 0">${
+      cargas.map(carga=>{
+        const dados = cargasMap[carga];
+        if(!dados) return '';
+        const dem = dados.demanda;
+        const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
+        const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+        const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+        const borderCol = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
+        const bgCol = euAtribuido?'rgba(5,150,105,.08)':outroFiscal?'rgba(245,158,11,.08)':'var(--bg-card)';
+        const pedOK = pedidos.filter(p=>dados.confMap[p]?.status==='ok').length;
+        const pedNOK = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
+        const pedPend = pedidos.filter(p=>!dados.confMap[p]).length;
+        return `<div onclick="abrirModalFiscalDrawer(${carga})" style="background:${bgCol};border:2px solid ${borderCol};border-radius:12px;padding:14px 12px;cursor:pointer;transition:transform .15s,box-shadow .15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 14px rgba(0,0,0,.18)'" onmouseleave="this.style.transform='';this.style.boxShadow=''">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+            <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">📋 ${carga}</span>
+            <span style="font-size:.68rem;color:var(--text-muted)">${dados.nfs.length} NF(s)</span>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">✅ ${pedOK} OK</span>
-            ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">❌ ${pedNOK} NOK</span>`:''}
-            ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">⏳ ${pedPend} s/ conf.</span>`:''}
-            <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
-            ${isAdminFiscal?(()=>{
-              const confs = pedidos.map(p=>dados.confMap[p]?.conferido_em).filter(Boolean);
-              const nfTimes = nfsCarga.map(n=>n.criado_em).filter(Boolean);
-              const fc = confs.length ? confs.reduce((a,b)=>a<b?a:b) : null;
-              const ln = nfTimes.length ? nfTimes.reduce((a,b)=>a>b?a:b) : null;
-              if(!fc) return '';
-              return '<span style="font-size:.68rem;color:var(--text-muted);background:rgba(255,255,255,.06);padding:2px 8px;border-radius:4px">⏱ '+_fT(fc)+(ln?' → '+_fT(ln)+_dMin(fc,ln):'...')+'</span>';
-            })():''}
+          <div style="font-size:.8rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${(dem.rota||'').replace(/"/g,'&quot;')}">${dem.rota||'—'}</div>
+          <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🚗 ${dem.motorista||'—'}</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:700">✅ ${pedOK}</span>
+            ${pedNOK?`<span style="font-size:.65rem;background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:4px;font-weight:700">❌ ${pedNOK}</span>`:''}
+            ${pedPend?`<span style="font-size:.65rem;background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700">⏳ ${pedPend}</span>`:''}
+            <span style="font-size:.65rem;color:var(--text-muted);padding:1px 4px">${pedidos.length} ped.</span>
           </div>
-          <span id="fiscal-arrow-${carga}" style="font-size:.85rem;color:var(--text-muted);flex-shrink:0;transition:transform .2s">▼</span>
-        </div>
-        <div id="fiscal-card-${carga}" style="display:none;padding:14px 20px;border-top:1px solid ${cardBorder}">
-          ${pedidos.map(ped=>{
-            const conf      = dados.confMap[ped];
-            const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
-            const stConf    = conf?.status;
-            const atribPed  = (atribs||[]).find(a=>a.carga===carga&&a.pedido===ped&&a.status==='em_andamento');
-            const euPeguei  = atribPed?.fiscal_id===USUARIO_LOGADO?.id;
-            const outroPegou= atribPed && !euPeguei;
-            const podeTrabalhar = euPeguei || podeAdmin;
+          ${euAtribuido?`<div style="margin-top:8px;font-size:.65rem;color:#059669;font-weight:700">✍️ Você está aqui</div>`:outroFiscal?`<div style="margin-top:8px;font-size:.65rem;color:#f59e0b;font-weight:700">🔒 ${outroFiscal.fiscal_nome||'Outro'}</div>`:''}
+        </div>`;
+      }).join('')
+    }</div>`;
 
-            const confBg     = outroPegou?'rgba(245,158,11,.05)':euPeguei?'rgba(5,150,105,.06)':stConf==='nok'?'rgba(239,68,68,.06)':'var(--bg-card2)';
-            const confBorder = outroPegou?'#fcd34d':euPeguei?'rgba(5,150,105,.3)':stConf==='nok'?'rgba(239,68,68,.2)':'var(--border)';
-            const confBadge  = stConf==='ok'
-              ? `<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✅ Conferido</span>`
-              : stConf==='nok'
-              ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700">❌ NOK</span>`
-              : `<span style="font-size:.7rem;background:#fef9c3;color:#92400e;padding:1px 7px;border-radius:5px;font-weight:700">⏳ Sem conf.</span>`;
-            const emissores=[...new Set(nfsPed.map(n=>n.fiscal_nome).filter(Boolean))];
-            // Verificar divergência de valor: NF emitida com valor ≠ valor atual em base_data
-            const _nfComValor = nfsPed.find(n=>n.valor!=null);
-            const _valAtualFisc = (_valMapFiscal[carga]??{})[ped]??null;
-            const _temDivFisc = _nfComValor && _valAtualFisc!==null &&
-              Math.abs(_valAtualFisc - _nfComValor.valor) > 0.01;
-            const _divBadge = _temDivFisc
-              ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700;cursor:help" title="NF emitida: R$ ${Number(_nfComValor.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})} | Atual: R$ ${Number(_valAtualFisc).toLocaleString('pt-BR',{minimumFractionDigits:2})}">⚠️ Valor divergente!</span>`
-              : '';
-
-            return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                  <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
-                  ${confBadge}
-                  ${_divBadge}
-                  ${euPeguei?`<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✍️ Você</span>`:''}
-                  ${outroPegou?`<span style="font-size:.7rem;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">🔒 ${atribPed.fiscal_nome}</span>`:''}
-                  ${conf?.conferente_nome?`<span style="font-size:.7rem;color:var(--text-muted)">${conf.conferente_nome}</span>`:''}
-                  ${emissores.length?`<span style="font-size:.7rem;background:rgba(5,150,105,.1);color:#059669;padding:1px 7px;border-radius:5px;font-weight:600">📋 ${emissores.join(', ')}</span>`:''}
-                  ${conf?.observacao?`<span style="font-size:.7rem;color:#ef4444">⚠️ ${conf.observacao}</span>`:''}
-                </div>
-                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                  <span style="font-size:.72rem;background:${nfsPed.length?'#d1fae5':'#fef9c3'};color:${nfsPed.length?'#065f46':'#92400e'};padding:2px 8px;border-radius:5px;font-weight:700">
-                    ${nfsPed.length?nfsPed.length+' NF(s)':'Sem NF'}
-                  </span>
-                  ${!atribPed?`<button onclick="pegarPedidoFiscal(${carga},${ped})" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🔒 Pegar</button>`:''}
-                  ${euPeguei?`<button onclick="liberarPedidoFiscal(${carga},${ped})" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer">🔓 Liberar</button>`:''}
-                  ${(outroPegou&&['fiscal_admin','admin','adm_fiscal'].includes(perfilUsuario))?`<button onclick="soltarPedidoFiscalADM(${carga},${ped},'${(atribPed?.fiscal_nome||'').replace(/'/g,"\\'")}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">🔓 Soltar (ADM)</button>`:''}
-                  ${stConf==='ok'?`<span style="font-size:.7rem;background:#dcfce7;color:#166534;padding:2px 9px;border-radius:5px;font-weight:700;cursor:default" title="Pedido já conferido — não pode ser cancelado">✅ Conferido</span>`:`<button onclick="abrirModalCancelarPedido(${carga},${ped},'${(dem?.rota||'').replace(/'/g,"\\'")}','${(dem?.motorista||'').replace(/'/g,"\\'")}','page')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">❌ Cancelar</button>`}
-                  ${(()=>{const _ak=`${carga}_${ped}`;const _ativo=(window._meusAlertas||new Set()).has(_ak);return`<button onclick="toggleAlertaFiscal(${carga},${ped},'${(dem?.rota||'').replace(/'/g,"\\'")}',this)" title="${_ativo?'Remover alerta desta rota':'Ser notificado quando esta rota finalizar'}" style="background:${_ativo?'rgba(251,191,36,.2)':'rgba(107,114,128,.1)'};color:${_ativo?'#f59e0b':'#6b7280'};border:1px solid ${_ativo?'rgba(251,191,36,.4)':'rgba(107,114,128,.2)'};border-radius:6px;padding:3px 8px;font-size:.82rem;cursor:pointer;transition:all .2s">${_ativo?'🔔':'🔕'}</button>`;})()}
-                </div>
-              </div>
-              ${nfsPed.map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:5px 10px;margin-bottom:3px">
-                <span style="font-size:.78rem;color:#065f46;font-weight:600">📄 ${n.nome_arquivo}</span>
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:.7rem;color:#6b7280">${n.tipo==='boleto'?'💰 Boleto':'📋 NF'}</span>
-                  ${podeAdmin?`<button onclick="removerNFInline(this)" data-nfid="${n.id||''}" data-nome="${(n.nome_arquivo||'').replace(/"/g,'&quot;')}" data-carga="${carga}" data-status="${dem.status||''}" title="Remover" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:.85rem;padding:1px 4px">🗑</button>`:''}
-                </div>
-              </div>`).join('')}
-              ${isAdminFiscal?(()=>{
-                const cTs = conf?.conferido_em||null;
-                const nfTs = (nfsPed.filter(n=>n.tipo==='nf').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
-                const bTs  = (nfsPed.filter(n=>n.tipo==='boleto').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
-                if(!cTs&&!nfTs&&!bTs) return '';
-                let row = '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 8px;background:rgba(255,255,255,.04);border-radius:6px;font-size:.68rem;color:var(--text-muted);margin-bottom:5px">';
-                if(cTs) row += '<span title="Conferido pelo armazém">📦 conf. '+_fT(cTs)+'</span>';
-                if(nfTs) row += '<span title="NF emitida">📋 NF '+_fT(nfTs)+'<b style="color:#22c55e">'+_dMin(cTs,nfTs)+'</b></span>';
-                if(bTs)  row += '<span title="Boleto emitido">💰 Boleto '+_fT(bTs)+'<b style="color:#3b82f6">'+_dMin(cTs,bTs)+'</b></span>';
-                row += '</div>';
-                return row;
-              })():''}
-              ${podeTrabalhar?`<div style="margin-top:6px">
-                ${stConf!=='ok'?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:5px 10px;margin-bottom:6px;font-size:.75rem;color:#92400e;font-weight:600">⚠️ Pedido ainda não conferido pelo armazém — envie assim mesmo com cautela.</div>`:''}
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <input type="file" id="nfi-${carga}-${ped}" accept=".pdf,.xml,.png,.jpg" multiple style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.75rem;flex:1;min-width:0"/>
-                  <button onclick="uploadNFInline(${carga},${ped})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 14px;font-size:.78rem;font-weight:700;cursor:pointer">📤 Enviar</button>
-                </div>
-                <span style="font-size:.67rem;color:var(--text-muted)">"boleto" no nome → 💰 Boleto; outros → 📋 NF</span>
-              </div>`:outroPegou?`<p style="font-size:.72rem;color:#92400e;margin-top:6px">🔒 Em uso por ${atribPed?.fiscal_nome}</p>`:''}
-            </div>`;
-          }).join('')}
-          ${podeAdmin?`<div style="display:flex;gap:8px;margin-top:10px">
-            <button onclick="concluirFiscal(${carga},'${dem?.id||''}')"
-              style="background:#059669;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:.8rem;font-weight:700;cursor:pointer">
-              ✅ Concluir Fiscal — Enviar para Seguros e Caixa
-            </button>
-          </div>`:''}
-        </div>
-      </div>`;
-    }).join('');
+    // Re-open drawer if it was open before this refresh
+    if(window._fiscalModalCargaAberta && cargasMap[window._fiscalModalCargaAberta]){
+      abrirModalFiscalDrawer(window._fiscalModalCargaAberta);
+    }
   }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; }
+}
+
+function abrirModalFiscalDrawer(carga){
+  window._fiscalModalCargaAberta = carga;
+  const fd = window._fiscalDados;
+  if(!fd){ showToast('Dados não carregados — recarregue a página','warning'); return; }
+  const { cargasMap, atribs, podeAdmin, podeUpload, isAdminFiscal, perfilUsuario, _valMapFiscal, _fT, _dMin } = fd;
+  const dados = cargasMap[carga];
+  if(!dados){ showToast('Carga não encontrada','warning'); return; }
+  const dem = dados.demanda;
+  const nfsCarga = dados.nfs;
+  const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
+  const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+  const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
+  const cardBorder = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
+  const pedOK  = pedidos.filter(p=>dados.confMap[p]?.status==='ok').length;
+  const pedNOK = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
+  const pedPend= pedidos.filter(p=>!dados.confMap[p]).length;
+  const _rotaEsc  = (dem?.rota||'').replace(/'/g,"\\'");
+  const _motorEsc = (dem?.motorista||'').replace(/'/g,"\\'");
+
+  const pedidosHTML = pedidos.map(ped=>{
+    const conf      = dados.confMap[ped];
+    const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
+    const stConf    = conf?.status;
+    const atribPed  = (atribs||[]).find(a=>a.carga===carga&&a.pedido===ped&&a.status==='em_andamento');
+    const euPeguei  = atribPed?.fiscal_id===USUARIO_LOGADO?.id;
+    const outroPegou= atribPed && !euPeguei;
+    const podeTrabalhar = euPeguei || podeAdmin;
+    const confBg    = outroPegou?'rgba(245,158,11,.05)':euPeguei?'rgba(5,150,105,.06)':stConf==='nok'?'rgba(239,68,68,.06)':'var(--bg-card2)';
+    const confBorder= outroPegou?'#fcd34d':euPeguei?'rgba(5,150,105,.3)':stConf==='nok'?'rgba(239,68,68,.2)':'var(--border)';
+    const confBadge = stConf==='ok'
+      ? `<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✅ Conferido</span>`
+      : stConf==='nok'
+      ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700">❌ NOK</span>`
+      : `<span style="font-size:.7rem;background:#fef9c3;color:#92400e;padding:1px 7px;border-radius:5px;font-weight:700">⏳ Sem conf.</span>`;
+    const emissores = [...new Set(nfsPed.map(n=>n.fiscal_nome).filter(Boolean))];
+    const _nfComValor = nfsPed.find(n=>n.valor!=null);
+    const _valAtualFisc = (_valMapFiscal[carga]??{})[ped]??null;
+    const _temDivFisc = _nfComValor && _valAtualFisc!==null && Math.abs(_valAtualFisc - _nfComValor.valor) > 0.01;
+    const _divBadge = _temDivFisc
+      ? `<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:5px;font-weight:700;cursor:help" title="NF emitida: R$ ${Number(_nfComValor.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})} | Atual: R$ ${Number(_valAtualFisc).toLocaleString('pt-BR',{minimumFractionDigits:2})}">⚠️ Valor divergente!</span>` : '';
+    const _nomeAtribEsc = (atribPed?.fiscal_nome||'').replace(/'/g,"\\'");
+
+    let timingRow = '';
+    if(isAdminFiscal){
+      const cTs = conf?.conferido_em||null;
+      const nfTs= (nfsPed.filter(n=>n.tipo==='nf').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
+      const bTs = (nfsPed.filter(n=>n.tipo==='boleto').sort((a,b)=>new Date(a.criado_em)-new Date(b.criado_em))[0]?.criado_em)||null;
+      if(cTs||nfTs||bTs){
+        timingRow = '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 8px;background:rgba(255,255,255,.04);border-radius:6px;font-size:.68rem;color:var(--text-muted);margin-bottom:5px">';
+        if(cTs)  timingRow += '<span title="Conferido pelo armazém">📦 conf. '+_fT(cTs)+'</span>';
+        if(nfTs) timingRow += '<span title="NF emitida">📋 NF '+_fT(nfTs)+'<b style="color:#22c55e">'+_dMin(cTs,nfTs)+'</b></span>';
+        if(bTs)  timingRow += '<span title="Boleto emitido">💰 Boleto '+_fT(bTs)+'<b style="color:#3b82f6">'+_dMin(cTs,bTs)+'</b></span>';
+        timingRow += '</div>';
+      }
+    }
+
+    const nfsHTML = nfsPed.map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:5px 10px;margin-bottom:3px">
+      <span style="font-size:.78rem;color:#065f46;font-weight:600">📄 ${n.nome_arquivo}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:.7rem;color:#6b7280">${n.tipo==='boleto'?'💰 Boleto':'📋 NF'}</span>
+        ${podeAdmin?`<button onclick="removerNFInline(this)" data-nfid="${n.id||''}" data-nome="${(n.nome_arquivo||'').replace(/"/g,'&quot;')}" data-carga="${carga}" data-status="${dem.status||''}" title="Remover" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:.85rem;padding:1px 4px">🗑</button>`:''}
+      </div>
+    </div>`).join('');
+
+    const uploadHTML = podeTrabalhar
+      ? `<div style="margin-top:6px">
+          ${stConf!=='ok'?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:5px 10px;margin-bottom:6px;font-size:.75rem;color:#92400e;font-weight:600">⚠️ Pedido ainda não conferido pelo armazém — envie assim mesmo com cautela.</div>`:''}
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <input type="file" id="nfi-${carga}-${ped}" accept=".pdf,.xml,.png,.jpg" multiple style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.75rem;flex:1;min-width:0"/>
+            <button onclick="uploadNFInline(${carga},${ped})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 14px;font-size:.78rem;font-weight:700;cursor:pointer">📤 Enviar</button>
+          </div>
+          <span style="font-size:.67rem;color:var(--text-muted)">"boleto" no nome → 💰 Boleto; outros → 📋 NF</span>
+        </div>`
+      : outroPegou ? `<p style="font-size:.72rem;color:#92400e;margin-top:6px">🔒 Em uso por ${atribPed?.fiscal_nome}</p>` : '';
+
+    const _alertaKey = `${carga}_${ped}`;
+    const _ativo = (window._meusAlertas||new Set()).has(_alertaKey);
+
+    return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
+          ${confBadge}${_divBadge}
+          ${euPeguei?`<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:5px;font-weight:700">✍️ Você</span>`:''}
+          ${outroPegou?`<span style="font-size:.7rem;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">🔒 ${atribPed.fiscal_nome}</span>`:''}
+          ${conf?.conferente_nome?`<span style="font-size:.7rem;color:var(--text-muted)">${conf.conferente_nome}</span>`:''}
+          ${emissores.length?`<span style="font-size:.7rem;background:rgba(5,150,105,.1);color:#059669;padding:1px 7px;border-radius:5px;font-weight:600">📋 ${emissores.join(', ')}</span>`:''}
+          ${conf?.observacao?`<span style="font-size:.7rem;color:#ef4444">⚠️ ${conf.observacao}</span>`:''}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:.72rem;background:${nfsPed.length?'#d1fae5':'#fef9c3'};color:${nfsPed.length?'#065f46':'#92400e'};padding:2px 8px;border-radius:5px;font-weight:700">${nfsPed.length?nfsPed.length+' NF(s)':'Sem NF'}</span>
+          ${!atribPed?`<button onclick="pegarPedidoFiscal(${carga},${ped})" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🔒 Pegar</button>`:''}
+          ${euPeguei?`<button onclick="liberarPedidoFiscal(${carga},${ped})" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer">🔓 Liberar</button>`:''}
+          ${outroPegou&&['fiscal_admin','admin','adm_fiscal'].includes(perfilUsuario)?`<button onclick="soltarPedidoFiscalADM(${carga},${ped},'${_nomeAtribEsc}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">🔓 Soltar (ADM)</button>`:''}
+          ${stConf==='ok'
+            ? `<span style="font-size:.7rem;background:#dcfce7;color:#166534;padding:2px 9px;border-radius:5px;font-weight:700;cursor:default" title="Pedido já conferido — não pode ser cancelado">✅ Conferido</span>`
+            : `<button onclick="abrirModalCancelarPedido(${carga},${ped},'${_rotaEsc}','${_motorEsc}','page')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">❌ Cancelar</button>`}
+          <button onclick="toggleAlertaFiscal(${carga},${ped},'${_rotaEsc}',this)" title="${_ativo?'Remover alerta desta rota':'Ser notificado quando esta rota finalizar'}" style="background:${_ativo?'rgba(251,191,36,.2)':'rgba(107,114,128,.1)'};color:${_ativo?'#f59e0b':'#6b7280'};border:1px solid ${_ativo?'rgba(251,191,36,.4)':'rgba(107,114,128,.2)'};border-radius:6px;padding:3px 8px;font-size:.82rem;cursor:pointer;transition:all .2s">${_ativo?'🔔':'🔕'}</button>
+        </div>
+      </div>
+      ${nfsHTML}${timingRow}${uploadHTML}
+    </div>`;
+  }).join('');
+
+  let timeInfo = '';
+  if(isAdminFiscal){
+    const confs = pedidos.map(p=>dados.confMap[p]?.conferido_em).filter(Boolean);
+    const nfTimes = nfsCarga.map(n=>n.criado_em).filter(Boolean);
+    const fc = confs.length ? confs.reduce((a,b)=>a<b?a:b) : null;
+    const ln = nfTimes.length ? nfTimes.reduce((a,b)=>a>b?a:b) : null;
+    if(fc) timeInfo = `<span style="font-size:.68rem;color:var(--text-muted);background:rgba(255,255,255,.06);padding:2px 8px;border-radius:4px">⏱ ${_fT(fc)}${ln?' → '+_fT(ln)+_dMin(fc,ln):'...'}</span>`;
+  }
+
+  if(!document.getElementById('_css_fiscalDrawer')){
+    const s = document.createElement('style');
+    s.id = '_css_fiscalDrawer';
+    s.textContent = '@keyframes _slideInRight{from{transform:translateX(100%)}to{transform:translateX(0)}} @keyframes _fadeInBg{from{opacity:0}to{opacity:1}}';
+    document.head.appendChild(s);
+  }
+
+  const existing = document.getElementById('fiscal-drawer-overlay');
+  if(existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'fiscal-drawer-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9000;display:flex;justify-content:flex-end;animation:_fadeInBg .2s';
+  overlay.innerHTML = `<div style="width:min(700px,100vw);height:100%;background:var(--bg-card);display:flex;flex-direction:column;box-shadow:-4px 0 24px rgba(0,0,0,.3);animation:_slideInRight .25s">
+    <div style="padding:16px 20px;border-bottom:1.5px solid ${cardBorder};background:var(--bg-card);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="background:#059669;color:#fff;font-size:.85rem;font-weight:800;padding:3px 14px;border-radius:20px">📋 Carga ${carga}</span>
+        <span style="font-size:.9rem;font-weight:700;color:var(--text-primary)">${dem.rota||'—'}</span>
+        <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">✅ ${pedOK} OK</span>
+        ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">❌ ${pedNOK} NOK</span>`:''}
+        ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">⏳ ${pedPend} s/ conf.</span>`:''}
+        <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
+        ${timeInfo}
+        <button onclick="fecharModalFiscalDrawer()" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer">✕ Fechar</button>
+      </div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:16px 20px">
+      ${pedidosHTML}
+      ${podeAdmin?`<div style="display:flex;gap:8px;margin-top:10px">
+        <button onclick="concluirFiscal(${carga},'${dem?.id||''}')" style="background:#059669;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:.8rem;font-weight:700;cursor:pointer">✅ Concluir Fiscal — Enviar para Seguros e Caixa</button>
+      </div>`:''}
+    </div>
+  </div>`;
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) fecharModalFiscalDrawer(); });
+  document.body.appendChild(overlay);
+}
+
+function fecharModalFiscalDrawer(){
+  window._fiscalModalCargaAberta = null;
+  const el = document.getElementById('fiscal-drawer-overlay');
+  if(el) el.remove();
 }
 
 
@@ -28670,8 +28776,9 @@ async function carregarTV(){
     const mesStr = hoje.slice(0,7);
     const [_y,_m] = mesStr.split('-').map(Number);
     const _prox = _m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
+    // 1ª fase: tudo exceto base_data (cargas do mês ainda desconhecidas)
     const [banners, demRota,
-           veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, bdRows, entRows,
+           veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, entRows,
            lancRows, demSaida] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.(pronto_viagem,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida&order=data_saida.desc&limit=60`).catch(()=>[]),
@@ -28682,11 +28789,19 @@ async function carregarTV(){
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=in.(saiu,fim_viagem)&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
-      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=pedido,carga,rota,rire,ocorrencia`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,ts`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&data_saida=lt.${_prox}-01&select=carga,data_saida`).catch(()=>[]),
     ]);
+
+    // 2ª fase: base_data filtrado pelas cargas que saíram no mês
+    const _tvCargasMes = new Set([
+      ...(lancRows||[]).map(l=>String(l.carga)).filter(Boolean),
+      ...(demSaida||[]).map(d=>String(d.carga)).filter(Boolean),
+    ]);
+    const bdRows = _tvCargasMes.size
+      ? await supaFetch(`base_data?carga=in.(${[..._tvCargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]) || []
+      : [];
 
     // ── Carrossel ──
     _tvRenderCarrossel(banners||[]);
@@ -28705,7 +28820,7 @@ async function carregarTV(){
       const noPrazo= tipoFiltro==='RI' ? otifStats.otifRI  : otifStats.otifRE;
       // Em Risco: cargas em rota que se aproximam do prazo
       const emTransito=(cargasEmRota||[]).filter(d=>{
-        const k=(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]?prazoMap[k]*24:null;
+        const k=(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]!=null?prazoMap[k]:null;
         if(!prazoH||!d.ts_saiu) return false;
         if(tipoFiltro==='RI' && getRireFromRota(d.rota)!=='R.I.') return false;
         if(tipoFiltro==='RE' && getRireFromRota(d.rota)!=='R.E.') return false;
