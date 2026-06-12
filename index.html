@@ -17989,7 +17989,7 @@ async function renderDashInterna(){
 
     // Buscar base_data do mês — inclui valor e ajudante; semana calculada de data_pedido
     // Estratégia dupla: lancamentos (und confiável) + base_data.und direto
-    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor';
+    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor,ocorrencia';
     let baseDataSupa;
     if(undFiltro){
       const [bdLanc, bdUnd] = await Promise.all([
@@ -18156,8 +18156,9 @@ async function renderDashInterna(){
         const isRI_c = cargaIsRI.hasOwnProperty(c) ? cargaIsRI[c] : (cfgRota?.ri ?? true);
         prazo = isRI_c ? 24 : 192;
       }
+      const isInFull = p.ocorrencia == null || p.ocorrencia === 0;
       otifTot++;
-      if(diffHoras <= prazo) otifOk++;
+      if(diffHoras <= prazo && isInFull) otifOk++;
     });
 
     const pctOtif = otifTot ? Math.round((otifOk/otifTot)*100) : null;
@@ -18329,11 +18330,13 @@ async function renderDashInterna(){
 
 // Cálculo OTIF unificado — usado pelo Dashboard Interno e pela TV
 // Prioridade data_entrega: entrega_datas (planilha real) → lancamentos.ts → demandas_rota.data_saida (mesmo dia = no prazo)
+// OTIF unificado — início: data_pedido; fim: data_entrega real ou data_saida provisória; prazoMap em horas
 function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
+  // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
   (rotasRows||[]).forEach(r=>{
     const nome=(r.nome||'').toUpperCase();
-    prazoMap[nome]=r.prazo_otif?r.prazo_otif/24:((r.tipo==='RI'||r.tipo==='R.I.')?1:8);
+    prazoMap[nome]=r.prazo_otif; // null do banco = sem prazo; número = horas
   });
   const saidaMap={};
   (saidaRows||[]).forEach(d=>{ if(d.carga!=null&&d.data_saida) saidaMap[String(d.carga)]=d.data_saida; });
@@ -18344,7 +18347,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
     const k=String(b.pedido);
     if(pedMap[k]) return;
     const rireNorm=normRire(b.rire)||getRireFromRota(b.rota)||'R.E.';
-    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia };
+    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia, dataPedido:b.data_pedido||null };
   });
   const entMap={};
   (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
@@ -18353,27 +18356,33 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
   let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
   let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
   for(const [ped,bd] of Object.entries(pedMap)){
+    if(!bd.dataPedido) continue; // sem data_pedido não entra no cálculo
     const ent=entMap[ped]||{};
     const carga=bd.carga;
-    const prazoD=prazoMap[bd.rota]??(bd.rire==='R.I.'?1:8);
-    let dataEntrega=ent.entrega||null;
-    if(!dataEntrega&&carga&&lancDtMap[carga]) dataEntrega=lancDtMap[carga];
-    if(!dataEntrega&&carga&&saidaMap[carga]) dataEntrega=saidaMap[carga];
-    const dataSaida=ent.saida||(carga?saidaMap[carga]:null)||null;
-    const isEntregue=!!dataEntrega;
-    let isOnTime=false;
-    if(isEntregue&&dataSaida) isOnTime=(new Date(dataEntrega)-new Date(dataSaida))/(864e5)<=prazoD;
-    const isInFull=isEntregue&&(bd.ocorrencia==null||bd.ocorrencia===0);
+    // Prazo em horas: cadastro tem prioridade; null = rota sem OTIF; undefined = usa padrão RI/RE
+    const prazoEntry=Object.prototype.hasOwnProperty.call(prazoMap,bd.rota)?prazoMap[bd.rota]:undefined;
+    if(prazoEntry===null) continue; // rota sem prazo (ex: CEASA)
+    const prazoH=prazoEntry!=null?prazoEntry:(bd.rire==='R.I.'?24:192);
+    // Data final: entrega real → saida por pedido → saida por carga → ts lançamento
+    let dataFim=ent.entrega||null;
+    if(!dataFim&&ent.saida) dataFim=ent.saida;
+    if(!dataFim&&carga&&saidaMap[carga]) dataFim=saidaMap[carga];
+    if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancDtMap[carga];
+    if(!dataFim) continue; // sem data de referência — não entra no cálculo
+    const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
+    if(diffHoras<0) continue; // data inconsistente — ignorar
+    const isOnTime=diffHoras<=prazoH;
+    const isInFull=bd.ocorrencia==null||bd.ocorrencia===0;
     const isOTIF=isOnTime&&isInFull;
     total++;
-    if(isEntregue)entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
-    if(bd.rire==='R.I.'){ riTotal++; if(isEntregue)entRI++; if(isOnTime)onTimeRI++; if(isInFull)inFullRI++; if(isOTIF)otifRI++; }
-    else { reTotal++; if(isEntregue)entRE++; if(isOnTime)onTimeRE++; if(isInFull)inFullRE++; if(isOTIF)otifRE++; }
+    entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
+    if(bd.rire==='R.I.'){ riTotal++; onTimeRI+=isOnTime?1:0; inFullRI+=isInFull?1:0; if(isOTIF)otifRI++; }
+    else { reTotal++; onTimeRE+=isOnTime?1:0; inFullRE+=isInFull?1:0; if(isOTIF)otifRE++; }
   }
   return { prazoMap, total, riTotal, reTotal,
-           entG, onTimeG, inFullG, otifG,
-           entRI, onTimeRI, inFullRI, otifRI,
-           entRE, onTimeRE, inFullRE, otifRE };
+           entG:total, onTimeG, inFullG, otifG,
+           entRI:riTotal, onTimeRI, inFullRI, otifRI,
+           entRE:reTotal, onTimeRE, inFullRE, otifRE };
 }
 
 async function renderDashOtif(){
@@ -18383,7 +18392,7 @@ async function renderDashOtif(){
     const mesAtual = new Date().toISOString().slice(0,7);
 
     const [bdRows, entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
-      supaFetch(`base_data?mes_ano=eq.${mesAtual}&select=pedido,carga,rota,rire,ocorrencia`).catch(()=>[]),
+      supaFetch(`base_data?mes_ano=eq.${mesAtual}&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesAtual}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
       supaFetch(`lancamentos?mes_ano=eq.${mesAtual}&select=carga,ts`).catch(()=>[]),
@@ -28779,7 +28788,7 @@ async function carregarTV(){
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=in.(saiu,fim_viagem)&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
-      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=pedido,carga,rota,rire,ocorrencia`).catch(()=>[]),
+      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,ts`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&data_saida=lt.${_prox}-01&select=carga,data_saida`).catch(()=>[]),
@@ -28802,7 +28811,7 @@ async function carregarTV(){
       const noPrazo= tipoFiltro==='RI' ? otifStats.otifRI  : otifStats.otifRE;
       // Em Risco: cargas em rota que se aproximam do prazo
       const emTransito=(cargasEmRota||[]).filter(d=>{
-        const k=(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]?prazoMap[k]*24:null;
+        const k=(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]!=null?prazoMap[k]:null;
         if(!prazoH||!d.ts_saiu) return false;
         if(tipoFiltro==='RI' && getRireFromRota(d.rota)!=='R.I.') return false;
         if(tipoFiltro==='RE' && getRireFromRota(d.rota)!=='R.E.') return false;
