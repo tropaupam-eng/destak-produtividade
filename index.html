@@ -17987,28 +17987,16 @@ async function renderDashInterna(){
       if(l.ajudante  && !cargaAjudante[c])  cargaAjudante[c]  = (l.ajudante||'').toUpperCase().trim();
     });
 
-    // Buscar base_data do mês — inclui valor e ajudante; semana calculada de data_pedido
-    // Estratégia dupla: lancamentos (und confiável) + base_data.und direto
+    // Buscar base_data pelas cargas que saíram no mês (não por mes_ano do pedido)
+    // Motivo: pedido criado no mês anterior mas entregue neste mês deve contar aqui
     const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor,ocorrencia';
     let baseDataSupa;
-    if(undFiltro){
-      const [bdLanc, bdUnd] = await Promise.all([
-        cargasUndLanc.size > 0
-          ? supaFetch(`base_data?mes_ano=eq.${mesFiltro}&carga=in.(${[...cargasUndLanc].join(',')})&select=${BD_SELECT}&limit=20000`).catch(()=>[])
-          : Promise.resolve([]),
-        supaFetch(`base_data?mes_ano=eq.${mesFiltro}&und=eq.${encodeURIComponent(undFiltro)}&select=${BD_SELECT}&limit=20000`).catch(()=>[])
-      ]);
-      const _seen = new Set();
-      baseDataSupa = [...(bdLanc||[]), ...(bdUnd||[])].filter(r => {
-        const k = `${r.carga}_${r.pedido}`;
-        if(_seen.has(k)) return false;
-        _seen.add(k);
-        return true;
-      });
+    if(!cargasUndLanc.size){
+      baseDataSupa = [];
     } else {
       baseDataSupa = await supaFetch(
-        `base_data?mes_ano=eq.${mesFiltro}&select=${BD_SELECT}&limit=20000`
-      ) || [];
+        `base_data?carga=in.(${[...cargasUndLanc].join(',')})&select=${BD_SELECT}&limit=20000`
+      ).catch(()=>[]) || [];
     }
 
     // Filtrar por RI/RE/Todos conforme seleção do usuário
@@ -18391,15 +18379,27 @@ async function renderDashOtif(){
   try{
     const mesAtual = new Date().toISOString().slice(0,7);
 
-    const [bdRows, entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
-      supaFetch(`base_data?mes_ano=eq.${mesAtual}&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]),
+    // 1ª fase: cargas do mês + configs + entregas (paralelo)
+    const [entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
       supaFetch(`entrega_datas?mes_ano=eq.${mesAtual}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
       supaFetch(`lancamentos?mes_ano=eq.${mesAtual}&select=carga,ts`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesAtual}-01&data_saida=lt.${_proximoMes(mesAtual)}-01&select=carga,data_saida`).catch(()=>[]),
     ]);
 
-    if(!(bdRows||[]).length){ el.innerHTML=''; return; }
+    // Cargas que saíram no mês (fonte: lancamentos + demandas_rota)
+    const _cargasMes = new Set([
+      ...(lancRows||[]).map(l=>String(l.carga)).filter(Boolean),
+      ...(saidaRows||[]).map(d=>String(d.carga)).filter(Boolean),
+    ]);
+    if(!_cargasMes.size){ el.innerHTML=''; return; }
+
+    // 2ª fase: pedidos dessas cargas (sem filtro mes_ano — pedido pode ser de outro mês)
+    const bdRows = await supaFetch(
+      `base_data?carga=in.(${[..._cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`
+    ).catch(()=>[]) || [];
+
+    if(!bdRows.length){ el.innerHTML=''; return; }
 
     const s=_computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
     const { total, riTotal, reTotal, entG, onTimeG, inFullG, otifG,
@@ -28776,8 +28776,9 @@ async function carregarTV(){
     const mesStr = hoje.slice(0,7);
     const [_y,_m] = mesStr.split('-').map(Number);
     const _prox = _m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
+    // 1ª fase: tudo exceto base_data (cargas do mês ainda desconhecidas)
     const [banners, demRota,
-           veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, bdRows, entRows,
+           veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, entRows,
            lancRows, demSaida] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.(pronto_viagem,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida&order=data_saida.desc&limit=60`).catch(()=>[]),
@@ -28788,11 +28789,19 @@ async function carregarTV(){
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=in.(saiu,fim_viagem)&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
-      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,ts`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&data_saida=lt.${_prox}-01&select=carga,data_saida`).catch(()=>[]),
     ]);
+
+    // 2ª fase: base_data filtrado pelas cargas que saíram no mês
+    const _tvCargasMes = new Set([
+      ...(lancRows||[]).map(l=>String(l.carga)).filter(Boolean),
+      ...(demSaida||[]).map(d=>String(d.carga)).filter(Boolean),
+    ]);
+    const bdRows = _tvCargasMes.size
+      ? await supaFetch(`base_data?carga=in.(${[..._tvCargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]) || []
+      : [];
 
     // ── Carrossel ──
     _tvRenderCarrossel(banners||[]);
