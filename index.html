@@ -17953,7 +17953,7 @@ async function renderDashInterna(){
 
   try{
     // 1. Buscar rotas RI diretamente do banco
-    const todasRotas = await supaFetch('rotas?select=nome,tipo&ativo=eq.true') || [];
+    const todasRotas = await supaFetch('rotas?select=nome,tipo,prazo_otif&ativo=eq.true') || [];
     const rotasRI = todasRotas.filter(r=>r.tipo==='RI'||r.tipo==='R.I.'||ROTAS_RI.has((r.nome||'').toUpperCase())).map(r=>r.nome);
     const rotaParam = rotasRI.length ? rotasRI.join(',') : '';
 
@@ -17963,7 +17963,7 @@ async function renderDashInterna(){
     // Buscar lancamentos do mês — inclui motorista E ajudante para rankings
     const undFilter = undFiltro ? `&und=eq.${encodeURIComponent(undFiltro)}` : '';
     const lancMes = await supaFetch(
-      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista,ajudante&limit=5000`
+      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista,ajudante,ts&limit=5000`
     ) || [];
 
     // Cargas da unidade selecionada (via lancamentos — fonte confiável)
@@ -18055,29 +18055,13 @@ async function renderDashInterna(){
     const emAtraso = dem.filter(d=>d.data_saida < hoje && !['saiu','fim_viagem','concluido','cancelado'].includes(d.status));
     const pedidosEmAtraso = emAtraso.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
 
-    // 5. OTIF — data_pedido → ts_saiu (sistema) com fallback da planilha
-
-    // Mapa carga → ts_saiu (sistema — quando motorista/adm marca que saiu)
-    const cargaSaiuMap = {};
-    dem.forEach(d=>{ if(d.ts_saiu) cargaSaiuMap[String(d.carga)] = d.ts_saiu; });
-
-    // Complementar: cargas cujo data_saida ficou fora do intervalo do mês
-    if(cargasUnd.size > 0){
-      const cargasSemSaida = [...cargasUnd].filter(c=>!cargaSaiuMap[c]);
-      if(cargasSemSaida.length > 0){
-        const extras = await supaFetch(
-          `demandas_rota?carga=in.(${cargasSemSaida.join(',')})&ts_saiu=not.is.null&select=carga,ts_saiu`
-        ).catch(()=>[]) || [];
-        extras.forEach(d=>{ cargaSaiuMap[String(d.carga)] = d.ts_saiu; });
-      }
-    }
-
     // Planilha de entregas: pedido → data_entrega (real) e data_saida (saída da planilha base)
     const entregaMap = {}; // pedido → 'YYYY-MM-DD' (data de entrega real)
     const saidaMap   = {}; // pedido → 'YYYY-MM-DD' (data de saída da planilha base)
     let nEntrega = 0, nSaida = 0;
+    let edRows = [];
     try{
-      const edRows = await supaFetch(
+      edRows = await supaFetch(
         `entrega_datas?mes_ano=eq.${mesFiltro}&select=pedido,data_entrega,data_saida`
       ).catch(()=>[]) || [];
       edRows.forEach(r=>{
@@ -18096,58 +18080,10 @@ async function renderDashInterna(){
         ? `🚛 Saída importada — ${nSaida} pedidos (aguardando planilha de entrega)`
         : '⏱ Sem planilha — OTIF pela saída registrada no sistema';
 
-    // Calcular OTIF: data_pedido → ts_saiu (prazo por rota configurado em Cadastro > Rotas)
-    let otifTot=0, otifOk=0;
-    const pedidosContados = new Set();
-
-    bd.forEach(p => {
-      const pedKey = String(p.carga)+'_'+String(p.pedido);
-      if(pedidosContados.has(pedKey)) return;
-      pedidosContados.add(pedKey);
-
-      const pedStr   = String(p.pedido);
-      const cargaStr = String(p.carga);
-
-      // data_pedido: quando o pedido foi criado (vem da planilha base importada)
-      const dpStr = p.data_pedido;
-      if(!dpStr) return;
-      const dpMs = new Date(dpStr+'T00:00:00').getTime();
-
-      // Data final (ordem de prioridade):
-      // 1º data_entrega — data real de entrega ao cliente (planilha de entregas)
-      // 2º data_saida   — data de saída da planilha base (SAÍDA importada)
-      // 3º ts_saiu      — timestamp do sistema quando motorista/adm marcou saída
-      let refMs = null;
-      if(entregaMap[pedStr]){
-        refMs = new Date(entregaMap[pedStr]+'T00:00:00').getTime();
-      } else if(saidaMap[pedStr]){
-        refMs = new Date(saidaMap[pedStr]+'T00:00:00').getTime();
-      } else {
-        const tsSaiu = cargaSaiuMap[cargaStr];
-        if(tsSaiu) refMs = new Date(tsSaiu).getTime();
-      }
-      if(!refMs) return;
-
-      const diffHoras = (refMs - dpMs) / (1000 * 3600);
-      if(diffHoras < 0) return; // data inconsistente — ignorar
-
-      // Prazo por rota — prioridade: cadastro → lancamento → padrão RI/RE
-      const rotaKey = (p.rota||'').toUpperCase().trim();
-      const c = Math.round(Number(p.carga));
-      const cfgRota = CONFIG.rotas?.[rotaKey];
-      if(cfgRota && cfgRota.prazoOtif === null) return; // rota sem prazo (ex: CEASA)
-      let prazo;
-      if(cfgRota?.prazoOtif != null){
-        prazo = cfgRota.prazoOtif; // cadastro tem prioridade
-      } else {
-        // fallback: tipo do lancamento, depois padrão RI=24h / RE=192h
-        const isRI_c = cargaIsRI.hasOwnProperty(c) ? cargaIsRI[c] : (cfgRota?.ri ?? true);
-        prazo = isRI_c ? 24 : 192;
-      }
-      const isInFull = p.ocorrencia == null || p.ocorrencia === 0;
-      otifTot++;
-      if(diffHoras <= prazo && isInFull) otifOk++;
-    });
+    // Calcular OTIF usando função unificada (mesma lógica do Dashboard OTIF e TV)
+    const _otifInterna = _computeOtifStats(bd, edRows, lancMes, dem, todasRotas);
+    const otifTot = _otifInterna.total;
+    const otifOk  = _otifInterna.otifG;
 
     const pctOtif = otifTot ? Math.round((otifOk/otifTot)*100) : null;
     const corOtif = p => p===null?'#6b7280':p>=95?'#059669':p>=80?'#f59e0b':'#ef4444';
