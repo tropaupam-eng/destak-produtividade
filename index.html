@@ -18080,9 +18080,9 @@ async function renderDashInterna(){
         ? `🚛 Saída importada — ${nSaida} pedidos (aguardando planilha de entrega)`
         : '⏱ Sem planilha — OTIF pela saída registrada no sistema';
 
-    // Calcular OTIF usando função unificada — passa baseDataSupa (não filtrado por rire)
-    // igual ao Painel: _computeOtifStats classifica RI/RE internamente pelo campo rire
-    const _otifInterna = _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas);
+    // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
+    const _dadosOtif = await _carregarOtifMes(mesFiltro);
+    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas);
     let otifTot, otifOk;
     if(rireFiltro === 'RI'){
       otifTot = _otifInterna.riTotal; otifOk = _otifInterna.otifRI;
@@ -18316,35 +18316,40 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
            entRE:reTotal, onTimeRE, inFullRE, otifRE };
 }
 
+// Fonte única de OTIF — busca e calcula uma vez por mês, cache compartilhado por todos os displays
+let _otifCache = null, _otifCacheMes = null;
+async function _carregarOtifMes(mes){
+  if(_otifCache && _otifCacheMes === mes) return _otifCache;
+  _otifCache = null; _otifCacheMes = mes;
+  const proximo = _proximoMes(mes);
+  const [entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
+    supaFetch(`entrega_datas?mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
+    supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
+    supaFetch(`lancamentos?mes_ano=eq.${mes}&select=carga,ts`).catch(()=>[]),
+    supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proximo}-01&select=carga,data_saida`).catch(()=>[]),
+  ]);
+  const cargasMes = new Set([
+    ...(lancRows||[]).map(l=>String(l.carga)).filter(Boolean),
+    ...(saidaRows||[]).map(d=>String(d.carga)).filter(Boolean),
+  ]);
+  const bdRows = cargasMes.size
+    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]) || []
+    : [];
+  const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
+  _otifCache = { stats, bdRows, entRows, lancRows, saidaRows, rotasRows, cargasMes };
+  return _otifCache;
+}
+
 async function renderDashOtif(){
   const el = document.getElementById('dash-otif');
   if(!el) return;
   try{
     const mesAtual = new Date().toISOString().slice(0,7);
 
-    // 1ª fase: cargas do mês + configs + entregas (paralelo)
-    const [entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
-      supaFetch(`entrega_datas?mes_ano=eq.${mesAtual}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
-      supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
-      supaFetch(`lancamentos?mes_ano=eq.${mesAtual}&select=carga,ts`).catch(()=>[]),
-      supaFetch(`demandas_rota?data_saida=gte.${mesAtual}-01&data_saida=lt.${_proximoMes(mesAtual)}-01&select=carga,data_saida`).catch(()=>[]),
-    ]);
-
-    // Cargas que saíram no mês (fonte: lancamentos + demandas_rota)
-    const _cargasMes = new Set([
-      ...(lancRows||[]).map(l=>String(l.carga)).filter(Boolean),
-      ...(saidaRows||[]).map(d=>String(d.carga)).filter(Boolean),
-    ]);
-    if(!_cargasMes.size){ el.innerHTML=''; return; }
-
-    // 2ª fase: pedidos dessas cargas (sem filtro mes_ano — pedido pode ser de outro mês)
-    const bdRows = await supaFetch(
-      `base_data?carga=in.(${[..._cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`
-    ).catch(()=>[]) || [];
-
-    if(!bdRows.length){ el.innerHTML=''; return; }
-
-    const s=_computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
+    // Fonte única: _carregarOtifMes calcula e armazena em cache
+    const _dados = await _carregarOtifMes(mesAtual);
+    if(!_dados || !_dados.bdRows.length){ el.innerHTML=''; return; }
+    const s = _dados.stats;
     const { total, riTotal, reTotal, entG, onTimeG, inFullG, otifG,
             entRI, onTimeRI, inFullRI, otifRI, entRE, onTimeRE, inFullRE, otifRE } = s;
 
@@ -28752,10 +28757,10 @@ async function carregarTV(){
     // ── Ticker ──
     _tvRenderTicker(demRota||[]);
 
-    // ── OTIF do Mês — mesma lógica do Dashboard Interno via _computeOtifStats ──
-    (rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
-
-    const otifStats=_computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif);
+    // ── OTIF do Mês — fonte única compartilhada com Painel e Dashboard Interno ──
+    const _tvDadosOtif = await _carregarOtifMes(mesStr);
+    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif);
+    (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
 
     const _buildTvOtif = (tipoFiltro) => {
