@@ -2623,7 +2623,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
       <div>
         <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Unidade</label>
-        <div id="l-und-display" style="border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.82rem;font-weight:700;color:var(--text-muted);background:var(--bg-card2)">—</div>
+        <!-- Usuário com unidade fixa: exibe somente leitura -->
+        <div id="l-und-display" style="border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.82rem;font-weight:700;color:var(--text-muted);background:var(--bg-card2);display:none">—</div>
+        <!-- Admin sem unidade fixa: select obrigatório -->
+        <select id="l-und-select" style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.85rem;outline:none;background:var(--bg-input);color:var(--text-primary);display:none">
+          <option value="">Selecione a unidade...</option>
+        </select>
         <input type="hidden" id="l-und" value=""/>
       </div>
 
@@ -3308,6 +3313,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
     <button onclick="limparComercialRotas()" style="background:transparent;border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.82rem;color:var(--text-muted);cursor:pointer">🗑 Limpar resolvidas</button>
   </div>
+  <div id="comercial-baixo-valor" style="margin-bottom:20px"></div>
   <div id="comercial-rotas-lista"></div>
 </div></div>
 
@@ -8524,7 +8530,18 @@ function ehVeiculoFrete(placa){
 async function lancar(){
   const carga = parseInt(document.getElementById('l-carga').value);
   const mot   = (document.getElementById('l-motorista')?.value||'').trim();
+  // Sincroniza select → hidden antes de ler (caso onchange não tenha disparado)
+  const undSel = document.getElementById('l-und-select');
+  if(undSel && undSel.style.display!=='none' && undSel.value){
+    const h = document.getElementById('l-und'); if(h) h.value = undSel.value;
+  }
   const und   = document.getElementById('l-und')?.value || (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+  if(!und){
+    showToast('Selecione a unidade do lançamento!','warning');
+    if(undSel) undSel.style.border='1.5px solid #ef4444';
+    return;
+  }
+  if(undSel) undSel.style.border='';
 
   document.getElementById('l-carga').classList.remove('error');
   if(!carga||carga<=0){
@@ -8561,6 +8578,9 @@ async function lancar(){
   document.getElementById('l-motorista').value='';
   document.getElementById('l-veiculo').value='';
   document.getElementById('l-rota-input').value='';
+  // Limpa select de unidade (admin) mas mantém hidden para usuário com unidade fixa
+  const _undSel2 = document.getElementById('l-und-select');
+  if(_undSel2 && _undSel2.style.display!=='none'){ _undSel2.value=''; document.getElementById('l-und').value=''; }
   const prev = document.getElementById('carga-preview');
   if(prev) prev.style.display='none';
   showToast(
@@ -17382,12 +17402,29 @@ function popularFormLancamento(){
       rotasRI.map(r=>`<option value="${r.nome}">${r.nome}</option>`).join('');
     if(cur) rotaSel.value = cur;
   }
-  // Unidade do usuário (auto — não editável)
+  // Unidade: auto para usuários com unidade fixa, select para admin
   const undDisplay = document.getElementById('l-und-display');
+  const undSelect  = document.getElementById('l-und-select');
   const undHidden  = document.getElementById('l-und');
   const und = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
-  if(undDisplay) undDisplay.textContent = und || '—';
-  if(undHidden)  undHidden.value = und;
+  if(und){
+    // Usuário tem unidade fixa → exibir bloqueado
+    if(undDisplay){ undDisplay.textContent = und; undDisplay.style.display=''; }
+    if(undSelect)   undSelect.style.display = 'none';
+    if(undHidden)   undHidden.value = und;
+  } else {
+    // Admin / sem unidade fixa → select obrigatório
+    if(undDisplay)  undDisplay.style.display = 'none';
+    if(undSelect){
+      undSelect.style.display = '';
+      const unidades = getUnidadesList();
+      const prev = undHidden?.value || '';
+      undSelect.innerHTML = '<option value="">Selecione a unidade...</option>'
+        + unidades.map(u=>`<option value="${u}"${u===prev?' selected':''}>${u}</option>`).join('');
+      undSelect.onchange = ()=>{ if(undHidden) undHidden.value = undSelect.value; };
+    }
+    if(undHidden) undHidden.value = undHidden?.value || '';
+  }
 }
 
 function previewCargaLanc(val){
@@ -22811,6 +22848,14 @@ async function carregarPortalConferente(){
   const container = document.getElementById('conf-pedidos-container');
   if(!container||!USUARIO_LOGADO) return;
 
+  // Registrar acesso do conferente (fire-and-forget)
+  if(USUARIO_LOGADO.id && USUARIO_LOGADO.perfil==='conferente'){
+    supaFetch(`conferentes?id=eq.${USUARIO_LOGADO.id}`,{
+      method:'PATCH', prefer:'return=minimal',
+      body:JSON.stringify({ultimo_acesso: new Date().toISOString()})
+    }).catch(()=>{});
+  }
+
   const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
 
   // Label do mês no topbar
@@ -24563,6 +24608,21 @@ async function transferirEAvancar(atribId, demandaId, carga, selectId){
   }catch(e){ showToast('Erro: '+e.message,'error'); }
 }
 
+function _fmtUltimoAcesso(ts){
+  if(!ts) return null;
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000); // segundos
+  if(diff < 120)  return {label:'Online agora',    cor:'#34d399', dot:'🟢'};
+  if(diff < 600)  return {label:`há ${Math.floor(diff/60)} min`, cor:'#34d399', dot:'🟢'};
+  if(diff < 3600) return {label:`há ${Math.floor(diff/60)} min`, cor:'#f59e0b', dot:'🟡'};
+  const hoje = new Date().toDateString();
+  const dt   = new Date(ts);
+  const hora = dt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  if(dt.toDateString()===hoje) return {label:`hoje às ${hora}`,  cor:'#6b7280', dot:'⚪'};
+  const ontem = new Date(); ontem.setDate(ontem.getDate()-1);
+  if(dt.toDateString()===ontem.toDateString()) return {label:`ontem às ${hora}`, cor:'#6b7280', dot:'⚪'};
+  return {label: dt.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})+' às '+hora, cor:'#6b7280', dot:'⚪'};
+}
+
 async function renderConferentesArmazem(conferentes, atribs, confStatus, demandas, fotos){
   const container = document.getElementById('arm-conf-container');
   if(!container) return;
@@ -24663,6 +24723,7 @@ async function renderConferentesArmazem(conferentes, atribs, confStatus, demanda
           <div style="display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap">
             <span style="background:rgba(37,99,235,.12);color:#2563eb;font-size:.67rem;font-weight:700;padding:1px 7px;border-radius:4px">conferente</span>
             <span style="font-size:.72rem;color:var(--text-muted)">${minhasAtribs.length} carga(s) ativa(s)</span>
+            ${(()=>{ const ac=_fmtUltimoAcesso(conf.ultimo_acesso); return ac?`<span style="font-size:.67rem;font-weight:700;color:${ac.cor};padding:1px 7px;border-radius:4px;border:1px solid ${ac.cor}33;background:${ac.cor}11">${ac.dot} ${ac.label}</span>`:'<span style="font-size:.67rem;color:var(--text-muted)">— nunca acessou</span>'; })()}
           </div>
         </div>
       </div>
@@ -27298,14 +27359,17 @@ async function abrirPopupRotasExpedicao(){
                 +'</button>'
             )
             // Motivo do atraso para entradas pendentes
-            +(temMotivo
+            // Quando há pré-carga ativa + motivo: o badge no cabeçalho já informa — não repetir aqui
+            +(temMotivo && !temPC
               ? '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'
                   +'<span style="font-size:.7rem;color:var(--text-muted)">📌 Motivo registrado</span>'
                   +'<button onclick="limparMotivoAtraso(\''+a.id+'\')" '
                     +'style="background:transparent;border:none;color:var(--text-muted);font-size:.7rem;cursor:pointer;text-decoration:underline;padding:0">alterar</button>'
                 +'</div>'
-              : '<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>'
-                +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
+              : (!temMotivo
+                  ? '<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>'
+                    +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
+                  : '')
             )
         )
 
@@ -27465,6 +27529,7 @@ function fecharPopupRotasDia(){
 // ── Cargas abaixo do valor mínimo (planilha vs rotas) ────
 async function renderCargasAbaixoValor(mesFiltro, elId){
   elId = elId || 'agend-baixo-valor';
+  const modoComercial = elId === 'comercial-baixo-valor';
   const el = document.getElementById(elId);
   if(!el) return;
 
@@ -27508,53 +27573,98 @@ async function renderCargasAbaixoValor(mesFiltro, elId){
     })
     .sort((a,b) => Number(b[0]) - Number(a[0])); // mais recentes primeiro (número maior = mais recente)
 
-  if(!abaixo.length){ el.innerHTML = ''; return; }
+  if(!abaixo.length){ el.innerHTML = modoComercial ? '<div style="background:rgba(5,150,105,.07);border:1px solid rgba(5,150,105,.25);border-radius:12px;padding:16px 20px;font-size:.85rem;color:#34d399;font-weight:600">✅ Todas as cargas da semana atingiram o valor mínimo.</div>' : ''; return; }
 
   const labelPeriodo = filtraSemana ? `Semana ${semanaAtual} — ${mesAtual.replace('-','/')}` : mesFiltro.replace('-','/');
 
-  el.innerHTML = `
-    <div style="background:var(--bg-card);border:1px solid rgba(239,68,68,.3);border-left:4px solid #ef4444;border-radius:14px;overflow:hidden">
-      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);background:rgba(239,68,68,.04)">
-        <div>
-          <div style="font-size:.88rem;font-weight:800;color:#b91c1c">⚠️ Cargas Abaixo do Valor Mínimo</div>
-          <div style="font-size:.75rem;color:var(--text-muted);margin-top:2px">${abaixo.length} carga(s) abaixo da meta — ${labelPeriodo} — dados da planilha</div>
+  if(modoComercial){
+    // Modo Comercial: cards com barra de progresso, mais evidentes
+    el.innerHTML = `
+      <div style="background:rgba(239,68,68,.06);border:2px solid rgba(239,68,68,.4);border-radius:16px;overflow:hidden">
+        <div style="padding:16px 20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid rgba(239,68,68,.2);background:rgba(239,68,68,.08)">
+          <div style="font-size:2rem;line-height:1">🚨</div>
+          <div style="flex:1">
+            <div style="font-size:1rem;font-weight:900;color:#ef4444;letter-spacing:.3px">${abaixo.length} CARGA${abaixo.length>1?'S':''} ABAIXO DO VALOR MÍNIMO</div>
+            <div style="font-size:.78rem;color:var(--text-muted);margin-top:3px">${labelPeriodo} — dados da planilha atual — ação comercial necessária</div>
+          </div>
         </div>
-      </div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-          <thead>
-            <tr style="background:var(--bg-card2)">
-              <th style="padding:9px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Carga</th>
-              <th style="padding:9px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Rota</th>
-              <th style="padding:9px 14px;text-align:right;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Valor</th>
-              <th style="padding:9px 14px;text-align:right;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Meta</th>
-              <th style="padding:9px 14px;text-align:right;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Diferença</th>
-              <th style="padding:9px 14px;text-align:center;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">%</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${abaixo.map(([carga, d])=>{
-              const rota = d.rota||'—';
-              const meta = rotasValor[(rota).trim().toUpperCase()]||0;
-              const val  = d.valor||0;
-              const diff = val - meta;
-              const pct  = meta > 0 ? Math.round((val/meta)*100) : 0;
-              const cor  = pct >= 80 ? '#f59e0b' : '#ef4444';
-              return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
-                <td style="padding:9px 14px;font-weight:700;color:var(--text-primary)">#${carga}</td>
-                <td style="padding:9px 14px;color:var(--text-primary)">${rota}</td>
-                <td style="padding:9px 14px;text-align:right;font-weight:700;color:${cor}">${fmtR(val)}</td>
-                <td style="padding:9px 14px;text-align:right;color:var(--text-muted)">${fmtR(meta)}</td>
-                <td style="padding:9px 14px;text-align:right;font-weight:700;color:#ef4444">${fmtR(diff)}</td>
-                <td style="padding:9px 14px;text-align:center">
-                  <span style="background:${cor}22;color:${cor};font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:20px">${pct}%</span>
-                </td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
+        <div style="padding:12px 16px;display:flex;flex-direction:column;gap:10px">
+          ${abaixo.map(([carga, d])=>{
+            const rota = d.rota||'—';
+            const meta = rotasValor[(rota).trim().toUpperCase()]||0;
+            const val  = d.valor||0;
+            const diff = val - meta;
+            const pct  = meta > 0 ? Math.round((val/meta)*100) : 0;
+            const cor  = pct >= 80 ? '#f59e0b' : '#ef4444';
+            const falta = Math.abs(diff);
+            return `<div style="background:var(--bg-card);border:1px solid ${cor}44;border-left:4px solid ${cor};border-radius:10px;padding:12px 16px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <span style="font-size:1rem;font-weight:900;color:var(--text-primary)">#${carga}</span>
+                  <span style="font-size:.88rem;font-weight:700;color:var(--text-secondary)">${rota}</span>
+                </div>
+                <span style="background:${cor}22;color:${cor};font-size:.82rem;font-weight:800;padding:3px 12px;border-radius:20px;border:1px solid ${cor}44">${pct}% da meta</span>
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                <span style="font-size:.78rem;color:var(--text-muted)">Valor atual: <strong style="color:${cor}">${fmtR(val)}</strong></span>
+                <span style="color:var(--border-med)">|</span>
+                <span style="font-size:.78rem;color:var(--text-muted)">Meta: <strong style="color:var(--text-primary)">${fmtR(meta)}</strong></span>
+                <span style="color:var(--border-med)">|</span>
+                <span style="font-size:.78rem;color:var(--text-muted)">Falta: <strong style="color:#ef4444">${fmtR(falta)}</strong></span>
+              </div>
+              <div style="height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${Math.min(pct,100)}%;background:${cor};border-radius:4px;transition:width .5s"></div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  } else {
+    // Modo padrão: tabela compacta (expedição, agendamento)
+    el.innerHTML = `
+      <div style="background:var(--bg-card);border:1px solid rgba(239,68,68,.3);border-left:4px solid #ef4444;border-radius:14px;overflow:hidden">
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);background:rgba(239,68,68,.04)">
+          <div>
+            <div style="font-size:.88rem;font-weight:800;color:#b91c1c">⚠️ Cargas Abaixo do Valor Mínimo</div>
+            <div style="font-size:.75rem;color:var(--text-muted);margin-top:2px">${abaixo.length} carga(s) abaixo da meta — ${labelPeriodo} — dados da planilha</div>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+            <thead>
+              <tr style="background:var(--bg-card2)">
+                <th style="padding:9px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Carga</th>
+                <th style="padding:9px 14px;text-align:left;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Rota</th>
+                <th style="padding:9px 14px;text-align:right;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Valor</th>
+                <th style="padding:9px 14px;text-align:right;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Meta</th>
+                <th style="padding:9px 14px;text-align:right;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">Diferença</th>
+                <th style="padding:9px 14px;text-align:center;font-size:.68rem;text-transform:uppercase;color:var(--text-muted);font-weight:700">%</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${abaixo.map(([carga, d])=>{
+                const rota = d.rota||'—';
+                const meta = rotasValor[(rota).trim().toUpperCase()]||0;
+                const val  = d.valor||0;
+                const diff = val - meta;
+                const pct  = meta > 0 ? Math.round((val/meta)*100) : 0;
+                const cor  = pct >= 80 ? '#f59e0b' : '#ef4444';
+                return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
+                  <td style="padding:9px 14px;font-weight:700;color:var(--text-primary)">#${carga}</td>
+                  <td style="padding:9px 14px;color:var(--text-primary)">${rota}</td>
+                  <td style="padding:9px 14px;text-align:right;font-weight:700;color:${cor}">${fmtR(val)}</td>
+                  <td style="padding:9px 14px;text-align:right;color:var(--text-muted)">${fmtR(meta)}</td>
+                  <td style="padding:9px 14px;text-align:right;font-weight:700;color:#ef4444">${fmtR(diff)}</td>
+                  <td style="padding:9px 14px;text-align:center">
+                    <span style="background:${cor}22;color:${cor};font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:20px">${pct}%</span>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
 }
 
 function verificarRotasSemana(){
@@ -27720,6 +27830,10 @@ async function renderComercialRotas(){
   const container = document.getElementById('comercial-rotas-lista');
   if(!container) return;
   container.innerHTML='<div style="text-align:center;padding:24px;color:var(--text-muted)">⏳ Carregando...</div>';
+
+  // Bloco de cargas abaixo do valor mínimo (planilha em tempo real)
+  const mesAtual = new Date().getFullYear()+'-'+String(new Date().getMonth()+1).padStart(2,'0');
+  renderCargasAbaixoValor(mesAtual, 'comercial-baixo-valor').catch(()=>{});
 
   // Carregar do Supabase
   let arr = [];
@@ -28152,37 +28266,74 @@ function mostrarBannerAtualizacao(novaVersao){
 // ── MONITOR DE CONEXÃO SUPABASE ─────────────────────────────────────────────
 let _connOk = true;
 let _connTimer = null;
+let _connStatus = 'online'; // 'online' | 'slow' | 'offline'
+
+function _atualizarConnUI(el, estado, ms){
+  if(!el) return;
+  if(estado === 'online'){
+    el.textContent = '🟢 Online';
+    el.style.background  = 'rgba(52,211,153,.15)';
+    el.style.color       = '#34d399';
+    el.style.borderColor = 'rgba(52,211,153,.3)';
+    el.title = ms ? `Banco de dados: OK (${ms}ms)` : 'Conectado';
+  } else if(estado === 'slow'){
+    el.textContent = `🟡 Lento (${ms}ms)`;
+    el.style.background  = 'rgba(245,158,11,.15)';
+    el.style.color       = '#f59e0b';
+    el.style.borderColor = 'rgba(245,158,11,.3)';
+    el.title = `Banco de dados: lento (${ms}ms)`;
+  } else {
+    el.textContent = '🔴 Offline';
+    el.style.background  = 'rgba(239,68,68,.15)';
+    el.style.color       = '#ef4444';
+    el.style.borderColor = 'rgba(239,68,68,.3)';
+    el.title = ms || 'Sem conexão com o banco de dados';
+  }
+}
+
+function _agendarProximaVerificacao(isOffline){
+  if(_connTimer) clearTimeout(_connTimer);
+  _connTimer = setTimeout(checarConexaoSupabase, isOffline ? 5000 : 60000);
+}
 
 async function checarConexaoSupabase(){
   const el = document.getElementById('conn-status');
+  const prev = _connStatus;
+
+  if(!navigator.onLine){
+    _connOk = false;
+    _connStatus = 'offline';
+    _atualizarConnUI(el, 'offline', 'Sem conexão com a internet');
+    if(prev !== 'offline' && typeof showToast === 'function')
+      showToast('⚠️ Sem internet — operações salvas quando reconectar','warning');
+    _agendarProximaVerificacao(true);
+    return;
+  }
+
   try{
     const inicio = Date.now();
-    const rows = await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1', {_quiet:true});
+    await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1', {_quiet:true});
     const ms = Date.now() - inicio;
     _connOk = true;
-    if(el){
-      el.textContent = ms < 800 ? '🟢 Online' : `🟡 Lento (${ms}ms)`;
-      el.style.background = ms < 800 ? 'rgba(52,211,153,.15)' : 'rgba(245,158,11,.15)';
-      el.style.color       = ms < 800 ? '#34d399'              : '#f59e0b';
-      el.style.borderColor = ms < 800 ? 'rgba(52,211,153,.3)' : 'rgba(245,158,11,.3)';
-      el.title = `Banco de dados: OK (${ms}ms)`;
-    }
+    _connStatus = ms < 800 ? 'online' : 'slow';
+    _atualizarConnUI(el, _connStatus, ms);
+    if(prev === 'offline' && typeof showToast === 'function')
+      showToast('✅ Conexão restaurada com o banco de dados','success');
+    _agendarProximaVerificacao(false);
   }catch(e){
     _connOk = false;
-    if(el){
-      el.textContent = '🔴 Offline';
-      el.style.background = 'rgba(239,68,68,.15)';
-      el.style.color       = '#ef4444';
-      el.style.borderColor = 'rgba(239,68,68,.3)';
-      el.title = 'Sem conexão com o banco de dados: ' + (e.message||'erro');
-    }
+    _connStatus = 'offline';
+    _atualizarConnUI(el, 'offline', 'Sem conexão: ' + (e.message||'erro'));
+    if(prev !== 'offline' && typeof showToast === 'function')
+      showToast('⚠️ Sem acesso ao banco de dados — tente recarregar','warning');
+    _agendarProximaVerificacao(true);
   }
 }
 
 function iniciarMonitorConexao(){
   checarConexaoSupabase();
-  if(_connTimer) clearInterval(_connTimer);
-  _connTimer = setInterval(checarConexaoSupabase, 60000);
+  window.addEventListener('online',  () => checarConexaoSupabase());
+  window.addEventListener('offline', () => checarConexaoSupabase());
 }
 
 // ══════════════════════════════════════════════════════
