@@ -28146,37 +28146,74 @@ function mostrarBannerAtualizacao(novaVersao){
 // ── MONITOR DE CONEXÃO SUPABASE ─────────────────────────────────────────────
 let _connOk = true;
 let _connTimer = null;
+let _connStatus = 'online'; // 'online' | 'slow' | 'offline'
+
+function _atualizarConnUI(el, estado, ms){
+  if(!el) return;
+  if(estado === 'online'){
+    el.textContent = '🟢 Online';
+    el.style.background  = 'rgba(52,211,153,.15)';
+    el.style.color       = '#34d399';
+    el.style.borderColor = 'rgba(52,211,153,.3)';
+    el.title = ms ? `Banco de dados: OK (${ms}ms)` : 'Conectado';
+  } else if(estado === 'slow'){
+    el.textContent = `🟡 Lento (${ms}ms)`;
+    el.style.background  = 'rgba(245,158,11,.15)';
+    el.style.color       = '#f59e0b';
+    el.style.borderColor = 'rgba(245,158,11,.3)';
+    el.title = `Banco de dados: lento (${ms}ms)`;
+  } else {
+    el.textContent = '🔴 Offline';
+    el.style.background  = 'rgba(239,68,68,.15)';
+    el.style.color       = '#ef4444';
+    el.style.borderColor = 'rgba(239,68,68,.3)';
+    el.title = ms || 'Sem conexão com o banco de dados';
+  }
+}
+
+function _agendarProximaVerificacao(isOffline){
+  if(_connTimer) clearTimeout(_connTimer);
+  _connTimer = setTimeout(checarConexaoSupabase, isOffline ? 5000 : 60000);
+}
 
 async function checarConexaoSupabase(){
   const el = document.getElementById('conn-status');
+  const prev = _connStatus;
+
+  if(!navigator.onLine){
+    _connOk = false;
+    _connStatus = 'offline';
+    _atualizarConnUI(el, 'offline', 'Sem conexão com a internet');
+    if(prev !== 'offline' && typeof showToast === 'function')
+      showToast('⚠️ Sem internet — operações salvas quando reconectar','warning');
+    _agendarProximaVerificacao(true);
+    return;
+  }
+
   try{
     const inicio = Date.now();
-    const rows = await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1', {_quiet:true});
+    await supaFetch('configuracoes?chave=eq.app_version&select=chave&limit=1', {_quiet:true});
     const ms = Date.now() - inicio;
     _connOk = true;
-    if(el){
-      el.textContent = ms < 800 ? '🟢 Online' : `🟡 Lento (${ms}ms)`;
-      el.style.background = ms < 800 ? 'rgba(52,211,153,.15)' : 'rgba(245,158,11,.15)';
-      el.style.color       = ms < 800 ? '#34d399'              : '#f59e0b';
-      el.style.borderColor = ms < 800 ? 'rgba(52,211,153,.3)' : 'rgba(245,158,11,.3)';
-      el.title = `Banco de dados: OK (${ms}ms)`;
-    }
+    _connStatus = ms < 800 ? 'online' : 'slow';
+    _atualizarConnUI(el, _connStatus, ms);
+    if(prev === 'offline' && typeof showToast === 'function')
+      showToast('✅ Conexão restaurada com o banco de dados','success');
+    _agendarProximaVerificacao(false);
   }catch(e){
     _connOk = false;
-    if(el){
-      el.textContent = '🔴 Offline';
-      el.style.background = 'rgba(239,68,68,.15)';
-      el.style.color       = '#ef4444';
-      el.style.borderColor = 'rgba(239,68,68,.3)';
-      el.title = 'Sem conexão com o banco de dados: ' + (e.message||'erro');
-    }
+    _connStatus = 'offline';
+    _atualizarConnUI(el, 'offline', 'Sem conexão: ' + (e.message||'erro'));
+    if(prev !== 'offline' && typeof showToast === 'function')
+      showToast('⚠️ Sem acesso ao banco de dados — tente recarregar','warning');
+    _agendarProximaVerificacao(true);
   }
 }
 
 function iniciarMonitorConexao(){
   checarConexaoSupabase();
-  if(_connTimer) clearInterval(_connTimer);
-  _connTimer = setInterval(checarConexaoSupabase, 60000);
+  window.addEventListener('online',  () => checarConexaoSupabase());
+  window.addEventListener('offline', () => checarConexaoSupabase());
 }
 
 // ══════════════════════════════════════════════════════
