@@ -2776,6 +2776,18 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <!-- ── Relatório KM ── -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px" id="g-km-section">
+    <div class="card">
+      <h3>📍 KM por Motorista</h3>
+      <div id="g-km-motorista"><div style="text-align:center;padding:24px;color:var(--text-muted);font-size:.85rem">⏳ Carregando...</div></div>
+    </div>
+    <div class="card">
+      <h3>🗺️ KM por Rota</h3>
+      <div id="g-km-rota"><div style="text-align:center;padding:24px;color:var(--text-muted);font-size:.85rem">⏳ Carregando...</div></div>
+    </div>
+  </div>
+
   <!-- ── Relatório Semanal por Setor ── -->
   <div class="card" style="margin-top:20px">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
@@ -8998,6 +9010,63 @@ function renderGeral(){
       scales:{x:{grid:{display:false},ticks:{font:{size:11,weight:'600'}}},y:{grid:{color:'#f0f0f0'},beginAtZero:true}}
     }
   });
+}
+
+
+// ── Relatório KM ─────────────────────────────────────────────────────────────
+
+async function renderGeralKM(){
+  const elMot = document.getElementById('g-km-motorista');
+  const elRot = document.getElementById('g-km-rota');
+  if(!elMot && !elRot) return;
+
+  try{
+    const kmRegs = await supaFetch('km_cargas?select=carga,motorista_nome,km_inicial,km_final,rota').catch(()=>[]) || [];
+
+    const motKm={}, rotaKm={};
+    kmRegs.forEach(r=>{
+      if(r.km_inicial!=null && r.km_final!=null){
+        const diff = r.km_final - r.km_inicial;
+        if(diff>0){
+          const m=(r.motorista_nome||'').trim()||'(sem nome)';
+          motKm[m]=(motKm[m]||0)+diff;
+          if(r.rota) rotaKm[r.rota]=(rotaKm[r.rota]||0)+diff;
+        }
+      }
+    });
+
+    const fmtKm = v=>v.toLocaleString('pt-BR')+' km';
+    const tbl = rows => {
+      const total = rows.reduce((s,[,v])=>s+v,0);
+      return `<div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:.83rem">
+          <tbody>
+            ${rows.map(([nome,km])=>`
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:6px 4px;font-weight:700;color:var(--text-primary)">${nome}</td>
+                <td style="padding:6px 4px;text-align:right;font-weight:800;color:#2563eb">${fmtKm(km)}</td>
+              </tr>`).join('')}
+            <tr style="border-top:2px solid var(--border-med)">
+              <td style="padding:8px 4px;font-size:.78rem;color:var(--text-muted);font-weight:700">Total</td>
+              <td style="padding:8px 4px;text-align:right;font-weight:800;color:#059669">${fmtKm(total)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`;
+    };
+    const vazio = '<p style="text-align:center;padding:16px;color:var(--text-muted);font-size:.83rem">Nenhum KM registrado</p>';
+
+    if(elMot){
+      const rows=Object.entries(motKm).sort((a,b)=>b[1]-a[1]);
+      elMot.innerHTML = rows.length ? tbl(rows) : vazio;
+    }
+    if(elRot){
+      const rows=Object.entries(rotaKm).sort((a,b)=>b[1]-a[1]);
+      elRot.innerHTML = rows.length ? tbl(rows) : vazio;
+    }
+  }catch(e){
+    [elMot,elRot].forEach(el=>{ if(el) el.innerHTML='<p style="color:var(--text-muted);text-align:center;padding:12px">Erro ao carregar KM</p>'; });
+  }
 }
 
 
@@ -15778,7 +15847,7 @@ function showPage(name,tab){
       ROTAS_CAD_CACHE.length  ? Promise.resolve() : cadCarregarRotas(),
     ]).then(()=>popularFormLancamento()).catch(()=>popularFormLancamento());
   },'lancamento');
-  else if(name==='geral'){ safe(()=>renderGeral(),'geral'); initRelSemanal(); }
+  else if(name==='geral'){ safe(()=>renderGeral(),'geral'); initRelSemanal(); renderGeralKM().catch(()=>{}); }
   else if(name==='financeiro') safe(()=>renderFinanceiro(),'financeiro');
   else if(name==='armazem') safe(()=>renderArmazem(),'armazem');
   else if(name==='abs-armazem') safe(()=>renderAbsArmazem(),'abs-armazem');
@@ -20306,8 +20375,9 @@ async function carregarHistoricoRotas(){
     // Buscar dados complementares de todos os setores
     const cargasIds = dados.map(d=>d.carga).filter(Boolean);
     const demIds = dados.map(d=>d.id).filter(Boolean);
-    const [rotasViagem, conferencias, nfs, atribsArm, atribsFiscal, validCaixa] = await Promise.all([
+    const [rotasViagem, kmCargasRegs, conferencias, nfs, atribsArm, atribsFiscal, validCaixa] = await Promise.all([
       cargasIds.length ? supaFetch(`rotas_viagem?carga=in.(${cargasIds.join(',')})&select=*`) : Promise.resolve([]),
+      cargasIds.length ? supaFetch(`km_cargas?carga=in.(${cargasIds.join(',')})&select=carga,km_inicial,km_final,motorista_nome,rota`) : Promise.resolve([]),
       cargasIds.length ? supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*&order=conferido_em.asc`) : Promise.resolve([]),
       cargasIds.length ? supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*&order=criado_em.asc`) : Promise.resolve([]),
       cargasIds.length ? supaFetch(`atribuicoes_armazem?carga=in.(${cargasIds.join(',')})&select=*`) : Promise.resolve([]),
@@ -20315,10 +20385,20 @@ async function carregarHistoricoRotas(){
       cargasIds.length ? supaFetch(`validacoes_caixa?carga=in.(${cargasIds.join(',')})&select=*&order=validado_em.asc`) : Promise.resolve([]),
     ]);
 
+    // Índice de km_cargas por carga (fonte primária: motorista registrou no portal)
+    const kmCargasMap = {};
+    (kmCargasRegs||[]).forEach(r=>{ kmCargasMap[r.carga]=r; });
+
     // KPIs gerais
     const totalPed = conferencias.length;
     const totalVal = dados.reduce((s,d)=>s+(d.valor_total||0),0);
-    const totalKm = rotasViagem.reduce((s,r)=>s+(r.km_total||0),0);
+    // KM total: km_cargas (primário) + rotas_viagem (complemento para cargas sem registro do motorista)
+    const totalKm = (()=>{
+      let sum=0; const visto=new Set();
+      (kmCargasRegs||[]).forEach(r=>{ if(r.km_inicial!=null&&r.km_final!=null){ sum+=r.km_final-r.km_inicial; visto.add(r.carga); } });
+      (rotasViagem||[]).forEach(r=>{ if(!visto.has(r.carga)&&r.km_total) sum+=r.km_total; });
+      return sum;
+    })();
     const diasList = rotasViagem.filter(r=>r.dias_rota).map(r=>r.dias_rota);
     const diasMed = diasList.length ? Math.round(diasList.reduce((a,b)=>a+b,0)/diasList.length) : 0;
 
@@ -20343,7 +20423,12 @@ async function carregarHistoricoRotas(){
     }
 
     container.innerHTML = dados.map(d=>{
-      const rv = rotasViagem.find(r=>r.carga===d.carga)||{};
+      const rv  = rotasViagem.find(r=>r.carga===d.carga)||{};
+      const kmc = kmCargasMap[d.carga]||{};
+      // km_cargas tem prioridade (registrado pelo motorista); rotas_viagem como fallback
+      const kmIni = kmc.km_inicial ?? rv.km_inicial;
+      const kmFin = kmc.km_final   ?? rv.km_final;
+      const kmTot = (kmIni!=null&&kmFin!=null) ? (kmFin-kmIni) : (rv.km_total||null);
       const confCarga = conferencias.filter(c=>c.carga===d.carga);
       const nfsCarga = nfs.filter(n=>n.carga===d.carga);
       const atribsCarga = atribsArm.filter(a=>a.carga===d.carga);
@@ -20448,7 +20533,7 @@ async function carregarHistoricoRotas(){
             ${[
               {l:'Pedidos', v:confCarga.length, sub:`${pedOK} OK • ${pedNOK} NOK`, c:'var(--red)'},
               {l:'NFs Emitidas', v:nfsCarga.length, sub:'', c:'#059669'},
-              rv.km_total?{l:'KM Total', v:rv.km_total.toLocaleString('pt-BR')+' km', sub:'percorrido', c:'#2563eb'}:null,
+              kmTot?{l:'KM Total', v:kmTot.toLocaleString('pt-BR')+' km', sub:'percorrido', c:'#2563eb'}:null,
               rv.dias_rota?{l:'Dias em Rota', v:rv.dias_rota+' dias', sub:rv.km_esperado?'Esperado: '+rv.km_esperado+' km':'', c:'#7c3aed'}:null,
               tTotal?{l:'Tempo Total', v:fmtTempo(tTotal), sub:'do armazém ao fechamento', c:'#f59e0b'}:null,
             ].filter(Boolean).map(m=>`
@@ -20478,8 +20563,8 @@ async function carregarHistoricoRotas(){
             ${blocoSetor('🛡️','Seguros','#7c3aed',tSeg,[],'')}
             ${blocoSetor('💵','Caixa','#065f46',null,caixasCarga,
               validCaixa.filter(v=>v.carga===d.carga).length?validCaixa.filter(v=>v.carga===d.carga).length+' pedidos validados':'')}
-            ${rv.km_inicial||rv.km_final?blocoSetor('🚛','Em Rota','#E8000D',rv.dias_rota?rv.dias_rota*24:null,[d.motorista],
-              [rv.km_inicial?'KM saída: '+rv.km_inicial.toLocaleString('pt-BR'):null,rv.km_final?'KM chegada: '+rv.km_final.toLocaleString('pt-BR'):null,rv.km_total?'Total: '+rv.km_total.toLocaleString('pt-BR')+' km':null].filter(Boolean).join(' • ')):''}
+            ${kmIni!=null||kmFin!=null?blocoSetor('🚛','Em Rota','#E8000D',rv.dias_rota?rv.dias_rota*24:null,[d.motorista||(kmc.motorista_nome||'')],
+              [kmIni!=null?'KM saída: '+kmIni.toLocaleString('pt-BR'):null,kmFin!=null?'KM chegada: '+kmFin.toLocaleString('pt-BR'):null,kmTot?'Total: '+kmTot.toLocaleString('pt-BR')+' km':null].filter(Boolean).join(' • ')):''}
           </div>
 
           <!-- Gráfico de tempo proporcional por setor -->
