@@ -22834,10 +22834,15 @@ async function vincularConferentePorCarga(demandaId, carga, selectId){
 async function vincularConferentePorConf(confId, confNome, selectId){
   const sel = document.getElementById(selectId);
   if(!sel||!sel.value){ showToast('Selecione uma carga','warning'); return; }
-  const [demandaId, cargaRaw] = sel.value.split('|');
-  const carga = Number(cargaRaw);
-  if(!demandaId||!carga){ showToast('Carga inválida','warning'); return; }
+  const [demandaId] = sel.value.split('|');
+  if(!demandaId){ showToast('Carga inválida','warning'); return; }
   try{
+    // Busca o carga real da demanda no banco — evita usar valor desatualizado do select
+    const demInfo = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,carga,status`);
+    if(!demInfo||!demInfo[0]){ showToast('Demanda não encontrada','warning'); return; }
+    const carga = Number(demInfo[0].carga);
+    if(!carga){ showToast('Carga inválida','warning'); return; }
+
     const jaVinculados = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id`) || [];
     if(jaVinculados.find(a=>String(a.conferente_id)===String(confId))){ showToast(confNome+' já vinculado a esta carga','warning'); return; }
     await supaFetch('atribuicoes_armazem',{
@@ -22845,8 +22850,7 @@ async function vincularConferentePorConf(confId, confNome, selectId){
       body:JSON.stringify({ demanda_id:demandaId, carga, conferente_id:confId, conferente_nome:confNome, status:'pendente', criado_em:new Date().toISOString() })
     });
     try{
-      const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
-      if(demDB&&demDB[0]&&['pendente','carregamento'].includes(demDB[0].status)){
+      if(['pendente','carregamento'].includes(demInfo[0].status)){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
         const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
       }
@@ -24329,6 +24333,8 @@ async function renderArmazem(){
 
   const demandasAtivas = demandas.filter(d=>!statusPosArmazem.includes(d.status));
   const demandasConcluidas = demandas.filter(d=>statusPosArmazem.includes(d.status));
+  // Mapa demanda_id → demanda (chave de vínculo imune a carga errada)
+  const demandaIdMap = new Map(demandasAtivas.map(d=>[d.id, d]));
 
   // Cargas com data de saída hoje ou passada ainda em 'pendente' — alerta ao conferente
   const _hojeStr = _hoje.toISOString().split('T')[0];
@@ -24347,12 +24353,10 @@ async function renderArmazem(){
   set('arm-kpi-ok',demandasConcluidas.length);
 
   const confCards = conferentes.filter(c=>(c.perfil||'').toLowerCase()==='conferente');
-  const cargasAtivasSet = new Set(demandasAtivas.map(d=>Number(d.carga)));
-
   // Conferentes com demanda ativa primeiro
   confCards.sort((a,b)=>{
-    const aAtivo = atribs.some(x=>String(x.conferente_id)===String(a.id)&&x.tipo!=='separador'&&cargasAtivasSet.has(Number(x.carga)))?1:0;
-    const bAtivo = atribs.some(x=>String(x.conferente_id)===String(b.id)&&x.tipo!=='separador'&&cargasAtivasSet.has(Number(x.carga)))?1:0;
+    const aAtivo = atribs.some(x=>String(x.conferente_id)===String(a.id)&&x.tipo!=='separador'&&demandaIdMap.has(x.demanda_id))?1:0;
+    const bAtivo = atribs.some(x=>String(x.conferente_id)===String(b.id)&&x.tipo!=='separador'&&demandaIdMap.has(x.demanda_id))?1:0;
     return bAtivo - aAtivo;
   });
 
@@ -24388,7 +24392,7 @@ async function renderArmazem(){
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:28px">
           ${demandasAtivas.map(d=>{
-            const confCarga = atribs.filter(a=>Number(a.carga)===Number(d.carga)&&a.tipo!=='separador');
+            const confCarga = atribs.filter(a=>a.demanda_id===d.id&&a.tipo!=='separador');
             const pedOk  = confStatus.filter(s=>Number(s.carga)===Number(d.carga)&&s.status==='ok').length;
             const pedNok = confStatus.filter(s=>Number(s.carga)===Number(d.carga)&&s.status==='nok').length;
             const total  = d.quantidade_pedidos||0;
@@ -24455,13 +24459,13 @@ async function renderArmazem(){
           : `<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#1d4ed8);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.3rem;font-weight:800;flex-shrink:0">${(conf.nome||'?').charAt(0)}</div>`;
         const cargasMes  = (cMes[conf.id]||new Set()).size;
         const pedidosMes = pMes[conf.id]||0;
-        const minhasAtribs = atribs.filter(a=>String(a.conferente_id)===String(conf.id)&&a.tipo!=='separador'&&cargasAtivasSet.has(Number(a.carga)));
-        const minhasCargasNums = minhasAtribs.map(a=>Number(a.carga));
-        const cargasDisp = demandasAtivas.filter(d=>d.carga&&!minhasCargasNums.includes(Number(d.carga)));
+        const minhasAtribs = atribs.filter(a=>String(a.conferente_id)===String(conf.id)&&a.tipo!=='separador'&&demandaIdMap.has(a.demanda_id));
+        const minhasDemandaIds = new Set(minhasAtribs.map(a=>a.demanda_id));
+        const cargasDisp = demandasAtivas.filter(d=>d.carga&&!minhasDemandaIds.has(d.id));
         const selVinc = `conf-vinc-${conf.id}`;
         const confOptsOutros = confCards.filter(c=>c.id!==conf.id).map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
         const _cargasBodyArr = minhasAtribs.map(a=>{
-              const dem = demandasAtivas.find(d=>Number(d.carga)===Number(a.carga)); if(!dem) return '';
+              const dem = demandaIdMap.get(a.demanda_id); if(!dem) return '';
               const pedOk  = confStatus.filter(s=>Number(s.carga)===Number(dem.carga)&&s.status==='ok').length;
               const pedNok = confStatus.filter(s=>Number(s.carga)===Number(dem.carga)&&s.status==='nok').length;
               const total  = dem.quantidade_pedidos||0;
@@ -24803,7 +24807,7 @@ async function renderConferentesArmazem(conferentes, atribs, confStatus, demanda
   html += `</div>`;
 
   // ── Cargas sem conferente ──
-  const semConf = demandasAtivas.filter(d=>d.carga && !atribs.find(a=>Number(a.carga)===Number(d.carga) && a.tipo!=='separador'));
+  const semConf = demandasAtivas.filter(d=>d.carga && !atribs.find(a=>a.demanda_id===d.id && a.tipo!=='separador'));
   if(semConf.length){
     const confOptsHtml = confCards.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${c.nome}</option>`).join('');
     html += `<div style="margin-top:4px;background:rgba(245,158,11,.04);border:1.5px solid rgba(245,158,11,.25);border-radius:14px;padding:16px 18px">
