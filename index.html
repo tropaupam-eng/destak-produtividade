@@ -18708,7 +18708,12 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
     pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia, dataPedido:b.data_pedido||null };
   });
   const entMap={};
-  (entRows||[]).forEach(e=>{ const k=String(e.pedido); if(!entMap[k]) entMap[k]={saida:e.data_saida,entrega:e.data_entrega}; });
+  (entRows||[]).forEach(e=>{
+    const k=String(e.pedido);
+    if(!entMap[k]) entMap[k]={saida:null,entrega:null};
+    if(e.data_entrega) entMap[k].entrega=e.data_entrega; // sempre prefere data_entrega real
+    if(e.data_saida&&!entMap[k].saida) entMap[k].saida=e.data_saida;
+  });
   let total=0,riTotal=0,reTotal=0;
   let entG=0,onTimeG=0,inFullG=0,otifG=0;
   let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
@@ -18749,8 +18754,8 @@ async function _carregarOtifMes(mes){
   if(_otifCache && _otifCacheMes === mes) return _otifCache;
   _otifCache = null; _otifCacheMes = mes;
   const proximo = _proximoMes(mes);
-  const [entRows, rotasRows, lancRows, saidaRows] = await Promise.all([
-    supaFetch(`entrega_datas?mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
+  // Busca rotas, lançamentos e saídas primeiro para descobrir cargas do mês
+  const [rotasRows, lancRows, saidaRows] = await Promise.all([
     supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`).catch(()=>[]),
     supaFetch(`lancamentos?mes_ano=eq.${mes}&select=carga,ts`).catch(()=>[]),
     supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proximo}-01&select=carga,data_saida`).catch(()=>[]),
@@ -18766,6 +18771,14 @@ async function _carregarOtifMes(mes){
   const bdRows = cargasMes.size
     ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]) || []
     : [];
+  // Busca entrega_datas pelos pedidos reais do mês (não por mes_ano, pois a entrega pode ocorrer em mês diferente)
+  const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
+  let entRows = [];
+  for(let i=0; i<pedidoList.length; i+=400){
+    const chunk = pedidoList.slice(i,i+400);
+    const r = await supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&select=pedido,data_saida,data_entrega`).catch(()=>[]) || [];
+    entRows = entRows.concat(r);
+  }
   const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
   _otifCache = { stats, bdRows, entRows, lancRows, saidaRows, rotasRows, cargasMes };
   return _otifCache;
