@@ -18711,7 +18711,8 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   (entRows||[]).forEach(e=>{
     const k=String(e.pedido);
     if(!entMap[k]) entMap[k]={saida:null,entrega:null};
-    if(e.data_entrega) entMap[k].entrega=e.data_entrega; // sempre prefere data_entrega real
+    // Guarda a data_entrega mais antiga (primeira entrega real = OTIF)
+    if(e.data_entrega&&(!entMap[k].entrega||e.data_entrega<entMap[k].entrega)) entMap[k].entrega=e.data_entrega;
     if(e.data_saida&&!entMap[k].saida) entMap[k].saida=e.data_saida;
   });
   // In Full: pedido com ocorrência na Expedição (inversão, falta, avaria, outro) = fora do In Full
@@ -18752,10 +18753,13 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
 }
 
 // Fonte única de OTIF — busca e calcula uma vez por mês, cache compartilhado por todos os displays
-let _otifCache = null, _otifCacheMes = null;
+let _otifCache = null, _otifCacheMes = null, _otifCachePromise = null;
 async function _carregarOtifMes(mes){
   if(_otifCache && _otifCacheMes === mes) return _otifCache;
+  // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo
+  if(_otifCachePromise && _otifCacheMes === mes) return _otifCachePromise;
   _otifCache = null; _otifCacheMes = mes;
+  _otifCachePromise = (async()=>{
   const proximo = _proximoMes(mes);
   // Busca rotas, lançamentos e saídas primeiro para descobrir cargas do mês
   const [rotasRows, lancRows, saidaRows] = await Promise.all([
@@ -18772,7 +18776,7 @@ async function _carregarOtifMes(mes){
     ...(saidaRows||[]).map(d=>String(d.carga)).filter(Boolean),
   ]);
   const bdRows = cargasMes.size
-    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]) || []
+    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido`).catch(()=>[]) || []
     : [];
   // Busca entrega_datas e ocorrencias_distribuicao pelos pedidos reais do mês
   const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
@@ -18788,7 +18792,10 @@ async function _carregarOtifMes(mes){
   }
   const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
   _otifCache = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
+  _otifCachePromise = null;
   return _otifCache;
+  })();
+  return _otifCachePromise;
 }
 
 async function renderDashOtif(){
