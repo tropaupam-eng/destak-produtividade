@@ -18689,7 +18689,7 @@ async function renderDashInterna(){
 // Cálculo OTIF unificado — usado pelo Dashboard Interno e pela TV
 // Prioridade data_entrega: entrega_datas (planilha real) → lancamentos.ts → demandas_rota.data_saida (mesmo dia = no prazo)
 // OTIF unificado — início: data_pedido; fim: data_entrega real ou data_saida provisória; prazoMap em horas
-function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
+function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows){
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
   (rotasRows||[]).forEach(r=>{
@@ -18705,7 +18705,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
     const k=String(b.pedido);
     if(pedMap[k]) return;
     const rireNorm=normRire(b.rire)||getRireFromRota(b.rota)||'R.E.';
-    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, ocorrencia:b.ocorrencia, dataPedido:b.data_pedido||null };
+    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, dataPedido:b.data_pedido||null };
   });
   const entMap={};
   (entRows||[]).forEach(e=>{
@@ -18714,6 +18714,9 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
     if(e.data_entrega) entMap[k].entrega=e.data_entrega; // sempre prefere data_entrega real
     if(e.data_saida&&!entMap[k].saida) entMap[k].saida=e.data_saida;
   });
+  // In Full: pedido com ocorrência na Expedição (inversão, falta, avaria, outro) = fora do In Full
+  const ocorrSet=new Set();
+  (ocorrRows||[]).forEach(o=>{ if(o.pedido) ocorrSet.add(String(o.pedido)); });
   let total=0,riTotal=0,reTotal=0;
   let entG=0,onTimeG=0,inFullG=0,otifG=0;
   let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
@@ -18735,7 +18738,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows){
     const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
     if(diffHoras<0) continue; // data inconsistente — ignorar
     const isOnTime=diffHoras<=prazoH;
-    const isInFull=bd.ocorrencia==null||bd.ocorrencia===0;
+    const isInFull=!ocorrSet.has(ped); // pedido sem ocorrência na Expedição = In Full
     const isOTIF=isOnTime&&isInFull;
     total++;
     entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
@@ -18771,16 +18774,20 @@ async function _carregarOtifMes(mes){
   const bdRows = cargasMes.size
     ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,ocorrencia,data_pedido`).catch(()=>[]) || []
     : [];
-  // Busca entrega_datas pelos pedidos reais do mês (não por mes_ano, pois a entrega pode ocorrer em mês diferente)
+  // Busca entrega_datas e ocorrencias_distribuicao pelos pedidos reais do mês
   const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
-  let entRows = [];
+  let entRows = [], ocorrRows = [];
   for(let i=0; i<pedidoList.length; i+=400){
     const chunk = pedidoList.slice(i,i+400);
-    const r = await supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&select=pedido,data_saida,data_entrega`).catch(()=>[]) || [];
-    entRows = entRows.concat(r);
+    const [rEnt, rOcorr] = await Promise.all([
+      supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&select=pedido,data_saida,data_entrega`).catch(()=>[]),
+      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&select=pedido,tipo`).catch(()=>[]),
+    ]);
+    entRows   = entRows.concat(rEnt   || []);
+    ocorrRows = ocorrRows.concat(rOcorr || []);
   }
-  const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows);
-  _otifCache = { stats, bdRows, entRows, lancRows, saidaRows, rotasRows, cargasMes };
+  const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
+  _otifCache = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
   return _otifCache;
 }
 
