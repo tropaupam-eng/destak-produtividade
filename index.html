@@ -7576,6 +7576,8 @@ function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), w
 // Inclui nomes abreviados E completos; syncConfig() adiciona rotas do banco dinamicamente
 const ROTAS_RI       = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 const ROTAS_CONTAGEM = new Set(['PETRO','JUA','CEASA','PETROLINA','JUAZEIRO']);
+// Cópia imutável de ROTAS_RI — nunca modificada por syncConfig; usada como árbitro final no filtro RI
+const ROTAS_RI_ORIG  = Object.freeze(new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']));
 
 // ── Helper: retorna a unidade do usuário logado (admin = '' = sem filtro) ──
 async function _getUnidadeUsuario(){
@@ -18449,21 +18451,30 @@ async function renderDashInterna(){
       bd = baseDataSupa;
     } else {
       // Padrão: R.I.
-      // O rire do lançamento é a fonte definitiva: carga RE → excluir sempre,
-      // independente do que base_data.rota diga (evita pedidos com rota
-      // inconsistente na planilha vazarem para o gráfico RI)
+      // Prioridade: lançamento.rire → lançamento.rota → base_data.rota → base_data.rire → ROTAS_CONTAGEM
+      // ROTAS_RI_ORIG é usado como árbitro: nunca sofre mutação pelo banco de dados
       bd = baseDataSupa.filter(r => {
         const c = Math.round(Number(r.carga));
-        if(cargaIsRI.hasOwnProperty(c) && !cargaIsRI[c]) return false; // lançamento RE — excluir
-        const rotaKey = (r.rota||'').toUpperCase().trim();
-        const cfgRota = CONFIG.rotas?.[rotaKey];
-        if(cfgRota) return cfgRota.ri && cfgRota.prazoOtif !== null;
+        // 1) Lançamento marcado RE → excluir sempre (fonte mais confiável)
+        if(cargaIsRI.hasOwnProperty(c) && !cargaIsRI[c]) return false;
+        // 2) Verificar CONFIG pela rota do lançamento (mais confiável que base_data.rota)
         const lancRota = cargaRota[c];
         if(lancRota) {
+          if(ROTAS_RI_ORIG.has(lancRota)) return true; // rota hardcoded → sempre RI
           const cfgLancRota = CONFIG.rotas?.[lancRota];
           if(cfgLancRota) return cfgLancRota.ri && cfgLancRota.prazoOtif !== null;
         }
-        if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c];
+        // 3) Lançamento confirma RI mas rota sem config → aceitar
+        if(cargaIsRI.hasOwnProperty(c) && cargaIsRI[c]) return true;
+        // 4) Sem lançamento: verificar base_data.rota — mas exigir que esteja em ROTAS_RI_ORIG
+        //    para evitar que rotas RE mal configuradas no banco contaminem o filtro RI
+        const rotaKey = (r.rota||'').toUpperCase().trim();
+        if(ROTAS_RI_ORIG.has(rotaKey)) return true; // hardcoded RI
+        const cfgRota = CONFIG.rotas?.[rotaKey];
+        if(cfgRota && !cfgRota.ri) return false; // CONFIG diz explicitamente RE → excluir
+        // CONFIG diz RI mas rota não está em ROTAS_RI_ORIG: exige confirmação por lançamento
+        // (sem lançamento e rota não hardcoded → cair para base_data.rire)
+        // 5) Último recurso: base_data.rire e ROTAS_CONTAGEM
         const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
         if(rireStr === 'RE') return false;
         if(rireStr === 'RI') return true;
@@ -18726,14 +18737,18 @@ async function renderDashInterna(){
         const c = Math.round(Number(p.carga));
         let rota = cargaRota[c] || (p.rota||'—').toUpperCase().trim();
         // No filtro RI: garantir que o rótulo seja uma rota RI conhecida.
-        // Se cargaRota[c] aponta para uma rota RE (ex.: lançamento com rota errada),
-        // tenta usar base_data.rota; se também for RE ou vazia, usa '—'.
+        // Usa ROTAS_RI_ORIG (imutável, hardcoded) como árbitro — CONFIG.rotas pode ter
+        // rotas RE mal classificadas no banco (ex.: CAPIM GROSSO com tipo='RI').
         if(rireFiltro === 'RI' && rota && rota !== '—'){
-          const cfgR = CONFIG.rotas?.[rota];
-          const rotaRI = cfgR ? cfgR.ri : (ROTAS_RI.has(rota) || ROTAS_CONTAGEM.has(rota));
+          const byHardcode = ROTAS_RI_ORIG.has(rota);
+          // CONFIG só confirma RI se o lançamento também confirma (evita contaminação do banco)
+          const byConfig   = CONFIG.rotas?.[rota]?.ri === true && cargaIsRI[c] === true;
+          const rotaRI = byHardcode || byConfig;
           if(!rotaRI){
             const bdRota = (p.rota||'').toUpperCase().trim();
-            rota = (bdRota && bdRota !== rota) ? bdRota : '—';
+            const bdHard = ROTAS_RI_ORIG.has(bdRota);
+            const bdCfg  = CONFIG.rotas?.[bdRota]?.ri === true && cargaIsRI[c] === true;
+            rota = (bdRota && bdRota !== rota && (bdHard || bdCfg)) ? bdRota : '—';
           }
         }
         if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0};
