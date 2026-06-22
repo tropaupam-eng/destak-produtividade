@@ -18988,18 +18988,23 @@ async function renderDashInterna(){
       }
     }
 
-    // 14. OTIF por Semana
+    // 14. OTIF por Semana — mesma fonte e agrupamento que "Pedidos por Semana" (bd + data_pedido)
     const semOtifEl = document.getElementById('dash-sem-otif-cards');
     if(semOtifEl && _dadosOtif){
-      const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif } = _dadosOtif;
+      const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif,
+              lancRows: lancRowsOtif, rotasRows: rotasRowsOtif } = _dadosOtif;
+
+      // prazoMap por rota
       const prazoMapOtif = {};
-      todasRotas.forEach(r=>{ prazoMapOtif[(r.nome||'').toUpperCase()] = r.prazo_otif; });
+      (rotasRowsOtif||[]).forEach(r=>{ prazoMapOtif[(r.nome||'').toUpperCase()] = r.prazo_otif; });
 
-      // saida por carga: dem (local) + saidaRows do cache OTIF
+      // saidaMap e lancDtMap por carga (para calcular dataFim)
       const saidaMapCarga = {};
-      dem.forEach(d=>{ if(d.carga && d.data_saida) saidaMapCarga[String(d.carga)] = d.data_saida; });
-      (saidaRowsOtif||[]).forEach(d=>{ if(d.carga && d.data_saida && !saidaMapCarga[String(d.carga)]) saidaMapCarga[String(d.carga)] = d.data_saida; });
+      (saidaRowsOtif||[]).forEach(d=>{ if(d.carga&&d.data_saida) saidaMapCarga[String(d.carga)]=d.data_saida; });
+      const lancDtMapOtif = {};
+      (lancRowsOtif||[]).forEach(l=>{ if(l.carga&&l.ts) lancDtMapOtif[String(l.carga)]=l.ts.slice(0,10); });
 
+      // entMap por pedido
       const entMapOtif = {};
       (entRowsOtif||[]).forEach(e=>{
         const k = String(e.pedido);
@@ -19008,42 +19013,53 @@ async function renderDashInterna(){
         if(e.data_saida && !entMapOtif[k].saida) entMapOtif[k].saida = e.data_saida;
       });
 
+      // ocorrSet
       const ocorrSetOtif = new Set();
       (ocorrRowsOtif||[]).forEach(o=>{ if(o.pedido) ocorrSetOtif.add(String(o.pedido)); });
 
+      // _semDoMes: mesmo helper usado em Pedidos por Semana
+      const _semDoMesOtif = d => { if(!d) return 0; return Math.min(Math.ceil(new Date(d+'T00:00:00').getDate()/7),5); };
+
       const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
+      // MESMA fonte, MESMA deduplication e MESMO agrupamento que "Pedidos por Semana"
       const vistoSemOtif = new Set();
       bd.forEach(p=>{
-        const ped = String(p.pedido);
-        if(vistoSemOtif.has(ped)) return;
-        vistoSemOtif.add(ped);
+        const key = String(p.carga)+'_'+String(p.pedido);
+        if(vistoSemOtif.has(key)) return;
+        vistoSemOtif.add(key);
         if(!p.data_pedido) return;
 
-        const rota = (p.rota||'').toUpperCase();
-        const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
-        if(prazoEntry === null) return;
-        const rireNorm = normRire(p.rire) || getRireFromRota(rota);
-        const prazoH = prazoEntry !== undefined ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
-
-        const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
-        const ent = entMapOtif[ped] || {};
-        // Priorizar saida do mês atual: entrega_datas pode ter datas de meses anteriores
-        // que sobrescreveriam a data correta de saidaMapCarga (demandas_rota do mês)
-        const entSaida = (ent.saida && ent.saida.startsWith(mesFiltro)) ? ent.saida : null;
-        const dataSaida = entSaida || (carga ? saidaMapCarga[carga] : null) || ent.saida;
-        if(!dataSaida || !dataSaida.startsWith(mesFiltro)) return;
-
-        const semIdx = Math.min(Math.ceil(new Date(dataSaida+'T00:00:00').getDate()/7), 5) - 1;
+        // Semana por data_pedido — idêntico ao bloco Pedidos por Semana
+        const semIdx = _semDoMesOtif(p.data_pedido) - 1;
         if(semIdx < 0 || semIdx > 4) return;
 
-        const dataEntrega = ent.entrega || dataSaida;
-        const diffH = (new Date(dataEntrega+'T23:59:59') - new Date(dataSaida+'T00:00:00')) / 3600000;
-        const onTime = diffH <= prazoH;
-        const inFull = !ocorrSetOtif.has(ped);
+        const ped   = String(p.pedido);
+        const rota  = (p.rota||'').toUpperCase();
+        const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
+        if(prazoEntry === null) return; // rota sem prazo (ex: CEASA)
+        const rireNorm = normRire(p.rire)||getRireFromRota(rota)||'R.E.';
+        const prazoH   = prazoEntry != null ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
+
+        const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
+        const ent   = entMapOtif[ped] || {};
+
+        // dataFim — mesma prioridade do _computeOtifStats
+        let dataFim = ent.entrega || null;
+        if(!dataFim && ent.saida)                      dataFim = ent.saida;
+        if(!dataFim && carga && saidaMapCarga[carga])  dataFim = saidaMapCarga[carga];
+        if(!dataFim && carga && lancDtMapOtif[carga])  dataFim = lancDtMapOtif[carga];
+        if(!dataFim) return;
+
+        // diffHoras — mesmo cálculo do _computeOtifStats
+        const diffHoras = (new Date(dataFim) - new Date(p.data_pedido)) / 3600000;
+        if(diffHoras < 0) return;
+
+        const isOnTime = diffHoras <= prazoH;
+        const isInFull = !ocorrSetOtif.has(ped);
         semOtif[semIdx].t++;
-        if(onTime)           semOtif[semIdx].ot++;
-        if(inFull)           semOtif[semIdx].ifull++;
-        if(onTime && inFull) semOtif[semIdx].ok++;
+        if(isOnTime)             semOtif[semIdx].ot++;
+        if(isInFull)             semOtif[semIdx].ifull++;
+        if(isOnTime && isInFull) semOtif[semIdx].ok++;
       });
 
       const semLabels = ['1ª Semana','2ª Semana','3ª Semana','4ª Semana','5ª Semana'];
