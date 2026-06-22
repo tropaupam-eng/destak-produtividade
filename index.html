@@ -2422,7 +2422,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <span class="si-icon">🚗</span><span class="si-label">Frota</span>
   </div>
   <div class="sidebar-item" data-page="gestao-frota" onclick="showPage('gestao-frota',this)">
-    <span class="si-icon">🔧</span><span class="si-label">Gestão de Frota</span>
+    <span class="si-icon">🔧</span><span class="si-label">Manutenção</span>
   </div>
   <div class="sidebar-divider"></div>
   <div class="sidebar-section-label">Comercial</div>
@@ -4840,7 +4840,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
     <div>
-      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">🔧 Gestão de Frota</h2>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">🔧 Manutenção</h2>
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Manutenções, custos e diárias da frota • Meta: 80% disponível</p>
     </div>
     <button onclick="carregarGestaoFrota()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 16px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
@@ -4848,6 +4848,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
   <!-- KPIs -->
   <div id="gf-kpis" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"></div>
+
+  <!-- Status dos Veículos Hoje -->
+  <div id="gf-veiculos-hoje" style="margin-bottom:16px"></div>
 
   <!-- Barras: Utilização de Frota + Disponibilidade de Frota -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
@@ -7596,12 +7599,13 @@ async function _getUnidadeUsuario(){
 // ── Helper: upserta registro de presença (case-insensitive) ──
 async function _absUpsertPresenca(nome, funcao, data, fonte='manual'){
   const mesAno = data.slice(0,7);
-  const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${data}&select=id,nome`) || [];
-  if(ex.length){
-    await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte})});
-  } else {
-    await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data,status:'presente',mes_ano:mesAno,fonte,criado_em:new Date().toISOString()})});
-  }
+  const nomeUp = (nome||'').toUpperCase().trim();
+  // UPSERT real via constraint única (nome, data) — sem risco de duplicata
+  await supaFetch('absenteismo', {
+    method: 'POST',
+    prefer: 'return=minimal,resolution=merge-duplicates',
+    body: JSON.stringify({ nome:nomeUp, funcao, data, status:'presente', mes_ano:mesAno, fonte, criado_em:new Date().toISOString() })
+  });
 }
 let CARGA_MAP   = {};
 let CARGAS_BASE = new Set();
@@ -12683,12 +12687,15 @@ async function renderFrotaUso(){
   wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando...</p></div>';
 
   try{
-    const [veiculos, demandas] = await Promise.all([
+    const proxMes = _proximoMes(mes);
+    const [veiculos, lancs] = await Promise.all([
       supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${_proximoMes(mes)}-01&status=not.eq.cancelado&select=veiculo,data_saida,ts_fim_viagem,rota,status,motorista,carga&order=data_saida.asc`)
+      supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proxMes}-01T00:00:00&veiculo=not.is.null&select=veiculo,ts,rota,motorista,ajudante,carga&order=ts.asc`)
     ]);
+
+    // Filtra só veículos ativos excluindo "A DEFINIR"
     const todos = (veiculos || []).filter(v => v.ativo);
-    const dems  = demandas || [];
+    const _isFretePlaca = p => (p||'').toUpperCase().includes('FRETE');
 
     if(!todos.length){
       wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum veículo ativo cadastrado.</div>';
@@ -12697,7 +12704,7 @@ async function renderFrotaUso(){
 
     // ── Calendário do mês ──
     const [ano, numMes] = mes.split('-').map(Number);
-    const diasNoMes = new Date(ano, numMes, 0).getDate();
+    const diasNoMes  = new Date(ano, numMes, 0).getDate();
     const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 
     // Dias úteis (Seg–Sab)
@@ -12707,67 +12714,31 @@ async function renderFrotaUso(){
         diasUteis.push(String(d).padStart(2,'0'));
     }
     const totalUteis = diasUteis.length;
-
-    // Data de fechamento = último dia útil do mês
-    let fechamento = diasUteis[diasUteis.length - 1];
+    const fechamento = diasUteis[diasUteis.length - 1];
 
     // Referência de hoje
-    const hojeObj  = new Date();
-    const hojeStr  = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
-    const hojeD    = String(hojeObj.getDate()).padStart(2,'0');
+    const hojeObj    = new Date();
+    const hojeStr    = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
+    const hojeD      = String(hojeObj.getDate()).padStart(2,'0');
     const ehMesAtual = mes === hojeStr;
 
-    // Dias úteis passados (até hoje inclusive, dentro do mês)
     const diasPassados = diasUteis.filter(d => !ehMesAtual || d <= hojeD);
     const nPassados    = diasPassados.length;
-    // Dias úteis restantes após hoje
     const nRestantes   = totalUteis - nPassados;
-    // % do mês decorrido
-    const pctMes = totalUteis > 0 ? Math.round((nPassados / totalUteis) * 100) : 100;
+    const pctMes       = totalUteis > 0 ? Math.round(nPassados / totalUteis * 100) : 100;
 
-    // Mapa de uso: usageMap[placa][dia] = [{...}]
+    // ── Mapa de lançamentos: usageMap[placa][dia] = [{rota,motorista,carga}] ──
     const usageMap = {};
     todos.forEach(v => { usageMap[v.placa] = {}; });
 
-    const mesInicioDt = new Date(ano, numMes-1, 1);
-    const mesFimDt    = new Date(ano, numMes, 0);   // último dia do mês
-    const hojeCapDt   = new Date(); hojeCapDt.setHours(0,0,0,0);
-
-    dems.forEach(d => {
-      if(!d.veiculo || !d.data_saida) return;
-
-      // Início: dia de saída
-      let dtInicio = new Date(d.data_saida + 'T00:00:00');
-
-      // Fim: ts_fim_viagem, ou hoje se veículo ocupado, ou só o dia se pendente sem data
-      const _statusOcupado = new Set(['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
-      let dtFim;
-      if(d.ts_fim_viagem){
-        dtFim = new Date(d.ts_fim_viagem.slice(0,10) + 'T00:00:00');
-      } else if(_statusOcupado.has(d.status)){
-        // Veículo ocupado (carregamento, em rota, etc.) — conta do dia de saída até hoje
-        dtFim = new Date(hojeCapDt);
-      } else {
-        // Pendente: apenas marca o dia de saída planejada
-        dtFim = new Date(dtInicio);
-      }
-
-      // Limitar ao mês exibido
-      if(dtInicio < mesInicioDt) dtInicio = new Date(mesInicioDt);
-      if(dtFim    > mesFimDt)    dtFim    = new Date(mesFimDt);
-      if(dtInicio > dtFim) return;
-
-      if(!usageMap[d.veiculo]) usageMap[d.veiculo] = {};
-
-      // Preencher todos os dias do intervalo
-      const cur = new Date(dtInicio);
-      while(cur <= dtFim){
-        const diaStr    = String(cur.getDate()).padStart(2,'0');
-        const isPartida = cur.toISOString().slice(0,10) === d.data_saida;
-        if(!usageMap[d.veiculo][diaStr]) usageMap[d.veiculo][diaStr] = [];
-        usageMap[d.veiculo][diaStr].push({...d, _transito: !isPartida});
-        cur.setDate(cur.getDate() + 1);
-      }
+    (lancs || []).forEach(l => {
+      const placa = (l.veiculo||'').trim().toUpperCase();
+      if(!placa || placa === 'A DEFINIR VEÍCULO') return;
+      const dia = (l.ts||'').slice(8,10);
+      if(!dia) return;
+      if(!usageMap[placa]) usageMap[placa] = {};
+      if(!usageMap[placa][dia]) usageMap[placa][dia] = [];
+      usageMap[placa][dia].push(l);
     });
 
     // ── Cabeçalho de dias ──
@@ -12791,24 +12762,24 @@ async function renderFrotaUso(){
       </th>`;
     }).join('');
 
-    // ── Dados por veículo (stats + células da tabela) ──
+    // ── Dados por veículo ──
     const veiculosData = todos.map(v => {
       let diasUsadosPassados = 0;
 
       const celulas = diasUteis.map(dia => {
-        const usos   = usageMap[v.placa]?.[dia] || [];
-        const ehHoje = ehMesAtual && dia === hojeD;
-        const futuro = ehMesAtual && dia > hojeD;
-        const dt     = new Date(ano, numMes-1, parseInt(dia));
-        const ehSab  = dt.getDay() === 6;
-        const ehFech = dia === fechamento;
-        const borderR = ehFech ? 'border-right:2.5px solid #7c3aed' : 'border-right:1px solid var(--border)';
+        const lancsDia = usageMap[v.placa]?.[dia] || [];
+        const ehHoje   = ehMesAtual && dia === hojeD;
+        const futuro   = ehMesAtual && dia > hojeD;
+        const dt       = new Date(ano, numMes-1, parseInt(dia));
+        const ehSab    = dt.getDay() === 6;
+        const ehFech   = dia === fechamento;
+        const borderR  = ehFech ? 'border-right:2.5px solid #7c3aed' : 'border-right:1px solid var(--border)';
 
-        if(!usos.length){
+        if(!lancsDia.length){
           let bg = '';
-          if(ehHoje)  bg = 'rgba(37,99,235,.06)';
-          else if(futuro) bg = 'transparent';
-          else if(ehSab)  bg = 'rgba(99,102,241,.04)';
+          if(ehHoje)       bg = 'rgba(37,99,235,.06)';
+          else if(futuro)  bg = 'transparent';
+          else if(ehSab)   bg = 'rgba(99,102,241,.04)';
           return `<td style="padding:4px 2px;text-align:center;${borderR};background:${bg}">
             <span style="color:${futuro?'transparent':'var(--border-med)'};font-size:.78rem">${futuro?'·':'—'}</span>
           </td>`;
@@ -12816,35 +12787,14 @@ async function renderFrotaUso(){
 
         if(!futuro) diasUsadosPassados++;
 
-        const temPartida    = usos.some(u => !u._transito);
-        const concluido     = usos.some(u => ['concluido','fim_viagem','saiu'].includes(u.status));
-        const emCarregament = usos.some(u => ['carregamento','separacao','aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(u.status));
-        const soTransito    = !temPartida;
+        const rotas   = [...new Set(lancsDia.map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
+        const motoris = [...new Set(lancsDia.map(l=>l.motorista).filter(Boolean))];
+        const title   = lancsDia.map(l=>`🚛 Cg ${l.carga||'?'} | ${l.rota||'?'} | ${l.motorista||'—'}`).join('\n');
 
-        let bg, cor, icon;
-        if(futuro){
-          bg='#fef9c3'; cor='#a16207'; icon= soTransito ? '🛣️' : '⏳';
-        } else if(concluido){
-          bg= soTransito ? '#e0f2fe' : '#dbeafe';
-          cor= soTransito ? '#0369a1' : '#1d4ed8';
-          icon= soTransito ? '🛣️' : '🚛';
-        } else if(emCarregament){
-          // Veículo ocupado em pré-saída (carregamento, separação, etc.) — conta como utilizado
-          bg='#fef3c7'; cor='#b45309'; icon= soTransito ? '🛣️' : '📦';
-        } else {
-          bg='#fef9c3'; cor='#92400e'; icon= soTransito ? '🛣️' : '⏳';
-        }
-
-        const demsUnicas = usos.filter(u => !u._transito).length ? usos.filter(u=>!u._transito) : usos;
-        const rotas = [...new Set(demsUnicas.map(u => u.rota||'').filter(Boolean))].join(', ');
-        const title = demsUnicas.map(u =>
-          `${u._transito?'Em trânsito — ':'Saída: '}${u.rota||'?'}${u.motorista?' | '+u.motorista:''}${u.carga?' | Cg '+u.carga:''}`
-        ).join('\n');
-
-        return `<td style="padding:3px 2px;text-align:center;${borderR};background:${bg}" title="${title}">
+        return `<td style="padding:3px 2px;text-align:center;${borderR};background:#dbeafe" title="${title}">
           <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
-            <span style="font-size:.73rem">${icon}</span>
-            <span style="font-size:.58rem;color:${cor};font-weight:700;max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rotas.slice(0,6)||'✓'}</span>
+            <span style="font-size:.73rem">🚛</span>
+            <span style="font-size:.56rem;color:#1d4ed8;font-weight:700;max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rotas[0]?.slice(0,5)||'✓'}</span>
           </div>
         </td>`;
       }).join('');
@@ -12852,20 +12802,24 @@ async function renderFrotaUso(){
       const taxaAtual = nPassados > 0 ? diasUsadosPassados / nPassados : 0;
       const projecao  = Math.round(diasUsadosPassados + taxaAtual * nRestantes);
       const pctAtual  = nPassados > 0 ? Math.round(taxaAtual * 100) : 0;
-      const pctProj   = totalUteis > 0 ? Math.round((projecao / totalUteis) * 100) : 0;
+      const pctProj   = totalUteis > 0 ? Math.round(projecao / totalUteis * 100) : 0;
 
       return { v, celulas, diasUsadosPassados, projecao, pctAtual, pctProj };
     });
+
+    // Ordenar: maior % de uso primeiro
+    veiculosData.sort((a,b) => b.pctAtual - a.pctAtual);
 
     // ── Linhas da tabela ──
     const linhas = veiculosData.map(({ v, celulas, diasUsadosPassados, projecao, pctAtual, pctProj }) => {
       const corAtual = pctAtual >= 80 ? '#059669' : pctAtual >= 50 ? '#f59e0b' : '#6b7280';
       const corProj  = pctProj  >= 80 ? '#059669' : pctProj  >= 50 ? '#f59e0b' : '#ef4444';
       const tipo     = v.tipo ? `<span style="font-size:.62rem;color:var(--text-muted);font-weight:400"> ${v.tipo}</span>` : '';
+      const isFrete  = _isFretePlaca(v.placa);
 
-      return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
+      return `<tr style="border-bottom:1px solid var(--border)${isFrete?';opacity:.65':''}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
         <td style="padding:7px 12px;font-family:monospace;font-weight:800;font-size:.82rem;color:var(--text-primary);white-space:nowrap;position:sticky;left:0;background:var(--bg-card);border-right:2px solid var(--border-med);z-index:1">
-          ${v.placa}${tipo}
+          ${v.placa}${tipo}${isFrete?'<span style="font-size:.6rem;color:#f59e0b;margin-left:4px">FRETE</span>':''}
         </td>
         ${celulas}
         <td style="padding:5px 8px;text-align:center;border-left:2px solid var(--border-med);white-space:nowrap">
@@ -12881,23 +12835,19 @@ async function renderFrotaUso(){
       </tr>`;
     }).join('');
 
-    // ── Linha de totais ──
-    const totDiasUsados = todos.reduce((s,v) =>
-      s + diasPassados.filter(d => (usageMap[v.placa]?.[d]||[]).length > 0).length, 0);
-    const totProjecao = todos.reduce((s,v) => {
-      const du = diasPassados.filter(d => (usageMap[v.placa]?.[d]||[]).length > 0).length;
-      const tx = nPassados > 0 ? du / nPassados : 0;
-      return s + Math.round(du + tx * nRestantes);
-    }, 0);
-    const maxPossivel  = todos.length * nPassados;
-    const maxTotal     = todos.length * totalUteis;
-    const pctTotAtual  = maxPossivel > 0 ? Math.round(totDiasUsados/maxPossivel*100) : 0;
-    const pctTotProj   = maxTotal    > 0 ? Math.round(totProjecao/maxTotal*100)      : 0;
+    // ── Totais (apenas frota própria, excluindo FRETE) ──
+    const propria = veiculosData.filter(x => !_isFretePlaca(x.v.placa));
+    const totDiasUsados = propria.reduce((s,x) => s + x.diasUsadosPassados, 0);
+    const totProjecao   = propria.reduce((s,x) => s + x.projecao, 0);
+    const maxPossivel   = propria.length * nPassados;
+    const maxTotal      = propria.length * totalUteis;
+    const pctTotAtual   = maxPossivel > 0 ? Math.round(totDiasUsados / maxPossivel * 100) : 0;
+    const pctTotProj    = maxTotal    > 0 ? Math.round(totProjecao   / maxTotal    * 100) : 0;
     const corTA = pctTotAtual >= 80 ? '#059669' : pctTotAtual >= 50 ? '#f59e0b' : '#6b7280';
     const corTP = pctTotProj  >= 80 ? '#059669' : pctTotProj  >= 50 ? '#f59e0b' : '#ef4444';
 
     const linhaTotais = `<tr style="background:var(--bg-card2);border-top:2px solid var(--border-med);font-weight:800">
-      <td style="padding:8px 12px;font-size:.78rem;color:var(--text-secondary);position:sticky;left:0;background:var(--bg-card2);border-right:2px solid var(--border-med);z-index:1">TOTAL FROTA</td>
+      <td style="padding:8px 12px;font-size:.78rem;color:var(--text-secondary);position:sticky;left:0;background:var(--bg-card2);border-right:2px solid var(--border-med);z-index:1">FROTA PRÓPRIA</td>
       ${diasUteis.map(()=>`<td style="border-right:1px solid var(--border)"></td>`).join('')}
       <td style="padding:6px 8px;text-align:center;border-left:2px solid var(--border-med)">
         <div style="font-size:.72rem;color:var(--text-muted)">Atual</div>
@@ -12911,66 +12861,58 @@ async function renderFrotaUso(){
       </td>
     </tr>`;
 
-    // ── Barra de progresso do mês ──
-    const corBarra = pctMes >= 80 ? '#2563eb' : pctMes >= 50 ? '#3b82f6' : '#93c5fd';
-    const fmtFech  = new Date(ano, numMes-1, parseInt(fechamento)).toLocaleDateString('pt-BR',{day:'2-digit',month:'long'});
-
     // ── Painel Meta de Uso ──
-    const META_USO = 80;
-    const nNaMeta  = veiculosData.filter(x => x.pctAtual >= META_USO).length;
-    const nAbaixo  = veiculosData.length - nNaMeta;
-    const corMeta  = pctTotAtual >= META_USO ? '#059669' : pctTotAtual >= 60 ? '#f59e0b' : '#ef4444';
-    const corMetaProj = pctTotProj >= META_USO ? '#059669' : pctTotProj >= 60 ? '#f59e0b' : '#ef4444';
-    const difMeta  = pctTotAtual - META_USO;
-    const msgMeta  = difMeta >= 0
+    const META_USO    = 80;
+    const nNaMeta     = propria.filter(x => x.pctAtual >= META_USO).length;
+    const nAbaixo     = propria.length - nNaMeta;
+    const corMeta     = pctTotAtual >= META_USO ? '#059669' : pctTotAtual >= 60 ? '#f59e0b' : '#ef4444';
+    const difMeta     = pctTotAtual - META_USO;
+    const msgMeta     = difMeta >= 0
       ? `<span style="color:#059669;font-weight:800">✅ +${difMeta}pp acima da meta</span>`
       : `<span style="color:#ef4444;font-weight:800">⚠️ ${Math.abs(difMeta)}pp abaixo da meta</span>`;
 
-    // Ranking por veículo ordenado por pctAtual desc
-    const rankingHtml = [...veiculosData]
-      .sort((a,b) => b.pctAtual - a.pctAtual)
-      .map(({ v, pctAtual, pctProj, diasUsadosPassados }) => {
-        const corV = pctAtual >= META_USO ? '#059669' : pctAtual >= 50 ? '#f59e0b' : '#ef4444';
+    const rankingHtml = [...propria]
+      .map(({ v, pctAtual, diasUsadosPassados }) => {
+        const corV  = pctAtual >= META_USO ? '#059669' : pctAtual >= 50 ? '#f59e0b' : '#ef4444';
         const iconV = pctAtual >= META_USO ? '✅' : pctAtual >= 50 ? '⚠️' : '❌';
         const barW  = Math.min(pctAtual, 100);
         return `<div style="display:flex;align-items:center;gap:10px;padding:5px 0">
           <span style="font-family:monospace;font-size:.78rem;font-weight:800;color:var(--text-primary);min-width:90px;white-space:nowrap">${v.placa}</span>
           <div style="flex:1;background:#e5e7eb;border-radius:99px;height:10px;position:relative">
             <div style="height:100%;width:${barW}%;background:${corV};border-radius:99px;transition:width .5s;min-width:${barW>0?'4px':'0'}"></div>
-            <!-- Linha de meta em 80% -->
             <div style="position:absolute;left:${META_USO}%;top:-3px;height:16px;width:2px;background:#7c3aed;border-radius:1px"></div>
           </div>
           <span style="font-size:.8rem;font-weight:800;color:${corV};min-width:36px;text-align:right">${pctAtual}%</span>
-          <span style="font-size:.72rem" title="${pctAtual>= META_USO?'Na meta':'Abaixo da meta'}">${iconV}</span>
+          <span style="font-size:.72rem" title="${pctAtual>=META_USO?'Na meta':'Abaixo da meta'}">${iconV}</span>
           <span style="font-size:.7rem;color:var(--text-muted);min-width:60px">${diasUsadosPassados}/${nPassados} dias</span>
         </div>`;
       }).join('');
 
-    wrap.innerHTML = `
-      <!-- ══ PAINEL META DE USO DA FROTA ══ -->
-      <div style="padding:20px 20px 16px;background:linear-gradient(135deg,#f8fafc,#fff);border-bottom:2px solid var(--border)">
+    // ── Barra do mês ──
+    const corBarra = '#2563eb';
+    const fmtFech  = new Date(ano, numMes-1, parseInt(fechamento)).toLocaleDateString('pt-BR',{day:'2-digit',month:'long'});
 
-        <!-- KPIs de uso geral -->
+    wrap.innerHTML = `
+      <!-- PAINEL META DE USO DA FROTA -->
+      <div style="padding:20px 20px 16px;background:linear-gradient(135deg,#f8fafc,#fff);border-bottom:2px solid var(--border)">
+        <!-- KPIs -->
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
-          <!-- % Uso Atual -->
           <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid ${corMeta}40;border-left:4px solid ${corMeta};border-radius:12px;padding:14px 16px;box-shadow:0 2px 8px ${corMeta}15">
             <div style="font-size:2.4rem;font-weight:900;color:${corMeta};line-height:1">${pctTotAtual}%</div>
             <div style="font-size:.73rem;color:var(--text-muted);font-weight:600;margin-top:3px">Uso Geral — Atual</div>
             <div style="font-size:.72rem;margin-top:4px">${msgMeta}</div>
           </div>
-          <!-- % Projeção -->
-          <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid ${corMetaProj}40;border-left:4px solid #7c3aed;border-radius:12px;padding:14px 16px">
+          <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid #7c3aed40;border-left:4px solid #7c3aed;border-radius:12px;padding:14px 16px">
             <div style="font-size:2.4rem;font-weight:900;color:#7c3aed;line-height:1">${pctTotProj}%</div>
             <div style="font-size:.73rem;color:var(--text-muted);font-weight:600;margin-top:3px">Projeção — Fechamento</div>
             <div style="font-size:.72rem;margin-top:4px;color:${pctTotProj>=META_USO?'#059669':'#ef4444'};font-weight:700">
               ${pctTotProj >= META_USO ? '✅ Projeção na meta' : `⚠️ ${META_USO - pctTotProj}pp para atingir`}
             </div>
           </div>
-          <!-- Veículos na meta -->
           <div style="flex:1;min-width:140px;background:#fff;border:1.5px solid #e5e7eb;border-left:4px solid #2563eb;border-radius:12px;padding:14px 16px">
             <div style="display:flex;align-items:baseline;gap:6px">
               <span style="font-size:2.4rem;font-weight:900;color:#2563eb;line-height:1">${nNaMeta}</span>
-              <span style="font-size:1rem;color:var(--text-muted);font-weight:600">/ ${veiculosData.length}</span>
+              <span style="font-size:1rem;color:var(--text-muted);font-weight:600">/ ${propria.length}</span>
             </div>
             <div style="font-size:.73rem;color:var(--text-muted);font-weight:600;margin-top:3px">Veículos ≥ ${META_USO}%</div>
             <div style="font-size:.72rem;margin-top:4px;color:${nAbaixo>0?'#ef4444':'#059669'};font-weight:700">
@@ -12978,8 +12920,7 @@ async function renderFrotaUso(){
             </div>
           </div>
         </div>
-
-        <!-- Barra geral com marcador de meta -->
+        <!-- Barra geral -->
         <div style="margin-bottom:18px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
             <span style="font-size:.78rem;font-weight:700;color:var(--text-primary)">🎯 Meta de uso da frota: <strong>${META_USO}%</strong></span>
@@ -12987,17 +12928,15 @@ async function renderFrotaUso(){
           </div>
           <div style="background:#e5e7eb;border-radius:99px;height:16px;position:relative;overflow:visible">
             <div style="height:100%;width:${Math.min(pctTotAtual,100)}%;background:linear-gradient(90deg,${corMeta}bb,${corMeta});border-radius:99px;transition:width .6s"></div>
-            <!-- Marcador da meta (80%) -->
             <div style="position:absolute;left:${META_USO}%;top:-5px;height:26px;width:3px;background:#7c3aed;border-radius:2px;z-index:2">
               <span style="position:absolute;top:28px;left:50%;transform:translateX(-50%);font-size:.62rem;color:#7c3aed;font-weight:800;white-space:nowrap">META ${META_USO}%</span>
             </div>
           </div>
         </div>
-
-        <!-- Ranking por veículo -->
+        <!-- Ranking -->
         <div>
           <div style="font-size:.7rem;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-            📊 Uso por veículo — dias passados (linha roxa = meta ${META_USO}%)
+            📊 Uso por veículo — lançamentos confirmados (linha roxa = meta ${META_USO}%)
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">${rankingHtml}</div>
         </div>
@@ -13023,7 +12962,7 @@ async function renderFrotaUso(){
         </div>
       </div>
 
-      <!-- Tabela -->
+      <!-- Tabela calendário -->
       <table style="width:100%;border-collapse:collapse;font-size:.82rem">
         <thead>
           <tr style="background:var(--bg-card2)">
@@ -13479,21 +13418,30 @@ var _GF_CUSTOS          = [];
 var _GF_DIARIAS         = [];
 var _GF_DEMANDAS_ATIVAS = []; // veículos atualmente em viagem (para cálculo de utilização)
 var _GF_ABA_ATUAL       = 'manut';
-var _GF_COLETAS = [];
+var _GF_COLETAS         = [];
 var _GF_FORNECEDORES_ROTA = []; // fornecedores com rota vinculada
+var _GF_LANCS_HOJE      = []; // lançamentos do dia corrente (para marcar veículos utilizados)
+var _GF_LANCS_MES       = []; // lançamentos do mês corrente (para calcular dias rodados por veículo)
 
 async function carregarGestaoFrota(){
   const hoje = new Date().toISOString().slice(0,10);
   document.getElementById('gf-kpis').innerHTML = '<span style="color:var(--text-muted);font-size:.83rem">Carregando...</span>';
   try{
-    const [manut, custos, diarias, demandasAtivas, coletas, fornRota] = await Promise.all([
+    const amanha = new Date(hoje); amanha.setDate(amanha.getDate()+1);
+    const amanhaStr = amanha.toISOString().slice(0,10);
+    const iniMes = hoje.slice(0,7) + '-01';
+    const [manut, custos, diarias, demandasAtivas, coletas, fornRota, lancsHoje, lancsMes] = await Promise.all([
       supaFetch('manutencoes_frota?select=*&order=data_inicio.desc').catch(()=>[]),
       supaFetch('custos_frota?select=*&order=data.desc').catch(()=>[]),
       supaFetch('diarias_frota?select=*&order=criado_em.desc').catch(()=>[]),
       // Veículos atualmente em viagem (qualquer status ativo pré-conclusão)
       supaFetch('demandas_rota?select=veiculo,rota,status&veiculo=not.is.null&status=in.(pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,saiu,fim_viagem)').catch(()=>[]),
       supaFetch('coletas_frota?select=*&order=data_coleta.desc').catch(()=>[]),
-      supaFetch('fornecedores?ativo=eq.true&rota=not.is.null&select=id,nome,rota,contato').catch(()=>[])
+      supaFetch('fornecedores?ativo=eq.true&rota=not.is.null&select=id,nome,rota,contato').catch(()=>[]),
+      // Lançamentos de hoje — para identificar veículos utilizados no dia
+      supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00&ts=lt.${amanhaStr}T00:00:00&select=veiculo,carga,rota,motorista`).catch(()=>[]),
+      // Lançamentos do mês — para calcular dias rodados por veículo
+      supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00&ts=lt.${amanhaStr}T00:00:00&veiculo=not.is.null&select=veiculo,ts`).catch(()=>[])
     ]);
     _GF_MANUT           = manut          || [];
     _GF_CUSTOS          = custos         || [];
@@ -13501,6 +13449,8 @@ async function carregarGestaoFrota(){
     _GF_DEMANDAS_ATIVAS = demandasAtivas || [];
     _GF_COLETAS         = coletas        || [];
     _GF_FORNECEDORES_ROTA = fornRota     || [];
+    _GF_LANCS_HOJE      = lancsHoje      || [];
+    _GF_LANCS_MES       = lancsMes       || [];
     // Badge coletas pendentes
     const coletasPend = (_GF_COLETAS||[]).filter(c=>c.status==='pendente'||c.status==='em_andamento').length;
     const badgeColetas = document.getElementById('gf-coletas-badge');
@@ -13530,6 +13480,7 @@ async function carregarGestaoFrota(){
   }
 
   renderGestaoFrotaKPIs();
+  renderGfVeiculosHoje();
   gfAba(_GF_ABA_ATUAL, document.getElementById('gf-tab-'+_GF_ABA_ATUAL));
 }
 
@@ -13619,8 +13570,28 @@ function renderGestaoFrotaKPIs(){
       </div>
     </div>`;
 
-  // ── Barra: Disponibilidade de Frota (baseada em manutenções) ──────
+  // ── Disponibilidade mensal real: dias rodados / dias úteis ──────────
+  const hoje2 = hoje; // mesmo escopo
+  const diasUteisMes = _diasUteisAte(hoje2);
+  const diasRodadosMapKpi = {};
+  (_GF_LANCS_MES||[]).forEach(l=>{
+    const p = (l.veiculo||'').trim().toUpperCase();
+    if(!p||p==='A DEFINIR VEÍCULO') return;
+    if(_isFretePlaca(p)) return;
+    const data = (l.ts||'').slice(0,10);
+    if(!data) return;
+    if(!diasRodadosMapKpi[p]) diasRodadosMapKpi[p] = new Set();
+    diasRodadosMapKpi[p].add(data);
+  });
+  const frota = VEICULOS_CACHE.filter(v=>!_isFretePlaca(v.placa));
+  const totalDiasRod = frota.reduce((s,v)=>s+Math.min((diasRodadosMapKpi[v.placa]||new Set()).size, diasUteisMes), 0);
+  const maxDispoMes  = Math.max(frota.length * diasUteisMes, 1);
+  const pctDispoMes  = Math.round(totalDiasRod/maxDispoMes*100);
+  const mesLabel2    = new Date().toLocaleDateString('pt-BR',{month:'short'}).toUpperCase();
+
+  // ── Barra: Disponibilidade de Frota (manutenção) + Aproveitamento Mensal ──────
   const barColor = pctDisp>=META_DISP ? '#059669' : pctDisp>=60 ? '#f59e0b' : '#ef4444';
+  const barMes   = pctDispoMes>=80?'#059669':pctDispoMes>=50?'#f59e0b':'#ef4444';
   document.getElementById('gf-disponibilidade').innerHTML = `
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px;height:100%;box-sizing:border-box">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -13635,8 +13606,158 @@ function renderGestaoFrotaKPIs(){
           <div style="position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:.6rem;font-weight:800;color:#f59e0b;white-space:nowrap">${META_DISP}%</div>
         </div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;margin-bottom:14px">
         ${[...emManutSet].map(v=>`<span style="font-size:.72rem;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 10px;font-weight:700">🔧 ${v}</span>`).join('')||'<span style="font-size:.72rem;color:#059669;font-weight:600">✅ Nenhum veículo em manutenção agora</span>'}
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:.78rem;font-weight:700;color:var(--text-secondary)">📅 Aproveitamento em ${mesLabel2}</span>
+          <span style="font-size:.88rem;font-weight:900;color:${barMes}">${pctDispoMes}%
+            <span style="font-size:.68rem;font-weight:600;color:var(--text-muted)"> ${totalDiasRod}/${maxDispoMes} dias-veíc.</span>
+          </span>
+        </div>
+        <div style="background:var(--bg-input);border-radius:20px;height:10px;overflow:hidden">
+          <div style="height:100%;border-radius:20px;background:${barMes};width:${Math.min(pctDispoMes,100)}%;transition:width .5s"></div>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${diasUteisMes} dias úteis decorridos · ${frota.length} veíc. próprios</div>
+      </div>
+    </div>`;
+}
+
+function _diasUteisAte(hojeStr){
+  const ano = parseInt(hojeStr.slice(0,4));
+  const mes = parseInt(hojeStr.slice(5,7)) - 1;
+  const dia = parseInt(hojeStr.slice(8,10));
+  let count = 0;
+  for(let d = 1; d <= dia; d++){
+    const dow = new Date(ano, mes, d).getDay();
+    if(dow >= 1 && dow <= 5) count++;
+  }
+  return Math.max(count, 1);
+}
+
+function renderGfVeiculosHoje(){
+  const el = document.getElementById('gf-veiculos-hoje');
+  if(!el) return;
+
+  const hoje = new Date().toISOString().slice(0,10);
+  const _isFretePlaca = p => (p||'').toUpperCase().includes('FRETE') || (VEICULOS_CACHE.find(v=>v.placa===p)?.tipo||'').toUpperCase().includes('FRETE');
+
+  // Veículos em manutenção ativa
+  const emManutSet = new Set();
+  (_GF_MANUT||[]).forEach(m=>{
+    if(m.status==='concluida'||m.status==='cancelada') return;
+    const ini = m.data_inicio||'';
+    if(!ini||ini>hoje) return;
+    if(m.tipo==='preventiva'){ const fim=m.data_fim||''; if(fim&&hoje>fim) emManutSet.add(m.veiculo); }
+    else emManutSet.add(m.veiculo);
+  });
+
+  // Veículos usados hoje — mapa: placa → lista de { carga, rota, motorista }
+  const utilizadosMap = {};
+  (_GF_LANCS_HOJE||[]).forEach(l=>{
+    const p = (l.veiculo||'').trim().toUpperCase();
+    if(!p||p==='A DEFINIR VEÍCULO') return;
+    if(!utilizadosMap[p]) utilizadosMap[p] = [];
+    utilizadosMap[p].push(l);
+  });
+
+  // Dias rodados no mês — mapa: placa → Set de datas únicas
+  const diasRodadosMap = {};
+  (_GF_LANCS_MES||[]).forEach(l=>{
+    const p = (l.veiculo||'').trim().toUpperCase();
+    if(!p||p==='A DEFINIR VEÍCULO') return;
+    const data = (l.ts||'').slice(0,10);
+    if(!data) return;
+    if(!diasRodadosMap[p]) diasRodadosMap[p] = new Set();
+    diasRodadosMap[p].add(data);
+  });
+  const diasUteis = _diasUteisAte(hoje);
+  const mesLabel  = new Date().toLocaleDateString('pt-BR',{month:'short'}).toUpperCase();
+
+  const veiculos = (VEICULOS_CACHE||[]).filter(v=>!_isFretePlaca(v.placa));
+  if(!veiculos.length){
+    el.innerHTML = '';
+    return;
+  }
+
+  // Ordenar: utilizados hoje primeiro, depois mais dias rodados, depois manutenção, depois livres
+  veiculos.sort((a,b)=>{
+    const aU = !!utilizadosMap[a.placa], bU = !!utilizadosMap[b.placa];
+    const aM = emManutSet.has(a.placa),  bM = emManutSet.has(b.placa);
+    const aD = (diasRodadosMap[a.placa]||new Set()).size;
+    const bD = (diasRodadosMap[b.placa]||new Set()).size;
+    if(aU!==bU) return aU?-1:1;
+    if(aM!==bM) return aM?1:-1;
+    if(aD!==bD) return bD-aD;
+    return (a.placa||'').localeCompare(b.placa||'');
+  });
+
+  const cards = veiculos.map(v=>{
+    const placa     = v.placa||'—';
+    const utilizado = utilizadosMap[placa];
+    const emManut   = emManutSet.has(placa);
+    const diasRod   = (diasRodadosMap[placa]||new Set()).size;
+    const pctRod    = Math.min(Math.round(diasRod/diasUteis*100), 100);
+    const rodCor    = pctRod>=80?'#059669':pctRod>=50?'#f59e0b':'#ef4444';
+
+    let badge, bordaCor, detalhes='';
+    if(emManut){
+      badge    = '<span style="font-size:.68rem;font-weight:800;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 9px">🔧 Manutenção</span>';
+      bordaCor = '#ef4444';
+    } else if(utilizado){
+      badge    = '<span style="font-size:.68rem;font-weight:800;background:#dcfce7;color:#065f46;border:1px solid #6ee7b7;border-radius:8px;padding:2px 9px">✅ Utilizado Hoje</span>';
+      bordaCor = '#059669';
+      const rotas = [...new Set(utilizado.map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
+      if(rotas.length) detalhes = `<div style="font-size:.68rem;color:#059669;margin-top:4px;font-weight:600">${rotas.map(r=>'🛣️ '+r).join(' · ')}</div>`;
+    } else {
+      badge    = '<span style="font-size:.68rem;font-weight:600;background:var(--bg-card2);color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:2px 9px">⏸️ Livre</span>';
+      bordaCor = 'var(--border)';
+    }
+
+    // Mini barra de dias rodados no mês
+    const miniBar = diasRod > 0 ? `
+      <div style="margin-top:7px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+          <span style="font-size:.62rem;color:var(--text-muted);font-weight:600">📅 Dias rodados ${mesLabel}</span>
+          <span style="font-size:.62rem;font-weight:800;color:${rodCor}">${diasRod}/${diasUteis} dias</span>
+        </div>
+        <div style="background:var(--bg-input);border-radius:6px;height:5px;overflow:hidden">
+          <div style="height:100%;border-radius:6px;background:${rodCor};width:${pctRod}%;transition:width .4s"></div>
+        </div>
+      </div>` : `<div style="margin-top:6px;font-size:.62rem;color:var(--text-muted)">📅 0 dias rodados em ${mesLabel}</div>`;
+
+    return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ${bordaCor};border-radius:12px;padding:11px 14px">
+      <div style="font-weight:900;font-size:.92rem;color:var(--text-primary);margin-bottom:5px">${placa}${v.modelo?'<span style="font-size:.72rem;font-weight:400;color:var(--text-muted);margin-left:6px">'+v.modelo+'</span>':''}</div>
+      ${badge}${detalhes}${miniBar}
+    </div>`;
+  }).join('');
+
+  const util  = veiculos.filter(v=>!!utilizadosMap[v.placa]&&!emManutSet.has(v.placa)).length;
+  const total = veiculos.length;
+
+  // Disponibilidade real do mês: média de dias rodados / dias úteis por veículo próprio
+  const totalDiasRodados = veiculos.reduce((s,v)=>{
+    const dr = (diasRodadosMap[v.placa]||new Set()).size;
+    return s + Math.min(dr, diasUteis);
+  }, 0);
+  const maxPossivel = total * diasUteis;
+  const pctDispoMes = maxPossivel > 0 ? Math.round(totalDiasRodados/maxPossivel*100) : 0;
+  const dispoMesCor = pctDispoMes>=80?'#059669':pctDispoMes>=50?'#f59e0b':'#ef4444';
+
+  el.innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:.88rem;font-weight:800;color:var(--text-primary)">🚛 Veículos — Utilização de Hoje</span>
+        <span style="font-size:.8rem;font-weight:700;color:${util===0?'var(--text-muted)':'#059669'}">${util} de ${total} utilizados hoje</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:.72rem;color:var(--text-muted)">
+        <span>📊 Aproveitamento da frota em ${mesLabel}:</span>
+        <span style="font-weight:800;color:${dispoMesCor}">${pctDispoMes}%</span>
+        <span>(${totalDiasRodados} de ${maxPossivel} dias-veículo úteis)</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
+        ${cards||'<span style="color:var(--text-muted);font-size:.83rem">Nenhum veículo cadastrado</span>'}
       </div>
     </div>`;
 }
@@ -14776,16 +14897,31 @@ function abrirModalSaida(demandaId){
   const dem = _demandasCache?.find(d=>d.id===demandaId);
   const info = document.getElementById('saida-rota-info');
   if(info && dem) info.textContent = `${dem.rota||'—'} • Carga ${dem.carga} • ${dem.motorista||'—'}`;
-  document.getElementById('saida-data').value = new Date().toISOString().split('T')[0];
+  const hoje = new Date().toISOString().split('T')[0];
+  document.getElementById('saida-data').value = hoje;
   document.getElementById('saida-km-inicial').value = '';
-  // Pré-preencher KM Esperado salvo na pré-carga (edição da expedição)
   document.getElementById('saida-km-esperado').value = dem?.km_esperado||'';
-  // Admin vê campo KM Esperado
+  // Guarda data agendada para detectar atraso
+  document.getElementById('saida-data').dataset.agendada = dem?.data_saida || '';
+  // Esconde motivo por padrão (só aparece se houver atraso)
+  const motivoRow = document.getElementById('saida-motivo-row');
+  if(motivoRow) motivoRow.style.display = 'none';
+  // Verifica já de cara se hoje é posterior à data agendada
+  _saidaVerificarAtraso();
   const espRow = document.getElementById('saida-km-esperado-row');
   if(espRow) espRow.style.display = '';
   const iniDiv = document.getElementById('saida-km-inicial')?.closest('div');
   if(iniDiv) iniDiv.style.gridColumn = '';
   document.getElementById('modal-saida-rota').style.display = 'flex';
+}
+
+function _saidaVerificarAtraso(){
+  const dataInput  = document.getElementById('saida-data');
+  const motivoRow  = document.getElementById('saida-motivo-row');
+  if(!dataInput || !motivoRow) return;
+  const dataReal   = dataInput.value;
+  const dataAgend  = dataInput.dataset.agendada || '';
+  motivoRow.style.display = (dataAgend && dataReal > dataAgend) ? 'block' : 'none';
 }
 
 // Chamado pelo portal do motorista — não depende de _demandasCache
@@ -14860,10 +14996,12 @@ async function confirmarSaidaRota(){
       const dataAgend = dem?.data_saida || data;
       const dataReal  = data;
       const novoStatus = dataReal > dataAgend ? 'atrasado' : 'realizado';
+      const _MOTIVO_LABELS = {atraso_rota:'⏱️ Atraso de Rota',comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📝 Outro'};
+      const motivoSel = (document.getElementById('saida-motivo-atraso')?.value) || 'atraso_rota';
       const payload = {
         lancado: true,
         status: novoStatus,
-        ...(novoStatus === 'atrasado' ? {motivo_atraso:'atraso_rota', motivo_label:'⏱️ Atraso de Rota'} : {})
+        ...(novoStatus === 'atrasado' ? {motivo_atraso: motivoSel, motivo_label: _MOTIVO_LABELS[motivoSel]||motivoSel} : {})
       };
       // Busca direto no Supabase para garantir match mesmo sem cache local
       const agendSupa = await supaFetch(
@@ -16340,7 +16478,7 @@ const PAGINAS_GRUPOS = [
   ]},
   { grupo:'🚛 Frota', itens:[
     ['frota',       '🚗 Frota'],
-    ['gestao-frota','⚙️ Gestão de Frota'],
+    ['gestao-frota','🔧 Manutenção'],
   ]},
   { grupo:'🛣️ Comercial', itens:[
     ['comercial-rotas',         '🛣️ Rotas Comerciais'],
@@ -16552,7 +16690,7 @@ function renderPerfis(){
     veiculos:                   {label:'Veículos',             icon:'🚛'},
     absenteismo:                {label:'Abs. Distribuição',    icon:'📅'},
     frota:                      {label:'Frota',                icon:'🚗'},
-    'gestao-frota':             {label:'Gestão de Frota',      icon:'⚙️'},
+    'gestao-frota':             {label:'Manutenção',           icon:'🔧'},
     'comercial-rotas':          {label:'Rotas Comerciais',     icon:'🛣️'},
     'comercial-cancelamentos':  {label:'Cancelamentos',        icon:'📞'},
     fiscal:                     {label:'Fiscal',               icon:'📋'},
@@ -19580,18 +19718,19 @@ async function gerarPresencasAutomaticas(mes, manual = false){
       '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
     ]);
 
-    // Gerar lista de registros faltando — pula domingos e feriados nacionais
+    // Gerar lista de registros — pula domingos e feriados nacionais
+    // Nomes sempre em UPPERCASE para consistência com constraint (nome, data)
     const novos = [];
     const cur = new Date(primeiroDia + 'T12:00:00');
     const fim = new Date(ultimoDia + 'T12:00:00');
     while(cur <= fim){
       const dataStr = cur.toISOString().split('T')[0];
       const diaSemana = cur.getDay();
-      // Domingo (0) e feriados nacionais não são dias úteis — não criar presente automático
       if(diaSemana !== 0 && !_feriadosNac.has(dataStr)){
         for(const f of funcionarios){
-          if(!existSet.has(`${f.nome.toUpperCase()}__${dataStr}`)){
-            novos.push({ nome:f.nome, funcao:f.funcao, data:dataStr,
+          const nomeUp = f.nome.toUpperCase();
+          if(!existSet.has(`${nomeUp}__${dataStr}`)){
+            novos.push({ nome:nomeUp, funcao:f.funcao, data:dataStr,
               status:'presente', mes_ano:mes, fonte:'automatico',
               criado_em: new Date().toISOString() });
           }
@@ -19603,25 +19742,37 @@ async function gerarPresencasAutomaticas(mes, manual = false){
     if(!novos.length){
       if(manual) showToast('✅ Todos os dias já têm registro — nenhuma presença pendente!','success');
       localStorage.setItem(flagKey, '1');
-      // Re-render na 1ª execução do dia: tabela pode ter sido montada antes dos dados existirem
       if(!manual) renderAbsenteismo().catch(()=>{});
       return;
     }
 
     // Inserir em lotes de 200
+    // ignore-duplicates: não sobrescreve falta/atestado existente com presente automático
+    let falhouAlgum = false;
     for(let i = 0; i < novos.length; i += 200){
-      await supaFetch('absenteismo', {
-        method: 'POST', prefer: 'return=minimal',
-        body: JSON.stringify(novos.slice(i, i + 200))
-      }).catch(()=>{});
+      try{
+        await supaFetch('absenteismo', {
+          method: 'POST',
+          prefer: 'return=minimal,resolution=ignore-duplicates',
+          body: JSON.stringify(novos.slice(i, i + 200))
+        });
+      }catch(err){
+        falhouAlgum = true;
+        console.warn('[Abs] Lote de presenças falhou:', err?.message);
+      }
     }
 
-    localStorage.setItem(flagKey, '1');
+    // Só marca como "já rodou hoje" se TODOS os lotes foram bem-sucedidos
+    if(!falhouAlgum) localStorage.setItem(flagKey, '1');
+
     if(manual){
-      showToast(`✅ ${novos.length} presenças automáticas geradas!`, 'success');
+      if(falhouAlgum){
+        showToast('⚠️ Algumas presenças podem não ter sido salvas — verifique a conexão e tente novamente','warning');
+      } else {
+        showToast(`✅ ${novos.length} presenças geradas com sucesso!`, 'success');
+      }
       await renderAbsenteismo();
     } else {
-      // Re-render silencioso: atualiza tabela após criar presenças em background
       renderAbsenteismo().catch(()=>{});
     }
   }catch(e){
@@ -20549,12 +20700,10 @@ async function marcarPresencaItem(nome, btn){
     const setor  = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
     const funcao = setor === 'armazem' ? 'conferente' : 'motorista';
     // Busca case-insensitive para encontrar registros salvos em maiúsculas (gerarPresencasAutomaticas)
-    const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id,nome`) || [];
-    if(ex.length){
-      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte:'manual'})});
-    } else {
-      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
-    }
+    const nomeUp = (nome||'').toUpperCase().trim();
+    await supaFetch('absenteismo', {method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify({
+      nome:nomeUp, funcao, data:hoje, status:'presente', mes_ano:mesAno, fonte:'manual', criado_em:new Date().toISOString()
+    })});
     const row   = btn.closest('.abs-item');
     const badge = row?.querySelector('.abs-status-badge');
     const s     = _absStatusCor['presente'];
@@ -20786,12 +20935,10 @@ async function salvarAbsenteismo(){
         });
       }
 
-      // Deletar dias existentes no período e inserir todos de uma vez
-      await supaFetch(
-        `absenteismo?nome=eq.${encodeURIComponent(nome)}&data=gte.${inicio}&data=lte.${fim}`,
-        {method:'DELETE', prefer:'return=minimal'}
-      );
-      await supaFetch('absenteismo',{method:'POST', prefer:'return=minimal', body:JSON.stringify(registros)});
+      // UPSERT: salva dados ANTES de qualquer deleção — elimina risco de perda entre DELETE e POST
+      const nomeUp = (nome||'').toUpperCase().trim();
+      const registrosUp = registros.map(r => ({...r, nome: nomeUp}));
+      await supaFetch('absenteismo', {method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify(registrosUp)});
 
       document.getElementById('modal-abs').style.display = 'none';
       showToast(`✅ ${status==='ferias'?'Férias':'Atestado'}: ${registros.length} dia(s) lançado(s)!`,'success');
@@ -20799,15 +20946,11 @@ async function salvarAbsenteismo(){
       const data = document.getElementById('abs-data-input')?.value;
       if(!data){ showToast('Informe a data','warning'); return; }
       const mesAno = data.slice(0,7);
-      const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${data}&select=id`) || [];
-      if(ex.length){
-        await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,fonte:'manual'})});
-      } else {
-        await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
-          nome, data, status, mes_ano:mesAno, observacao:obs,
-          fonte:'manual', criado_em:new Date().toISOString()
-        })});
-      }
+      const nomeUp2 = (nome||'').toUpperCase().trim();
+      await supaFetch('absenteismo', {method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify({
+        nome:nomeUp2, data, status, mes_ano:mesAno, observacao:obs,
+        fonte:'manual', criado_em:new Date().toISOString()
+      })});
       document.getElementById('modal-abs').style.display = 'none';
       showToast('✅ Registro salvo!','success');
     }
@@ -27600,22 +27743,27 @@ async function renderAgendamentos(){
   const semValor      = naoSaiuArr.filter(a=>getMKey(a)==='comercial').length;
   const semAtraso     = naoSaiuArr.filter(a=>getMKey(a)==='atraso_rota').length;
   const semAtrasoCarg = naoSaiuArr.filter(a=>getMKey(a)==='atraso_carregamento'||getMKey(a)==='outro').length;
-  const totalRef      = Math.max(total+extras.length,1);
+  // Percentagens calculadas sobre agendadas (não inclui extras — extras são métricas separadas)
+  const totalRef = Math.max(total, 1);
 
   const motivosCfg = [
-    {label:'✅ Saíram na data certa',         val:noPrazo,        cor:'#059669', desc:'Rota saiu conforme programado'},
-    {label:'⚡ Extras (sem agendamento)',      val:extras.length,  cor:'#f59e0b', desc:'Pré-cargas criadas fora do planejamento'},
-    {label:'💰 Comercial não fechou',          val:semValor,       cor:'#ef4444', desc:'Pendência comercial'},
-    {label:'🚛 Sem veículo',                  val:semVeiculo,     cor:'#7c3aed', desc:'Carga não saiu por falta de veículo'},
-    {label:'🚗 Sem motorista',                val:semMot,         cor:'#3b82f6', desc:'Carga não saiu por falta de motorista'},
-    {label:'⏱️ Atraso de rota',               val:semAtraso,      cor:'#ea580c', desc:'Rota saiu com atraso'},
-    {label:'📦 Atraso no Carregamento',       val:semAtrasoCarg,  cor:'#f97316', desc:'Atraso no carregamento da carga'},
+    {label:'✅ Saíram na data certa',    val:noPrazo,        cor:'#059669', desc:'Rota saiu conforme programado'},
+    {label:'💰 Comercial não fechou',    val:semValor,       cor:'#ef4444', desc:'Pendência comercial'},
+    {label:'🚛 Sem veículo',             val:semVeiculo,     cor:'#7c3aed', desc:'Carga não saiu por falta de veículo'},
+    {label:'🚗 Sem motorista',           val:semMot,         cor:'#3b82f6', desc:'Carga não saiu por falta de motorista'},
+    {label:'⏱️ Atraso de rota',          val:semAtraso,      cor:'#ea580c', desc:'Rota saiu com atraso'},
+    {label:'📦 Atraso no Carregamento',  val:semAtrasoCarg,  cor:'#f97316', desc:'Atraso no carregamento da carga'},
   ];
+  // Extras ficam em card separado para não distorcer os % das agendadas
+  const extrasCfg = extras.length
+    ? [{label:'⚡ Extras (sem agendamento)', val:extras.length, cor:'#f59e0b', desc:'Pré-cargas criadas fora do planejamento'}]
+    : [];
 
   // ── 6. Renderizar painel de motivos ───────────────────────────────────────
   const motivosEl = document.getElementById('agend-motivos');
   if(motivosEl){
     var mHtml = '';
+    // Cards das agendadas (% sobre total agendado)
     for(var mi=0;mi<motivosCfg.length;mi++){
       var m = motivosCfg[mi];
       var pct = Math.round((m.val/totalRef)*100);
@@ -27626,17 +27774,30 @@ async function renderAgendamentos(){
         +'<div style="margin-top:8px;height:4px;background:var(--border);border-radius:2px;overflow:hidden">'
           +'<div style="height:100%;width:'+pct+'%;background:'+m.cor+';border-radius:2px;transition:width .4s"></div>'
         +'</div>'
-        +'<div style="font-size:.68rem;color:'+m.cor+';font-weight:700;margin-top:3px">'+pct+'% do total</div>'
+        +'<div style="font-size:.68rem;color:'+m.cor+';font-weight:700;margin-top:3px">'+pct+'% das agendadas</div>'
+      +'</div>';
+    }
+    // Card de extras em separado (% sobre agendadas como referência)
+    for(var ei=0;ei<extrasCfg.length;ei++){
+      var e=extrasCfg[ei], ep=Math.round((e.val/totalRef)*100);
+      mHtml += '<div style="background:var(--bg-card2);border:1px solid #f59e0b33;border-radius:10px;padding:12px;border-left:4px solid '+e.cor+'">'
+        +'<div style="font-size:1.4rem;font-weight:900;color:'+e.cor+'">'+e.val+'</div>'
+        +'<div style="font-size:.78rem;font-weight:700;color:var(--text-primary);margin-top:2px">'+e.label+'</div>'
+        +'<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">'+e.desc+'</div>'
+        +'<div style="margin-top:8px;height:4px;background:var(--border);border-radius:2px;overflow:hidden">'
+          +'<div style="height:100%;width:'+ep+'%;background:'+e.cor+';border-radius:2px;transition:width .4s"></div>'
+        +'</div>'
+        +'<div style="font-size:.68rem;color:'+e.cor+';font-weight:700;margin-top:3px">'+ep+'% das agendadas</div>'
       +'</div>';
     }
     motivosEl.innerHTML = mHtml;
   }
 
-  // Barra empilhada
+  // Barra empilhada (só das agendadas — extras não entram na barra de distribuição)
   const barraCont = document.getElementById('agend-barra-container');
   if(barraCont && total>0){
     var segs = motivosCfg.filter(function(m){return m.val>0;});
-    var barHtml = '<div style="font-size:.72rem;color:var(--text-muted);font-weight:700;margin-bottom:6px;text-transform:uppercase">Distribuição do mês</div>'
+    var barHtml = '<div style="font-size:.72rem;color:var(--text-muted);font-weight:700;margin-bottom:6px;text-transform:uppercase">Distribuição das agendadas no mês</div>'
       +'<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:2px">';
     for(var si=0;si<segs.length;si++){
       var s=segs[si], sp=Math.round((s.val/total)*100);
@@ -28050,146 +28211,75 @@ async function abrirPopupRotasExpedicao(){
     return d.toISOString().slice(0,10);
   };
 
+  // Popup aparece SOMENTE para rotas lançadas na Expedição que tiveram atraso (data passou)
   const rotasSemana = agends
     .filter(a => {
-      const fdt = calcFech(a.data);
-      // Inclui rotas cujo fechamento está nos próximos 7 dias OU já venceu mas a saída ainda não ocorreu
-      const noJanela  = datas.includes(fdt);
-      const vencido   = fdt < hojeStr && a.data >= hojeStr;
-      if(!noJanela && !vencido) return false;
+      const foiLancado = a.lancado || a.acao === 'lancar';
+      if(!foiLancado) return false;              // não foi lançada na expedição
+      if(a.data >= hojeStr) return false;        // data ainda não passou — sem atraso confirmado
       if(a.status === 'concluido') return false;
-      // Mantém realizado no popup se tiver motivo registrado (histórico visível)
-      if(a.status === 'realizado' && !a.motivo_atraso) return false;
-      if(temPreCargaAtiva(a.rota, a.data) && a.status !== 'realizado' && !a.motivo_atraso) return false;
+      if(a.status === 'realizado') return false; // saída já confirmada em expedição
+      if(a.motivo_atraso) return false;          // motivo já registrado
       return true;
     })
-    .sort((a,b) => calcFech(a.data).localeCompare(calcFech(b.data)));
+    .sort((a,b) => a.data.localeCompare(b.data));
+
+  // Não abre automaticamente se não há nada pendente
+  if(!rotasSemana.length && document.getElementById('popup-rotas-dia')?.style.display !== 'flex') return;
 
   const total_ct = rotasSemana.length;
-  const hoje_ct  = rotasSemana.filter(a=>calcFech(a.data)===hojeStr).length;
   if(sub) sub.textContent = total_ct
-    ? total_ct+' rota(s) para fechar nos próximos 7 dias'+(hoje_ct?' — '+hoje_ct+' hoje':'')
-    : 'Nenhum fechamento agendado para os próximos 7 dias';
+    ? total_ct+' rota(s) lançada(s) com atraso — registre o motivo'
+    : 'Nenhuma rota com atraso pendente de motivo';
 
-  // Helpers
-  const fmtLabel = dt => {
-    if(dt===hojeStr) return 'Hoje';
-    const am=new Date(hoje); am.setDate(hoje.getDate()+1);
-    if(dt===am.toISOString().slice(0,10)) return 'Amanhã';
-    return new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long'});
-  };
   const fmtData = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
 
-  const MOTIVOS   = [{key:'comercial',label:'💰 Comercial',desc:'Carga sem valor mínimo'},{key:'veiculo',label:'🚛 Sem Veículo',desc:'Sem veículo disponível'},{key:'motorista',label:'🚗 Sem Motorista',desc:'Sem motorista disponível'},{key:'atraso_rota',label:'⏱️ Atraso de Rota',desc:'Rota saiu com atraso'},{key:'atraso_carregamento',label:'📦 Atraso no Carregamento',desc:'Atraso no carregamento da carga'}];
+  const MOTIVOS   = [{key:'atraso_rota',label:'⏱️ Atraso de Rota',desc:'Rota saiu com atraso'},{key:'comercial',label:'💰 Comercial',desc:'Carga sem valor mínimo'},{key:'veiculo',label:'🚛 Sem Veículo',desc:'Sem veículo disponível'},{key:'motorista',label:'🚗 Sem Motorista',desc:'Sem motorista disponível'},{key:'atraso_carregamento',label:'📦 Atraso no Carregamento',desc:'Atraso no carregamento'}];
   const CORES_MOT = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#f97316'};
 
-  // Agrupar por data de FECHAMENTO (não de saída)
-  const porFech = {};
-  rotasSemana.forEach(a=>{ var fd=calcFech(a.data); if(!porFech[fd]) porFech[fd]=[]; porFech[fd].push(a); });
+  // Agrupar por data de saída programada
+  const porData = {};
+  rotasSemana.forEach(a=>{ if(!porData[a.data]) porData[a.data]=[]; porData[a.data].push(a); });
 
   var html = '';
 
-  datas.forEach(function(dt, di){
-    const isHoje   = dt===hojeStr;
-    const label    = fmtLabel(dt);
-    const rotasDia = porFech[dt]||[];
+  Object.keys(porData).sort().forEach(function(dt, di){
+    const diasAtraso = Math.max(1, Math.floor((new Date(hojeStr)-new Date(dt+'T00:00:00'))/86400000));
+    const corDia     = diasAtraso >= 3 ? '#ef4444' : '#f59e0b';
 
-    // Cabeçalho do dia
-    html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'10px':'0')+'">'
-      +'<div style="background:'+(isHoje?'#7c3aed':'#334155')+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
-        +'<span style="font-size:.58rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.03em">'+label+'</span>'
-        +'<span style="font-size:1.15rem;font-weight:900;line-height:1.15">'+new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
-        +'<span style="font-size:.6rem;opacity:.8">'+new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
+    html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'12px':'0')+'">'
+      +'<div style="background:'+corDia+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
+        +'<span style="font-size:.58rem;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:.02em">'+(diasAtraso===1?'Ontem':diasAtraso+'d atrás')+'</span>'
+        +'<span style="font-size:1.15rem;font-weight:900;line-height:1.2">'+new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
+        +'<span style="font-size:.6rem;opacity:.85">'+new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
       +'</div>'
-      +'<div style="flex:1;border-top:2px solid '+(isHoje?'rgba(124,58,237,.5)':'rgba(255,255,255,.07)')+'"></div>'
-      +'<span style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">'+fmtData(dt)+'</span>'
+      +'<div style="flex:1;border-top:2px solid '+corDia+'55"></div>'
+      +'<span style="font-size:.7rem;color:'+corDia+';font-weight:700;white-space:nowrap">⚠️ '+diasAtraso+' dia(s) de atraso</span>'
     +'</div>';
 
-    if(!rotasDia.length){
-      html += '<div style="margin-left:8px;padding:9px 14px;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.07);border-radius:8px">'
-        +'<span style="font-size:.78rem;color:var(--text-muted)">Nenhum fechamento para este dia</span>'
-      +'</div>';
-      return;
-    }
-
-    rotasDia.forEach(function(a){
-      const temPC      = temPreCargaAtiva(a.rota, a.data);
-      const isRealizado = a.status === 'realizado';
-      const editando   = _editandoMotivo.has(a.id);
-      // motivo "ativo" se existe E não está em modo edição
-      const temMotivo  = !!(a.motivo_atraso) && !editando;
-      const corMot     = CORES_MOT[a.motivo_atraso]||'#6b7280';
-      const saidaLabel = new Date(a.data+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'}).replace('.',',');
-      const borda = isRealizado ? '#059669' : (temPC ? '#059669' : (temMotivo ? corMot : (isHoje ? '#7c3aed' : '#475569')));
-
-      // Botões de motivo (só relevante para entradas ainda pendentes)
+    porData[dt].forEach(function(a){
       var mBtns = '';
-      if(!isRealizado){
-        MOTIVOS.forEach(function(m){
-          var sel = a.motivo_atraso===m.key;
-          var c   = CORES_MOT[m.key]||'#6b7280';
-          mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
-            +'style="background:'+(sel?c+'33':'rgba(239,68,68,.06)')+';color:'+(sel?c:'#fca5a5')+';'
-            +'border:'+(sel?'2px solid '+c:'1px solid rgba(239,68,68,.2)')+';border-radius:6px;padding:4px 10px;'
-            +'font-size:.72rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+m.label+'</button>';
-        });
-      }
+      MOTIVOS.forEach(function(m){
+        mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
+          +'style="background:rgba(239,68,68,.07);color:#fca5a5;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:5px 11px;font-size:.73rem;font-weight:600;cursor:pointer;white-space:nowrap">'+m.label+'</button>';
+      });
 
-      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+borda+';border-radius:10px;padding:13px 15px;margin-left:8px'+(isRealizado?';opacity:.8':'')+'">'
-
-        // Cabeçalho: nome + badges + botão excluir
-        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap">'
-          +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+(isRealizado?'&nbsp;<span style="font-size:.68rem;font-weight:400;color:#6ee7b7">✅ saiu</span>':'')+'</div>'
-          +'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
-            +(!isRealizado&&isHoje&&!temMotivo&&!temPC?'<span style="background:rgba(124,58,237,.15);color:#c084e0;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔒 Fechar hoje</span>':'')
-            +(temPC&&!isRealizado?'<span style="background:rgba(5,150,105,.15);color:#34d399;font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid rgba(5,150,105,.3)">✅ Pré-carga ativa</span>':'')
-            +((temMotivo||editando)?'<span style="background:'+corMot+'22;color:'+corMot+';font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid '+corMot+'44">📌 '+(a.motivo_label||a.motivo_atraso)+'</span>':'')
-            +'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Remover agendamento" style="background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:2px 7px;font-size:.72rem;cursor:pointer;line-height:1.4" onmouseover="this.style.background=\'rgba(239,68,68,.25)\'" onmouseout="this.style.background=\'rgba(239,68,68,.1)\'">🗑</button>'
+      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+corDia+';border-radius:10px;padding:13px 15px;margin-left:8px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:8px;flex-wrap:wrap">'
+          +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+'</div>'
+          +'<div style="display:flex;gap:5px;align-items:center">'
+            +'<span style="background:rgba(239,68,68,.12);color:#fca5a5;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">📅 Saída: '+fmtData(a.data)+'</span>'
+            +'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Remover agendamento" style="background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:2px 7px;font-size:.72rem;cursor:pointer;line-height:1.4">🗑</button>'
           +'</div>'
         +'</div>'
-        // Carga vinculada (se houver) + Data de saída
-        +(a.carga?'<div style="font-size:.72rem;margin-bottom:5px">📦 Carga: <strong style="color:#7c3aed">#'+a.carga+'</strong></div>':'')
-        +'<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:9px">📅 Saída: <strong style="color:var(--text-secondary)">'+saidaLabel+'</strong></div>'
-
-        // Entrada realizada: apenas info do motivo, sem ações
-        +(isRealizado
-          ? '<div style="background:rgba(5,150,105,.07);border:1px solid rgba(5,150,105,.18);border-radius:8px;padding:8px 12px;font-size:.8rem;color:#6ee7b7;font-weight:600">'
-              +'✅ Carga saiu'+(a.motivo_atraso?' com motivo registrado: <strong>'+(a.motivo_label||a.motivo_atraso)+'</strong>':'')
-            +'</div>'
-          // Ação principal para entradas pendentes
-          : (temPC
-              ? '<div style="background:rgba(5,150,105,.08);border:1px solid rgba(5,150,105,.2);border-radius:8px;padding:9px 14px;font-size:.83rem;color:#34d399;font-weight:600;margin-bottom:9px">'
-                  +'✅ Pré-carga já criada para este dia — gerencie na lista abaixo'
-                +'</div>'
-                +'<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
-                  +'style="width:100%;background:rgba(5,150,105,.06);color:#6ee7b7;border:1px dashed rgba(5,150,105,.25);border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:600;cursor:pointer;margin-bottom:9px;text-align:left">'
-                  +'➕ Criar outra pré-carga'
-                +'</button>'
-              : '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
-                  +'style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:8px">'
-                  +'<span>➕</span><span>Criar Pré-Carga</span>'
-                +'</button>'
-            )
-            // Motivo do atraso para entradas pendentes
-            // Quando há pré-carga ativa + motivo: o badge no cabeçalho já informa — não repetir aqui
-            +(temMotivo && !temPC
-              ? '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'
-                  +'<span style="font-size:.7rem;color:var(--text-muted)">📌 Motivo registrado</span>'
-                  +'<button onclick="limparMotivoAtraso(\''+a.id+'\')" '
-                    +'style="background:transparent;border:none;color:var(--text-muted);font-size:.7rem;cursor:pointer;text-decoration:underline;padding:0">alterar</button>'
-                +'</div>'
-              : (!temMotivo
-                  ? '<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>'
-                    +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
-                  : '')
-            )
-        )
-
+        +(a.carga?'<div style="font-size:.72rem;margin-bottom:6px">📦 Carga: <strong style="color:#7c3aed">#'+a.carga+'</strong></div>':'')
+        +'<div style="font-size:.7rem;font-weight:700;color:#fca5a5;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">⚠️ Por que houve atraso?</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
       +'</div>';
     });
   });
 
-  lista.innerHTML = html;
+  lista.innerHTML = html || '<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:.85rem">✅ Nenhuma rota com atraso pendente de motivo</div>';
   document.getElementById('popup-rotas-dia').style.display='flex';
 }
 
@@ -31025,7 +31115,7 @@ async function _alhoRenderDashboard() {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
         <div style="grid-column:1/-1">
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">📅 Data de Saída *</label>
-          <input type="date" id="saida-data" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+          <input type="date" id="saida-data" onchange="_saidaVerificarAtraso()" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
         </div>
         <div>
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🔢 KM Inicial *</label>
@@ -31034,6 +31124,21 @@ async function _alhoRenderDashboard() {
         <div id="saida-km-esperado-row">
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🎯 KM Esperado da Rota</label>
           <input type="number" id="saida-km-esperado" placeholder="Ex: 850" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+        </div>
+        <!-- Campo de motivo — aparece apenas quando a saída é posterior à data agendada -->
+        <div id="saida-motivo-row" style="display:none;grid-column:1/-1">
+          <div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:9px 14px;margin-bottom:8px">
+            <span style="font-size:.78rem;font-weight:700;color:#92400e">⚠️ Saída posterior à data agendada — informe o motivo:</span>
+          </div>
+          <label style="font-size:.72rem;font-weight:700;color:#92400e;text-transform:uppercase;display:block;margin-bottom:5px">Motivo do Atraso *</label>
+          <select id="saida-motivo-atraso" style="width:100%;border:1.5px solid #fbbf24;border-radius:8px;padding:10px 12px;font-size:.88rem;outline:none;box-sizing:border-box;background:#fffbeb;color:#374151">
+            <option value="atraso_rota">⏱️ Atraso de Rota</option>
+            <option value="comercial">💰 Comercial</option>
+            <option value="veiculo">🚛 Sem Veículo</option>
+            <option value="motorista">🚗 Sem Motorista</option>
+            <option value="atraso_carregamento">📦 Atraso no Carregamento</option>
+            <option value="outro">📝 Outro</option>
+          </select>
         </div>
       </div>
       <div style="display:flex;gap:10px">
