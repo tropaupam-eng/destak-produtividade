@@ -3224,8 +3224,19 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
   <!-- Entregas por Rota -->
   <div id="dash-int-rotas-chart" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:16px">
-    <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">🗺️ Entregas por Rota</h3>
-    <div id="dash-rotas-bars" style="display:flex;flex-direction:column;gap:8px"></div>
+    <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:16px">🗺️ Entregas por Rota</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start">
+      <!-- Pizza: pedidos por rota -->
+      <div>
+        <div style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">Pedidos por Rota</div>
+        <div style="position:relative;height:260px"><canvas id="chart-rotas-pizza"></canvas></div>
+      </div>
+      <!-- Barras: valor por rota -->
+      <div>
+        <div style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">Valor por Rota (R$)</div>
+        <div style="position:relative;height:260px"><canvas id="chart-rotas-valor"></canvas></div>
+      </div>
+    </div>
   </div>
 </div></div>
 
@@ -8331,7 +8342,7 @@ function getFiltered(prefix){
 function setSrc(p,src){}
 
 let cSem=null,cVVal=null,cVEnt=null;
-let _cDashSem = null;
+let _cDashSem = null, _cRotasPizza = null, _cRotasValor = null;
 let _dashIntRefreshTimer = null;
 let _dashIntCountdownTimer = null;
 
@@ -18679,9 +18690,10 @@ async function renderDashInterna(){
       }).join('');
     }
 
-    // 13. Gráfico de barras: Entregas por Rota
-    const rotasBarsEl = document.getElementById('dash-rotas-bars');
-    if(rotasBarsEl){
+    // 13. Gráficos: Pizza (pedidos por rota) + Barras horizontais (valor por rota)
+    const ctxPizza = document.getElementById('chart-rotas-pizza');
+    const ctxValor = document.getElementById('chart-rotas-valor');
+    if(ctxPizza || ctxValor){
       const rotaMap = {};
       const vistoPed2 = new Set();
       bd.forEach(p=>{
@@ -18693,23 +18705,46 @@ async function renderDashInterna(){
         rotaMap[rota].ped++;
         rotaMap[rota].val+=Number(p.valor)||0;
       });
-      const rotasOrdenadas = Object.entries(rotaMap)
-        .sort((a,b)=>b[1].ped-a[1].ped)
-        .slice(0,12);
-      const maxPed = rotasOrdenadas[0]?.[1]?.ped||1;
-      const fmtV = v => v>=1000?'R$ '+(v/1000).toFixed(1).replace('.',',')+'k':'R$ '+Math.round(v);
-      rotasBarsEl.innerHTML = rotasOrdenadas.length ? rotasOrdenadas.map(([rota,d],i)=>{
-        const pct = Math.round(d.ped/maxPed*100);
-        const cor = i===0?'#E8000D':i===1?'#f59e0b':i===2?'#059669':'#2563eb';
-        return `<div style="display:grid;grid-template-columns:130px 1fr 70px 90px;align-items:center;gap:10px">
-          <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${rota}">${rota}</div>
-          <div style="background:var(--bg-card2);border-radius:4px;height:10px;overflow:hidden">
-            <div style="height:100%;width:${pct}%;background:${cor};border-radius:4px;transition:width .5s"></div>
-          </div>
-          <div style="font-size:.8rem;font-weight:800;color:var(--text-primary);text-align:right">${d.ped.toLocaleString('pt-BR')} ped</div>
-          <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);text-align:right">${fmtV(d.val)}</div>
-        </div>`;
-      }).join('') : '<p style="color:var(--text-muted);font-size:.84rem">Sem dados de rota</p>';
+      const top = Object.entries(rotaMap).sort((a,b)=>b[1].ped-a[1].ped).slice(0,10);
+      const labels = top.map(([r])=>r);
+      const pedidos = top.map(([,d])=>d.ped);
+      const valores = top.map(([,d])=>d.val);
+      const cores = ['#E8000D','#f59e0b','#059669','#2563eb','#7c3aed','#0891b2','#db2777','#65a30d','#ea580c','#6366f1'];
+      if(_cRotasPizza){ _cRotasPizza.destroy(); _cRotasPizza=null; }
+      if(_cRotasValor){ _cRotasValor.destroy(); _cRotasValor=null; }
+      const isDark = document.documentElement.getAttribute('data-theme')==='dark'||document.body.classList.contains('dark');
+      const txtColor = isDark?'#94a3b8':'#64748b';
+      if(ctxPizza && top.length){
+        _cRotasPizza = new Chart(ctxPizza,{
+          type:'pie',
+          data:{ labels, datasets:[{ data:pedidos, backgroundColor:cores, borderWidth:2, borderColor: isDark?'#1e293b':'#fff' }] },
+          options:{
+            responsive:true, maintainAspectRatio:false,
+            plugins:{
+              legend:{ position:'right', labels:{ color:txtColor, font:{size:11,weight:'600'}, boxWidth:12, padding:8 } },
+              tooltip:{ callbacks:{ label: c=>' '+c.label+': '+c.raw.toLocaleString('pt-BR')+' pedidos' } }
+            }
+          }
+        });
+      }
+      if(ctxValor && top.length){
+        const topVal = [...top].sort((a,b)=>b[1].val-a[1].val).slice(0,10);
+        _cRotasValor = new Chart(ctxValor,{
+          type:'bar',
+          data:{ labels:topVal.map(([r])=>r), datasets:[{ data:topVal.map(([,d])=>d.val), backgroundColor:cores, borderRadius:6, borderSkipped:false }] },
+          options:{
+            indexAxis:'y', responsive:true, maintainAspectRatio:false,
+            plugins:{
+              legend:{display:false},
+              tooltip:{ callbacks:{ label: c=>' R$ '+(c.raw/1000).toFixed(1).replace('.',',')+'k' } }
+            },
+            scales:{
+              x:{ grid:{color: isDark?'#334155':'#f0f0f0'}, ticks:{ color:txtColor, callback:v=>'R$'+(v/1000).toFixed(0)+'k' } },
+              y:{ grid:{display:false}, ticks:{ color:txtColor, font:{size:11,weight:'700'} } }
+            }
+          }
+        });
+      }
     }
   }catch(e){ if(container) container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; console.error('renderDashInterna:', e); }
 }
