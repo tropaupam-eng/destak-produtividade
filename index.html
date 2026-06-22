@@ -14777,16 +14777,31 @@ function abrirModalSaida(demandaId){
   const dem = _demandasCache?.find(d=>d.id===demandaId);
   const info = document.getElementById('saida-rota-info');
   if(info && dem) info.textContent = `${dem.rota||'—'} • Carga ${dem.carga} • ${dem.motorista||'—'}`;
-  document.getElementById('saida-data').value = new Date().toISOString().split('T')[0];
+  const hoje = new Date().toISOString().split('T')[0];
+  document.getElementById('saida-data').value = hoje;
   document.getElementById('saida-km-inicial').value = '';
-  // Pré-preencher KM Esperado salvo na pré-carga (edição da expedição)
   document.getElementById('saida-km-esperado').value = dem?.km_esperado||'';
-  // Admin vê campo KM Esperado
+  // Guarda data agendada para detectar atraso
+  document.getElementById('saida-data').dataset.agendada = dem?.data_saida || '';
+  // Esconde motivo por padrão (só aparece se houver atraso)
+  const motivoRow = document.getElementById('saida-motivo-row');
+  if(motivoRow) motivoRow.style.display = 'none';
+  // Verifica já de cara se hoje é posterior à data agendada
+  _saidaVerificarAtraso();
   const espRow = document.getElementById('saida-km-esperado-row');
   if(espRow) espRow.style.display = '';
   const iniDiv = document.getElementById('saida-km-inicial')?.closest('div');
   if(iniDiv) iniDiv.style.gridColumn = '';
   document.getElementById('modal-saida-rota').style.display = 'flex';
+}
+
+function _saidaVerificarAtraso(){
+  const dataInput  = document.getElementById('saida-data');
+  const motivoRow  = document.getElementById('saida-motivo-row');
+  if(!dataInput || !motivoRow) return;
+  const dataReal   = dataInput.value;
+  const dataAgend  = dataInput.dataset.agendada || '';
+  motivoRow.style.display = (dataAgend && dataReal > dataAgend) ? 'block' : 'none';
 }
 
 // Chamado pelo portal do motorista — não depende de _demandasCache
@@ -14861,10 +14876,12 @@ async function confirmarSaidaRota(){
       const dataAgend = dem?.data_saida || data;
       const dataReal  = data;
       const novoStatus = dataReal > dataAgend ? 'atrasado' : 'realizado';
+      const _MOTIVO_LABELS = {atraso_rota:'⏱️ Atraso de Rota',comercial:'💰 Pendência Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📝 Outro'};
+      const motivoSel = (document.getElementById('saida-motivo-atraso')?.value) || 'atraso_rota';
       const payload = {
         lancado: true,
         status: novoStatus,
-        ...(novoStatus === 'atrasado' ? {motivo_atraso:'atraso_rota', motivo_label:'⏱️ Atraso de Rota'} : {})
+        ...(novoStatus === 'atrasado' ? {motivo_atraso: motivoSel, motivo_label: _MOTIVO_LABELS[motivoSel]||motivoSel} : {})
       };
       // Busca direto no Supabase para garantir match mesmo sem cache local
       const agendSupa = await supaFetch(
@@ -28074,148 +28091,75 @@ async function abrirPopupRotasExpedicao(){
     return d.toISOString().slice(0,10);
   };
 
+  // Popup aparece SOMENTE para rotas lançadas na Expedição que tiveram atraso (data passou)
   const rotasSemana = agends
     .filter(a => {
-      const fdt = calcFech(a.data);
-      const noJanela = datas.includes(fdt);
-      const vencido  = fdt < hojeStr && a.data >= hojeStr;
-      if(!noJanela && !vencido) return false;           // fora da janela de 7 dias
-      if(a.status === 'concluido') return false;        // concluída
-      if(a.status === 'realizado') return false;        // já saiu — histórico fica no Agendamento
-      if(a.motivo_atraso) return false;                 // motivo já registrado — sem ação pendente
-      if(temPreCargaAtiva(a.rota, a.data)) return false;// pré-carga ativa
+      const foiLancado = a.lancado || a.acao === 'lancar';
+      if(!foiLancado) return false;              // não foi lançada na expedição
+      if(a.data >= hojeStr) return false;        // data ainda não passou — sem atraso confirmado
+      if(a.status === 'concluido') return false;
+      if(a.status === 'realizado') return false; // saída já confirmada em expedição
+      if(a.motivo_atraso) return false;          // motivo já registrado
       return true;
     })
-    .sort((a,b) => calcFech(a.data).localeCompare(calcFech(b.data)));
+    .sort((a,b) => a.data.localeCompare(b.data));
 
-  // Se nada pendente e popup ainda fechado, não abre automaticamente
+  // Não abre automaticamente se não há nada pendente
   if(!rotasSemana.length && document.getElementById('popup-rotas-dia')?.style.display !== 'flex') return;
 
   const total_ct = rotasSemana.length;
-  const hoje_ct  = rotasSemana.filter(a=>calcFech(a.data)===hojeStr).length;
   if(sub) sub.textContent = total_ct
-    ? total_ct+' rota(s) para fechar nos próximos 7 dias'+(hoje_ct?' — '+hoje_ct+' hoje':'')
-    : 'Nenhum fechamento agendado para os próximos 7 dias';
+    ? total_ct+' rota(s) lançada(s) com atraso — registre o motivo'
+    : 'Nenhuma rota com atraso pendente de motivo';
 
-  // Helpers
-  const fmtLabel = dt => {
-    if(dt===hojeStr) return 'Hoje';
-    const am=new Date(hoje); am.setDate(hoje.getDate()+1);
-    if(dt===am.toISOString().slice(0,10)) return 'Amanhã';
-    return new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long'});
-  };
   const fmtData = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
 
-  const MOTIVOS   = [{key:'comercial',label:'💰 Comercial',desc:'Carga sem valor mínimo'},{key:'veiculo',label:'🚛 Sem Veículo',desc:'Sem veículo disponível'},{key:'motorista',label:'🚗 Sem Motorista',desc:'Sem motorista disponível'},{key:'atraso_rota',label:'⏱️ Atraso de Rota',desc:'Rota saiu com atraso'},{key:'atraso_carregamento',label:'📦 Atraso no Carregamento',desc:'Atraso no carregamento da carga'}];
+  const MOTIVOS   = [{key:'atraso_rota',label:'⏱️ Atraso de Rota',desc:'Rota saiu com atraso'},{key:'comercial',label:'💰 Comercial',desc:'Carga sem valor mínimo'},{key:'veiculo',label:'🚛 Sem Veículo',desc:'Sem veículo disponível'},{key:'motorista',label:'🚗 Sem Motorista',desc:'Sem motorista disponível'},{key:'atraso_carregamento',label:'📦 Atraso no Carregamento',desc:'Atraso no carregamento'}];
   const CORES_MOT = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#f97316'};
 
-  // Agrupar por data de FECHAMENTO (não de saída)
-  const porFech = {};
-  rotasSemana.forEach(a=>{ var fd=calcFech(a.data); if(!porFech[fd]) porFech[fd]=[]; porFech[fd].push(a); });
+  // Agrupar por data de saída programada
+  const porData = {};
+  rotasSemana.forEach(a=>{ if(!porData[a.data]) porData[a.data]=[]; porData[a.data].push(a); });
 
   var html = '';
 
-  datas.forEach(function(dt, di){
-    const isHoje   = dt===hojeStr;
-    const label    = fmtLabel(dt);
-    const rotasDia = porFech[dt]||[];
+  Object.keys(porData).sort().forEach(function(dt, di){
+    const diasAtraso = Math.max(1, Math.floor((new Date(hojeStr)-new Date(dt+'T00:00:00'))/86400000));
+    const corDia     = diasAtraso >= 3 ? '#ef4444' : '#f59e0b';
 
-    // Cabeçalho do dia
-    html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'10px':'0')+'">'
-      +'<div style="background:'+(isHoje?'#7c3aed':'#334155')+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
-        +'<span style="font-size:.58rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.03em">'+label+'</span>'
-        +'<span style="font-size:1.15rem;font-weight:900;line-height:1.15">'+new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
-        +'<span style="font-size:.6rem;opacity:.8">'+new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
+    html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'12px':'0')+'">'
+      +'<div style="background:'+corDia+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
+        +'<span style="font-size:.58rem;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:.02em">'+(diasAtraso===1?'Ontem':diasAtraso+'d atrás')+'</span>'
+        +'<span style="font-size:1.15rem;font-weight:900;line-height:1.2">'+new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
+        +'<span style="font-size:.6rem;opacity:.85">'+new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
       +'</div>'
-      +'<div style="flex:1;border-top:2px solid '+(isHoje?'rgba(124,58,237,.5)':'rgba(255,255,255,.07)')+'"></div>'
-      +'<span style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">'+fmtData(dt)+'</span>'
+      +'<div style="flex:1;border-top:2px solid '+corDia+'55"></div>'
+      +'<span style="font-size:.7rem;color:'+corDia+';font-weight:700;white-space:nowrap">⚠️ '+diasAtraso+' dia(s) de atraso</span>'
     +'</div>';
 
-    if(!rotasDia.length){
-      html += '<div style="margin-left:8px;padding:9px 14px;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.07);border-radius:8px">'
-        +'<span style="font-size:.78rem;color:var(--text-muted)">Nenhum fechamento para este dia</span>'
-      +'</div>';
-      return;
-    }
-
-    rotasDia.forEach(function(a){
-      const temPC      = temPreCargaAtiva(a.rota, a.data);
-      const isRealizado = a.status === 'realizado';
-      const editando   = _editandoMotivo.has(a.id);
-      // motivo "ativo" se existe E não está em modo edição
-      const temMotivo  = !!(a.motivo_atraso) && !editando;
-      const corMot     = CORES_MOT[a.motivo_atraso]||'#6b7280';
-      const saidaLabel = new Date(a.data+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'}).replace('.',',');
-      const borda = isRealizado ? '#059669' : (temPC ? '#059669' : (temMotivo ? corMot : (isHoje ? '#7c3aed' : '#475569')));
-
-      // Botões de motivo (só relevante para entradas ainda pendentes)
+    porData[dt].forEach(function(a){
       var mBtns = '';
-      if(!isRealizado){
-        MOTIVOS.forEach(function(m){
-          var sel = a.motivo_atraso===m.key;
-          var c   = CORES_MOT[m.key]||'#6b7280';
-          mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
-            +'style="background:'+(sel?c+'33':'rgba(239,68,68,.06)')+';color:'+(sel?c:'#fca5a5')+';'
-            +'border:'+(sel?'2px solid '+c:'1px solid rgba(239,68,68,.2)')+';border-radius:6px;padding:4px 10px;'
-            +'font-size:.72rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+m.label+'</button>';
-        });
-      }
+      MOTIVOS.forEach(function(m){
+        mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
+          +'style="background:rgba(239,68,68,.07);color:#fca5a5;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:5px 11px;font-size:.73rem;font-weight:600;cursor:pointer;white-space:nowrap">'+m.label+'</button>';
+      });
 
-      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+borda+';border-radius:10px;padding:13px 15px;margin-left:8px'+(isRealizado?';opacity:.8':'')+'">'
-
-        // Cabeçalho: nome + badges + botão excluir
-        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap">'
-          +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+(isRealizado?'&nbsp;<span style="font-size:.68rem;font-weight:400;color:#6ee7b7">✅ saiu</span>':'')+'</div>'
-          +'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
-            +(!isRealizado&&isHoje&&!temMotivo&&!temPC?'<span style="background:rgba(124,58,237,.15);color:#c084e0;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">🔒 Fechar hoje</span>':'')
-            +(temPC&&!isRealizado?'<span style="background:rgba(5,150,105,.15);color:#34d399;font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid rgba(5,150,105,.3)">✅ Pré-carga ativa</span>':'')
-            +((temMotivo||editando)?'<span style="background:'+corMot+'22;color:'+corMot+';font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid '+corMot+'44">📌 '+(a.motivo_label||a.motivo_atraso)+'</span>':'')
-            +'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Remover agendamento" style="background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:2px 7px;font-size:.72rem;cursor:pointer;line-height:1.4" onmouseover="this.style.background=\'rgba(239,68,68,.25)\'" onmouseout="this.style.background=\'rgba(239,68,68,.1)\'">🗑</button>'
+      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+corDia+';border-radius:10px;padding:13px 15px;margin-left:8px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:8px;flex-wrap:wrap">'
+          +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+'</div>'
+          +'<div style="display:flex;gap:5px;align-items:center">'
+            +'<span style="background:rgba(239,68,68,.12);color:#fca5a5;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">📅 Saída: '+fmtData(a.data)+'</span>'
+            +'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Remover agendamento" style="background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:2px 7px;font-size:.72rem;cursor:pointer;line-height:1.4">🗑</button>'
           +'</div>'
         +'</div>'
-        // Carga vinculada (se houver) + Data de saída
-        +(a.carga?'<div style="font-size:.72rem;margin-bottom:5px">📦 Carga: <strong style="color:#7c3aed">#'+a.carga+'</strong></div>':'')
-        +'<div style="font-size:.72rem;color:var(--text-muted);margin-bottom:9px">📅 Saída: <strong style="color:var(--text-secondary)">'+saidaLabel+'</strong></div>'
-
-        // Entrada realizada: apenas info do motivo, sem ações
-        +(isRealizado
-          ? '<div style="background:rgba(5,150,105,.07);border:1px solid rgba(5,150,105,.18);border-radius:8px;padding:8px 12px;font-size:.8rem;color:#6ee7b7;font-weight:600">'
-              +'✅ Carga saiu'+(a.motivo_atraso?' com motivo registrado: <strong>'+(a.motivo_label||a.motivo_atraso)+'</strong>':'')
-            +'</div>'
-          // Ação principal para entradas pendentes
-          : (temPC
-              ? '<div style="background:rgba(5,150,105,.08);border:1px solid rgba(5,150,105,.2);border-radius:8px;padding:9px 14px;font-size:.83rem;color:#34d399;font-weight:600;margin-bottom:9px">'
-                  +'✅ Pré-carga já criada para este dia — gerencie na lista abaixo'
-                +'</div>'
-                +'<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
-                  +'style="width:100%;background:rgba(5,150,105,.06);color:#6ee7b7;border:1px dashed rgba(5,150,105,.25);border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:600;cursor:pointer;margin-bottom:9px;text-align:left">'
-                  +'➕ Criar outra pré-carga'
-                +'</button>'
-              : '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'lancar\')" '
-                  +'style="width:100%;background:rgba(5,150,105,.12);color:#34d399;border:1.5px solid rgba(5,150,105,.35);border-radius:8px;padding:9px 14px;font-size:.83rem;font-weight:700;cursor:pointer;margin-bottom:9px;text-align:left;display:flex;align-items:center;gap:8px">'
-                  +'<span>➕</span><span>Criar Pré-Carga</span>'
-                +'</button>'
-            )
-            // Motivo do atraso para entradas pendentes
-            // Quando há pré-carga ativa + motivo: o badge no cabeçalho já informa — não repetir aqui
-            +(temMotivo && !temPC
-              ? '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'
-                  +'<span style="font-size:.7rem;color:var(--text-muted)">📌 Motivo registrado</span>'
-                  +'<button onclick="limparMotivoAtraso(\''+a.id+'\')" '
-                    +'style="background:transparent;border:none;color:var(--text-muted);font-size:.7rem;cursor:pointer;text-decoration:underline;padding:0">alterar</button>'
-                +'</div>'
-              : (!temMotivo
-                  ? '<div style="font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">⚠️ Por que não saiu:</div>'
-                    +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
-                  : '')
-            )
-        )
-
+        +(a.carga?'<div style="font-size:.72rem;margin-bottom:6px">📦 Carga: <strong style="color:#7c3aed">#'+a.carga+'</strong></div>':'')
+        +'<div style="font-size:.7rem;font-weight:700;color:#fca5a5;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">⚠️ Por que houve atraso?</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
       +'</div>';
     });
   });
 
-  lista.innerHTML = html;
+  lista.innerHTML = html || '<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:.85rem">✅ Nenhuma rota com atraso pendente de motivo</div>';
   document.getElementById('popup-rotas-dia').style.display='flex';
 }
 
@@ -31051,7 +30995,7 @@ async function _alhoRenderDashboard() {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
         <div style="grid-column:1/-1">
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">📅 Data de Saída *</label>
-          <input type="date" id="saida-data" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+          <input type="date" id="saida-data" onchange="_saidaVerificarAtraso()" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
         </div>
         <div>
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🔢 KM Inicial *</label>
@@ -31060,6 +31004,21 @@ async function _alhoRenderDashboard() {
         <div id="saida-km-esperado-row">
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🎯 KM Esperado da Rota</label>
           <input type="number" id="saida-km-esperado" placeholder="Ex: 850" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+        </div>
+        <!-- Campo de motivo — aparece apenas quando a saída é posterior à data agendada -->
+        <div id="saida-motivo-row" style="display:none;grid-column:1/-1">
+          <div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:9px 14px;margin-bottom:8px">
+            <span style="font-size:.78rem;font-weight:700;color:#92400e">⚠️ Saída posterior à data agendada — informe o motivo:</span>
+          </div>
+          <label style="font-size:.72rem;font-weight:700;color:#92400e;text-transform:uppercase;display:block;margin-bottom:5px">Motivo do Atraso *</label>
+          <select id="saida-motivo-atraso" style="width:100%;border:1.5px solid #fbbf24;border-radius:8px;padding:10px 12px;font-size:.88rem;outline:none;box-sizing:border-box;background:#fffbeb;color:#374151">
+            <option value="atraso_rota">⏱️ Atraso de Rota</option>
+            <option value="comercial">💰 Comercial</option>
+            <option value="veiculo">🚛 Sem Veículo</option>
+            <option value="motorista">🚗 Sem Motorista</option>
+            <option value="atraso_carregamento">📦 Atraso no Carregamento</option>
+            <option value="outro">📝 Outro</option>
+          </select>
         </div>
       </div>
       <div style="display:flex;gap:10px">
