@@ -3238,6 +3238,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       </div>
     </div>
   </div>
+  <!-- OTIF por Semana -->
+  <div id="dash-int-otif-semana" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:16px">
+    <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">🎯 OTIF por Semana</h3>
+    <div id="dash-sem-otif-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px"></div>
+  </div>
 </div></div>
 
 <!-- ══ AGENDAMENTO DE ROTAS ══ -->
@@ -18775,13 +18780,131 @@ async function renderDashInterna(){
               tooltip:{ callbacks:{ label: c=>' R$ '+(c.raw/1000).toFixed(1).replace('.',',')+'k' } }
             },
             scales:{
-              x:{ grid:{color: isDark?'#334155':'#f0f0f0'}, ticks:{ color:txtColor, callback:v=>'R$'+(v/1000).toFixed(0)+'k' } },
+              x:{ display:false },
               y:{ grid:{display:false}, ticks:{ color:txtColor, font:{size:11,weight:'700'} } }
+            },
+            layout:{ padding:{ right: 10 } }
+          },
+          plugins:[{
+            id:'barValLabel',
+            afterDatasetDraw(chart){
+              const ctx2 = chart.ctx;
+              chart.data.datasets.forEach((ds,i)=>{
+                chart.getDatasetMeta(i).data.forEach((bar,idx)=>{
+                  const val = ds.data[idx];
+                  if(!val) return;
+                  const lbl = 'R$ '+(val/1000).toFixed(1).replace('.',',')+'k';
+                  const barW = bar.x - chart.scales.x.getPixelForValue(0);
+                  ctx2.save();
+                  ctx2.font = 'bold 12px Arial';
+                  ctx2.textBaseline = 'middle';
+                  if(barW > 80){
+                    ctx2.fillStyle = '#ffffff';
+                    ctx2.textAlign = 'end';
+                    ctx2.fillText(lbl, bar.x - 6, bar.y);
+                  } else {
+                    ctx2.fillStyle = txtColor;
+                    ctx2.textAlign = 'start';
+                    ctx2.fillText(lbl, bar.x + 5, bar.y);
+                  }
+                  ctx2.restore();
+                });
+              });
             }
-          }
+          }]
         });
       }
     }
+
+    // 14. OTIF por Semana
+    const semOtifEl = document.getElementById('dash-sem-otif-cards');
+    if(semOtifEl && _dadosOtif){
+      const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif } = _dadosOtif;
+      const prazoMapOtif = {};
+      todasRotas.forEach(r=>{ prazoMapOtif[(r.nome||'').toUpperCase()] = r.prazo_otif; });
+
+      // saida por carga: dem (local) + saidaRows do cache OTIF
+      const saidaMapCarga = {};
+      dem.forEach(d=>{ if(d.carga && d.data_saida) saidaMapCarga[String(d.carga)] = d.data_saida; });
+      (saidaRowsOtif||[]).forEach(d=>{ if(d.carga && d.data_saida && !saidaMapCarga[String(d.carga)]) saidaMapCarga[String(d.carga)] = d.data_saida; });
+
+      const entMapOtif = {};
+      (entRowsOtif||[]).forEach(e=>{
+        const k = String(e.pedido);
+        if(!entMapOtif[k]) entMapOtif[k] = {saida:null, entrega:null};
+        if(e.data_entrega && (!entMapOtif[k].entrega || e.data_entrega < entMapOtif[k].entrega)) entMapOtif[k].entrega = e.data_entrega;
+        if(e.data_saida && !entMapOtif[k].saida) entMapOtif[k].saida = e.data_saida;
+      });
+
+      const ocorrSetOtif = new Set();
+      (ocorrRowsOtif||[]).forEach(o=>{ if(o.pedido) ocorrSetOtif.add(String(o.pedido)); });
+
+      const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
+      const vistoSemOtif = new Set();
+      bd.forEach(p=>{
+        const ped = String(p.pedido);
+        if(vistoSemOtif.has(ped)) return;
+        vistoSemOtif.add(ped);
+        if(!p.data_pedido) return;
+
+        const rota = (p.rota||'').toUpperCase();
+        const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
+        if(prazoEntry === null) return;
+        const rireNorm = normRire(p.rire) || getRireFromRota(rota);
+        const prazoH = prazoEntry !== undefined ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
+
+        const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
+        const ent = entMapOtif[ped] || {};
+        const dataSaida = ent.saida || (carga ? saidaMapCarga[carga] : null);
+        if(!dataSaida || !dataSaida.startsWith(mesFiltro)) return;
+
+        const semIdx = Math.min(Math.ceil(new Date(dataSaida+'T00:00:00').getDate()/7), 5) - 1;
+        if(semIdx < 0 || semIdx > 4) return;
+
+        const dataEntrega = ent.entrega || dataSaida;
+        const diffH = (new Date(dataEntrega+'T23:59:59') - new Date(dataSaida+'T00:00:00')) / 3600000;
+        const onTime = diffH <= prazoH;
+        const inFull = !ocorrSetOtif.has(ped);
+        semOtif[semIdx].t++;
+        if(onTime)           semOtif[semIdx].ot++;
+        if(inFull)           semOtif[semIdx].ifull++;
+        if(onTime && inFull) semOtif[semIdx].ok++;
+      });
+
+      const semLabels = ['1ª Semana','2ª Semana','3ª Semana','4ª Semana','5ª Semana'];
+      const maxOtifPct = Math.max(...semOtif.map(s=>s.t>0?Math.round(s.ok/s.t*100):-1), 0);
+      semOtifEl.innerHTML = semOtif.map((s,i)=>{
+        const pct    = s.t > 0 ? Math.round(s.ok/s.t*100)    : null;
+        const otPct  = s.t > 0 ? Math.round(s.ot/s.t*100)    : null;
+        const ifPct  = s.t > 0 ? Math.round(s.ifull/s.t*100) : null;
+        const isMax  = pct !== null && pct === maxOtifPct;
+        if(pct === null){
+          return `<div style="background:var(--bg-card2);border:1.5px solid var(--border);border-radius:12px;padding:16px;opacity:.45">
+            <div style="font-size:.68rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">${semLabels[i]}</div>
+            <div style="font-size:1.6rem;font-weight:900;color:var(--text-muted);line-height:1">—</div>
+            <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">sem dados</div>
+          </div>`;
+        }
+        const cor   = pct>=95?'#059669':pct>=80?'#f59e0b':'#ef4444';
+        const bgSem = isMax ? 'linear-gradient(135deg,#1e3a5f,#1d4ed8)' : 'var(--bg-card2)';
+        const bdr   = isMax ? '#3b82f6' : 'var(--border)';
+        return `<div style="background:${bgSem};border:1.5px solid ${bdr};border-radius:12px;padding:16px;position:relative;overflow:hidden">
+          <div style="font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:${isMax?'rgba(255,255,255,.7)':'var(--text-muted)'};margin-bottom:8px">${semLabels[i]}</div>
+          <div style="font-size:1.9rem;font-weight:900;color:${isMax?'#fff':cor};line-height:1">${pct}%</div>
+          <div style="font-size:.68rem;font-weight:700;color:${isMax?'rgba(255,255,255,.5)':'var(--text-muted)'};margin-bottom:8px">${s.t} pedidos</div>
+          <div style="display:flex;gap:8px">
+            <span style="font-size:.68rem;font-weight:800;color:${isMax?'#93c5fd':'#3b82f6'}">⏱ ${otPct}%</span>
+            <span style="font-size:.68rem;font-weight:800;color:${isMax?'#86efac':'#22c55e'}">✓ ${ifPct}%</span>
+          </div>
+          <div style="position:absolute;bottom:0;left:0;right:0;height:3px;background:${isMax?'rgba(255,255,255,.15)':'var(--border)'}">
+            <div style="height:100%;width:${pct}%;background:${isMax?'rgba(255,255,255,.6)':cor};transition:width .4s"></div>
+          </div>
+        </div>`;
+      }).join('');
+    } else if(semOtifEl){
+      semOtifEl.innerHTML = '<p style="color:var(--text-muted);font-size:.84rem;padding:8px">Carregando dados OTIF...</p>';
+    }
+
   }catch(e){ if(container) container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; console.error('renderDashInterna:', e); }
 }
 
