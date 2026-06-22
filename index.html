@@ -3484,6 +3484,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <!-- Absenteísmo por Semana -->
+  <div id="abs-semana-section" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:16px">
+    <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">📅 Absenteísmo por Semana</h3>
+    <div id="abs-semana-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px"></div>
+    <div style="position:relative;height:180px"><canvas id="abs-semana-chart"></canvas></div>
+  </div>
+
 </div></div>
 
 <!-- ══ POP-UP PENDENTES ABSENTEÍSMO ══ -->
@@ -19278,8 +19285,8 @@ function gerarTabsMeses(){
 
   function buildBtns(prefix, fn){
     let html = `<button onclick="${fn}('')" id="${prefix}-todos" style="${s}">Todos</button>`;
-    // Mostrar ano anterior + ano atual (scroll horizontal cobre tudo)
-    [anoAtual - 1, anoAtual].forEach(ano => {
+    // Mostrar apenas 2026 (dados anteriores não são necessários nesta aba)
+    [2026].forEach(ano => {
       meses.forEach((label, i) => {
         const mv = `${ano}-${String(i+1).padStart(2,'0')}`;
         const labelFull = `${label}/${String(ano).slice(2)}`;
@@ -20085,11 +20092,144 @@ async function renderAbsenteismo(){
       </tr>`;
     }).join('');
 
+    // ── Absenteísmo por Semana ────────────────────────────────────────────────
+    _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais);
+
   }catch(e){ container.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--text-muted)">Erro: ${e.message}</td></tr>`; }
 
   // Auto-preencher presenças em background (silencioso, 1x por dia por mês)
   const _mesPreencher = document.getElementById('abs-filtro-mes')?.value || new Date().toISOString().slice(0,7);
   gerarPresencasAutomaticas(_mesPreencher, false).catch(()=>{});
+}
+
+// ── Absenteísmo por Semana — Distribuição ─────────────────────────────────────
+let _absSemanChart = null;
+function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais){
+  const cardsEl  = document.getElementById('abs-semana-cards');
+  const canvasEl = document.getElementById('abs-semana-chart');
+  if(!cardsEl || !canvasEl) return;
+
+  if(!filtMes){
+    cardsEl.innerHTML = '<span style="font-size:.8rem;color:var(--text-muted)">Selecione um mês para ver o absenteísmo semanal.</span>';
+    return;
+  }
+
+  // Determinar semanas do mês (segunda → domingo, cortadas pelos limites do mês)
+  const [ano, mes] = filtMes.split('-').map(Number);
+  const primeiroDia = new Date(ano, mes-1, 1);
+  const ultimoDia   = new Date(ano, mes, 0);
+
+  // Encontrar a segunda-feira da semana que contém o dia 1
+  const diaSemana0 = primeiroDia.getDay(); // 0=Dom, 1=Seg, ...
+  const offsetLun  = diaSemana0 === 0 ? -6 : 1 - diaSemana0; // quantos dias até a segunda anterior/atual
+  const inicioS1   = new Date(primeiroDia);
+  inicioS1.setDate(primeiroDia.getDate() + offsetLun);
+
+  const semanas = [];
+  let cur = new Date(inicioS1);
+  while(cur <= ultimoDia){
+    const ini = new Date(cur);
+    const fim = new Date(cur); fim.setDate(fim.getDate() + 6);
+    // Cortar aos limites do mês
+    const iniMes = ini < primeiroDia ? primeiroDia : ini;
+    const fimMes = fim > ultimoDia   ? ultimoDia   : fim;
+    semanas.push({ ini: iniMes, fim: fimMes });
+    cur.setDate(cur.getDate() + 7);
+  }
+
+  // Para cada semana, calcular absenteísmo
+  const fmtDia = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  const fmtISO = d => {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+
+  const semanaStats = semanas.map((s, idx) => {
+    let faltas=0, atestados=0, total=0;
+    const d = new Date(s.ini);
+    while(d <= s.fim){
+      const iso = fmtISO(d);
+      const dSem = d.getDay();
+      if(dSem !== 0 && !feriadosNacionais.has(iso)){
+        // Dia útil — somar para todos os funcionários
+        Object.values(porFunc).forEach(f => {
+          const st = f.dias[iso];
+          if(st === 'falta')    { faltas++; total++; }
+          else if(st === 'atestado') { atestados++; total++; }
+          else if(st === 'presente' || st === 'rota' || st === 'rota_auto') { total++; }
+        });
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    const pct = total > 0 ? ((faltas + atestados) / total * 100) : null;
+    return { label: `S${idx+1} ${fmtDia(s.ini)}-${fmtDia(s.fim)}`, pct, faltas, atestados, total };
+  });
+
+  // Filtrar semanas sem dados (nenhum registro ainda no futuro)
+  const semanasComDados = semanaStats.filter(s => s.total > 0 || s.pct !== null);
+
+  // Cards
+  cardsEl.innerHTML = semanasComDados.map((s, i) => {
+    if(s.pct === null) return '';
+    const cor = s.pct <= 1 ? '#059669' : s.pct <= 2 ? '#f59e0b' : '#E8000D';
+    const bg  = s.pct <= 1 ? 'rgba(5,150,105,.08)' : s.pct <= 2 ? 'rgba(245,158,11,.08)' : 'rgba(232,0,13,.08)';
+    return `<div style="background:${bg};border:1.5px solid ${cor}33;border-radius:12px;padding:14px 10px;text-align:center">
+      <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">${s.label}</div>
+      <div style="font-size:1.5rem;font-weight:900;color:${cor}">${s.pct.toFixed(1)}%</div>
+      <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${s.faltas+s.atestados} ocorr. / ${s.total} dias</div>
+    </div>`;
+  }).join('');
+
+  // Chart
+  if(_absSemanChart){ _absSemanChart.destroy(); _absSemanChart = null; }
+  const txtColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#111';
+  const ctx = canvasEl.getContext('2d');
+  _absSemanChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: semanasComDados.map(s => s.label),
+      datasets: [{
+        data: semanasComDados.map(s => s.pct !== null ? parseFloat(s.pct.toFixed(2)) : 0),
+        backgroundColor: semanasComDados.map(s => s.pct <= 1 ? '#059669' : s.pct <= 2 ? '#f59e0b' : '#E8000D'),
+        borderRadius: 6,
+        borderSkipped: false
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => ` ${c.raw.toFixed(2)}% de absenteísmo` } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: txtColor, font: { size: 11, weight: '700' } } },
+        y: {
+          grid: { color: 'rgba(0,0,0,.06)' },
+          ticks: { color: txtColor, callback: v => v+'%' },
+          suggestedMax: Math.max(2, ...semanasComDados.map(s => s.pct||0)) * 1.3
+        }
+      }
+    },
+    plugins: [{
+      id: 'absSemanMetaLine',
+      afterDraw(chart){
+        const ctx2 = chart.ctx;
+        const y1 = chart.scales.y.getPixelForValue(1);
+        ctx2.save();
+        ctx2.setLineDash([6,4]);
+        ctx2.strokeStyle = '#059669';
+        ctx2.lineWidth = 1.5;
+        ctx2.beginPath();
+        ctx2.moveTo(chart.chartArea.left, y1);
+        ctx2.lineTo(chart.chartArea.right, y1);
+        ctx2.stroke();
+        ctx2.fillStyle = '#059669';
+        ctx2.font = 'bold 10px Arial';
+        ctx2.textAlign = 'end';
+        ctx2.fillText('Meta 1%', chart.chartArea.right - 4, y1 - 4);
+        ctx2.restore();
+      }
+    }]
+  });
 }
 
 // ── STATUS → visual ──────────────────────────────────────
