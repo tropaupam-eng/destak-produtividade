@@ -4849,6 +4849,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- KPIs -->
   <div id="gf-kpis" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"></div>
 
+  <!-- Status dos Veículos Hoje -->
+  <div id="gf-veiculos-hoje" style="margin-bottom:16px"></div>
+
   <!-- Barras: Utilização de Frota + Disponibilidade de Frota -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
     <div id="gf-utilizacao"></div>
@@ -13480,21 +13483,26 @@ var _GF_CUSTOS          = [];
 var _GF_DIARIAS         = [];
 var _GF_DEMANDAS_ATIVAS = []; // veículos atualmente em viagem (para cálculo de utilização)
 var _GF_ABA_ATUAL       = 'manut';
-var _GF_COLETAS = [];
+var _GF_COLETAS         = [];
 var _GF_FORNECEDORES_ROTA = []; // fornecedores com rota vinculada
+var _GF_LANCS_HOJE      = []; // lançamentos do dia corrente (para marcar veículos utilizados)
 
 async function carregarGestaoFrota(){
   const hoje = new Date().toISOString().slice(0,10);
   document.getElementById('gf-kpis').innerHTML = '<span style="color:var(--text-muted);font-size:.83rem">Carregando...</span>';
   try{
-    const [manut, custos, diarias, demandasAtivas, coletas, fornRota] = await Promise.all([
+    const amanha = new Date(hoje); amanha.setDate(amanha.getDate()+1);
+    const amanhaStr = amanha.toISOString().slice(0,10);
+    const [manut, custos, diarias, demandasAtivas, coletas, fornRota, lancsHoje] = await Promise.all([
       supaFetch('manutencoes_frota?select=*&order=data_inicio.desc').catch(()=>[]),
       supaFetch('custos_frota?select=*&order=data.desc').catch(()=>[]),
       supaFetch('diarias_frota?select=*&order=criado_em.desc').catch(()=>[]),
       // Veículos atualmente em viagem (qualquer status ativo pré-conclusão)
       supaFetch('demandas_rota?select=veiculo,rota,status&veiculo=not.is.null&status=in.(pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,saiu,fim_viagem)').catch(()=>[]),
       supaFetch('coletas_frota?select=*&order=data_coleta.desc').catch(()=>[]),
-      supaFetch('fornecedores?ativo=eq.true&rota=not.is.null&select=id,nome,rota,contato').catch(()=>[])
+      supaFetch('fornecedores?ativo=eq.true&rota=not.is.null&select=id,nome,rota,contato').catch(()=>[]),
+      // Lançamentos de hoje — para identificar veículos utilizados no dia
+      supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00&ts=lt.${amanhaStr}T00:00:00&select=veiculo,carga,rota,motorista`).catch(()=>[])
     ]);
     _GF_MANUT           = manut          || [];
     _GF_CUSTOS          = custos         || [];
@@ -13502,6 +13510,7 @@ async function carregarGestaoFrota(){
     _GF_DEMANDAS_ATIVAS = demandasAtivas || [];
     _GF_COLETAS         = coletas        || [];
     _GF_FORNECEDORES_ROTA = fornRota     || [];
+    _GF_LANCS_HOJE      = lancsHoje      || [];
     // Badge coletas pendentes
     const coletasPend = (_GF_COLETAS||[]).filter(c=>c.status==='pendente'||c.status==='em_andamento').length;
     const badgeColetas = document.getElementById('gf-coletas-badge');
@@ -13531,6 +13540,7 @@ async function carregarGestaoFrota(){
   }
 
   renderGestaoFrotaKPIs();
+  renderGfVeiculosHoje();
   gfAba(_GF_ABA_ATUAL, document.getElementById('gf-tab-'+_GF_ABA_ATUAL));
 }
 
@@ -13638,6 +13648,88 @@ function renderGestaoFrotaKPIs(){
       </div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         ${[...emManutSet].map(v=>`<span style="font-size:.72rem;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 10px;font-weight:700">🔧 ${v}</span>`).join('')||'<span style="font-size:.72rem;color:#059669;font-weight:600">✅ Nenhum veículo em manutenção agora</span>'}
+      </div>
+    </div>`;
+}
+
+function renderGfVeiculosHoje(){
+  const el = document.getElementById('gf-veiculos-hoje');
+  if(!el) return;
+
+  const hoje = new Date().toISOString().slice(0,10);
+  const _isFretePlaca = p => (p||'').toUpperCase().includes('FRETE') || (VEICULOS_CACHE.find(v=>v.placa===p)?.tipo||'').toUpperCase().includes('FRETE');
+
+  // Veículos em manutenção ativa
+  const emManutSet = new Set();
+  (_GF_MANUT||[]).forEach(m=>{
+    if(m.status==='concluida'||m.status==='cancelada') return;
+    const ini = m.data_inicio||'';
+    if(!ini||ini>hoje) return;
+    if(m.tipo==='preventiva'){ const fim=m.data_fim||''; if(fim&&hoje>fim) emManutSet.add(m.veiculo); }
+    else emManutSet.add(m.veiculo);
+  });
+
+  // Veículos usados hoje — mapa: placa → lista de { carga, rota, motorista }
+  const utilizadosMap = {};
+  (_GF_LANCS_HOJE||[]).forEach(l=>{
+    const p = (l.veiculo||'').trim().toUpperCase();
+    if(!p||p==='A DEFINIR VEÍCULO') return;
+    if(!utilizadosMap[p]) utilizadosMap[p] = [];
+    utilizadosMap[p].push(l);
+  });
+
+  const veiculos = (VEICULOS_CACHE||[]).filter(v=>!_isFretePlaca(v.placa));
+  if(!veiculos.length){
+    el.innerHTML = '';
+    return;
+  }
+
+  // Ordenar: utilizados hoje primeiro, depois manutenção, depois livres
+  veiculos.sort((a,b)=>{
+    const aU = !!utilizadosMap[a.placa], bU = !!utilizadosMap[b.placa];
+    const aM = emManutSet.has(a.placa),  bM = emManutSet.has(b.placa);
+    if(aU!==bU) return aU?-1:1;
+    if(aM!==bM) return aM?1:-1;
+    return (a.placa||'').localeCompare(b.placa||'');
+  });
+
+  const cards = veiculos.map(v=>{
+    const placa    = v.placa||'—';
+    const utilizado = utilizadosMap[placa];
+    const emManut  = emManutSet.has(placa);
+
+    let badge, bordaCor, detalhes='';
+    if(emManut){
+      badge    = '<span style="font-size:.68rem;font-weight:800;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 9px">🔧 Manutenção</span>';
+      bordaCor = '#ef4444';
+    } else if(utilizado){
+      badge    = '<span style="font-size:.68rem;font-weight:800;background:#dcfce7;color:#065f46;border:1px solid #6ee7b7;border-radius:8px;padding:2px 9px">✅ Utilizado Hoje</span>';
+      bordaCor = '#059669';
+      // Mostrar rotas/cargas do dia
+      const rotas = [...new Set(utilizado.map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
+      if(rotas.length) detalhes = `<div style="font-size:.68rem;color:#059669;margin-top:4px;font-weight:600">${rotas.map(r=>'🛣️ '+r).join(' · ')}</div>`;
+    } else {
+      badge    = '<span style="font-size:.68rem;font-weight:600;background:var(--bg-card2);color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:2px 9px">⏸️ Livre</span>';
+      bordaCor = 'var(--border)';
+    }
+
+    return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ${bordaCor};border-radius:12px;padding:11px 14px">
+      <div style="font-weight:900;font-size:.92rem;color:var(--text-primary);margin-bottom:5px">${placa}${v.modelo?'<span style="font-size:.72rem;font-weight:400;color:var(--text-muted);margin-left:6px">'+v.modelo+'</span>':''}</div>
+      ${badge}${detalhes}
+    </div>`;
+  }).join('');
+
+  const util  = veiculos.filter(v=>!!utilizadosMap[v.placa]&&!emManutSet.has(v.placa)).length;
+  const total = veiculos.length;
+
+  el.innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:.88rem;font-weight:800;color:var(--text-primary)">🚛 Veículos — Utilização de Hoje</span>
+        <span style="font-size:.8rem;font-weight:700;color:${util===0?'var(--text-muted)':'#059669'}">${util} de ${total} utilizados hoje</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:8px">
+        ${cards||'<span style="color:var(--text-muted);font-size:.83rem">Nenhum veículo cadastrado</span>'}
       </div>
     </div>`;
 }
