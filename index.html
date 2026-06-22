@@ -13486,6 +13486,7 @@ var _GF_ABA_ATUAL       = 'manut';
 var _GF_COLETAS         = [];
 var _GF_FORNECEDORES_ROTA = []; // fornecedores com rota vinculada
 var _GF_LANCS_HOJE      = []; // lançamentos do dia corrente (para marcar veículos utilizados)
+var _GF_LANCS_MES       = []; // lançamentos do mês corrente (para calcular dias rodados por veículo)
 
 async function carregarGestaoFrota(){
   const hoje = new Date().toISOString().slice(0,10);
@@ -13493,7 +13494,8 @@ async function carregarGestaoFrota(){
   try{
     const amanha = new Date(hoje); amanha.setDate(amanha.getDate()+1);
     const amanhaStr = amanha.toISOString().slice(0,10);
-    const [manut, custos, diarias, demandasAtivas, coletas, fornRota, lancsHoje] = await Promise.all([
+    const iniMes = hoje.slice(0,7) + '-01';
+    const [manut, custos, diarias, demandasAtivas, coletas, fornRota, lancsHoje, lancsMes] = await Promise.all([
       supaFetch('manutencoes_frota?select=*&order=data_inicio.desc').catch(()=>[]),
       supaFetch('custos_frota?select=*&order=data.desc').catch(()=>[]),
       supaFetch('diarias_frota?select=*&order=criado_em.desc').catch(()=>[]),
@@ -13502,7 +13504,9 @@ async function carregarGestaoFrota(){
       supaFetch('coletas_frota?select=*&order=data_coleta.desc').catch(()=>[]),
       supaFetch('fornecedores?ativo=eq.true&rota=not.is.null&select=id,nome,rota,contato').catch(()=>[]),
       // Lançamentos de hoje — para identificar veículos utilizados no dia
-      supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00&ts=lt.${amanhaStr}T00:00:00&select=veiculo,carga,rota,motorista`).catch(()=>[])
+      supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00&ts=lt.${amanhaStr}T00:00:00&select=veiculo,carga,rota,motorista`).catch(()=>[]),
+      // Lançamentos do mês — para calcular dias rodados por veículo
+      supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00&ts=lt.${amanhaStr}T00:00:00&veiculo=not.is.null&select=veiculo,ts`).catch(()=>[])
     ]);
     _GF_MANUT           = manut          || [];
     _GF_CUSTOS          = custos         || [];
@@ -13511,6 +13515,7 @@ async function carregarGestaoFrota(){
     _GF_COLETAS         = coletas        || [];
     _GF_FORNECEDORES_ROTA = fornRota     || [];
     _GF_LANCS_HOJE      = lancsHoje      || [];
+    _GF_LANCS_MES       = lancsMes       || [];
     // Badge coletas pendentes
     const coletasPend = (_GF_COLETAS||[]).filter(c=>c.status==='pendente'||c.status==='em_andamento').length;
     const badgeColetas = document.getElementById('gf-coletas-badge');
@@ -13630,8 +13635,28 @@ function renderGestaoFrotaKPIs(){
       </div>
     </div>`;
 
-  // ── Barra: Disponibilidade de Frota (baseada em manutenções) ──────
+  // ── Disponibilidade mensal real: dias rodados / dias úteis ──────────
+  const hoje2 = hoje; // mesmo escopo
+  const diasUteisMes = _diasUteisAte(hoje2);
+  const diasRodadosMapKpi = {};
+  (_GF_LANCS_MES||[]).forEach(l=>{
+    const p = (l.veiculo||'').trim().toUpperCase();
+    if(!p||p==='A DEFINIR VEÍCULO') return;
+    if(_isFretePlaca(p)) return;
+    const data = (l.ts||'').slice(0,10);
+    if(!data) return;
+    if(!diasRodadosMapKpi[p]) diasRodadosMapKpi[p] = new Set();
+    diasRodadosMapKpi[p].add(data);
+  });
+  const frota = VEICULOS_CACHE.filter(v=>!_isFretePlaca(v.placa));
+  const totalDiasRod = frota.reduce((s,v)=>s+Math.min((diasRodadosMapKpi[v.placa]||new Set()).size, diasUteisMes), 0);
+  const maxDispoMes  = Math.max(frota.length * diasUteisMes, 1);
+  const pctDispoMes  = Math.round(totalDiasRod/maxDispoMes*100);
+  const mesLabel2    = new Date().toLocaleDateString('pt-BR',{month:'short'}).toUpperCase();
+
+  // ── Barra: Disponibilidade de Frota (manutenção) + Aproveitamento Mensal ──────
   const barColor = pctDisp>=META_DISP ? '#059669' : pctDisp>=60 ? '#f59e0b' : '#ef4444';
+  const barMes   = pctDispoMes>=80?'#059669':pctDispoMes>=50?'#f59e0b':'#ef4444';
   document.getElementById('gf-disponibilidade').innerHTML = `
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px;height:100%;box-sizing:border-box">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -13646,10 +13671,34 @@ function renderGestaoFrotaKPIs(){
           <div style="position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:.6rem;font-weight:800;color:#f59e0b;white-space:nowrap">${META_DISP}%</div>
         </div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;margin-bottom:14px">
         ${[...emManutSet].map(v=>`<span style="font-size:.72rem;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 10px;font-weight:700">🔧 ${v}</span>`).join('')||'<span style="font-size:.72rem;color:#059669;font-weight:600">✅ Nenhum veículo em manutenção agora</span>'}
       </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:.78rem;font-weight:700;color:var(--text-secondary)">📅 Aproveitamento em ${mesLabel2}</span>
+          <span style="font-size:.88rem;font-weight:900;color:${barMes}">${pctDispoMes}%
+            <span style="font-size:.68rem;font-weight:600;color:var(--text-muted)"> ${totalDiasRod}/${maxDispoMes} dias-veíc.</span>
+          </span>
+        </div>
+        <div style="background:var(--bg-input);border-radius:20px;height:10px;overflow:hidden">
+          <div style="height:100%;border-radius:20px;background:${barMes};width:${Math.min(pctDispoMes,100)}%;transition:width .5s"></div>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${diasUteisMes} dias úteis decorridos · ${frota.length} veíc. próprios</div>
+      </div>
     </div>`;
+}
+
+function _diasUteisAte(hojeStr){
+  const ano = parseInt(hojeStr.slice(0,4));
+  const mes = parseInt(hojeStr.slice(5,7)) - 1;
+  const dia = parseInt(hojeStr.slice(8,10));
+  let count = 0;
+  for(let d = 1; d <= dia; d++){
+    const dow = new Date(ano, mes, d).getDay();
+    if(dow >= 1 && dow <= 5) count++;
+  }
+  return Math.max(count, 1);
 }
 
 function renderGfVeiculosHoje(){
@@ -13678,25 +13727,44 @@ function renderGfVeiculosHoje(){
     utilizadosMap[p].push(l);
   });
 
+  // Dias rodados no mês — mapa: placa → Set de datas únicas
+  const diasRodadosMap = {};
+  (_GF_LANCS_MES||[]).forEach(l=>{
+    const p = (l.veiculo||'').trim().toUpperCase();
+    if(!p||p==='A DEFINIR VEÍCULO') return;
+    const data = (l.ts||'').slice(0,10);
+    if(!data) return;
+    if(!diasRodadosMap[p]) diasRodadosMap[p] = new Set();
+    diasRodadosMap[p].add(data);
+  });
+  const diasUteis = _diasUteisAte(hoje);
+  const mesLabel  = new Date().toLocaleDateString('pt-BR',{month:'short'}).toUpperCase();
+
   const veiculos = (VEICULOS_CACHE||[]).filter(v=>!_isFretePlaca(v.placa));
   if(!veiculos.length){
     el.innerHTML = '';
     return;
   }
 
-  // Ordenar: utilizados hoje primeiro, depois manutenção, depois livres
+  // Ordenar: utilizados hoje primeiro, depois mais dias rodados, depois manutenção, depois livres
   veiculos.sort((a,b)=>{
     const aU = !!utilizadosMap[a.placa], bU = !!utilizadosMap[b.placa];
     const aM = emManutSet.has(a.placa),  bM = emManutSet.has(b.placa);
+    const aD = (diasRodadosMap[a.placa]||new Set()).size;
+    const bD = (diasRodadosMap[b.placa]||new Set()).size;
     if(aU!==bU) return aU?-1:1;
     if(aM!==bM) return aM?1:-1;
+    if(aD!==bD) return bD-aD;
     return (a.placa||'').localeCompare(b.placa||'');
   });
 
   const cards = veiculos.map(v=>{
-    const placa    = v.placa||'—';
+    const placa     = v.placa||'—';
     const utilizado = utilizadosMap[placa];
-    const emManut  = emManutSet.has(placa);
+    const emManut   = emManutSet.has(placa);
+    const diasRod   = (diasRodadosMap[placa]||new Set()).size;
+    const pctRod    = Math.min(Math.round(diasRod/diasUteis*100), 100);
+    const rodCor    = pctRod>=80?'#059669':pctRod>=50?'#f59e0b':'#ef4444';
 
     let badge, bordaCor, detalhes='';
     if(emManut){
@@ -13705,7 +13773,6 @@ function renderGfVeiculosHoje(){
     } else if(utilizado){
       badge    = '<span style="font-size:.68rem;font-weight:800;background:#dcfce7;color:#065f46;border:1px solid #6ee7b7;border-radius:8px;padding:2px 9px">✅ Utilizado Hoje</span>';
       bordaCor = '#059669';
-      // Mostrar rotas/cargas do dia
       const rotas = [...new Set(utilizado.map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
       if(rotas.length) detalhes = `<div style="font-size:.68rem;color:#059669;margin-top:4px;font-weight:600">${rotas.map(r=>'🛣️ '+r).join(' · ')}</div>`;
     } else {
@@ -13713,22 +13780,48 @@ function renderGfVeiculosHoje(){
       bordaCor = 'var(--border)';
     }
 
+    // Mini barra de dias rodados no mês
+    const miniBar = diasRod > 0 ? `
+      <div style="margin-top:7px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+          <span style="font-size:.62rem;color:var(--text-muted);font-weight:600">📅 Dias rodados ${mesLabel}</span>
+          <span style="font-size:.62rem;font-weight:800;color:${rodCor}">${diasRod}/${diasUteis} dias</span>
+        </div>
+        <div style="background:var(--bg-input);border-radius:6px;height:5px;overflow:hidden">
+          <div style="height:100%;border-radius:6px;background:${rodCor};width:${pctRod}%;transition:width .4s"></div>
+        </div>
+      </div>` : `<div style="margin-top:6px;font-size:.62rem;color:var(--text-muted)">📅 0 dias rodados em ${mesLabel}</div>`;
+
     return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ${bordaCor};border-radius:12px;padding:11px 14px">
       <div style="font-weight:900;font-size:.92rem;color:var(--text-primary);margin-bottom:5px">${placa}${v.modelo?'<span style="font-size:.72rem;font-weight:400;color:var(--text-muted);margin-left:6px">'+v.modelo+'</span>':''}</div>
-      ${badge}${detalhes}
+      ${badge}${detalhes}${miniBar}
     </div>`;
   }).join('');
 
   const util  = veiculos.filter(v=>!!utilizadosMap[v.placa]&&!emManutSet.has(v.placa)).length;
   const total = veiculos.length;
 
+  // Disponibilidade real do mês: média de dias rodados / dias úteis por veículo próprio
+  const totalDiasRodados = veiculos.reduce((s,v)=>{
+    const dr = (diasRodadosMap[v.placa]||new Set()).size;
+    return s + Math.min(dr, diasUteis);
+  }, 0);
+  const maxPossivel = total * diasUteis;
+  const pctDispoMes = maxPossivel > 0 ? Math.round(totalDiasRodados/maxPossivel*100) : 0;
+  const dispoMesCor = pctDispoMes>=80?'#059669':pctDispoMes>=50?'#f59e0b':'#ef4444';
+
   el.innerHTML = `
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:8px">
         <span style="font-size:.88rem;font-weight:800;color:var(--text-primary)">🚛 Veículos — Utilização de Hoje</span>
         <span style="font-size:.8rem;font-weight:700;color:${util===0?'var(--text-muted)':'#059669'}">${util} de ${total} utilizados hoje</span>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:8px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:.72rem;color:var(--text-muted)">
+        <span>📊 Aproveitamento da frota em ${mesLabel}:</span>
+        <span style="font-weight:800;color:${dispoMesCor}">${pctDispoMes}%</span>
+        <span>(${totalDiasRodados} de ${maxPossivel} dias-veículo úteis)</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
         ${cards||'<span style="color:var(--text-muted);font-size:.83rem">Nenhum veículo cadastrado</span>'}
       </div>
     </div>`;
