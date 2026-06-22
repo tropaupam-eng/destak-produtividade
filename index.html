@@ -7596,12 +7596,13 @@ async function _getUnidadeUsuario(){
 // ── Helper: upserta registro de presença (case-insensitive) ──
 async function _absUpsertPresenca(nome, funcao, data, fonte='manual'){
   const mesAno = data.slice(0,7);
-  const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${data}&select=id,nome`) || [];
-  if(ex.length){
-    await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte})});
-  } else {
-    await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data,status:'presente',mes_ano:mesAno,fonte,criado_em:new Date().toISOString()})});
-  }
+  const nomeUp = (nome||'').toUpperCase().trim();
+  // UPSERT real via constraint única (nome, data) — sem risco de duplicata
+  await supaFetch('absenteismo', {
+    method: 'POST',
+    prefer: 'return=minimal,resolution=merge-duplicates',
+    body: JSON.stringify({ nome:nomeUp, funcao, data, status:'presente', mes_ano:mesAno, fonte, criado_em:new Date().toISOString() })
+  });
 }
 let CARGA_MAP   = {};
 let CARGAS_BASE = new Set();
@@ -19580,18 +19581,19 @@ async function gerarPresencasAutomaticas(mes, manual = false){
       '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
     ]);
 
-    // Gerar lista de registros faltando — pula domingos e feriados nacionais
+    // Gerar lista de registros — pula domingos e feriados nacionais
+    // Nomes sempre em UPPERCASE para consistência com constraint (nome, data)
     const novos = [];
     const cur = new Date(primeiroDia + 'T12:00:00');
     const fim = new Date(ultimoDia + 'T12:00:00');
     while(cur <= fim){
       const dataStr = cur.toISOString().split('T')[0];
       const diaSemana = cur.getDay();
-      // Domingo (0) e feriados nacionais não são dias úteis — não criar presente automático
       if(diaSemana !== 0 && !_feriadosNac.has(dataStr)){
         for(const f of funcionarios){
-          if(!existSet.has(`${f.nome.toUpperCase()}__${dataStr}`)){
-            novos.push({ nome:f.nome, funcao:f.funcao, data:dataStr,
+          const nomeUp = f.nome.toUpperCase();
+          if(!existSet.has(`${nomeUp}__${dataStr}`)){
+            novos.push({ nome:nomeUp, funcao:f.funcao, data:dataStr,
               status:'presente', mes_ano:mes, fonte:'automatico',
               criado_em: new Date().toISOString() });
           }
@@ -19603,25 +19605,37 @@ async function gerarPresencasAutomaticas(mes, manual = false){
     if(!novos.length){
       if(manual) showToast('✅ Todos os dias já têm registro — nenhuma presença pendente!','success');
       localStorage.setItem(flagKey, '1');
-      // Re-render na 1ª execução do dia: tabela pode ter sido montada antes dos dados existirem
       if(!manual) renderAbsenteismo().catch(()=>{});
       return;
     }
 
     // Inserir em lotes de 200
+    // ignore-duplicates: não sobrescreve falta/atestado existente com presente automático
+    let falhouAlgum = false;
     for(let i = 0; i < novos.length; i += 200){
-      await supaFetch('absenteismo', {
-        method: 'POST', prefer: 'return=minimal',
-        body: JSON.stringify(novos.slice(i, i + 200))
-      }).catch(()=>{});
+      try{
+        await supaFetch('absenteismo', {
+          method: 'POST',
+          prefer: 'return=minimal,resolution=ignore-duplicates',
+          body: JSON.stringify(novos.slice(i, i + 200))
+        });
+      }catch(err){
+        falhouAlgum = true;
+        console.warn('[Abs] Lote de presenças falhou:', err?.message);
+      }
     }
 
-    localStorage.setItem(flagKey, '1');
+    // Só marca como "já rodou hoje" se TODOS os lotes foram bem-sucedidos
+    if(!falhouAlgum) localStorage.setItem(flagKey, '1');
+
     if(manual){
-      showToast(`✅ ${novos.length} presenças automáticas geradas!`, 'success');
+      if(falhouAlgum){
+        showToast('⚠️ Algumas presenças podem não ter sido salvas — verifique a conexão e tente novamente','warning');
+      } else {
+        showToast(`✅ ${novos.length} presenças geradas com sucesso!`, 'success');
+      }
       await renderAbsenteismo();
     } else {
-      // Re-render silencioso: atualiza tabela após criar presenças em background
       renderAbsenteismo().catch(()=>{});
     }
   }catch(e){
@@ -20549,12 +20563,10 @@ async function marcarPresencaItem(nome, btn){
     const setor  = document.getElementById('modal-abs')?.dataset?.setor || 'distribuicao';
     const funcao = setor === 'armazem' ? 'conferente' : 'motorista';
     // Busca case-insensitive para encontrar registros salvos em maiúsculas (gerarPresencasAutomaticas)
-    const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nome)}&data=eq.${hoje}&select=id,nome`) || [];
-    if(ex.length){
-      await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'presente',nome,fonte:'manual'})});
-    } else {
-      await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({nome,funcao,data:hoje,status:'presente',mes_ano:mesAno,fonte:'manual',criado_em:new Date().toISOString()})});
-    }
+    const nomeUp = (nome||'').toUpperCase().trim();
+    await supaFetch('absenteismo', {method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify({
+      nome:nomeUp, funcao, data:hoje, status:'presente', mes_ano:mesAno, fonte:'manual', criado_em:new Date().toISOString()
+    })});
     const row   = btn.closest('.abs-item');
     const badge = row?.querySelector('.abs-status-badge');
     const s     = _absStatusCor['presente'];
@@ -20786,12 +20798,10 @@ async function salvarAbsenteismo(){
         });
       }
 
-      // Deletar dias existentes no período e inserir todos de uma vez
-      await supaFetch(
-        `absenteismo?nome=eq.${encodeURIComponent(nome)}&data=gte.${inicio}&data=lte.${fim}`,
-        {method:'DELETE', prefer:'return=minimal'}
-      );
-      await supaFetch('absenteismo',{method:'POST', prefer:'return=minimal', body:JSON.stringify(registros)});
+      // UPSERT: salva dados ANTES de qualquer deleção — elimina risco de perda entre DELETE e POST
+      const nomeUp = (nome||'').toUpperCase().trim();
+      const registrosUp = registros.map(r => ({...r, nome: nomeUp}));
+      await supaFetch('absenteismo', {method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify(registrosUp)});
 
       document.getElementById('modal-abs').style.display = 'none';
       showToast(`✅ ${status==='ferias'?'Férias':'Atestado'}: ${registros.length} dia(s) lançado(s)!`,'success');
@@ -20799,15 +20809,11 @@ async function salvarAbsenteismo(){
       const data = document.getElementById('abs-data-input')?.value;
       if(!data){ showToast('Informe a data','warning'); return; }
       const mesAno = data.slice(0,7);
-      const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${data}&select=id`) || [];
-      if(ex.length){
-        await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,fonte:'manual'})});
-      } else {
-        await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
-          nome, data, status, mes_ano:mesAno, observacao:obs,
-          fonte:'manual', criado_em:new Date().toISOString()
-        })});
-      }
+      const nomeUp2 = (nome||'').toUpperCase().trim();
+      await supaFetch('absenteismo', {method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify({
+        nome:nomeUp2, data, status, mes_ano:mesAno, observacao:obs,
+        fonte:'manual', criado_em:new Date().toISOString()
+      })});
       document.getElementById('modal-abs').style.display = 'none';
       showToast('✅ Registro salvo!','success');
     }
