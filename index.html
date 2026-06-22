@@ -3238,6 +3238,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       </div>
     </div>
   </div>
+  <!-- OTIF por Semana -->
+  <div id="dash-int-otif-semana" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:16px">
+    <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">🎯 OTIF por Semana</h3>
+    <div id="dash-sem-otif-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px"></div>
+  </div>
 </div></div>
 
 <!-- ══ AGENDAMENTO DE ROTAS ══ -->
@@ -3394,7 +3399,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px">
     <div>
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">📅 Absenteísmo — Distribuição</h2>
-      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Controle de presença: motoristas e ajudantes • Meta: 2%</p>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Controle de presença: motoristas e ajudantes • Meta: 1%</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <select id="abs-filtro-tipo" onchange="renderAbsenteismo()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none">
@@ -3432,7 +3437,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- Meta -->
   <div id="abs-meta-bar" style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 20px;margin-bottom:20px">
     <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-      <span style="font-size:.8rem;font-weight:700;color:var(--text-primary)">Meta de Absenteísmo: 2%</span>
+      <span style="font-size:.8rem;font-weight:700;color:var(--text-primary)">Meta de Absenteísmo: 1%</span>
       <span id="abs-meta-label" style="font-size:.8rem;font-weight:700">—</span>
     </div>
     <div style="height:10px;background:var(--bg-card2);border-radius:5px;overflow:hidden">
@@ -3440,7 +3445,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
     <div style="display:flex;justify-content:space-between;margin-top:4px">
       <span style="font-size:.72rem;color:var(--text-muted)">0%</span>
-      <span style="font-size:.72rem;color:var(--text-muted)">Meta: 2%</span>
+      <span style="font-size:.72rem;color:var(--text-muted)">Meta: 1%</span>
     </div>
   </div>
 
@@ -3477,6 +3482,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <tbody id="abs-tbody"></tbody>
       </table>
     </div>
+  </div>
+
+  <!-- Absenteísmo por Semana -->
+  <div id="abs-semana-section" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:16px">
+    <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">📅 Absenteísmo por Semana</h3>
+    <div id="abs-semana-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px"></div>
+    <div style="position:relative;height:180px"><canvas id="abs-semana-chart"></canvas></div>
   </div>
 
 </div></div>
@@ -7564,6 +7576,8 @@ function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), w
 // Inclui nomes abreviados E completos; syncConfig() adiciona rotas do banco dinamicamente
 const ROTAS_RI       = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 const ROTAS_CONTAGEM = new Set(['PETRO','JUA','CEASA','PETROLINA','JUAZEIRO']);
+// Cópia imutável de ROTAS_RI — nunca modificada por syncConfig; usada como árbitro final no filtro RI
+const ROTAS_RI_ORIG  = Object.freeze(new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']));
 
 // ── Helper: retorna a unidade do usuário logado (admin = '' = sem filtro) ──
 async function _getUnidadeUsuario(){
@@ -18436,13 +18450,31 @@ async function renderDashInterna(){
       // Todos (RI + RE) — sem filtro de tipo de rota
       bd = baseDataSupa;
     } else {
-      // Padrão: R.I. — prioridade: cadastro → lancamento → base_data.rire
+      // Padrão: R.I.
+      // Prioridade: lançamento.rire → lançamento.rota → base_data.rota → base_data.rire → ROTAS_CONTAGEM
+      // ROTAS_RI_ORIG é usado como árbitro: nunca sofre mutação pelo banco de dados
       bd = baseDataSupa.filter(r => {
-        const rotaKey = (r.rota||'').toUpperCase().trim();
-        const cfgRota = CONFIG.rotas?.[rotaKey];
-        if(cfgRota) return cfgRota.ri && cfgRota.prazoOtif !== null;
         const c = Math.round(Number(r.carga));
-        if(cargaIsRI.hasOwnProperty(c)) return cargaIsRI[c];
+        // 1) Lançamento marcado RE → excluir sempre (fonte mais confiável)
+        if(cargaIsRI.hasOwnProperty(c) && !cargaIsRI[c]) return false;
+        // 2) Verificar CONFIG pela rota do lançamento (mais confiável que base_data.rota)
+        const lancRota = cargaRota[c];
+        if(lancRota) {
+          if(ROTAS_RI_ORIG.has(lancRota)) return true; // rota hardcoded → sempre RI
+          const cfgLancRota = CONFIG.rotas?.[lancRota];
+          if(cfgLancRota) return cfgLancRota.ri && cfgLancRota.prazoOtif !== null;
+        }
+        // 3) Lançamento confirma RI mas rota sem config → aceitar
+        if(cargaIsRI.hasOwnProperty(c) && cargaIsRI[c]) return true;
+        // 4) Sem lançamento: verificar base_data.rota — mas exigir que esteja em ROTAS_RI_ORIG
+        //    para evitar que rotas RE mal configuradas no banco contaminem o filtro RI
+        const rotaKey = (r.rota||'').toUpperCase().trim();
+        if(ROTAS_RI_ORIG.has(rotaKey)) return true; // hardcoded RI
+        const cfgRota = CONFIG.rotas?.[rotaKey];
+        if(cfgRota && !cfgRota.ri) return false; // CONFIG diz explicitamente RE → excluir
+        // CONFIG diz RI mas rota não está em ROTAS_RI_ORIG: exige confirmação por lançamento
+        // (sem lançamento e rota não hardcoded → cair para base_data.rire)
+        // 5) Último recurso: base_data.rire e ROTAS_CONTAGEM
         const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
         if(rireStr === 'RE') return false;
         if(rireStr === 'RI') return true;
@@ -18702,9 +18734,23 @@ async function renderDashInterna(){
         const key = String(p.carga)+'_'+String(p.pedido);
         if(vistoPed2.has(key)) return;
         vistoPed2.add(key);
-        // Rota do lançamento tem prioridade (fonte confiável), fallback para base_data
         const c = Math.round(Number(p.carga));
-        const rota = cargaRota[c] || (p.rota||'—').toUpperCase().trim();
+        let rota = cargaRota[c] || (p.rota||'—').toUpperCase().trim();
+        // No filtro RI: garantir que o rótulo seja uma rota RI conhecida.
+        // Usa ROTAS_RI_ORIG (imutável, hardcoded) como árbitro — CONFIG.rotas pode ter
+        // rotas RE mal classificadas no banco (ex.: CAPIM GROSSO com tipo='RI').
+        if(rireFiltro === 'RI' && rota && rota !== '—'){
+          const byHardcode = ROTAS_RI_ORIG.has(rota);
+          // CONFIG só confirma RI se o lançamento também confirma (evita contaminação do banco)
+          const byConfig   = CONFIG.rotas?.[rota]?.ri === true && cargaIsRI[c] === true;
+          const rotaRI = byHardcode || byConfig;
+          if(!rotaRI){
+            const bdRota = (p.rota||'').toUpperCase().trim();
+            const bdHard = ROTAS_RI_ORIG.has(bdRota);
+            const bdCfg  = CONFIG.rotas?.[bdRota]?.ri === true && cargaIsRI[c] === true;
+            rota = (bdRota && bdRota !== rota && (bdHard || bdCfg)) ? bdRota : '—';
+          }
+        }
         if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0};
         rotaMap[rota].ped++;
         rotaMap[rota].val+=Number(p.valor)||0;
@@ -18769,13 +18815,134 @@ async function renderDashInterna(){
               tooltip:{ callbacks:{ label: c=>' R$ '+(c.raw/1000).toFixed(1).replace('.',',')+'k' } }
             },
             scales:{
-              x:{ grid:{color: isDark?'#334155':'#f0f0f0'}, ticks:{ color:txtColor, callback:v=>'R$'+(v/1000).toFixed(0)+'k' } },
+              x:{ display:false },
               y:{ grid:{display:false}, ticks:{ color:txtColor, font:{size:11,weight:'700'} } }
+            },
+            layout:{ padding:{ right: 10 } }
+          },
+          plugins:[{
+            id:'barValLabel',
+            afterDatasetDraw(chart){
+              const ctx2 = chart.ctx;
+              chart.data.datasets.forEach((ds,i)=>{
+                chart.getDatasetMeta(i).data.forEach((bar,idx)=>{
+                  const val = ds.data[idx];
+                  if(!val) return;
+                  const lbl = 'R$ '+(val/1000).toFixed(1).replace('.',',')+'k';
+                  const barW = bar.x - chart.scales.x.getPixelForValue(0);
+                  ctx2.save();
+                  ctx2.font = 'bold 12px Arial';
+                  ctx2.textBaseline = 'middle';
+                  if(barW > 80){
+                    ctx2.fillStyle = '#ffffff';
+                    ctx2.textAlign = 'end';
+                    ctx2.fillText(lbl, bar.x - 6, bar.y);
+                  } else {
+                    ctx2.fillStyle = txtColor;
+                    ctx2.textAlign = 'start';
+                    ctx2.fillText(lbl, bar.x + 5, bar.y);
+                  }
+                  ctx2.restore();
+                });
+              });
             }
-          }
+          }]
         });
       }
     }
+
+    // 14. OTIF por Semana
+    const semOtifEl = document.getElementById('dash-sem-otif-cards');
+    if(semOtifEl && _dadosOtif){
+      const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif } = _dadosOtif;
+      const prazoMapOtif = {};
+      todasRotas.forEach(r=>{ prazoMapOtif[(r.nome||'').toUpperCase()] = r.prazo_otif; });
+
+      // saida por carga: dem (local) + saidaRows do cache OTIF
+      const saidaMapCarga = {};
+      dem.forEach(d=>{ if(d.carga && d.data_saida) saidaMapCarga[String(d.carga)] = d.data_saida; });
+      (saidaRowsOtif||[]).forEach(d=>{ if(d.carga && d.data_saida && !saidaMapCarga[String(d.carga)]) saidaMapCarga[String(d.carga)] = d.data_saida; });
+
+      const entMapOtif = {};
+      (entRowsOtif||[]).forEach(e=>{
+        const k = String(e.pedido);
+        if(!entMapOtif[k]) entMapOtif[k] = {saida:null, entrega:null};
+        if(e.data_entrega && (!entMapOtif[k].entrega || e.data_entrega < entMapOtif[k].entrega)) entMapOtif[k].entrega = e.data_entrega;
+        if(e.data_saida && !entMapOtif[k].saida) entMapOtif[k].saida = e.data_saida;
+      });
+
+      const ocorrSetOtif = new Set();
+      (ocorrRowsOtif||[]).forEach(o=>{ if(o.pedido) ocorrSetOtif.add(String(o.pedido)); });
+
+      const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
+      const vistoSemOtif = new Set();
+      bd.forEach(p=>{
+        const ped = String(p.pedido);
+        if(vistoSemOtif.has(ped)) return;
+        vistoSemOtif.add(ped);
+        if(!p.data_pedido) return;
+
+        const rota = (p.rota||'').toUpperCase();
+        const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
+        if(prazoEntry === null) return;
+        const rireNorm = normRire(p.rire) || getRireFromRota(rota);
+        const prazoH = prazoEntry !== undefined ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
+
+        const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
+        const ent = entMapOtif[ped] || {};
+        // Priorizar saida do mês atual: entrega_datas pode ter datas de meses anteriores
+        // que sobrescreveriam a data correta de saidaMapCarga (demandas_rota do mês)
+        const entSaida = (ent.saida && ent.saida.startsWith(mesFiltro)) ? ent.saida : null;
+        const dataSaida = entSaida || (carga ? saidaMapCarga[carga] : null) || ent.saida;
+        if(!dataSaida || !dataSaida.startsWith(mesFiltro)) return;
+
+        const semIdx = Math.min(Math.ceil(new Date(dataSaida+'T00:00:00').getDate()/7), 5) - 1;
+        if(semIdx < 0 || semIdx > 4) return;
+
+        const dataEntrega = ent.entrega || dataSaida;
+        const diffH = (new Date(dataEntrega+'T23:59:59') - new Date(dataSaida+'T00:00:00')) / 3600000;
+        const onTime = diffH <= prazoH;
+        const inFull = !ocorrSetOtif.has(ped);
+        semOtif[semIdx].t++;
+        if(onTime)           semOtif[semIdx].ot++;
+        if(inFull)           semOtif[semIdx].ifull++;
+        if(onTime && inFull) semOtif[semIdx].ok++;
+      });
+
+      const semLabels = ['1ª Semana','2ª Semana','3ª Semana','4ª Semana','5ª Semana'];
+      const maxOtifPct = Math.max(...semOtif.map(s=>s.t>0?Math.round(s.ok/s.t*100):-1), 0);
+      semOtifEl.innerHTML = semOtif.map((s,i)=>{
+        const pct    = s.t > 0 ? Math.round(s.ok/s.t*100)    : null;
+        const otPct  = s.t > 0 ? Math.round(s.ot/s.t*100)    : null;
+        const ifPct  = s.t > 0 ? Math.round(s.ifull/s.t*100) : null;
+        const isMax  = pct !== null && pct === maxOtifPct;
+        if(pct === null){
+          return `<div style="background:var(--bg-card2);border:1.5px solid var(--border);border-radius:12px;padding:16px;opacity:.45">
+            <div style="font-size:.68rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">${semLabels[i]}</div>
+            <div style="font-size:1.6rem;font-weight:900;color:var(--text-muted);line-height:1">—</div>
+            <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">sem dados</div>
+          </div>`;
+        }
+        const cor   = pct>=95?'#059669':pct>=80?'#f59e0b':'#ef4444';
+        const bgSem = isMax ? 'linear-gradient(135deg,#1e3a5f,#1d4ed8)' : 'var(--bg-card2)';
+        const bdr   = isMax ? '#3b82f6' : 'var(--border)';
+        return `<div style="background:${bgSem};border:1.5px solid ${bdr};border-radius:12px;padding:16px;position:relative;overflow:hidden">
+          <div style="font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:${isMax?'rgba(255,255,255,.7)':'var(--text-muted)'};margin-bottom:8px">${semLabels[i]}</div>
+          <div style="font-size:1.9rem;font-weight:900;color:${isMax?'#fff':cor};line-height:1">${pct}%</div>
+          <div style="font-size:.68rem;font-weight:700;color:${isMax?'rgba(255,255,255,.5)':'var(--text-muted)'};margin-bottom:8px">${s.t} pedidos</div>
+          <div style="display:flex;gap:8px">
+            <span style="font-size:.68rem;font-weight:800;color:${isMax?'#93c5fd':'#3b82f6'}">⏱ ${otPct}%</span>
+            <span style="font-size:.68rem;font-weight:800;color:${isMax?'#86efac':'#22c55e'}">✓ ${ifPct}%</span>
+          </div>
+          <div style="position:absolute;bottom:0;left:0;right:0;height:3px;background:${isMax?'rgba(255,255,255,.15)':'var(--border)'}">
+            <div style="height:100%;width:${pct}%;background:${isMax?'rgba(255,255,255,.6)':cor};transition:width .4s"></div>
+          </div>
+        </div>`;
+      }).join('');
+    } else if(semOtifEl){
+      semOtifEl.innerHTML = '<p style="color:var(--text-muted);font-size:.84rem;padding:8px">Carregando dados OTIF...</p>';
+    }
+
   }catch(e){ if(container) container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; console.error('renderDashInterna:', e); }
 }
 
@@ -19133,8 +19300,8 @@ function gerarTabsMeses(){
 
   function buildBtns(prefix, fn){
     let html = `<button onclick="${fn}('')" id="${prefix}-todos" style="${s}">Todos</button>`;
-    // Mostrar ano anterior + ano atual (scroll horizontal cobre tudo)
-    [anoAtual - 1, anoAtual].forEach(ano => {
+    // Mostrar apenas 2026 (dados anteriores não são necessários nesta aba)
+    [2026].forEach(ano => {
       meses.forEach((label, i) => {
         const mv = `${ano}-${String(i+1).padStart(2,'0')}`;
         const labelFull = `${label}/${String(ano).slice(2)}`;
@@ -19652,13 +19819,13 @@ async function renderAbsenteismo(){
     const fill = document.getElementById('abs-meta-fill');
     const label = document.getElementById('abs-meta-label');
     if(fill){
-      const pctBar = Math.min(absNum*50, 100);
+      const pctBar = Math.min(absNum*100, 100);
       fill.style.width = pctBar+'%';
-      fill.style.background = absNum <= 2 ? '#059669' : absNum <= 3 ? '#f59e0b' : '#E8000D';
+      fill.style.background = absNum <= 1 ? '#059669' : absNum <= 1.5 ? '#f59e0b' : '#E8000D';
     }
     if(label){
-      label.textContent = absNum <= 2 ? `✅ ${pctAbs}% — Dentro da meta` : `⚠️ ${pctAbs}% — Acima da meta (2%)`;
-      label.style.color = absNum <= 2 ? '#059669' : '#E8000D';
+      label.textContent = absNum <= 1 ? `✅ ${pctAbs}% — Dentro da meta` : `⚠️ ${pctAbs}% — Acima da meta (1%)`;
+      label.style.color = absNum <= 1 ? '#059669' : '#E8000D';
     }
 
     // Feriados nacionais fixos — definidos aqui para uso tanto na exclusão de presença quanto em folgas devidas
@@ -19940,11 +20107,144 @@ async function renderAbsenteismo(){
       </tr>`;
     }).join('');
 
+    // ── Absenteísmo por Semana ────────────────────────────────────────────────
+    _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais);
+
   }catch(e){ container.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--text-muted)">Erro: ${e.message}</td></tr>`; }
 
   // Auto-preencher presenças em background (silencioso, 1x por dia por mês)
   const _mesPreencher = document.getElementById('abs-filtro-mes')?.value || new Date().toISOString().slice(0,7);
   gerarPresencasAutomaticas(_mesPreencher, false).catch(()=>{});
+}
+
+// ── Absenteísmo por Semana — Distribuição ─────────────────────────────────────
+let _absSemanChart = null;
+function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais){
+  const cardsEl  = document.getElementById('abs-semana-cards');
+  const canvasEl = document.getElementById('abs-semana-chart');
+  if(!cardsEl || !canvasEl) return;
+
+  if(!filtMes){
+    cardsEl.innerHTML = '<span style="font-size:.8rem;color:var(--text-muted)">Selecione um mês para ver o absenteísmo semanal.</span>';
+    return;
+  }
+
+  // Determinar semanas do mês (segunda → domingo, cortadas pelos limites do mês)
+  const [ano, mes] = filtMes.split('-').map(Number);
+  const primeiroDia = new Date(ano, mes-1, 1);
+  const ultimoDia   = new Date(ano, mes, 0);
+
+  // Encontrar a segunda-feira da semana que contém o dia 1
+  const diaSemana0 = primeiroDia.getDay(); // 0=Dom, 1=Seg, ...
+  const offsetLun  = diaSemana0 === 0 ? -6 : 1 - diaSemana0; // quantos dias até a segunda anterior/atual
+  const inicioS1   = new Date(primeiroDia);
+  inicioS1.setDate(primeiroDia.getDate() + offsetLun);
+
+  const semanas = [];
+  let cur = new Date(inicioS1);
+  while(cur <= ultimoDia){
+    const ini = new Date(cur);
+    const fim = new Date(cur); fim.setDate(fim.getDate() + 6);
+    // Cortar aos limites do mês
+    const iniMes = ini < primeiroDia ? primeiroDia : ini;
+    const fimMes = fim > ultimoDia   ? ultimoDia   : fim;
+    semanas.push({ ini: iniMes, fim: fimMes });
+    cur.setDate(cur.getDate() + 7);
+  }
+
+  // Para cada semana, calcular absenteísmo
+  const fmtDia = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  const fmtISO = d => {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+
+  const semanaStats = semanas.map((s, idx) => {
+    let faltas=0, atestados=0, total=0;
+    const d = new Date(s.ini);
+    while(d <= s.fim){
+      const iso = fmtISO(d);
+      const dSem = d.getDay();
+      if(dSem !== 0 && !feriadosNacionais.has(iso)){
+        // Dia útil — somar para todos os funcionários
+        Object.values(porFunc).forEach(f => {
+          const st = f.dias[iso];
+          if(st === 'falta')    { faltas++; total++; }
+          else if(st === 'atestado') { atestados++; total++; }
+          else if(st === 'presente' || st === 'rota' || st === 'rota_auto') { total++; }
+        });
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    const pct = total > 0 ? ((faltas + atestados) / total * 100) : null;
+    return { label: `S${idx+1} ${fmtDia(s.ini)}-${fmtDia(s.fim)}`, pct, faltas, atestados, total };
+  });
+
+  // Filtrar semanas sem dados (nenhum registro ainda no futuro)
+  const semanasComDados = semanaStats.filter(s => s.total > 0 || s.pct !== null);
+
+  // Cards
+  cardsEl.innerHTML = semanasComDados.map((s, i) => {
+    if(s.pct === null) return '';
+    const cor = s.pct <= 1 ? '#059669' : s.pct <= 2 ? '#f59e0b' : '#E8000D';
+    const bg  = s.pct <= 1 ? 'rgba(5,150,105,.08)' : s.pct <= 2 ? 'rgba(245,158,11,.08)' : 'rgba(232,0,13,.08)';
+    return `<div style="background:${bg};border:1.5px solid ${cor}33;border-radius:12px;padding:14px 10px;text-align:center">
+      <div style="font-size:.7rem;font-weight:700;color:var(--text-muted);margin-bottom:6px">${s.label}</div>
+      <div style="font-size:1.5rem;font-weight:900;color:${cor}">${s.pct.toFixed(1)}%</div>
+      <div style="font-size:.68rem;color:var(--text-muted);margin-top:4px">${s.faltas+s.atestados} ocorr. / ${s.total} dias</div>
+    </div>`;
+  }).join('');
+
+  // Chart
+  if(_absSemanChart){ _absSemanChart.destroy(); _absSemanChart = null; }
+  const txtColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#111';
+  const ctx = canvasEl.getContext('2d');
+  _absSemanChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: semanasComDados.map(s => s.label),
+      datasets: [{
+        data: semanasComDados.map(s => s.pct !== null ? parseFloat(s.pct.toFixed(2)) : 0),
+        backgroundColor: semanasComDados.map(s => s.pct <= 1 ? '#059669' : s.pct <= 2 ? '#f59e0b' : '#E8000D'),
+        borderRadius: 6,
+        borderSkipped: false
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => ` ${c.raw.toFixed(2)}% de absenteísmo` } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: txtColor, font: { size: 11, weight: '700' } } },
+        y: {
+          grid: { color: 'rgba(0,0,0,.06)' },
+          ticks: { color: txtColor, callback: v => v+'%' },
+          suggestedMax: Math.max(2, ...semanasComDados.map(s => s.pct||0)) * 1.3
+        }
+      }
+    },
+    plugins: [{
+      id: 'absSemanMetaLine',
+      afterDraw(chart){
+        const ctx2 = chart.ctx;
+        const y1 = chart.scales.y.getPixelForValue(1);
+        ctx2.save();
+        ctx2.setLineDash([6,4]);
+        ctx2.strokeStyle = '#059669';
+        ctx2.lineWidth = 1.5;
+        ctx2.beginPath();
+        ctx2.moveTo(chart.chartArea.left, y1);
+        ctx2.lineTo(chart.chartArea.right, y1);
+        ctx2.stroke();
+        ctx2.fillStyle = '#059669';
+        ctx2.font = 'bold 10px Arial';
+        ctx2.textAlign = 'end';
+        ctx2.fillText('Meta 1%', chart.chartArea.right - 4, y1 - 4);
+        ctx2.restore();
+      }
+    }]
+  });
 }
 
 // ── STATUS → visual ──────────────────────────────────────
