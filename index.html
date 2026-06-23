@@ -5930,7 +5930,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div style="background:var(--bg-card);border-radius:16px;padding:0;width:min(640px,98vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.4)">
     <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,#1e1b4b,#7c3aed);display:flex;align-items:flex-start;justify-content:space-between">
       <div>
-        <h3 style="font-size:1.05rem;font-weight:800;color:#fff;margin-bottom:3px">🔒 Fechamento de Rotas — Expedição</h3>
+        <h3 style="font-size:1.05rem;font-weight:800;color:#fff;margin-bottom:3px">📋 Fechamentos de Vendas — Próximos 7 dias</h3>
         <p style="font-size:.78rem;color:rgba(255,255,255,.65);margin:0" id="popup-rotas-sub">Carregando...</p>
       </div>
       <button onclick="fecharPopupRotasDia()" style="background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:8px;padding:5px 12px;cursor:pointer;font-size:.85rem;margin-left:12px;flex-shrink:0">✕</button>
@@ -28469,140 +28469,99 @@ function limparMotivoAtraso(id){
 
 // ══ POPUP UNIFICADO — ROTAS DA SEMANA (EXPEDIÇÃO) ═══════════════════════
 async function abrirPopupRotasExpedicao(){
-  // Não exibir para Expedição Operador — apenas gestores/admins
   if((USUARIO_LOGADO?.perfil||'') === 'operador') return;
+
+  const calcFech = dataStr => {
+    var d=new Date(dataStr+'T12:00:00'), c=0;
+    while(c<2){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; }
+    return d.toISOString().slice(0,10);
+  };
 
   const hoje    = new Date();
   const hojeStr = hoje.toISOString().slice(0,10);
+  const fim7    = new Date(hoje); fim7.setDate(hoje.getDate()+6);
+  const fim7Str = fim7.toISOString().slice(0,10);
   const datas   = Array.from({length:7},(_,i)=>{ const d=new Date(hoje); d.setDate(hoje.getDate()+i); return d.toISOString().slice(0,10); });
 
   const lista = document.getElementById('popup-rotas-lista');
   const sub   = document.getElementById('popup-rotas-sub');
   if(!lista) return;
 
-  // Cache de pré-cargas — se estiver vazio (ex: usuário entrou pela página Agendamento
-  // sem passar pela Expedição), busca direto do banco para o popup não mostrar rotas já lançadas
-  let cache = Array.isArray(_demandasCache) && _demandasCache.length > 0 ? _demandasCache : [];
-  if(!cache.length){
-    try{
-      const _inicio = datas[0];
-      const _fim    = datas[datas.length-1];
-      const _fetched = await supaFetch(
-        `demandas_rota?status=not.in.(concluido,cancelado)&data_saida=gte.${_inicio}&data_saida=lte.${_fim}&select=rota,data_saida`
-      ).catch(()=>[]);
-      cache = _fetched || [];
-    }catch(e){}
+  if(sub) sub.textContent = 'Buscando fechamentos...';
+  lista.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)">⏳ Carregando...</div>';
+  document.getElementById('popup-rotas-dia').style.display='flex';
+
+  // Busca sempre diretamente do Supabase — sem localStorage, sem cache local
+  let agends = [];
+  try{
+    agends = await supaFetch('agendamentos_rotas?select=*&order=data.asc') || [];
+  }catch(e){
+    lista.innerHTML = '<div style="text-align:center;padding:24px;color:#dc2626;font-size:.85rem">Erro ao carregar dados: '+e.message+'</div>';
+    return;
   }
 
-  // ── Helper: verifica se existe pré-carga ativa para rota+data ─────────────
-  const temPreCargaAtiva = (rota, data) => {
-    const rn = (rota||'').trim().toUpperCase();
-    return cache.some(d => (d.rota||'').trim().toUpperCase()===rn && d.data_saida===data);
-  };
-
-  // ── Buscar rotas do Agendamento para os próximos 7 dias (não realizadas) ──
-  const agends = getAgendamentos();
-
-  // Auto-sync: atualiza status/lancado conforme estado real da pré-carga
-  let mudou = false;
-  agends.forEach(a=>{
-    if(!datas.includes(a.data)) return;
-    const temPC = temPreCargaAtiva(a.rota, a.data);
-
-    // Caso 1: marcado como lançado/realizado via ação de pré-carga, mas pré-carga foi apagada
-    // → volta para agendado/atrasado para reaparecer no popup
-    const foiLancado = a.lancado || a.acao==='lancar';
-    if(foiLancado && !temPC && a.status !== 'concluido'){
-      a.lancado = false;
-      a.status  = a.motivo_atraso ? 'atrasado' : (a.data < hojeStr ? 'atrasado' : 'agendado');
-      mudou = true;
-    }
-    // Caso 2: pré-carga existe mas lancado não marcado → sincroniza
-    else if(!foiLancado && temPC){
-      a.lancado = true;
-      mudou = true;
-    }
-  });
-  if(mudou) await saveAgendamentos(agends);
-
-  // Rotas a exibir: fechamento nos próximos 7 dias (= saída em 2 dias úteis a partir de cada dia)
-  // Calcula a data de fechamento de cada agendamento e filtra pelos próximos 7 dias
-  const calcFech = dataStr => {
-    var d=new Date(dataStr+'T12:00:00'),c=0;
-    while(c<2){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; }
-    return d.toISOString().slice(0,10);
-  };
-
-  // Popup aparece SOMENTE para rotas lançadas na Expedição que tiveram atraso (data passou)
-  const rotasSemana = agends
+  // Filtrar: fechamento de vendas dentro dos próximos 7 dias e status não finalizado
+  const rotasFechamento = agends
     .filter(a => {
-      const foiLancado = a.lancado || a.acao === 'lancar';
-      if(!foiLancado) return false;              // não foi lançada na expedição
-      if(a.data >= hojeStr) return false;        // data ainda não passou — sem atraso confirmado
-      if(a.status === 'concluido') return false;
-      if(a.status === 'realizado') return false; // saída já confirmada em expedição
-      if(a.motivo_atraso) return false;          // motivo já registrado
-      return true;
+      if(!a.data) return false;
+      if(a.status === 'realizado' || a.status === 'concluido') return false;
+      const fech = calcFech(a.data);
+      return fech >= hojeStr && fech <= fim7Str;
     })
-    .sort((a,b) => a.data.localeCompare(b.data));
+    .sort((a,b) => calcFech(a.data).localeCompare(calcFech(b.data)));
 
-  // Não abre automaticamente se não há nada pendente
-  if(!rotasSemana.length && document.getElementById('popup-rotas-dia')?.style.display !== 'flex') return;
-
-  const total_ct = rotasSemana.length;
+  const total_ct = rotasFechamento.length;
   if(sub) sub.textContent = total_ct
-    ? total_ct+' rota(s) lançada(s) com atraso — registre o motivo'
-    : 'Nenhuma rota com atraso pendente de motivo';
+    ? total_ct+' fechamento(s) nos próximos 7 dias'
+    : 'Nenhum fechamento previsto para os próximos 7 dias';
 
-  const fmtData = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
+  if(!total_ct){
+    lista.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:.85rem">✅ Nenhum fechamento de vendas previsto para os próximos 7 dias</div>';
+    return;
+  }
 
-  const MOTIVOS   = [{key:'atraso_rota',label:'⏱️ Atraso de Rota',desc:'Rota saiu com atraso'},{key:'comercial',label:'💰 Comercial',desc:'Carga sem valor mínimo'},{key:'veiculo',label:'🚛 Sem Veículo',desc:'Sem veículo disponível'},{key:'motorista',label:'🚗 Sem Motorista',desc:'Sem motorista disponível'},{key:'atraso_carregamento',label:'📦 Atraso no Carregamento',desc:'Atraso no carregamento'}];
-  const CORES_MOT = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#f97316'};
+  const fmtData = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'});
 
-  // Agrupar por data de saída programada
-  const porData = {};
-  rotasSemana.forEach(a=>{ if(!porData[a.data]) porData[a.data]=[]; porData[a.data].push(a); });
+  // Agrupar por data de fechamento
+  const porFech = {};
+  rotasFechamento.forEach(a=>{
+    const f = calcFech(a.data);
+    if(!porFech[f]) porFech[f]=[];
+    porFech[f].push(a);
+  });
 
   var html = '';
+  Object.keys(porFech).sort().forEach(function(fechDt, di){
+    const diffDias = Math.round((new Date(fechDt+'T12:00:00')-new Date(hojeStr+'T12:00:00'))/86400000);
+    const labelDia = diffDias === 0 ? 'Hoje' : diffDias === 1 ? 'Amanhã' : 'em '+diffDias+' dias';
+    const corDia   = diffDias === 0 ? '#dc2626' : diffDias === 1 ? '#f59e0b' : '#2563eb';
 
-  Object.keys(porData).sort().forEach(function(dt, di){
-    const diasAtraso = Math.max(1, Math.floor((new Date(hojeStr)-new Date(dt+'T00:00:00'))/86400000));
-    const corDia     = diasAtraso >= 3 ? '#ef4444' : '#f59e0b';
-
-    html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'12px':'0')+'">'
-      +'<div style="background:'+corDia+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:54px;text-align:center">'
-        +'<span style="font-size:.58rem;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:.02em">'+(diasAtraso===1?'Ontem':diasAtraso+'d atrás')+'</span>'
-        +'<span style="font-size:1.15rem;font-weight:900;line-height:1.2">'+new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
-        +'<span style="font-size:.6rem;opacity:.85">'+new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
+    html += '<div style="display:flex;align-items:center;gap:10px;margin-top:'+(di>0?'14px':'0')+'">'
+      +'<div style="background:'+corDia+';color:#fff;border-radius:10px;padding:6px 12px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:58px;text-align:center">'
+        +'<span style="font-size:.58rem;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:.02em">'+labelDia+'</span>'
+        +'<span style="font-size:1.15rem;font-weight:900;line-height:1.2">'+new Date(fechDt+'T00:00:00').getDate().toString().padStart(2,'0')+'</span>'
+        +'<span style="font-size:.6rem;opacity:.85">'+new Date(fechDt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')+'</span>'
       +'</div>'
       +'<div style="flex:1;border-top:2px solid '+corDia+'55"></div>'
-      +'<span style="font-size:.7rem;color:'+corDia+';font-weight:700;white-space:nowrap">⚠️ '+diasAtraso+' dia(s) de atraso</span>'
+      +'<span style="font-size:.7rem;color:'+corDia+';font-weight:700;white-space:nowrap">🔒 Fechamento '+labelDia.toLowerCase()+'</span>'
     +'</div>';
 
-    porData[dt].forEach(function(a){
-      var mBtns = '';
-      MOTIVOS.forEach(function(m){
-        mBtns += '<button onclick="acaoRotaUnificada(\''+a.id+'\',\''+a.rota+'\',\''+a.data+'\',\'atraso\',\''+m.key+'\')" title="'+m.desc+'" '
-          +'style="background:rgba(239,68,68,.07);color:#fca5a5;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:5px 11px;font-size:.73rem;font-weight:600;cursor:pointer;white-space:nowrap">'+m.label+'</button>';
-      });
-
-      html += '<div id="popup-rota-'+a.id+'" style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+corDia+';border-radius:10px;padding:13px 15px;margin-left:8px">'
-        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:8px;flex-wrap:wrap">'
+    porFech[fechDt].forEach(function(a){
+      const statusCor   = a.status==='atrasado'?'#f59e0b':a.status==='agendado'?'#2563eb':'#6b7280';
+      const statusLabel = a.status==='atrasado'?'⏳ Atrasado':a.status==='agendado'?'📅 Agendado':a.status||'—';
+      const corRgb      = corDia==='#dc2626'?'220,38,38':corDia==='#f59e0b'?'245,158,11':'37,99,235';
+      html += '<div style="background:var(--bg-card2);border:1px solid var(--border);border-left:4px solid '+corDia+';border-radius:10px;padding:13px 15px;margin-left:8px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
           +'<div style="font-size:.97rem;font-weight:800;color:var(--text-primary)">🛣️ '+a.rota+(a.obs?'&nbsp;<span style="font-size:.72rem;font-weight:400;color:var(--text-muted)">— '+a.obs+'</span>':'')+'</div>'
-          +'<div style="display:flex;gap:5px;align-items:center">'
-            +'<span style="background:rgba(239,68,68,.12);color:#fca5a5;font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px">📅 Saída: '+fmtData(a.data)+'</span>'
-            +'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Remover agendamento" style="background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:2px 7px;font-size:.72rem;cursor:pointer;line-height:1.4">🗑</button>'
-          +'</div>'
+          +'<span style="background:rgba('+corRgb+',.12);color:'+corDia+';font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap">🚚 Saída: '+fmtData(a.data)+'</span>'
         +'</div>'
-        +(a.carga?'<div style="font-size:.72rem;margin-bottom:6px">📦 Carga: <strong style="color:#7c3aed">#'+a.carga+'</strong></div>':'')
-        +'<div style="font-size:.7rem;font-weight:700;color:#fca5a5;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">⚠️ Por que houve atraso?</div>'
-        +'<div style="display:flex;flex-wrap:wrap;gap:5px">'+mBtns+'</div>'
+        +(a.carga?'<div style="font-size:.72rem;color:var(--text-muted);margin-top:5px">📦 Carga: <strong style="color:#7c3aed">#'+a.carga+'</strong></div>':'')
+        +'<div style="margin-top:6px"><span style="font-size:.7rem;font-weight:700;color:'+statusCor+';background:'+statusCor+'22;padding:2px 8px;border-radius:10px">'+statusLabel+'</span></div>'
       +'</div>';
     });
   });
 
-  lista.innerHTML = html || '<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:.85rem">✅ Nenhuma rota com atraso pendente de motivo</div>';
-  document.getElementById('popup-rotas-dia').style.display='flex';
+  lista.innerHTML = html;
 }
 
 // ── Handler unificado de ações no popup de rotas ──────────────────────────
