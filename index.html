@@ -7552,11 +7552,38 @@ async function filtrarSidebarPorPerfil(){
 let BASE_DATA   = [];
 window._cargaMapCache = null;
 
+// Filtra resultados de base_data mantendo apenas o mês mais recente por número de carga.
+// Necessário porque o mesmo número de carga pode se repetir em meses diferentes.
+function _filtrarBaseDataMesRecente(rows) {
+  if(!rows || !rows.length) return rows;
+  const mesPorCarga = {};
+  rows.forEach(r => {
+    const m = r.mes_ano || '';
+    if(m && (!mesPorCarga[r.carga] || m > mesPorCarga[r.carga])) mesPorCarga[r.carga] = m;
+  });
+  return rows.filter(r => !r.mes_ano || !mesPorCarga[r.carga] || r.mes_ano === mesPorCarga[r.carga]);
+}
+
+// Dado um array de demandas (com data_saida), constrói mapa carga→mes_ano
+function _cargaMesMapDeDemandas(demandas) {
+  const m = {};
+  (demandas||[]).forEach(d => {
+    if(d.carga && d.data_saida) m[d.carga] = String(d.data_saida).substring(0,7);
+  });
+  return m;
+}
+
 function buildCargaMapCache(){
   const map = {};
+  const _cargaMes = {}; // carga → mes_ano do primeiro registro encontrado (mais recente, pois BASE_DATA vem mes_ano.desc)
   BASE_DATA.forEach(r=>{
     if(!r.carga) return;
     const c = Math.round(Number(r.carga));
+    const mes = r.mes_ano || '';
+    // Registra o primeiro mês visto para esta carga (= mais recente por causa da ordenação desc)
+    if(!_cargaMes[c] && mes) _cargaMes[c] = mes;
+    // Pula registros de meses anteriores para o mesmo número de carga
+    else if(mes && _cargaMes[c] && mes !== _cargaMes[c]) return;
     if(!map[c]) map[c]={pedidos:new Set(),pedidosSemOcorr:new Set(),pedidoValor:{},valor:0,rota:'',und:'',rire:'',placa:'',ajudante:''};
     const k = String(r.pedido||'');
     if(r.pedido && !map[c].pedidoValor.hasOwnProperty(k)){
@@ -8016,7 +8043,8 @@ async function onFileSelected(event) {
     let resolvidos = 0;
     lancamentos.forEach(l => {
       if(l.pendente) {
-        const linhas = BASE_DATA.filter(x => Math.round(Number(x.carga))===Math.round(Number(l.carga)) && x.pedido);
+        const _mesLanc = (()=>{ const d=new Date(l.ts||''); return !isNaN(d)?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'):''; })();
+        const linhas = BASE_DATA.filter(x => Math.round(Number(x.carga))===Math.round(Number(l.carga)) && x.pedido && (!_mesLanc||!x.mes_ano||x.mes_ano===_mesLanc));
         if(linhas.length > 0) {
           l.vinculado = true;
           l.pendente  = false;
@@ -8100,7 +8128,9 @@ function previewCarga() {
   }
 
   // Buscar no BASE_DATA primeiro (fonte mais atualizada)
-  const linhas = BASE_DATA.filter(r => Number(r.carga) === carga && r.pedido);
+  const _linhasRaw = BASE_DATA.filter(r => Number(r.carga) === carga && r.pedido);
+  const _mesesPrev = [...new Set(_linhasRaw.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+  const linhas = _mesesPrev.length > 1 ? _linhasRaw.filter(r=>r.mes_ano===_mesesPrev[0]) : _linhasRaw;
   const pedidosUnicos = linhas.length > 0 ? [...new Set(linhas.map(r=>r.pedido))] : [];
 
   // Fallback CARGA_MAP embutido
@@ -8163,9 +8193,18 @@ function buildManualRecords() {
     return Math.floor((d.getDate()+first.getDay()-1)/7)+1;
   }
   // Buscar pedidos da carga SEMPRE no BASE_DATA (fonte mais atualizada)
-  function getPedidosDaCarga(carga) {
-    // Pegar todas as linhas da carga no BASE_DATA
-    const linhas = BASE_DATA.filter(r => Math.round(Number(r.carga)) === Math.round(Number(carga)) && r.pedido);
+  function getPedidosDaCarga(carga, mesAno) {
+    let linhas = BASE_DATA.filter(r => Math.round(Number(r.carga)) === Math.round(Number(carga)) && r.pedido);
+    if(linhas.length > 0) {
+      // Filtrar pelo mês do lançamento: evita mistura de pedidos de cargas com mesmo número em meses distintos
+      if(mesAno) {
+        const filtrado = linhas.filter(r => r.mes_ano === mesAno);
+        if(filtrado.length > 0) linhas = filtrado;
+      } else {
+        const meses = [...new Set(linhas.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+        if(meses.length > 1) linhas = linhas.filter(r => r.mes_ano === meses[0]);
+      }
+    }
     if(linhas.length > 0) {
       // Pedidos únicos
       const pedidosUnicos = [...new Set(linhas.map(r=>r.pedido))];
@@ -8197,8 +8236,8 @@ function buildManualRecords() {
 
   const records=[];
   lancamentos.forEach(l => {
-    const info = getPedidosDaCarga(l.carga);
     const mesAno = getMesAno(l);
+    const info = getPedidosDaCarga(l.carga, mesAno);
     const semana = getSemana(l);
     const rotaContagem = rotaContaEntrega(l.rota);
     if(info && info.pedidos && info.pedidos.length>0 && rotaContagem) {
@@ -8733,7 +8772,9 @@ async function lancar(){
   }
   const veiculo = veicLanc;
   const rotaInput = normalizarRota(document.getElementById('l-rota-input')?.value||'');
-  const linhasBase = BASE_DATA.filter(x=>Number(x.carga)===Number(carga)&&x.pedido);
+  const _linhasBaseRaw = BASE_DATA.filter(x=>Number(x.carga)===Number(carga)&&x.pedido);
+  const _mesesBase = [...new Set(_linhasBaseRaw.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
+  const linhasBase = _mesesBase.length > 1 ? _linhasBaseRaw.filter(r=>r.mes_ano===_mesesBase[0]) : _linhasBaseRaw;
   const temNaBase  = linhasBase.length>0;
   const rotaFinal  = rotaInput||(temNaBase?normalizarRota(linhasBase[0].rota):'');
   const qtdPedidos = temNaBase?[...new Set(linhasBase.map(x=>x.pedido))].length:0;
@@ -21514,13 +21555,17 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   }
 
   // Todos os pedidos de cada carga (base_data) — caixa vê tudo
-  const [todosPedidos, valids, nfs, bdData, atribsFiscal] = await Promise.all([
-    supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota&order=carga.asc,pedido.asc`).catch(()=>[]),
+  const _caixaCargaMes = _cargaMesMapDeDemandas(demandas);
+  const [_todosPedidosRaw, valids, nfs, _bdDataRaw, atribsFiscal] = await Promise.all([
+    supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota,mes_ano&order=carga.asc,pedido.asc`).catch(()=>[]),
     supaFetch(`validacoes_caixa?carga=in.(${cargasIds.join(',')})`).catch(()=>[]),
     supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=carga,pedido,tipo,url,nome_arquivo&limit=1000&order=carga.asc,pedido.asc`).catch(()=>[]),
-    supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota`).catch(()=>[]),
+    supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota,mes_ano`).catch(()=>[]),
     supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=carga,pedido,fiscal_nome,status`).catch(()=>[])
   ]);
+  const _filtCaixa = r => { const m=_caixaCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; };
+  const todosPedidos = (_todosPedidosRaw||[]).filter(_filtCaixa);
+  const bdData = (_bdDataRaw||[]).filter(_filtCaixa);
 
   // Montar mapa: carga → pedidos únicos (Set)
   const pedidosPorCarga = {};
@@ -21935,9 +21980,11 @@ async function carregarPortalOperador(){
 
     // Buscar pedidos da base_data para cada carga
     const cargasIds = demandas.map(d=>d.carga).filter(Boolean);
-    const baseRows = cargasIds.length
-      ? (await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,cidade,valor&order=carga.asc,pedido.asc`) || [])
+    const _armCargaMes = _cargaMesMapDeDemandas(demandas);
+    const _baseRowsRaw = cargasIds.length
+      ? (await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,cidade,valor,mes_ano&order=carga.asc,pedido.asc`) || [])
       : [];
+    const baseRows = _baseRowsRaw.filter(r => { const m=_armCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; });
 
     // Buscar conferencias para saber o que já foi separado
     const conferencias = cargasIds.length
@@ -23921,10 +23968,12 @@ async function carregarPortalConferente(){
 
     // Buscar pedidos e conferências em lote
     const idsAtivos = atribsAtivas.map(a=>a.carga);
-    const [pedidosBDAll, confMeus] = await Promise.all([
-      supaFetch(`base_data?carga=in.(${idsAtivos.join(',')})&select=carga,pedido,rota,valor&order=pedido.asc`).catch(()=>[]),
+    const _confCargaMes = _cargaMesMapDeDemandas(Object.values(demMap));
+    const [_pedidosBDRaw, confMeus] = await Promise.all([
+      supaFetch(`base_data?carga=in.(${idsAtivos.join(',')})&select=carga,pedido,rota,valor,mes_ano&order=pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${idsAtivos.join(',')})&conferente_id=eq.${myId}&select=*`).catch(()=>[])
     ]);
+    const pedidosBDAll = (_pedidosBDRaw||[]).filter(r=>{ const m=_confCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; });
 
     const pedPorCarga = {};
     (pedidosBDAll||[]).forEach(r=>{ if(!pedPorCarga[r.carga]) pedPorCarga[r.carga]=[]; pedPorCarga[r.carga].push(r); });
@@ -24662,13 +24711,15 @@ async function carregarPaginaFiscal(){
     }
 
     // Buscar TODOS os pedidos dessas cargas (conferidos ou não)
-    const [todosPedidos, conferidos, nfs, atribs, meusAlertas] = await Promise.all([
-      supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor&order=carga.asc,pedido.asc`).catch(()=>[]),
+    const _fiscalCargaMes = _cargaMesMapDeDemandas(demandasFiscal);
+    const [_todosPedidosFRaw, conferidos, nfs, atribs, meusAlertas] = await Promise.all([
+      supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,mes_ano&order=carga.asc,pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([])
     ]);
+    const todosPedidos = (_todosPedidosFRaw||[]).filter(r=>{ const m=_fiscalCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; });
     // Montar Set de alertas ativos: "carga_pedido"
     window._meusAlertas = new Set((meusAlertas||[]).map(a=>`${a.carga}_${a.pedido}`));
 
@@ -25753,11 +25804,18 @@ async function verPedidosConferencia(carga, atribId, confId, confNome){
   window._mpcConferenteId   = confId   || '';
   window._mpcConferenteNome = confNome || '';
   try{
-    const [pedidosBase, confStatus] = await Promise.all([
-      supaFetch(`base_data?carga=eq.${carga}&select=pedido,valor,rota&order=pedido.asc`) || [],
+    // Determinar mês esperado desta carga usando o cache de demandas ativas
+    const _vpcDem = (_demandasCache||[]).find(d=>String(d.carga)===String(carga));
+    const _vpcMes = _vpcDem?.data_saida ? String(_vpcDem.data_saida).substring(0,7) : '';
+    const _vpcUrl = _vpcMes
+      ? `base_data?carga=eq.${carga}&mes_ano=eq.${_vpcMes}&select=pedido,valor,rota&order=pedido.asc`
+      : `base_data?carga=eq.${carga}&select=pedido,valor,rota,mes_ano&order=pedido.asc`;
+    const [_pedidosBaseRaw, confStatus] = await Promise.all([
+      supaFetch(_vpcUrl) || [],
       supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=*`) || []
     ]);
-    const unicos = [...new Map((pedidosBase||[]).map(p=>[p.pedido,p])).entries()].map(([,v])=>v);
+    const _pedidosBase = _vpcMes ? (_pedidosBaseRaw||[]) : _filtrarBaseDataMesRecente(_pedidosBaseRaw||[]);
+    const unicos = [...new Map(_pedidosBase.map(p=>[p.pedido,p])).entries()].map(([,v])=>v);
     const confMap = {};
     (confStatus||[]).forEach(c=>{ confMap[c.pedido]=c; });
 
