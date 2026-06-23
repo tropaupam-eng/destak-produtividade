@@ -7575,33 +7575,52 @@ function _cargaMesMapDeDemandas(demandas) {
 
 function buildCargaMapCache(){
   const map = {};
-  const _cargaMes = {}; // carga → mes_ano do primeiro registro encontrado (mais recente, pois BASE_DATA vem mes_ano.desc)
+  // Chave composta (und_carga) → mes_ano do primeiro registro (mais recente, dados ordenados desc)
+  // Garante que CD carga 100 e Petrolina carga 100 não se misturem
+  const _compKey = (und, c) => und ? `${(und||'').trim().toUpperCase()}_${c}` : String(c);
+  const _undMesSeen = {}; // compKey → mes_ano first seen
+  // Backward-compat: para CARGA_MAP[carga] (sem und), rastreia qual und/mes foi visto primeiro
+  const _cargaSimples = {}; // carga → compKey first assigned (para backward compat)
   BASE_DATA.forEach(r=>{
     if(!r.carga) return;
     const c = Math.round(Number(r.carga));
+    const und = (r.und || '').trim();
     const mes = r.mes_ano || '';
-    // Registra o primeiro mês visto para esta carga (= mais recente por causa da ordenação desc)
-    if(!_cargaMes[c] && mes) _cargaMes[c] = mes;
-    // Pula registros de meses anteriores para o mesmo número de carga
-    else if(mes && _cargaMes[c] && mes !== _cargaMes[c]) return;
-    if(!map[c]) map[c]={pedidos:new Set(),pedidosSemOcorr:new Set(),pedidoValor:{},valor:0,rota:'',und:'',rire:'',placa:'',ajudante:''};
+    const ck = _compKey(und, c);
+    // Registra o primeiro (mais recente) mes_ano para esta combinação carga+und
+    if(!_undMesSeen[ck] && mes) _undMesSeen[ck] = mes;
+    else if(mes && _undMesSeen[ck] && mes !== _undMesSeen[ck]) return; // mês anterior → pular
+    // Chave no mapa: composta quando und disponível, simples como fallback backward-compat
+    const mapKey = und ? ck : c;
+    if(!map[mapKey]) map[mapKey]={pedidos:new Set(),pedidosSemOcorr:new Set(),pedidoValor:{},valor:0,rota:'',und:'',rire:'',placa:'',ajudante:''};
     const k = String(r.pedido||'');
-    if(r.pedido && !map[c].pedidoValor.hasOwnProperty(k)){
+    if(r.pedido && !map[mapKey].pedidoValor.hasOwnProperty(k)){
       const v = parseValorBR(r.valor);
-      map[c].pedidoValor[k] = v;
-      map[c].pedidos.add(k);
-      if(Number(r.ocorrencia||0)!==1){ map[c].pedidosSemOcorr.add(k); map[c].valor+=v; }
+      map[mapKey].pedidoValor[k] = v;
+      map[mapKey].pedidos.add(k);
+      if(Number(r.ocorrencia||0)!==1){ map[mapKey].pedidosSemOcorr.add(k); map[mapKey].valor+=v; }
     }
-    if(!map[c].rota       && r.rota)                    map[c].rota       = r.rota;
-    if(!map[c].und        && r.und)                     map[c].und        = r.und;
-    if(!map[c].rire       && r.rire)                    map[c].rire       = r.rire;
-    if(!map[c].placa      && r.placa)                   map[c].placa      = r.placa;
-    if(!map[c].ajudante   && r.ajudante&&r.ajudante.trim()) map[c].ajudante = r.ajudante.trim();
-    if(!map[c].condutor   && r.condutor&&r.condutor.trim()) map[c].condutor = r.condutor.trim();
-    if(!map[c].mes_ano    && r.mes_ano)                 map[c].mes_ano    = r.mes_ano;
-    if(!map[c].data_pedido && r.data_pedido)            map[c].data_pedido = r.data_pedido;
+    if(!map[mapKey].rota       && r.rota)                    map[mapKey].rota       = r.rota;
+    if(!map[mapKey].und        && r.und)                     map[mapKey].und        = r.und;
+    if(!map[mapKey].rire       && r.rire)                    map[mapKey].rire       = r.rire;
+    if(!map[mapKey].placa      && r.placa)                   map[mapKey].placa      = r.placa;
+    if(!map[mapKey].ajudante   && r.ajudante&&r.ajudante.trim()) map[mapKey].ajudante = r.ajudante.trim();
+    if(!map[mapKey].condutor   && r.condutor&&r.condutor.trim()) map[mapKey].condutor = r.condutor.trim();
+    if(!map[mapKey].mes_ano    && r.mes_ano)                 map[mapKey].mes_ano    = r.mes_ano;
+    if(!map[mapKey].data_pedido && r.data_pedido)            map[mapKey].data_pedido = r.data_pedido;
+    // Backward compat: expõe também sob chave numérica simples (primeira und vista para este número)
+    if(und && !_cargaSimples[c]){ _cargaSimples[c] = ck; map[c] = map[mapKey]; }
+    else if(und && _cargaSimples[c] === ck){ map[c] = map[mapKey]; }
   });
   window._cargaMapCache = map;
+}
+// Lookup com contexto de unidade: prefere chave composta und_carga, cai no numérico
+function getCargaMapEntry(carga, und){
+  const m = window._cargaMapCache || (buildCargaMapCache(), window._cargaMapCache);
+  const undNorm = (und||'').trim().toUpperCase();
+  const c = Math.round(Number(carga));
+  const ck = undNorm ? `${undNorm}_${c}` : String(c);
+  return m[ck] || m[c] || null;
 }
 function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), window._cargaMapCache); }
 
@@ -8044,7 +8063,12 @@ async function onFileSelected(event) {
     lancamentos.forEach(l => {
       if(l.pendente) {
         const _mesLanc = (()=>{ const d=new Date(l.ts||''); return !isNaN(d)?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'):''; })();
-        const linhas = BASE_DATA.filter(x => Math.round(Number(x.carga))===Math.round(Number(l.carga)) && x.pedido && (!_mesLanc||!x.mes_ano||x.mes_ano===_mesLanc));
+        const _undLanc = (l.und||'').trim().toUpperCase();
+        const linhas = BASE_DATA.filter(x => {
+          if(Math.round(Number(x.carga))!==Math.round(Number(l.carga))||!x.pedido) return false;
+          if(_undLanc && x.und && (x.und||'').trim().toUpperCase()!==_undLanc) return false;
+          return !_mesLanc||!x.mes_ano||x.mes_ano===_mesLanc;
+        });
         if(linhas.length > 0) {
           l.vinculado = true;
           l.pendente  = false;
@@ -8128,7 +8152,8 @@ function previewCarga() {
   }
 
   // Buscar no BASE_DATA primeiro (fonte mais atualizada)
-  const _linhasRaw = BASE_DATA.filter(r => Number(r.carga) === carga && r.pedido);
+  const _prevUndN = ((document.getElementById('l-und')?.value||USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim()).toUpperCase();
+  const _linhasRaw = BASE_DATA.filter(r => Number(r.carga) === carga && r.pedido && (!_prevUndN||!(r.und||'').trim()||((r.und||'').trim().toUpperCase()===_prevUndN)));
   const _mesesPrev = [...new Set(_linhasRaw.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
   const linhas = _mesesPrev.length > 1 ? _linhasRaw.filter(r=>r.mes_ano===_mesesPrev[0]) : _linhasRaw;
   const pedidosUnicos = linhas.length > 0 ? [...new Set(linhas.map(r=>r.pedido))] : [];
@@ -8193,9 +8218,15 @@ function buildManualRecords() {
     return Math.floor((d.getDate()+first.getDay()-1)/7)+1;
   }
   // Buscar pedidos da carga SEMPRE no BASE_DATA (fonte mais atualizada)
-  function getPedidosDaCarga(carga, mesAno) {
+  function getPedidosDaCarga(carga, mesAno, und) {
     let linhas = BASE_DATA.filter(r => Math.round(Number(r.carga)) === Math.round(Number(carga)) && r.pedido);
     if(linhas.length > 0) {
+      // Filtrar pela unidade do lançamento: evita mistura entre Petrolina e CD com o mesmo número de carga
+      if(und) {
+        const undNorm = (und||'').trim().toUpperCase();
+        const filtUnd = linhas.filter(r => (r.und||'').trim().toUpperCase() === undNorm);
+        if(filtUnd.length > 0) linhas = filtUnd;
+      }
       // Filtrar pelo mês do lançamento: evita mistura de pedidos de cargas com mesmo número em meses distintos
       if(mesAno) {
         const filtrado = linhas.filter(r => r.mes_ano === mesAno);
@@ -8237,7 +8268,7 @@ function buildManualRecords() {
   const records=[];
   lancamentos.forEach(l => {
     const mesAno = getMesAno(l);
-    const info = getPedidosDaCarga(l.carga, mesAno);
+    const info = getPedidosDaCarga(l.carga, mesAno, l.und);
     const semana = getSemana(l);
     const rotaContagem = rotaContaEntrega(l.rota);
     if(info && info.pedidos && info.pedidos.length>0 && rotaContagem) {
@@ -8772,7 +8803,8 @@ async function lancar(){
   }
   const veiculo = veicLanc;
   const rotaInput = normalizarRota(document.getElementById('l-rota-input')?.value||'');
-  const _linhasBaseRaw = BASE_DATA.filter(x=>Number(x.carga)===Number(carga)&&x.pedido);
+  const _undN = (und||'').trim().toUpperCase();
+  const _linhasBaseRaw = BASE_DATA.filter(x=>Number(x.carga)===Number(carga)&&x.pedido&&(!_undN||!(x.und||'').trim()||((x.und||'').trim().toUpperCase()===_undN)));
   const _mesesBase = [...new Set(_linhasBaseRaw.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
   const linhasBase = _mesesBase.length > 1 ? _linhasBaseRaw.filter(r=>r.mes_ano===_mesesBase[0]) : _linhasBaseRaw;
   const temNaBase  = linhasBase.length>0;
@@ -21563,7 +21595,12 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
     supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,rota,mes_ano`).catch(()=>[]),
     supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=carga,pedido,fiscal_nome,status`).catch(()=>[])
   ]);
-  const _filtCaixa = r => { const m=_caixaCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; };
+  const _caixaUnd = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim().toUpperCase();
+  const _filtCaixa = r => {
+    const m=_caixaCargaMes[r.carga]; if(m&&r.mes_ano&&r.mes_ano!==m) return false;
+    if(_caixaUnd&&r.und&&(r.und||'').trim().toUpperCase()!==_caixaUnd) return false;
+    return true;
+  };
   const todosPedidos = (_todosPedidosRaw||[]).filter(_filtCaixa);
   const bdData = (_bdDataRaw||[]).filter(_filtCaixa);
 
@@ -21984,7 +22021,12 @@ async function carregarPortalOperador(){
     const _baseRowsRaw = cargasIds.length
       ? (await supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,cidade,valor,mes_ano&order=carga.asc,pedido.asc`) || [])
       : [];
-    const baseRows = _baseRowsRaw.filter(r => { const m=_armCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; });
+    const _armUnd = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim().toUpperCase();
+    const baseRows = _baseRowsRaw.filter(r => {
+      const m=_armCargaMes[r.carga]; if(m&&r.mes_ano&&r.mes_ano!==m) return false;
+      if(_armUnd&&r.und&&(r.und||'').trim().toUpperCase()!==_armUnd) return false;
+      return true;
+    });
 
     // Buscar conferencias para saber o que já foi separado
     const conferencias = cargasIds.length
@@ -23973,7 +24015,12 @@ async function carregarPortalConferente(){
       supaFetch(`base_data?carga=in.(${idsAtivos.join(',')})&select=carga,pedido,rota,valor,mes_ano&order=pedido.asc`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=in.(${idsAtivos.join(',')})&conferente_id=eq.${myId}&select=*`).catch(()=>[])
     ]);
-    const pedidosBDAll = (_pedidosBDRaw||[]).filter(r=>{ const m=_confCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; });
+    const _confUnd = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim().toUpperCase();
+    const pedidosBDAll = (_pedidosBDRaw||[]).filter(r=>{
+      const m=_confCargaMes[r.carga]; if(m&&r.mes_ano&&r.mes_ano!==m) return false;
+      if(_confUnd&&r.und&&(r.und||'').trim().toUpperCase()!==_confUnd) return false;
+      return true;
+    });
 
     const pedPorCarga = {};
     (pedidosBDAll||[]).forEach(r=>{ if(!pedPorCarga[r.carga]) pedPorCarga[r.carga]=[]; pedPorCarga[r.carga].push(r); });
@@ -24719,7 +24766,12 @@ async function carregarPaginaFiscal(){
       supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
       USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([])
     ]);
-    const todosPedidos = (_todosPedidosFRaw||[]).filter(r=>{ const m=_fiscalCargaMes[r.carga]; return !m||!r.mes_ano||r.mes_ano===m; });
+    const _fiscalUnd = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim().toUpperCase();
+    const todosPedidos = (_todosPedidosFRaw||[]).filter(r=>{
+      const m=_fiscalCargaMes[r.carga]; if(m&&r.mes_ano&&r.mes_ano!==m) return false;
+      if(_fiscalUnd&&r.und&&(r.und||'').trim().toUpperCase()!==_fiscalUnd) return false;
+      return true;
+    });
     // Montar Set de alertas ativos: "carga_pedido"
     window._meusAlertas = new Set((meusAlertas||[]).map(a=>`${a.carga}_${a.pedido}`));
 
