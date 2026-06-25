@@ -28205,6 +28205,8 @@ async function salvarAgendamento(){
       arr[idx] = {...arr[idx], rota, data, obs, mes_ano, carga, motivo_atraso:motivo||null, motivo_label:motivoLabel||null, status:novoStatus};
     }
   } else {
+    const jaExisteAgend = arr.find(a => a.rota === rota && a.data === data);
+    if(jaExisteAgend){ showToast('⚠️ Já existe agendamento para '+rota+' em '+data,'warning'); return; }
     arr.push({id:(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'agend_'+Date.now()), rota, data, obs, mes_ano, status:'agendado', criado_em:new Date().toISOString()});
   }
   await saveAgendamentos(arr);
@@ -28723,13 +28725,18 @@ async function abrirPopupRotasExpedicao(){
   }
 
   // Filtrar: fechamento de vendas dentro dos próximos 7 dias e status não finalizado
-  const rotasFechamento = agends
-    .filter(a => {
-      if(!a.data) return false;
-      if(a.status === 'realizado' || a.status === 'concluido') return false;
-      const fech = calcFech(a.data);
-      return fech >= hojeStr && fech <= fim7Str;
-    })
+  // Deduplicar por rota+data: manter apenas o mais recente (por criado_em) para cada par
+  const _agendsSeen = new Map();
+  agends.forEach(a=>{
+    if(!a.data) return;
+    if(a.status === 'realizado' || a.status === 'concluido') return;
+    const fech = calcFech(a.data);
+    if(fech < hojeStr || fech > fim7Str) return;
+    const key = (a.rota||'')+'__'+(a.data||'');
+    const prev = _agendsSeen.get(key);
+    if(!prev || (a.criado_em||'') > (prev.criado_em||'')) _agendsSeen.set(key, a);
+  });
+  const rotasFechamento = [..._agendsSeen.values()]
     .sort((a,b) => calcFech(a.data).localeCompare(calcFech(b.data)));
 
   const total_ct = rotasFechamento.length;
@@ -28847,8 +28854,7 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
         await saveAgendamentos(arr);
       }
       showToast('✅ Pré-carga criada: '+rota,'success');
-      carregarDemandas();
-      abrirPopupRotasExpedicao(); // atualiza o popup
+      await carregarDemandas(); // já recarrega o popup via linha interna se estiver aberto
     }catch(e){ showToast('Erro: '+e.message,'warning'); }
 
   } else if(tipo==='atraso'){
