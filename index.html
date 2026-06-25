@@ -23080,13 +23080,19 @@ async function concluirFiscalPortal(carga){
     } else {
       if(!confirm('Confirmar conclusão do Fiscal para carga '+carga+'? A carga irá para Seguros e Caixa.')) return;
     }
-    const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`);
+    const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
     const id = dem?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    const r = await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal');
-    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
+    // Fiscal conclui independente do status da demanda
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
-    showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
+    // Se armazém já finalizou (status=aguardando_nf), avança para manifesto agora
+    if(dem[0].status === 'aguardando_nf'){
+      const r = await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal_concluir');
+      if(r.ok) showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
+      else showToast('✅ Fiscal concluído — erro ao avançar status: '+r.msg,'warning');
+    } else {
+      showToast('✅ Fiscal concluído — aguardando finalização do armazém.','success');
+    }
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -24648,7 +24654,14 @@ async function concluirCarregamentoConferente(carga){
 
     const r = await _patchStatusDemanda(dem.id, 'aguardando_nf', 'conferente_concluir', {extra:{arm_status:'carregado_ok'}});
     if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
-    showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
+    // Se fiscal já concluiu, avança automaticamente para aguardando_manifesto
+    const fiscalOk = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&status=eq.concluido&select=id&limit=1`).catch(()=>[]) || [];
+    if(fiscalOk.length){
+      await _patchStatusDemanda(dem.id, 'aguardando_manifesto', 'armazem_auto_manifesto').catch(()=>{});
+      showToast('✅ Carga '+carga+' carregada! Fiscal já concluído — enviada para Seguros e Caixa.','success');
+    } else {
+      showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
+    }
     await carregarPortalConferente();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -25455,7 +25468,6 @@ async function _executarConclusaoFiscal(){
   const carga = _fiscalXmlCarga;
   const demandaId = _fiscalXmlDemandaId;
   try{
-    // Validar pedidos antes de avançar status
     const v = await _validarFiscalCompleto(carga);
     if(!v.ok){
       let msg = 'Carga '+carga+' ainda tem pendências:';
@@ -25464,12 +25476,18 @@ async function _executarConclusaoFiscal(){
       msg += '\n\nDeseja enviar mesmo assim?';
       if(!confirm(msg)) return;
     }
-    const id = demandaId || (await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`))?.[0]?.id;
+    const demRow = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
+    const id = demandaId || demRow?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    const tsManifesto = new Date().toISOString();
-    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto',ts_aguardando_manifesto:tsManifesto})});
+    // Fiscal conclui independente do status da demanda
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
-    showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
+    // Se armazém já finalizou (status=aguardando_nf), avança para manifesto agora
+    if(demRow?.[0]?.status === 'aguardando_nf'){
+      await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal_xml_concluir');
+      showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
+    } else {
+      showToast('✅ Fiscal concluído — aguardando finalização do armazém.','success');
+    }
     document.getElementById('modal-xml-fiscal').style.display = 'none';
     _fiscalXmlCarga = null;
     _fiscalXmlDemandaId = null;
