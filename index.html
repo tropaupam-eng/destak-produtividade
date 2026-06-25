@@ -4123,7 +4123,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">👥 Recursos Humanos</h2>
       <p style="font-size:.83rem;color:var(--text-secondary)">Colaboradores ativos — Distribuição · Armazém · Loja · Administrativo</p>
     </div>
-    <button onclick="renderRH()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="renderRH()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+      <button onclick="sincronizarRHComSistema(this)" style="background:#0891b2;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔗 Sincronizar com Cadastros</button>
+    </div>
   </div>
 
   <!-- KPIs -->
@@ -17619,12 +17622,31 @@ async function salvarNovoAjudante(){
     const ex = await supaFetch(`ajudantes?nome=eq.${encodeURIComponent(nome)}&select=id`) || [];
     if(ex.length){ msg.style.display='block'; msg.style.background='#fee2e2'; msg.style.color='#991b1b'; msg.textContent='Ajudante já cadastrado.'; return; }
     if(cpf){
-      const exCpf = await supaFetch(`ajudantes?cpf=eq.${cpf.replace(/\D/g,'')}&select=id,nome`) || [];
+      const exCpf = await supaFetch(`ajudantes?cpf=eq.${cpf}&select=id,nome`) || [];
       if(exCpf.length){ msg.style.display='block'; msg.style.background='#fee2e2'; msg.style.color='#991b1b'; msg.textContent='CPF já cadastrado para: '+exCpf[0].nome; return; }
     }
 
+    // Vinculação automática: se mesmo nome E CPF já existem em motoristas, herda dados
+    let unidadeFinal = und;
+    let senhaFinal   = senha;
+    if(cpf && nome){
+      const motVinc = await supaFetch(`motoristas?nome=eq.${encodeURIComponent(nome)}&cpf=eq.${cpf}&select=id,nome,unidade,senha&limit=1`) || [];
+      if(motVinc.length){
+        const m = motVinc[0];
+        if(!und && m.unidade) unidadeFinal = m.unidade;
+        if(senha === 'destak123' && m.senha) senhaFinal = m.senha;
+        msg.style.display='block'; msg.style.background='#d1fae5'; msg.style.color='#065f46';
+        msg.textContent='🔗 Vinculado ao motorista '+m.nome+' — dados sincronizados.';
+      }
+      // Também herda dados do RH (dp_funcionarios) se não veio do motorista
+      if(!motVinc.length){
+        const rhMatch = await supaFetch(`dp_funcionarios?nome=eq.${encodeURIComponent(nome)}&cpf=eq.${cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4')}&select=local_trabalho&limit=1`) || [];
+        if(rhMatch.length && !und) unidadeFinal = _mapRHUnidade(rhMatch[0].local_trabalho||'') || und;
+      }
+    }
+
     await supaFetch('ajudantes',{method:'POST',body:JSON.stringify({
-      nome, unidade:und, senha, ativo:true, status:'ativo',
+      nome, unidade:unidadeFinal, senha:senhaFinal, ativo:true, status:'ativo',
       email: null,
       cpf: cpf||null,
       criado_em:new Date().toISOString()
@@ -17635,6 +17657,69 @@ async function salvarNovoAjudante(){
   }catch(e){
     msg.style.display='block'; msg.style.background='#fee2e2'; msg.style.color='#991b1b';
     msg.textContent='Erro: '+e.message;
+  }
+}
+
+function _mapRHUnidade(localTrabalho){
+  const l = (localTrabalho||'').toUpperCase();
+  if(l.includes('CD'))    return '1 - CD';
+  if(l.includes('CEASA')) return 'CEASA';
+  if(l.includes(' PE'))   return 'PE';
+  if(l.includes('-PE'))   return 'PE';
+  return localTrabalho;
+}
+
+async function sincronizarRHComSistema(btn){
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Sincronizando...'; }
+  try{
+    const [funcs, mots, ajs] = await Promise.all([
+      supaFetch('dp_funcionarios?ativo=eq.true&select=nome,cpf,cargo,local_trabalho&limit=2000').catch(()=>[]),
+      supaFetch('motoristas?select=nome,cpf,unidade,senha&limit=2000').catch(()=>[]),
+      supaFetch('ajudantes?select=nome,cpf&limit=2000').catch(()=>[]),
+    ]);
+
+    const cpfMotSet = new Set((mots||[]).map(m=>(m.cpf||'').replace(/\D/g,'')).filter(Boolean));
+    const cpfAjuSet = new Set((ajs||[]).map(a=>(a.cpf||'').replace(/\D/g,'')).filter(Boolean));
+    let criadosMot=0, criadosAju=0, ignorados=0;
+
+    for(const f of (funcs||[])){
+      const cargo  = (f.cargo||'').toUpperCase();
+      const cpf    = (f.cpf||'').replace(/\D/g,'');
+      const nome   = (f.nome||'').toUpperCase().trim();
+      if(!nome || !cpf){ ignorados++; continue; }
+      const unidade = _mapRHUnidade(f.local_trabalho||'');
+
+      if(cargo.includes('MOTORISTA') || cargo.includes('ENTREGADOR')){
+        if(!cpfMotSet.has(cpf)){
+          await supaFetch('motoristas',{method:'POST',body:JSON.stringify({
+            nome, cpf, unidade, ativo:true, senha:'destak123', criado_em:new Date().toISOString()
+          })}).catch(()=>{});
+          cpfMotSet.add(cpf); criadosMot++;
+        }
+        // Se o mesmo CPF existe em ajudantes, garante dados atualizados (vinculação silenciosa)
+        const motRow = (mots||[]).find(m=>(m.cpf||'').replace(/\D/g,'')===cpf) || {unidade,senha:'destak123'};
+        if(cpfAjuSet.has(cpf)){
+          await supaFetch(`ajudantes?cpf=eq.${cpf}`,{method:'PATCH',body:JSON.stringify({unidade:motRow.unidade||unidade})}).catch(()=>{});
+        }
+      } else if(cargo.includes('AJUDANTE') || cargo.includes('AUXILIAR DE ENTREGA')){
+        if(!cpfAjuSet.has(cpf)){
+          const motVinc = (mots||[]).find(m=>(m.cpf||'').replace(/\D/g,'')===cpf);
+          await supaFetch('ajudantes',{method:'POST',body:JSON.stringify({
+            nome, cpf, unidade: motVinc?.unidade||unidade,
+            ativo:true, status:'ativo', senha: motVinc?.senha||'destak123',
+            criado_em:new Date().toISOString()
+          })}).catch(()=>{});
+          cpfAjuSet.add(cpf); criadosAju++;
+        }
+      } else { ignorados++; }
+    }
+
+    showToast(`✅ RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados`,'success');
+    renderRH();
+  }catch(e){
+    showToast('⛔ Erro na sincronização: '+e.message,'warning');
+  } finally {
+    if(btn){ btn.disabled=false; btn.textContent='🔗 Sincronizar com Cadastros'; }
   }
 }
 
