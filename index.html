@@ -2404,6 +2404,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
   <div class="sidebar-divider"></div>
   <div class="sidebar-section-label">Distribuição</div>
+  <div class="sidebar-item" data-page="lancamento" onclick="showPage('lancamento',this)">
+    <span class="si-icon">🚚</span><span class="si-label">Lançamento</span>
+  </div>
   <div class="sidebar-item" data-page="expedicao" onclick="showPage('expedicao',this)">
     <span class="si-icon">📦</span><span class="si-label">Expedição</span>
   </div>
@@ -7047,6 +7050,112 @@ async function resolverTodosErros(){
   }
 }
 
+// ══ FLUXO DE STATUS — regras centralizadas ════════════════════════════════════
+// Única fonte de verdade para transições válidas de demandas_rota.
+// Para avançar o status: só é permitido ir para o `next` imediato.
+// `cancelado` é permitido de qualquer status ativo (exceto concluido).
+const FLUXO_STATUS = {
+  pendente:             { next:'separacao',              label:'📦 Em Separação' },
+  separacao:            { next:'carregamento',           label:'🚛 Em Carregamento' },
+  carregamento:         { next:'aguardando_nf',          label:'📋 Aguardando NF' },
+  aguardando_nf:        { next:'aguardando_manifesto',   label:'🛡️ Aguardando Manifesto' },
+  aguardando_manifesto: { next:'pronto_viagem',          label:'✅ Pronto para Viagem' },
+  pronto_viagem:        { next:'saiu',                   label:'🚛 Em Viagem' },
+  saiu:                 { next:'fim_viagem',             label:'🏁 Fim de Viagem' },
+  fim_viagem:           { next:'concluido',              label:'✅ Concluído' },
+  concluido:            { next:null,                     label:null },
+  cancelado:            { next:null,                     label:null },
+};
+
+const STATUS_CANCELAVEIS = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
+
+/**
+ * Valida se uma transição de status é permitida pelas regras do fluxo.
+ * Retorna {ok:true} ou {ok:false, msg:'...'}
+ */
+function validarTransicaoStatus(statusAtual, novoStatus){
+  if(novoStatus === statusAtual) return {ok:false, msg:'Carga já está nesse status.'};
+  if(novoStatus === 'cancelado'){
+    if(!STATUS_CANCELAVEIS.includes(statusAtual))
+      return {ok:false, msg:`Não é possível cancelar uma carga com status "${statusAtual}".`};
+    return {ok:true};
+  }
+  const regra = FLUXO_STATUS[statusAtual];
+  if(!regra) return {ok:false, msg:`Status atual desconhecido: "${statusAtual}".`};
+  if(regra.next !== novoStatus)
+    return {ok:false, msg:`Transição inválida: "${statusAtual}" → "${novoStatus}". O próximo passo obrigatório é "${regra.next}".`};
+  return {ok:true};
+}
+
+/**
+ * Registra qualquer mudança de status no histórico (Supabase).
+ * Fire-and-forget: erros não bloqueiam o fluxo principal.
+ */
+async function registrarHistoricoStatus(demandaId, statusAnterior, novoStatus, origem){
+  try{
+    const dem = (_demandasCache||[]).find(d=>d.id===demandaId)||{};
+    await supaFetch('historico_status_carga',{
+      method:'POST',
+      body: JSON.stringify({
+        demanda_id:   String(demandaId),
+        carga:        dem.carga||null,
+        rota:         dem.rota||null,
+        status_anterior: statusAnterior||null,
+        novo_status:  novoStatus,
+        usuario_id:   USUARIO_LOGADO?.id ? String(USUARIO_LOGADO.id) : null,
+        usuario_nome: USUARIO_LOGADO?.nome||null,
+        origem:       origem||'frontend',
+      }),
+      prefer:'return=minimal'
+    });
+  }catch(_){}
+}
+
+/**
+ * Wrapper central para TODA mudança de status em demandas_rota.
+ * Busca o status atual direto do Supabase, valida a transição e registra histórico.
+ * opcoes.extra: campos adicionais a incluir no PATCH (ex: ts_saiu, arm_status)
+ * opcoes.bypassValidacao: true apenas para ações de reabertura (admin/fiscal)
+ * Retorna {ok:true} ou {ok:false, msg:'...'}
+ */
+async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
+  const extra           = opcoes?.extra           || {};
+  const bypassValidacao = opcoes?.bypassValidacao || false;
+  try{
+    // Busca status atual direto no Supabase (evita cache stale)
+    const rows = await supaFetch(`demandas_rota?id=eq.${id}&select=status`);
+    const statusAtual = rows?.[0]?.status;
+    if(!statusAtual) return {ok:false, msg:'Carga não encontrada (id: '+id+')'};
+
+    if(!bypassValidacao){
+      const chk = validarTransicaoStatus(statusAtual, novoStatus);
+      if(!chk.ok) return {ok:false, msg:chk.msg};
+    }
+
+    const tsField = {
+      separacao:'ts_separacao', carregamento:'ts_carregamento',
+      aguardando_nf:'ts_aguardando_nf', aguardando_manifesto:'ts_aguardando_manifesto',
+      pronto_viagem:'ts_pronto_viagem', saiu:'ts_saiu',
+      fim_viagem:'ts_fim_viagem', concluido:'ts_concluido'
+    }[novoStatus];
+
+    const patch = {status: novoStatus, ...extra};
+    if(tsField && !patch[tsField]) patch[tsField] = new Date().toISOString();
+
+    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
+    registrarHistoricoStatus(id, statusAtual, novoStatus, origem||'sistema');
+
+    // Atualiza cache local se existir
+    const cached = (_demandasCache||[]).find(d=>d.id===id);
+    if(cached){ Object.assign(cached, patch); }
+
+    return {ok:true};
+  }catch(e){
+    return {ok:false, msg:e.message};
+  }
+}
+// ══════════════════════════════════════════════════════════════════════════════
+
 // ══ AUTH ══════════════════════════════════════════════
 let USUARIO_LOGADO = null;
 
@@ -11088,11 +11197,11 @@ async function confirmarModalKmCarga(){
       const h   = Math.floor(ms/3600000);
       const d   = Math.floor(h/24);
       const dur = d>0 ? `${d}d ${h%24}h` : `${h}h`;
-      // Auto-registrar fim de viagem ao salvar KM Final
+      // Auto-registrar fim de viagem ao salvar KM Final (a consulta já filtra status=saiu)
       try{
         const demRot = await supaFetch(`demandas_rota?carga=eq.${carga}&status=eq.saiu&select=id&limit=1`).catch(()=>[]) || [];
         if(demRot[0]){
-          await supaFetch(`demandas_rota?id=eq.${demRot[0].id}`,{method:'PATCH',body:JSON.stringify({status:'fim_viagem',ts_fim_viagem:agora})});
+          await _patchStatusDemanda(demRot[0].id, 'fim_viagem', 'km_final_motorista');
           showToast(`🏁 Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km — Fim de Viagem registrado!`,'success');
         } else {
           showToast(`✅ Carga #${carga} — ${kmRodado.toLocaleString('pt-BR')} km em ${dur}`,'success');
@@ -12146,25 +12255,18 @@ async function criarDemanda(){
   const veiculoSalvar   = veiculo || 'A DEFINIR VEÍCULO';
 
   try{
-    // Pré-carga vai direto para carregamento no armazém
-    const _temMot = motoristaSalvar && motoristaSalvar !== 'A DEFINIR MOTORISTA';
-    const _novoStatus = _temMot ? 'carregamento' : 'pendente';
-    const _tsExtra = _temMot ? {ts_carregamento: new Date().toISOString()} : {};
-
     await supaFetch('demandas_rota',{
       method:'POST',
       body: JSON.stringify({
         motorista: motoristaSalvar, veiculo: veiculoSalvar, rota,
         data_saida: data,
         valor_meta: valorMeta,
-        status: _novoStatus,
-        arm_status: 'carregamento',
-        ..._tsExtra,
+        status: 'pendente',
         usuario_id: USUARIO_LOGADO?.id||null
       })
     });
 
-    showMsgExp('✅ Pré-carga criada — aguardando conferente no Carregamento!','ok');
+    showMsgExp('✅ Pré-carga criada!','ok');
     // Limpar formulário
     ['exp-motorista','exp-veiculo','exp-rota','exp-valor-meta'].forEach(id=>{
       const el = document.getElementById(id); if(el) el.value='';
@@ -12389,34 +12491,57 @@ async function renderConferentesStats(){
 
 async function admConcluirCarregamento(demandaId, carga){
   try{
-    // Buscar total de pedidos e conferências
+    // Validar transição de status via regra centralizada
+    const demAtual = (_demandasCache||[]).find(d=>d.id===demandaId);
+    const statusChk = validarTransicaoStatus(demAtual?.status||'carregamento', 'aguardando_nf');
+    if(!statusChk.ok){
+      showToast('⛔ '+statusChk.msg,'warning');
+      return;
+    }
+    // Buscar total de pedidos e conferências direto do Supabase
     const [demRow, confRegs] = await Promise.all([
-      supaFetch(`demandas_rota?id=eq.${demandaId}&select=quantidade_pedidos`).catch(()=>[]),
+      supaFetch(`demandas_rota?id=eq.${demandaId}&select=quantidade_pedidos,status`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.(ok,nok)&select=id`).catch(()=>[])
     ]);
     const totalPedidos = demRow?.[0]?.quantidade_pedidos || 0;
+    const statusReal   = demRow?.[0]?.status;
     const conferidos   = (confRegs||[]).length;
 
-    if(totalPedidos > 0 && conferidos < totalPedidos){
-      showToast(`⛔ Não é possível concluir: ${totalPedidos - conferidos} pedido(s) ainda não conferidos (${conferidos}/${totalPedidos}).`,'warning');
+    // Verificar status real no banco (evita conflito de concorrência)
+    if(statusReal && statusReal !== 'carregamento' && statusReal !== 'separacao' && statusReal !== 'pendente'){
+      showToast(`⛔ Status atual é "${statusReal}" — operação não permitida.`,'warning');
       return;
     }
-    if(!conferidos){
-      showToast('⛔ Nenhuma conferência registrada. Atribua um conferente e aguarde a conferência.','warning');
+    // quantidade_pedidos=0 é suspeito — bloquear bypass
+    if(totalPedidos === 0){
+      showToast('⛔ A carga não possui quantidade de pedidos definida. Vincule os pedidos antes de concluir.','warning');
+      return;
+    }
+    if(conferidos < totalPedidos){
+      showToast(`⛔ Não é possível concluir: ${totalPedidos - conferidos} pedido(s) ainda não conferidos (${conferidos}/${totalPedidos}).`,'warning');
       return;
     }
     if(!confirm(`ATENÇÃO (ADM): Confirmar carregamento concluído da carga ${carga}? (${conferidos}/${totalPedidos} conferidos)`)) return;
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
+    registrarHistoricoStatus(demandaId, statusReal||'carregamento', 'aguardando_nf', 'adm_concluir_carregamento');
     showToast('✅ Carga '+carga+' carregada! Aguardando NF.','success');
     await carregarDemandas();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 async function apagarDemanda(id){
+  const demanda = _demandasCache.find(d=>d.id===id);
+  // Bloquear exclusão de cargas com status além de pendente ou com carga vinculada
+  if(demanda?.carga){
+    showToast('⛔ Não é possível apagar uma pré-carga com carga vinculada. Cancele a carga primeiro.','warning');
+    return;
+  }
+  const statusBloqueados = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
+  if(statusBloqueados.includes(demanda?.status)){
+    showToast(`⛔ Não é possível apagar uma carga com status "${demanda.status}". Cancele-a primeiro.`,'warning');
+    return;
+  }
   if(!confirm('Apagar esta pré-carga? Esta ação não pode ser desfeita.')) return;
   try{
-    // Guarda rota + data antes de remover do cache
-    const demanda = _demandasCache.find(d=>d.id===id);
-
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'DELETE',prefer:'return=minimal'});
     _demandasCache = _demandasCache.filter(d=>d.id!==id);
 
@@ -12469,6 +12594,9 @@ async function carregarDemandas(){
     // Expedição mostra apenas cargas NÃO concluídas (concluídas vão para Histórico)
     const data = await supaFetch('demandas_rota?status=not.in.(concluido,cancelado)&select=*&order=data_saida.desc&limit=200');
     _demandasCache = data||[];
+    if(_demandasCache.length >= 200){
+      showToast('⚠️ Limite de 200 cargas ativas atingido. Cargas mais antigas podem não estar visíveis. Conclua ou cancele cargas antigas.','warning');
+    }
     // Carregar comercial_rotas do Supabase para badge na expedição
     supaFetch('comercial_rotas?status=neq.resolvido&select=rota,data,motivo,status').then(cr=>{ window._comRotasCache = cr||[]; }).catch(()=>{});
     popularFiltrosExpedicao();
@@ -13570,6 +13698,16 @@ async function salvarEditarDemanda(){
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
     if(d) Object.assign(d, patch);
 
+    // ── Propagar mudança de número de carga para tabelas relacionadas ──────
+    const _cargaNova = patch.carga !== undefined ? patch.carga : null;
+    if(_cargaNova !== null && _cargaAntes !== null && _cargaNova !== _cargaAntes){
+      await Promise.all([
+        supaFetch(`atribuicoes_armazem?demanda_id=eq.${id}`,{method:'PATCH',body:JSON.stringify({carga:_cargaNova}),prefer:'return=minimal'}).catch(()=>{}),
+        supaFetch(`atribuicoes_fiscal?carga=eq.${_cargaAntes}`,{method:'PATCH',body:JSON.stringify({carga:_cargaNova}),prefer:'return=minimal'}).catch(()=>{}),
+        supaFetch(`conferencia_pedidos?carga=eq.${_cargaAntes}`,{method:'PATCH',body:JSON.stringify({carga:_cargaNova}),prefer:'return=minimal'}).catch(()=>{}),
+      ]);
+    }
+
     // ── Salvar KM Esperado separado (coluna opcional — ignora se não existir) ──
     if(kmEspVal!==null){
       try{ await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({km_esperado:kmEspVal})}); if(d) d.km_esperado=kmEspVal; }
@@ -13587,9 +13725,8 @@ async function salvarEditarDemanda(){
     const _rotaMudou  = patch.rota  !== undefined && patch.rota !== _rotaAntes;
     if((_cargaMudou || _rotaMudou) && _statusPosArmazem.includes(_statusAntes)){
       try{
-        // 1. Resetar status da demanda para carregamento
-        await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'carregamento'})});
-        if(d) d.status = 'carregamento';
+        // 1. Resetar status para carregamento (retrocesso intencional: carga/rota mudou)
+        await _patchStatusDemanda(id, 'carregamento', 'editar_demanda_retrocesso', {bypassValidacao:true});
 
         // 2. Limpar arm_status 'carregado_ok' desta demanda para que
         //    o Armazém não ache que ela já está pronta
@@ -14967,17 +15104,34 @@ function renderDemandasCards(){
           <div style="position:relative;display:inline-block">
             <button onclick="_expMenuToggle(this,'${d.id}')" data-menu-id="${d.id}"
               style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:.82rem;cursor:pointer" title="Alterar status">⋯</button>
-            <div id="exp-status-menu-${d.id}" style="display:none;position:fixed;top:0;left:0;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:5px;z-index:99999;min-width:210px;box-shadow:0 8px 28px rgba(0,0,0,.4);max-height:340px;overflow-y:auto">
-              <div style="padding:5px 10px 4px;font-size:.7rem;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px">ALTERAR STATUS</div>
-              ${['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido','cancelado'].map(s=>{
-                const lbs={pendente:'⏳ Pendente',separacao:'📦 Em Separação',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Aguardando NF',aguardando_manifesto:'🛡️ Aguardando Manifesto',pronto_viagem:'✅ Pronto para Viagem',saiu:'🚛 Em Viagem',fim_viagem:'🏁 Fim de Viagem',concluido:'✅ Concluído',cancelado:'❌ Cancelar'};
-                const isAtual = d.status===s;
-                return `<div onclick="document.getElementById('exp-status-menu-${d.id}').style.display='none';atualizarStatusDemanda('${d.id}','${s}')"
-                  style="padding:7px 12px;font-size:.8rem;cursor:pointer;border-radius:6px;font-weight:${isAtual?'800':'500'};background:${isAtual?'rgba(37,99,235,.13)':'transparent'};color:${isAtual?'#2563eb':'var(--text-primary)'};border-left:3px solid ${isAtual?'#2563eb':'transparent'};margin-bottom:1px"
-                  onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='${isAtual?'rgba(37,99,235,.13)':'transparent'}'">
-                  ${lbs[s]}${isAtual?' ✓':''}
-                </div>`;
-              }).join('')}
+            <div id="exp-status-menu-${d.id}" style="display:none;position:fixed;top:0;left:0;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:5px;z-index:99999;min-width:220px;box-shadow:0 8px 28px rgba(0,0,0,.4)">
+              <div style="padding:5px 10px 4px;font-size:.7rem;color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px">AÇÕES DA CARGA</div>
+              ${(()=>{
+                const lbs={pendente:'⏳ Pendente',separacao:'📦 Em Separação',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Aguardando NF',aguardando_manifesto:'🛡️ Aguardando Manifesto',pronto_viagem:'✅ Pronto para Viagem',saiu:'🚛 Em Viagem',fim_viagem:'🏁 Fim de Viagem',concluido:'✅ Concluído',cancelado:'❌ Cancelar Carga'};
+                const opcoes = [];
+                // Status atual (não clicável)
+                opcoes.push(`<div style="padding:6px 12px;font-size:.78rem;border-radius:6px;font-weight:800;background:rgba(37,99,235,.13);color:#2563eb;border-left:3px solid #2563eb;margin-bottom:4px">${lbs[d.status]||d.status} ✓ (atual)</div>`);
+                // Próxima etapa obrigatória
+                const regra = (typeof FLUXO_STATUS!=='undefined') ? FLUXO_STATUS[d.status] : null;
+                const next = regra?.next;
+                if(next && d.status!=='concluido' && d.status!=='cancelado'){
+                  opcoes.push(`<div onclick="document.getElementById('exp-status-menu-${d.id}').style.display='none';atualizarStatusDemanda('${d.id}','${next}')"
+                    style="padding:7px 12px;font-size:.8rem;cursor:pointer;border-radius:6px;font-weight:600;background:rgba(16,185,129,.1);color:#059669;border-left:3px solid #10b981;margin-bottom:1px"
+                    onmouseover="this.style.background='rgba(16,185,129,.2)'" onmouseout="this.style.background='rgba(16,185,129,.1)'">
+                    → ${lbs[next]||next}
+                  </div>`);
+                }
+                // Cancelar (somente para status canceláveis)
+                const cancelaveis = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
+                if(cancelaveis.includes(d.status)){
+                  opcoes.push(`<div onclick="document.getElementById('exp-status-menu-${d.id}').style.display='none';atualizarStatusDemanda('${d.id}','cancelado')"
+                    style="padding:7px 12px;font-size:.8rem;cursor:pointer;border-radius:6px;font-weight:600;background:rgba(239,68,68,.08);color:#ef4444;border-left:3px solid #ef4444;margin-top:4px;border-top:1px solid var(--border)"
+                    onmouseover="this.style.background='rgba(239,68,68,.18)'" onmouseout="this.style.background='rgba(239,68,68,.08)'">
+                    ❌ Cancelar Carga
+                  </div>`);
+                }
+                return opcoes.join('');
+              })()}
             </div>
           </div>
           <button onclick="abrirEditarDemanda('${d.id}')"
@@ -15082,10 +15236,19 @@ function _expMenuToggle(btn, id){
 
 async function atualizarStatusDemanda(id, status){
   if(!status) return;
-  // Se saindo em rota → verificar se motorista está definido
+  const dem = (_demandasCache||[]).find(x=>x.id===id);
+  const statusAtual = dem?.status;
+
+  // ── Validação centralizada de transição ──────────────────────────────────
+  const chk = validarTransicaoStatus(statusAtual, status);
+  if(!chk.ok){
+    showToast('⛔ '+chk.msg,'warning');
+    return;
+  }
+
+  // Se saindo em rota → verificar se motorista/veículo está definido
   if(status === 'saiu'){
-    const dem = _demandasCache.find(x=>x.id===id);
-    const mot = (dem?.motorista||'').trim();
+    const mot  = (dem?.motorista||'').trim();
     const veic = (dem?.veiculo||'').trim();
     if(mot === 'A DEFINIR MOTORISTA' && !ehVeiculoFrete(veic)){
       showToast('⚠️ Defina o motorista antes de colocar em viagem!','warning');
@@ -15102,11 +15265,19 @@ async function atualizarStatusDemanda(id, status){
   }
   // Fim de viagem → abrir pop-up de KM final e data retorno
   if(status === 'fim_viagem'){
+    // Valida que realmente está em 'saiu' (dupla verificação via Supabase)
+    if(statusAtual !== 'saiu'){
+      showToast('⛔ Só é possível registrar fim de viagem após a saída ser confirmada.','warning');
+      return;
+    }
     abrirModalFimViagem(id);
     return;
   }
   try{
-    // Capturar timestamp de cada mudança de status
+    // Confirmação extra para cancelamento
+    if(status === 'cancelado'){
+      if(!confirm(`Cancelar esta carga (${dem?.rota||id})? Esta ação não pode ser desfeita.`)) return;
+    }
     const tsField = {
       separacao:'ts_separacao', carregamento:'ts_carregamento',
       aguardando_nf:'ts_aguardando_nf', aguardando_manifesto:'ts_aguardando_manifesto',
@@ -15116,8 +15287,8 @@ async function atualizarStatusDemanda(id, status){
     const patch = {status};
     if(tsField) patch[tsField] = new Date().toISOString();
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
-    const d = _demandasCache.find(x=>x.id===id);
-    if(d){ d.status=status; if(tsField) d[tsField]=patch[tsField]; }
+    registrarHistoricoStatus(id, statusAtual, status, 'manual_expedicao');
+    if(dem){ dem.status=status; if(tsField) dem[tsField]=patch[tsField]; }
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderFrotaStatus();
@@ -15199,11 +15370,21 @@ async function confirmarSaidaRota(){
   if(!kmIni){ showToast('Informe o KM inicial','warning'); return; }
   try{
     const dem = _demandasCache?.find(d=>d.id===_demandaSaidaId) || _demandaSaidaData;
+    // Validar status atual antes de confirmar saída
+    if(dem?.status && dem.status !== 'pronto_viagem'){
+      // Busca confirmação do Supabase para evitar falsos positivos de cache desatualizado
+      const atual = await supaFetch(`demandas_rota?id=eq.${_demandaSaidaId}&select=status`).catch(()=>[]);
+      const statusReal = atual?.[0]?.status;
+      if(statusReal && statusReal !== 'pronto_viagem'){
+        showToast(`⛔ Não é possível registrar saída: carga está em "${statusReal}" (exige "pronto_viagem").`,'warning');
+        document.getElementById('modal-saida-rota').style.display='none';
+        return;
+      }
+    }
     const tsSaiu = new Date().toISOString(); // horário real da confirmação
     const savedId = _demandaSaidaId;
-    await supaFetch(`demandas_rota?id=eq.${savedId}`,{
-      method:'PATCH', body:JSON.stringify({status:'saiu', ts_saiu:tsSaiu})
-    });
+    const patchResult = await _patchStatusDemanda(savedId, 'saiu', 'modal_saida', {extra:{ts_saiu:tsSaiu}});
+    if(!patchResult.ok){ showToast('⛔ '+patchResult.msg,'warning'); return; }
     await supaFetch('rotas_viagem',{method:'POST',body:JSON.stringify({
       demanda_id:savedId, carga:dem?.carga||null,
       data_saida:data, km_inicial:kmIni, km_esperado:kmEsp,
@@ -16368,11 +16549,15 @@ async function excluirBonusAdm(mes, idx){
 
 async function motoristaChegarViagem(demId){
   try{
-    const dem = await supaFetch(`demandas_rota?id=eq.${demId}&select=carga,rota,motorista&limit=1`).catch(()=>[]) || [];
+    const dem = await supaFetch(`demandas_rota?id=eq.${demId}&select=carga,rota,motorista,status&limit=1`).catch(()=>[]) || [];
+    // Validar que a carga está em 'saiu' antes de registrar fim_viagem
+    if(dem[0]?.status && dem[0].status !== 'saiu'){
+      showToast(`⛔ Não é possível registrar chegada: carga está em "${dem[0].status}" (exige "saiu").`,'warning');
+      return;
+    }
     if(dem[0]?.carga){
-      // Registrar fim_viagem imediatamente para a carga sumir do portal mesmo se o motorista cancelar o KM
-      const ts = new Date().toISOString();
-      await supaFetch(`demandas_rota?id=eq.${demId}`,{method:'PATCH',body:JSON.stringify({status:'fim_viagem',ts_fim_viagem:ts})}).catch(()=>{});
+      // Registrar fim_viagem via wrapper (valida + loga histórico)
+      await _patchStatusDemanda(demId, 'fim_viagem', 'portal_motorista').catch(()=>{});
       await carregarPortalMotorista().catch(()=>{});
       _fimViagemDemId = demId;
       lancarKmCarga(dem[0].carga, 'final');
@@ -16382,8 +16567,8 @@ async function motoristaChegarViagem(demId){
   // Fallback sem carga: apenas confirmar status
   if(!confirm('Confirmar chegada / fim de viagem?')) return;
   try{
-    const ts = new Date().toISOString();
-    await supaFetch(`demandas_rota?id=eq.${demId}`,{method:'PATCH',body:JSON.stringify({status:'fim_viagem',ts_fim_viagem:ts})});
+    const r = await _patchStatusDemanda(demId, 'fim_viagem', 'portal_motorista');
+    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
     showToast('🏁 Chegada registrada!','success');
     await carregarPortalMotorista();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -18784,7 +18969,7 @@ async function renderDashInterna(){
     // Buscar lancamentos do mês — inclui motorista E ajudante para rankings
     const undFilter = undFiltro ? `&und=eq.${encodeURIComponent(undFiltro)}` : '';
     const lancMes = await supaFetch(
-      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista,ajudante,ts&limit=5000`
+      `lancamentos?ts=gte.${iniMes}T00:00:00-03:00&ts=lte.${fimMes}T23:59:59-03:00${undFilter}&select=carga,rota,rire,motorista,ajudante,ts&limit=5000`
     ) || [];
 
     // Cargas da unidade selecionada (via lancamentos — fonte confiável)
@@ -19275,9 +19460,16 @@ async function renderDashInterna(){
       const _semDoMesOtif = d => { if(!d) return 0; return Math.min(Math.ceil(new Date(d+'T00:00:00').getDate()/7),5); };
 
       const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
-      // MESMA fonte, MESMA deduplication e MESMO agrupamento que "Pedidos por Semana"
+      // Usa bdRows do cache OTIF (mesma fonte do card de OTIF), filtrado por rire
+      const _bdOtifSem = (_dadosOtif.bdRows||[]).filter(p=>{
+        if(rireFiltro === '') return true;
+        const rn = normRire(p.rire)||getRireFromRota((p.rota||'').toUpperCase())||'R.E.';
+        if(rireFiltro === 'RI') return rn.includes('I');
+        if(rireFiltro === 'RE') return !rn.includes('I');
+        return true;
+      });
       const vistoSemOtif = new Set();
-      bd.forEach(p=>{
+      _bdOtifSem.forEach(p=>{
         const key = String(p.carga)+'_'+String(p.pedido);
         if(vistoSemOtif.has(key)) return;
         vistoSemOtif.add(key);
@@ -19422,19 +19614,19 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
            entRE:reTotal, onTimeRE, inFullRE, otifRE };
 }
 
-// Fonte única de OTIF — busca e calcula uma vez por mês, cache compartilhado por todos os displays
-let _otifCache = null, _otifCacheMes = null, _otifCachePromise = null;
+// Fonte única de OTIF — cache por mês (Map) para suportar consultas simultâneas sem corrida
+const _otifCacheMap = new Map();
+const _otifPromiseMap = new Map();
 async function _carregarOtifMes(mes){
-  if(_otifCache && _otifCacheMes === mes) return _otifCache;
-  // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo
-  if(_otifCachePromise && _otifCacheMes === mes) return _otifCachePromise;
-  _otifCache = null; _otifCacheMes = mes;
-  _otifCachePromise = (async()=>{
+  if(_otifCacheMap.has(mes)) return _otifCacheMap.get(mes);
+  // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo para o mesmo mês
+  if(_otifPromiseMap.has(mes)) return _otifPromiseMap.get(mes);
+  const promise = (async()=>{
   const proximo = _proximoMes(mes);
   // Busca rotas, lançamentos e saídas primeiro para descobrir cargas do mês
   const [rotasRows, lancRows, saidaRows] = await Promise.all([
     supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`,{_quiet:true}).catch(()=>[]),
-    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proximo}-01T00:00:00&select=carga,ts`,{_quiet:true}).catch(()=>[]),
+    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00&select=carga,ts`,{_quiet:true}).catch(()=>[]),
     supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proximo}-01&select=carga,data_saida`,{_quiet:true}).catch(()=>[]),
   ]);
   // Atualizar ROTAS_RI com cadastro para getRireFromRota classificar corretamente
@@ -19461,11 +19653,13 @@ async function _carregarOtifMes(mes){
     ocorrRows = ocorrRows.concat(rOcorr || []);
   }
   const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
-  _otifCache = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
-  _otifCachePromise = null;
-  return _otifCache;
+  const result = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
+  _otifCacheMap.set(mes, result);
+  _otifPromiseMap.delete(mes);
+  return result;
   })();
-  return _otifCachePromise;
+  _otifPromiseMap.set(mes, promise);
+  return promise;
 }
 
 async function renderDashOtif(){
@@ -19880,6 +20074,12 @@ async function editarNumeroCarga(demandaId, cargaAtual){
   if(isNaN(numNovo)){ showToast('Número inválido','warning'); return; }
   try{
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo})});
+    // Propagar novo número de carga para todas as tabelas relacionadas
+    await Promise.all([
+      supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}),
+      supaFetch(`atribuicoes_fiscal?carga=eq.${cargaAtual}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}),
+      cargaAtual ? supaFetch(`conferencia_pedidos?carga=eq.${cargaAtual}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}) : Promise.resolve(),
+    ]);
     showToast('✅ Número da carga atualizado!','success');
     await carregarDemandas();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -22072,6 +22272,15 @@ async function confirmarFimViagem(){
   try{
     const dem = _demandasCache?.find(d=>d.id===_demandaFimId);
 
+    // Verificar status atual diretamente no Supabase para evitar cache stale
+    const statusCheck = await supaFetch(`demandas_rota?id=eq.${_demandaFimId}&select=status`).catch(()=>[]);
+    const statusReal = statusCheck?.[0]?.status;
+    if(statusReal && statusReal !== 'saiu'){
+      showToast(`⛔ Não é possível registrar fim de viagem: carga está em "${statusReal}" (exige "saiu").`,'warning');
+      document.getElementById('modal-fim-viagem').style.display='none';
+      return;
+    }
+
     // Buscar dados da saída
     const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${_demandaFimId}&select=*&order=criado_em.desc&limit=1`) || [];
     const saida = rv[0];
@@ -22101,6 +22310,7 @@ async function confirmarFimViagem(){
         ts_fim_viagem: new Date().toISOString()
       })
     });
+    registrarHistoricoStatus(_demandaFimId, 'saiu', 'fim_viagem', 'modal_fim_viagem');
 
     document.getElementById('modal-fim-viagem').style.display = 'none';
     _demandaFimId = null;
@@ -22573,14 +22783,17 @@ async function concluirCaixa(demandaId, carga){
 
     if(stAtual === 'fim_viagem'){
       // Etapa 2: retorno — fechar carga, vai para histórico
-      await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({
-        status:'concluido', ts_concluido:new Date().toISOString()
-      })});
+      const r = await _patchStatusDemanda(demandaId, 'concluido', 'caixa');
+      if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
       showToast('✅ Carga fechada! Indo para o Histórico.','success');
-    } else if(stAtual === 'aguardando_manifesto'||stAtual === 'pronto_viagem'){
-      // Etapa 1: antes da saída — liberar para expedição lançar viagem
-      await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'pronto_viagem'})});
+    } else if(stAtual === 'aguardando_manifesto'){
+      // Etapa 1: antes da saída — se manifesto emitido, libera para viagem
+      const r = await _patchStatusDemanda(demandaId, 'pronto_viagem', 'caixa');
+      if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
       showToast('✅ Pagamentos confirmados! Carga liberada para viagem.','success');
+    } else if(stAtual === 'pronto_viagem'){
+      // Já está pronto — notifica sem alterar
+      showToast('✅ Carga já está pronta para viagem.','success');
     }
     if(document.getElementById('caixa-cargas-portal')?.offsetParent) await carregarPortalCaixa();
     else await carregarPaginaCaixa();
@@ -22826,10 +23039,13 @@ async function carregarPortalFiscal(){
 }
 
 async function reabrirFiscal(carga, demandaId){
-  if(!confirm('Reabrir carga '+carga+' para o fiscal?')) return;
+  if(!confirm('Reabrir carga '+carga+' para o fiscal? (retrocesso de status — apenas ADM)')) return;
   try{
     const id = demandaId || (await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`))?.[0]?.id;
-    if(id) await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_nf'})});
+    if(id){
+      // bypassValidacao=true pois é retrocesso intencional de ADM
+      await _patchStatusDemanda(id, 'aguardando_nf', 'reabrir_fiscal_adm', {bypassValidacao:true});
+    }
     showToast('✅ Carga '+carga+' reaberta no Fiscal','success');
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -22867,8 +23083,8 @@ async function concluirFiscalPortal(carga){
     const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`);
     const id = dem?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    const tsManifesto = new Date().toISOString();
-    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'aguardando_manifesto',ts_aguardando_manifesto:tsManifesto})});
+    const r = await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal');
+    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
     showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     await carregarPaginaFiscal();
@@ -23101,7 +23317,8 @@ async function finalizarSeguros(carga, demandaId){
   try{
     const id = demandaId || (await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`))?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'pronto_viagem'})});
+    const r = await _patchStatusDemanda(id, 'pronto_viagem', 'seguros');
+    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
     showToast('✅ Carga '+carga+' pronta para viagem!','success');
     await carregarPaginaSeguros();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -23969,9 +24186,9 @@ async function vincularConferentePorCarga(demandaId, carga, selectId){
     });
     try{
       const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
-      if(demDB&&demDB[0]&&['pendente','carregamento'].includes(demDB[0].status)){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
-        const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
+      const stAtual = demDB?.[0]?.status;
+      if(stAtual && ['pendente','carregamento'].includes(stAtual)){
+        await _patchStatusDemanda(demandaId, 'separacao', 'vincular_conferente');
       }
     }catch(e){}
     showToast('✅ '+confNome+' vinculado à carga '+carga,'success');
@@ -23999,8 +24216,7 @@ async function vincularConferentePorConf(confId, confNome, selectId){
     });
     try{
       if(['pendente','carregamento'].includes(demInfo[0].status)){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
-        const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
+        await _patchStatusDemanda(demandaId, 'separacao', 'vincular_conferente_por_conf');
       }
     }catch(e){}
     showToast('✅ '+confNome+' vinculado à carga '+carga,'success');
@@ -24330,8 +24546,7 @@ async function pegarCargaConferente(demandaId, carga){
     try{
       const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=id,status`);
       if(demDB&&demDB[0]&&demDB[0].status==='pendente'){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({status:'separacao',ts_separacao:new Date().toISOString()})});
-        const cached=(_demandasCache||[]).find(d=>d.id===demandaId); if(cached) cached.status='separacao';
+        await _patchStatusDemanda(demandaId, 'separacao', 'conferente_pegar_carga');
       }
     }catch(_){}
     // Limpar busca
@@ -24352,12 +24567,7 @@ async function conferirPedidoPortal(carga, pedido, status){
       const demDB = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
       const dem = demDB && demDB[0];
       if(dem && dem.status==='pendente'){
-        await supaFetch(`demandas_rota?id=eq.${dem.id}`,{
-          method:'PATCH',
-          body:JSON.stringify({status:'separacao', ts_separacao:new Date().toISOString()})
-        });
-        const cached = (_demandasCache||[]).find(d=>d.id===dem.id);
-        if(cached) cached.status='separacao';
+        await _patchStatusDemanda(dem.id, 'separacao', 'conferir_pedido_auto');
       }
     }catch(eSep){ console.warn('sep-check:',eSep.message); }
 
@@ -24394,10 +24604,7 @@ async function conferirPedidoPortal(carga, pedido, status){
           demanda.arm_status = 'carregamento';
           // Sincronizar demandas_rota.status
           if(['pendente','separacao'].includes(demanda.status)){
-            await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{
-              method:'PATCH',body:JSON.stringify({status:'carregamento',ts_carregamento:new Date().toISOString()})
-            }).catch(()=>{});
-            demanda.status = 'carregamento';
+            await _patchStatusDemanda(demanda.id, 'carregamento', 'conferir_pedido_auto').catch(()=>{});
           }
           showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
         }
@@ -24419,20 +24626,28 @@ async function concluirCarregamentoConferente(carga){
     const dem = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
     if(!dem){ showToast('Demanda não encontrada','warning'); return; }
 
-    // Verificar se todos os pedidos foram conferidos
-    const totalPedidos = dem.quantidade_pedidos || 0;
-    if(totalPedidos > 0){
-      const confRegs = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.(ok,nok)&select=id`).catch(()=>[]) || [];
-      const conferidos = confRegs.length;
-      if(conferidos < totalPedidos){
-        showToast(`⚠️ Não é possível concluir: ${totalPedidos - conferidos} pedido(s) ainda não conferidos (${conferidos}/${totalPedidos}). Confira todos antes de concluir o carregamento.`, 'warning');
-        return;
-      }
+    // Verificar se todos os pedidos foram conferidos (busca fresca do Supabase)
+    const [demRow, confRegs] = await Promise.all([
+      supaFetch(`demandas_rota?id=eq.${dem.id}&select=quantidade_pedidos,status`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.(ok,nok)&select=id`).catch(()=>[])
+    ]);
+    const totalPedidos = demRow?.[0]?.quantidade_pedidos || 0;
+    const statusReal   = demRow?.[0]?.status;
+    const conferidos   = (confRegs||[]).length;
+
+    if(totalPedidos === 0){
+      showToast('⚠️ A carga não possui quantidade de pedidos definida. Solicite ao administrador vincular os pedidos antes de concluir.','warning');
+      return;
+    }
+    if(conferidos < totalPedidos){
+      showToast(`⚠️ Não é possível concluir: ${totalPedidos - conferidos} pedido(s) ainda não conferidos (${conferidos}/${totalPedidos}). Confira todos antes de concluir o carregamento.`, 'warning');
+      return;
     }
 
     if(!confirm('Confirmar carregamento concluído da carga '+carga+'?')) return;
 
-    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
+    const r = await _patchStatusDemanda(dem.id, 'aguardando_nf', 'conferente_concluir', {extra:{arm_status:'carregado_ok'}});
+    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
     showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
     await carregarPortalConferente();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -26241,28 +26456,16 @@ async function salvarStatusArmazem(demandaId, status){
     const statusArmAzem = ['pendente','separacao','carregamento'];
 
     if(stAtual && statusArmAzem.includes(stAtual)){
-      const tsNow = new Date().toISOString();
       if(status === 'carregado_ok'){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
-          method:'PATCH',
-          body:JSON.stringify({status:'aguardando_nf', ts_aguardando_nf:tsNow})
-        }).catch(()=>{});
-        showToast('✅ Carregamento concluído! Carga enviada para o Fiscal.','success');
+        const r = await _patchStatusDemanda(demandaId, 'aguardando_nf', 'armazem_arm_status', {extra:{arm_status:'carregado_ok'}}).catch(()=>({ok:false}));
+        if(r.ok) showToast('✅ Carregamento concluído! Carga enviada para o Fiscal.','success');
       } else if(status === 'carregamento' && ['pendente','separacao'].includes(stAtual)){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
-          method:'PATCH',
-          body:JSON.stringify({status:'carregamento', ts_carregamento:tsNow})
-        }).catch(()=>{});
+        await _patchStatusDemanda(demandaId, 'carregamento', 'armazem_arm_status').catch(()=>{});
       } else if(status === 'separacao' && stAtual === 'pendente'){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
-          method:'PATCH',
-          body:JSON.stringify({status:'separacao', ts_separacao:tsNow})
-        }).catch(()=>{});
+        await _patchStatusDemanda(demandaId, 'separacao', 'armazem_arm_status').catch(()=>{});
       } else if(status === 'pendente' && ['separacao','carregamento'].includes(stAtual)){
-        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
-          method:'PATCH',
-          body:JSON.stringify({status:'pendente', ts_separacao:null, ts_carregamento:null})
-        }).catch(()=>{});
+        // Retrocesso intencional pelo armazém (ADM)
+        await _patchStatusDemanda(demandaId, 'pendente', 'armazem_retrocesso_adm', {bypassValidacao:true, extra:{ts_separacao:null, ts_carregamento:null}}).catch(()=>{});
       }
     }
     // Atualizar KPIs (atualizar cache local para KPI imediato)
@@ -28495,11 +28698,12 @@ async function abrirPopupRotasExpedicao(){
     return d.toISOString().slice(0,10);
   };
 
+  const _tzBR  = d => new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Sao_Paulo'}).format(d);
   const hoje    = new Date();
-  const hojeStr = hoje.toISOString().slice(0,10);
+  const hojeStr = _tzBR(hoje);
   const fim7    = new Date(hoje); fim7.setDate(hoje.getDate()+6);
-  const fim7Str = fim7.toISOString().slice(0,10);
-  const datas   = Array.from({length:7},(_,i)=>{ const d=new Date(hoje); d.setDate(hoje.getDate()+i); return d.toISOString().slice(0,10); });
+  const fim7Str = _tzBR(fim7);
+  const datas   = Array.from({length:7},(_,i)=>{ const d=new Date(hoje); d.setDate(hoje.getDate()+i); return _tzBR(d); });
 
   const lista = document.getElementById('popup-rotas-lista');
   const sub   = document.getElementById('popup-rotas-sub');
@@ -28620,8 +28824,17 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
   if(tipo==='lancar'){
     // Criar pré-carga para o dia exato da rota
     try{
-      const body = { rota, status:'pendente', data_saida:data, motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO', usuario_id:USUARIO_LOGADO?.id||null };
-      await supaFetch('demandas_rota',{method:'POST',body:JSON.stringify(body)});
+      // Verificar duplicata: evitar criar duas pré-cargas para mesma rota/data
+      const jaExiste = await supaFetch(`demandas_rota?rota=eq.${encodeURIComponent(rota)}&data_saida=eq.${data}&status=not.in.(cancelado)&select=id&limit=1`).catch(()=>[]) || [];
+      if(jaExiste.length){
+        showToast('⚠️ Já existe uma pré-carga ativa para '+rota+' em '+data,'warning');
+        return;
+      }
+      const body = { rota, status:'pendente', data_saida:data, motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO', usuario_id:USUARIO_LOGADO?.id||null, criado_em:new Date().toISOString() };
+      const novaPreCarga = await supaFetch('demandas_rota',{method:'POST',body:JSON.stringify(body),prefer:'return=representation'});
+      const novaId = novaPreCarga?.[0]?.id || null;
+      // Registrar criação no histórico
+      if(novaId) registrarHistoricoStatus(novaId, null, 'pendente', 'popup_expedicao_criar');
 
       // Atualiza o agendamento: marca lancado=true (pré-carga existe)
       // O popup usa _demandasCache para saber se existe, não o lancado
@@ -28663,97 +28876,6 @@ async function confirmarOutroUnificado(id, rota, data){
   showToast('📌 Motivo registrado — rota permanece pendente','warning');
   abrirPopupRotasExpedicao();
   renderDemandasCards();
-}
-
-// ── Popup: Rotas do dia na Expedição (legado — mantido para compatibilidade) ──────────────────────────────────────
-function verificarRotasDia(){
-  const hoje = new Date().toISOString().slice(0,10);
-  const rotasHoje = getAgendamentos().filter(a=>a.data===hoje);
-  if(!rotasHoje.length) return;
-  const lista = document.getElementById('popup-rotas-lista');
-  const sub   = document.getElementById('popup-rotas-sub');
-  if(!lista) return;
-  if(sub) sub.textContent = `${rotasHoje.length} rota(s) programada(s) para hoje — selecione a ação para cada uma`;
-  lista.innerHTML = rotasHoje.map(a=>`
-    <div id="popup-rota-${a.id}" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px">
-      <div style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:10px">🛣️ ${a.rota}${a.obs?` <span style="font-size:.75rem;font-weight:400;color:var(--text-muted)">— ${a.obs}</span>`:''}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <button onclick="acaoRotaDia('${a.id}','${a.rota}','adicionar')" style="background:rgba(37,99,235,.1);color:#2563eb;border:1.5px solid rgba(37,99,235,.3);border-radius:8px;padding:8px 6px;font-size:.78rem;font-weight:700;cursor:pointer;text-align:left;line-height:1.3">
-          ➕ Adicionar rota<br><span style="font-size:.7rem;font-weight:400;opacity:.8">Cria nova pré-carga</span>
-        </button>
-        <button onclick="acaoRotaDia('${a.id}','${a.rota}','valor')" style="background:rgba(245,158,11,.1);color:#d97706;border:1.5px solid rgba(245,158,11,.3);border-radius:8px;padding:8px 6px;font-size:.78rem;font-weight:700;cursor:pointer;text-align:left;line-height:1.3">
-          💰 Carga sem valor<br><span style="font-size:.7rem;font-weight:400;opacity:.8">Envia ao Comercial</span>
-        </button>
-        <button onclick="acaoRotaDia('${a.id}','${a.rota}','sem_veiculo')" style="background:rgba(124,58,237,.1);color:#7c3aed;border:1.5px solid rgba(124,58,237,.3);border-radius:8px;padding:8px 6px;font-size:.78rem;font-weight:700;cursor:pointer;text-align:left;line-height:1.3">
-          🚛 Sem veículo<br><span style="font-size:.7rem;font-weight:400;opacity:.8">Aguardando veículo</span>
-        </button>
-        <button onclick="acaoRotaDia('${a.id}','${a.rota}','sem_motorista')" style="background:rgba(5,150,105,.1);color:#059669;border:1.5px solid rgba(5,150,105,.3);border-radius:8px;padding:8px 6px;font-size:.78rem;font-weight:700;cursor:pointer;text-align:left;line-height:1.3">
-          🚗 Sem motorista<br><span style="font-size:.7rem;font-weight:400;opacity:.8">Aguardando motorista</span>
-        </button>
-      </div>
-    </div>
-  `).join('');
-  document.getElementById('popup-rotas-dia').style.display='flex';
-}
-
-async function acaoRotaDia(id, rota, acao){
-  const hoje = new Date().toISOString().slice(0,10);
-  const card  = document.getElementById('popup-rota-'+id);
-
-  // Helper: criar pré-carga e marcar agendamento como realizado
-  async function criarPreCarga(obs){
-    const body = {
-      rota, status:'pendente',
-      data_saida: hoje,
-      motorista:'A DEFINIR MOTORISTA',
-      veiculo:'A DEFINIR VEÍCULO',
-      usuario_id: USUARIO_LOGADO?.id||null
-    };
-    await supaFetch('demandas_rota',{method:'POST',body:JSON.stringify(body)});
-    // Marcar agendamento como realizado automaticamente
-    const arr = getAgendamentos();
-    const idx = arr.findIndex(a=>a.id===id);
-    if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao=acao; await saveAgendamentos(arr); }
-    carregarDemandas();
-  }
-
-  if(acao==='adicionar'){
-    try{
-      await criarPreCarga('adicionar');
-      if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#059669;font-weight:700">✅ Pré-carga criada — aparecerá na Expedição</div>';
-      showToast('✅ Pré-carga criada para '+rota,'success');
-    }catch(e){ showToast('Erro: '+e.message,'warning'); }
-
-  } else if(acao==='valor'){
-    try{
-      await criarPreCarga('valor');
-      // Registrar no Comercial Rotas (Supabase)
-      supaFetch('comercial_rotas',{method:'POST',body:JSON.stringify({
-        id:'com_'+Date.now(),
-        rota, data:hoje,
-        motivo:'Carga não atingiu o valor mínimo',
-        status:'pendente',
-        criado_em:new Date().toISOString(),
-        usuario_id: USUARIO_LOGADO?.id||null
-      })}).catch(()=>{});
-      if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#d97706;font-weight:700">💰 Enviado ao Comercial — pré-carga criada</div>';
-      showToast('💰 Rota enviada ao Comercial','success');
-    }catch(e){ showToast('Erro: '+e.message,'warning'); }
-
-  } else if(acao==='sem_veiculo'){
-    try{
-      await criarPreCarga('sem_veiculo');
-      if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#7c3aed;font-weight:700">🚛 Pré-carga criada — aguardando veículo</div>';
-      showToast('🚛 Pré-carga criada sem veículo','success');
-    }catch(e){ showToast('Erro: '+e.message,'warning'); }
-
-  } else if(acao==='sem_motorista'){
-    try{
-      await criarPreCarga('sem_motorista');
-      if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#059669;font-weight:700">🚗 Pré-carga criada — aguardando motorista</div>';
-      showToast('🚗 Pré-carga criada sem motorista','success');
-    }catch(e){ showToast('Erro: '+e.message,'warning'); }
-  }
 }
 
 function fecharPopupRotasDia(){
@@ -28899,161 +29021,6 @@ async function renderCargasAbaixoValor(mesFiltro, elId){
         </div>
       </div>`;
   }
-}
-
-function verificarRotasSemana(){
-  const hoje = new Date();
-  const hojeStr = hoje.toISOString().slice(0,10);
-  const datas = Array.from({length:7},(_,i)=>{
-    const d = new Date(hoje); d.setDate(hoje.getDate()+i);
-    return d.toISOString().slice(0,10);
-  });
-  const rotasSemana = getAgendamentos()
-    .filter(a => datas.includes(a.data) && a.status !== 'realizado' && a.status !== 'atrasado')
-    .sort((a,b) => a.data.localeCompare(b.data));
-
-  if(!rotasSemana.length) return;
-
-  const lista = document.getElementById('popup-rotas-lista');
-  const sub   = document.getElementById('popup-rotas-sub');
-  if(!lista) return;
-  if(sub) sub.textContent = `${rotasSemana.length} rota(s) nos próximos 7 dias`;
-
-  // Label de data amigável
-  const fmtDiaLabel = dt => {
-    if(dt === hojeStr) return 'Hoje';
-    const amanha = new Date(hoje); amanha.setDate(hoje.getDate()+1);
-    if(dt === amanha.toISOString().slice(0,10)) return 'Amanhã';
-    return new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long'});
-  };
-  const fmtDataCompleta = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
-  const fmtDiaSemana = dt => new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long'});
-
-  const MOTIVOS = [
-    {key:'comercial',           label:'💰 Comercial',              desc:'Carga sem valor mínimo'},
-    {key:'veiculo',             label:'🚛 Veículo',                desc:'Sem veículo disponível'},
-    {key:'motorista',           label:'🚗 Motorista',              desc:'Sem motorista disponível'},
-    {key:'atraso_rota',         label:'⏱️ Atraso de Rota',         desc:'Rota saiu com atraso'},
-    {key:'atraso_carregamento', label:'📦 Atraso no Carregamento', desc:'Atraso no carregamento da carga'},
-  ];
-
-  // Agrupar por data
-  const porDia = {};
-  rotasSemana.forEach(a=>{ if(!porDia[a.data]) porDia[a.data]=[]; porDia[a.data].push(a); });
-
-  let html = '';
-  Object.keys(porDia).sort().forEach(dt=>{
-    const isHoje = dt === hojeStr;
-    const label  = fmtDiaLabel(dt);
-    const dataCompleta = fmtDataCompleta(dt);
-    // Cabeçalho do dia
-    html += `
-      <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
-        <div style="background:${isHoje?'#2563eb':'#64748b'};color:#fff;border-radius:9px;padding:5px 14px;display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:56px">
-          <span style="font-size:.65rem;font-weight:700;opacity:.85;text-transform:uppercase;letter-spacing:.04em">${label}</span>
-          <span style="font-size:1rem;font-weight:800;line-height:1.1">${new Date(dt+'T00:00:00').getDate().toString().padStart(2,'0')}</span>
-          <span style="font-size:.62rem;opacity:.8">${new Date(dt+'T00:00:00').toLocaleDateString('pt-BR',{month:'short'}).replace('.','')}</span>
-        </div>
-        <div style="flex:1;border-top:1.5px solid ${isHoje?'rgba(37,99,235,.3)':'var(--border)'};margin-top:2px"></div>
-        <span style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">${dataCompleta}</span>
-      </div>`;
-
-    // Rotas do dia
-    porDia[dt].forEach(a=>{
-      html += `
-      <div id="popup-rota-${a.id}" style="background:var(--bg-card2);border:1px solid var(--border);border-left:3px solid ${isHoje?'#2563eb':'#94a3b8'};border-radius:10px;padding:12px 14px;margin-left:10px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">
-          <div style="font-size:.95rem;font-weight:800;color:var(--text-primary)">🛣️ ${a.rota}</div>
-          ${a.obs?`<div style="font-size:.72rem;color:var(--text-muted)">${a.obs}</div>`:''}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:7px">
-          <button onclick="acaoRotaSemana('${a.id}','${a.rota}','${a.data}','lancar')"
-            style="width:100%;background:rgba(5,150,105,.1);color:#059669;border:1.5px solid rgba(5,150,105,.3);border-radius:8px;padding:9px;font-size:.82rem;font-weight:700;cursor:pointer">
-            ➕ Lançar Rota — Criar Pré-Carga
-          </button>
-          <div>
-            <div style="font-size:.71rem;color:var(--text-muted);font-weight:600;margin-bottom:5px">⏳ Registrar Atraso:</div>
-            <div style="display:flex;flex-wrap:wrap;gap:5px">
-              ${MOTIVOS.map(m=>`
-                <button onclick="acaoRotaSemana('${a.id}','${a.rota}','${a.data}','atraso','${m.key}')"
-                  title="${m.desc}"
-                  style="background:rgba(239,68,68,.07);color:#b91c1c;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:600;cursor:pointer">
-                  ${m.label}
-                </button>`).join('')}
-            </div>
-            <div id="obs-outro-${a.id}" style="display:none;margin-top:6px">
-              <input type="text" id="inp-outro-${a.id}" placeholder="Descreva o motivo..."
-                style="width:100%;border:1px solid var(--border-med);border-radius:6px;padding:6px 10px;font-size:.78rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
-              <button onclick="confirmarOutro('${a.id}','${a.rota}','${a.data}')"
-                style="margin-top:4px;width:100%;background:#ef4444;color:#fff;border:none;border-radius:6px;padding:5px;font-size:.78rem;font-weight:700;cursor:pointer">
-                Confirmar Atraso
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    });
-  });
-
-  lista.innerHTML = html;
-  document.getElementById('popup-rotas-dia').style.display='flex';
-}
-
-async function acaoRotaSemana(id, rota, data, tipo, motivo){
-  const card = document.getElementById('popup-rota-'+id);
-  const arr  = getAgendamentos();
-  const idx  = arr.findIndex(a=>a.id===id);
-
-  if(tipo==='lancar'){
-    try{
-      await supaFetch('demandas_rota',{method:'POST',body:JSON.stringify({
-        rota, status:'pendente', data_saida:data,
-        motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO',
-        usuario_id:USUARIO_LOGADO?.id||null
-      })});
-      if(idx>=0){ arr[idx].status='realizado'; arr[idx].acao='lancar'; await saveAgendamentos(arr); }
-      if(card) card.innerHTML='<div style="text-align:center;padding:12px;color:#059669;font-weight:700">✅ Pré-carga criada — aparecerá na Expedição</div>';
-      showToast('✅ Pré-carga criada para '+rota,'success');
-      renderDemandasCards();
-    }catch(e){ showToast('Erro: '+e.message,'warning'); }
-
-  } else if(tipo==='atraso'){
-    if(motivo==='outro'){
-      const obsDiv = document.getElementById('obs-outro-'+id);
-      if(obsDiv){ obsDiv.style.display='block'; }
-      return;
-    }
-    const labMap = {comercial:'Comercial',veiculo:'Sem Veículo',motorista:'Sem Motorista',atraso_rota:'Atraso de Rota'};
-    if(idx>=0){ _editandoMotivo.delete(id); arr[idx].status='atrasado'; arr[idx].motivo_atraso=motivo; arr[idx].motivo_label=labMap[motivo]||motivo; saveAgendamentos(arr); }
-    if(motivo==='comercial'){
-      // Verificar se já existe no Supabase antes de criar
-      supaFetch(`comercial_rotas?rota=eq.${encodeURIComponent(rota)}&data=eq.${data}&status=neq.resolvido&select=id&limit=1`)
-        .then(existing=>{
-          if(!existing||existing.length===0){
-            return supaFetch('comercial_rotas',{method:'POST',body:JSON.stringify({
-              id:'com_'+Date.now(), rota, data,
-              motivo:'Carga não atingiu o valor mínimo',
-              status:'pendente',
-              criado_em:new Date().toISOString(),
-              usuario_id: USUARIO_LOGADO?.id||null
-            })});
-          }
-        }).catch(()=>{});
-    }
-    if(card) card.innerHTML=`<div style="text-align:center;padding:12px;color:#b91c1c;font-weight:700">⏳ Atraso registrado — ${labMap[motivo]||motivo}</div>`;
-    showToast('⏳ Atraso registrado: '+rota,'warning');
-  }
-}
-
-async function confirmarOutro(id, rota, data){
-  const obs = document.getElementById('inp-outro-'+id)?.value.trim();
-  if(!obs){ showToast('Descreva o motivo','warning'); return; }
-  const arr = getAgendamentos();
-  const idx = arr.findIndex(a=>a.id===id);
-  if(idx>=0){ arr[idx].status='atrasado'; arr[idx].motivo_atraso='outro'; arr[idx].motivo_label=obs; await saveAgendamentos(arr); }
-  const card = document.getElementById('popup-rota-'+id);
-  if(card) card.innerHTML=`<div style="text-align:center;padding:12px;color:#b91c1c;font-weight:700">⏳ Atraso registrado — ${obs}</div>`;
-  showToast('⏳ Atraso registrado: '+rota,'warning');
 }
 
 // ══════════════════════════════════════════════════════
