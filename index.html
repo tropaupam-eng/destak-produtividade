@@ -4370,6 +4370,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <label>Ajudante (R$)</label>
           <input type="number" id="cad-rota-ajudante" placeholder="0,00" step="0.01" style="width:110px"/>
         </div>
+        <div class="cad-field">
+          <label>Conferente (R$)</label>
+          <input type="number" id="cad-rota-conferente" placeholder="0,20" step="0.01" value="0.20" style="width:110px"/>
+        </div>
         <div class="cad-field" id="cad-rota-km-field">
           <label>R$/KM — RE</label>
           <input type="number" id="cad-rota-valor-km" placeholder="0,20" step="0.01" value="0.20" style="width:100px"/>
@@ -5632,6 +5636,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Ajudante (R$)</label>
           <input type="number" id="er-ajudante" step="0.01" min="0" placeholder="0,00"
             style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#059669;text-transform:uppercase;display:block;margin-bottom:5px">📦 Conferente (R$)</label>
+          <input type="number" id="er-conferente" step="0.01" min="0" placeholder="0,20"
+            style="width:100%;border:1.5px solid rgba(5,150,105,.4);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"/>
         </div>
         <div>
           <label style="font-size:.72rem;font-weight:700;color:#ea580c;text-transform:uppercase;display:block;margin-bottom:5px">🛣️ R$/KM — RE</label>
@@ -7534,7 +7543,7 @@ async function syncConfig(){
   }catch(e){ console.warn('Config sync erro:',e.message); }
   // Carregar valores por rota do banco (mot_sem_aj, mot_com_aj, val_ajudante)
   try{
-    const rotas = await supaFetch('rotas?select=nome,tipo,valor_padrao,mot_sem_aj,mot_com_aj,val_ajudante,valor_km,prazo_otif&ativo=eq.true');
+    const rotas = await supaFetch('rotas?select=nome,tipo,valor_padrao,mot_sem_aj,mot_com_aj,val_ajudante,val_conferente,valor_km,prazo_otif&ativo=eq.true');
     if(rotas && rotas.length){
       if(!CONFIG.rotas) CONFIG.rotas = {};
       rotas.forEach(r=>{
@@ -7551,6 +7560,7 @@ async function syncConfig(){
           mot:    motSemVal,
           ajud:   r.val_ajudante || 0,
           val_ajudante: r.val_ajudante || 0,
+          conferente: r.val_conferente || 0.20,
           valorKm: r.valor_km || 0.20,
           prazoOtif: r.prazo_otif != null ? r.prazo_otif : (isRI ? 24 : 192),
           meta:   r.valor_padrao || 0,
@@ -9981,12 +9991,13 @@ function getValorRota(rota){
     const isRI = cfgRota.ri !== undefined ? cfgRota.ri : ROTAS_RI.has(r);
     if(!isRI){
       // Rota externa: motorista NÃO recebe por pedido — recebe por KM
-      return { motSem:0, motCom:0, ajud: cfgRota.ajud ?? cfgRota.val_ajudante ?? 0, valorKm: cfgRota.valorKm ?? 0.20, ri:false };
+      return { motSem:0, motCom:0, ajud: cfgRota.ajud ?? cfgRota.val_ajudante ?? 0, conferente: cfgRota.conferente ?? 0.20, valorKm: cfgRota.valorKm ?? 0.20, ri:false };
     }
     return {
       motSem: cfgRota.motSem ?? cfgRota.mot ?? 0,
       motCom: cfgRota.motCom ?? 0,
       ajud:   cfgRota.ajud   ?? cfgRota.val_ajudante ?? 0,
+      conferente: cfgRota.conferente ?? 0.20,
       valorKm: cfgRota.valorKm ?? 0,
       ri: true
     };
@@ -9994,12 +10005,13 @@ function getValorRota(rota){
 
   // Rota não cadastrada: verificar se é interna pelo nome
   if(ROTAS_RI.has(r)){
-    return CONFIG.rotas['CEASA'] || { motSem:1.00, motCom:0.50, ajud:0.50, valorKm:0, ri:true };
+    const cfgCeasa = CONFIG.rotas['CEASA'];
+    return cfgCeasa ? {...cfgCeasa, conferente: cfgCeasa.conferente ?? 0.20} : { motSem:1.00, motCom:0.50, ajud:0.50, conferente:0.20, valorKm:0, ri:true };
   }
 
   // Rota externa não cadastrada: motorista recebe por KM, ajudante por pedido
   const cfgRE = CONFIG.rotas['RE'] || {};
-  return { motSem:0, motCom:0, ajud: cfgRE.ajud ?? 0.75, valorKm: cfgRE.valorKm ?? 0.20, ri:false };
+  return { motSem:0, motCom:0, ajud: cfgRE.ajud ?? 0.75, conferente: cfgRE.conferente ?? 0.20, valorKm: cfgRE.valorKm ?? 0.20, ri:false };
 }
 
 
@@ -17874,6 +17886,7 @@ async function cadCarregarRotas(){
             ${r.valor_padrao>0?`<span style="color:#059669;font-weight:700;font-size:.72rem;margin-left:4px">Meta: R$${Number(r.valor_padrao).toLocaleString('pt-BR')}</span>`:''}
             ${r.mot_sem_aj>0?`<span style="color:#2563eb;font-size:.71rem;margin-left:2px">Mot: R$${Number(r.mot_sem_aj).toFixed(2)}</span>`:''}
             ${r.val_ajudante>0?`<span style="color:#7c3aed;font-size:.71rem;margin-left:2px">Aj: R$${Number(r.val_ajudante).toFixed(2)}</span>`:''}
+            ${r.val_conferente>0?`<span style="color:#059669;font-size:.71rem;margin-left:2px">Conf: R$${Number(r.val_conferente).toFixed(2)}</span>`:''}
             ${r.tipo==='RE'&&r.valor_km>0?`<span style="color:#ea580c;font-size:.71rem;margin-left:2px">🛣️ R$${Number(r.valor_km).toFixed(2)}/km</span>`:''}
             ${r.prazo_otif>0?`<span style="color:#7c3aed;font-size:.71rem;margin-left:2px">⏱ OTIF: ${r.prazo_otif}h</span>`:''}
           </div>
@@ -17892,15 +17905,16 @@ async function cadAdicionarRota(){
   const nome     = document.getElementById('cad-rota-nome').value.trim().toUpperCase();
   const tipo     = document.getElementById('cad-rota-tipo').value;
   const valor    = parseFloat(document.getElementById('cad-rota-valor').value)||0;
-  const motSem   = parseFloat(document.getElementById('cad-rota-mot-sem')?.value)||0;
-  const motCom   = parseFloat(document.getElementById('cad-rota-mot-com')?.value)||0;
-  const ajudante = parseFloat(document.getElementById('cad-rota-ajudante')?.value)||0;
+  const motSem    = parseFloat(document.getElementById('cad-rota-mot-sem')?.value)||0;
+  const motCom    = parseFloat(document.getElementById('cad-rota-mot-com')?.value)||0;
+  const ajudante  = parseFloat(document.getElementById('cad-rota-ajudante')?.value)||0;
+  const conferente= parseFloat(document.getElementById('cad-rota-conferente')?.value)||0.20;
   const valorKm   = parseFloat(document.getElementById('cad-rota-valor-km')?.value)||0.20;
   const prazoOtifRaw2 = document.getElementById('cad-rota-prazo-otif')?.value.trim()||'';
   const prazoOtif = prazoOtifRaw2 === '' ? null : (parseInt(prazoOtifRaw2)||192);
   if(!nome){ showCadMsg('msg-cad-rota','Informe o nome da rota',false); return; }
   try{
-    const payload = { tipo, valor_padrao:valor, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajudante, valor_km:valorKm, prazo_otif:prazoOtif, ativo:true };
+    const payload = { tipo, valor_padrao:valor, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajudante, val_conferente:conferente, valor_km:valorKm, prazo_otif:prazoOtif, ativo:true };
     // Verificar se já existe — atualizar em vez de inserir
     const ex = await supaFetch(`rotas?nome=eq.${encodeURIComponent(nome)}&select=id`)||[];
     if(ex.length){
@@ -17914,7 +17928,7 @@ async function cadAdicionarRota(){
     await supaFetch('rotas',{method:'POST',body:JSON.stringify({nome,...payload})});
     document.getElementById('cad-rota-nome').value='';
     document.getElementById('cad-rota-valor').value='';
-    ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante','cad-rota-valor-km','cad-rota-prazo-otif'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+    ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante','cad-rota-conferente','cad-rota-valor-km','cad-rota-prazo-otif'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
     showCadMsg('msg-cad-rota','✅ Rota adicionada!');
     showToast('✅ Rota '+nome+' cadastrada!','success');
     await cadCarregarRotas();
@@ -17964,8 +17978,9 @@ function abrirEditarRota(rota){
   document.getElementById('er-meta').value      = rota.valor_padrao > 0 ? rota.valor_padrao : '';
   document.getElementById('er-mot-sem').value   = rota.mot_sem_aj  > 0 ? rota.mot_sem_aj   : '';
   document.getElementById('er-mot-com').value   = rota.mot_com_aj  > 0 ? rota.mot_com_aj   : '';
-  document.getElementById('er-ajudante').value  = rota.val_ajudante> 0 ? rota.val_ajudante  : '';
-  document.getElementById('er-valor-km').value   = rota.valor_km    > 0 ? rota.valor_km      : '0.20';
+  document.getElementById('er-ajudante').value   = rota.val_ajudante  > 0 ? rota.val_ajudante  : '';
+  document.getElementById('er-conferente').value = rota.val_conferente > 0 ? rota.val_conferente : '0.20';
+  document.getElementById('er-valor-km').value   = rota.valor_km       > 0 ? rota.valor_km      : '0.20';
   document.getElementById('er-prazo-otif').value = rota.prazo_otif != null ? rota.prazo_otif : '';
   const msg = document.getElementById('er-msg');
   if(msg){ msg.style.display='none'; msg.textContent=''; }
@@ -17978,9 +17993,10 @@ async function salvarEditarRota(){
   const nome     = document.getElementById('er-nome').value.trim().toUpperCase();
   const tipo     = document.getElementById('er-tipo').value;
   const meta     = parseFloat(document.getElementById('er-meta').value)    || 0;
-  const motSem   = parseFloat(document.getElementById('er-mot-sem').value) || 0;
-  const motCom   = parseFloat(document.getElementById('er-mot-com').value) || 0;
-  const ajudante = parseFloat(document.getElementById('er-ajudante').value)|| 0;
+  const motSem    = parseFloat(document.getElementById('er-mot-sem').value)    || 0;
+  const motCom    = parseFloat(document.getElementById('er-mot-com').value)    || 0;
+  const ajudante  = parseFloat(document.getElementById('er-ajudante').value)   || 0;
+  const conferente= parseFloat(document.getElementById('er-conferente').value) || 0.20;
   const valorKm   = parseFloat(document.getElementById('er-valor-km').value)   || 0.20;
   const prazoOtifRaw = document.getElementById('er-prazo-otif').value.trim();
   const prazoOtif = prazoOtifRaw === '' ? null : (parseInt(prazoOtifRaw) || 192);
@@ -18009,7 +18025,7 @@ async function salvarEditarRota(){
     }
     await supaFetch(`rotas?id=eq.${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ nome, tipo, valor_padrao: meta, mot_sem_aj: motSem, mot_com_aj: motCom, val_ajudante: ajudante, valor_km: valorKm, prazo_otif: prazoOtif })
+      body: JSON.stringify({ nome, tipo, valor_padrao: meta, mot_sem_aj: motSem, mot_com_aj: motCom, val_ajudante: ajudante, val_conferente: conferente, valor_km: valorKm, prazo_otif: prazoOtif })
     });
     erMsg('✅ Rota salva com sucesso!');
     showToast('✅ Rota '+nome+' atualizada!','success');
@@ -24381,22 +24397,34 @@ async function carregarPortalConferente(){
 
   try{
     // ── Buscar tudo em paralelo ──────────────────────────────────
-    const [confMes, confRankAll, atribsMinha, demandasAtivas, atribsAll, cfgArr, abastPend] = await Promise.all([
+    const [confMes, confRankAll, atribsMinha, demandasAtivas, atribsAll, abastPend] = await Promise.all([
       supaFetch(`conferencia_pedidos?conferente_id=eq.${myId}&conferido_em=gte.${mesInicio}&status=eq.ok&select=pedido,carga`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.(pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id&order=carga.desc`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status`).catch(()=>[]),
-      supaFetch(`configuracoes?chave=eq.config_bonus&select=valor`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.false&select=*&order=criado_em.desc`).catch(()=>[])
     ]);
 
-    // Bônus por pedido: config_bonus.confer_por_pedido ou default R$0,20
-    const bonusPP = cfgArr?.[0]?.valor?.confer_por_pedido ?? 0.20;
+    // Mapear rota por carga a partir das demandas já carregadas
+    const rotaPorCarga = {};
+    (demandasAtivas||[]).forEach(d=>{ if(d.carga) rotaPorCarga[String(d.carga)] = d.rota||''; });
+    // Complementar com lancamentos para cargas já concluídas (não aparecem em demandas ativas)
+    const cargasConferidas = [...new Set((confMes||[]).map(r=>String(r.carga)))];
+    const cargasSemRota = cargasConferidas.filter(c=>!rotaPorCarga[c]);
+    if(cargasSemRota.length){
+      const lancsRota = await supaFetch(`lancamentos?carga=in.(${cargasSemRota.join(',')})&select=carga,rota`).catch(()=>[]);
+      (lancsRota||[]).forEach(l=>{ rotaPorCarga[String(l.carga)] = l.rota||''; });
+    }
 
     // ── KPIs do mês ─────────────────────────────────────────────
-    const pedsMes      = (confMes||[]).length;
-    const bonusEstMes  = pedsMes * bonusPP;
+    const pedsMes     = (confMes||[]).length;
+    const bonusEstMes = (confMes||[]).reduce((sum,p)=>{
+      const rota = rotaPorCarga[String(p.carga)] || '';
+      return sum + (getValorRota(rota).conferente ?? 0.20);
+    }, 0);
+    // Valor por pedido médio para exibição no ranking (usa CEASA como referência RI ou RE padrão)
+    const bonusPP = pedsMes > 0 ? bonusEstMes / pedsMes : 0.20;
     const cargasConc   = (atribsMinha||[]).filter(a=>a.status==='concluido').length;
 
     // ── Ranking ─────────────────────────────────────────────────
