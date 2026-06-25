@@ -18966,7 +18966,7 @@ async function renderDashInterna(){
     // Buscar lancamentos do mês — inclui motorista E ajudante para rankings
     const undFilter = undFiltro ? `&und=eq.${encodeURIComponent(undFiltro)}` : '';
     const lancMes = await supaFetch(
-      `lancamentos?ts=gte.${iniMes}&ts=lte.${fimMes}T23:59:59${undFilter}&select=carga,rota,rire,motorista,ajudante,ts&limit=5000`
+      `lancamentos?ts=gte.${iniMes}T00:00:00-03:00&ts=lte.${fimMes}T23:59:59-03:00${undFilter}&select=carga,rota,rire,motorista,ajudante,ts&limit=5000`
     ) || [];
 
     // Cargas da unidade selecionada (via lancamentos — fonte confiável)
@@ -19457,9 +19457,16 @@ async function renderDashInterna(){
       const _semDoMesOtif = d => { if(!d) return 0; return Math.min(Math.ceil(new Date(d+'T00:00:00').getDate()/7),5); };
 
       const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
-      // MESMA fonte, MESMA deduplication e MESMO agrupamento que "Pedidos por Semana"
+      // Usa bdRows do cache OTIF (mesma fonte do card de OTIF), filtrado por rire
+      const _bdOtifSem = (_dadosOtif.bdRows||[]).filter(p=>{
+        if(rireFiltro === '') return true;
+        const rn = normRire(p.rire)||getRireFromRota((p.rota||'').toUpperCase())||'R.E.';
+        if(rireFiltro === 'RI') return rn.includes('I');
+        if(rireFiltro === 'RE') return !rn.includes('I');
+        return true;
+      });
       const vistoSemOtif = new Set();
-      bd.forEach(p=>{
+      _bdOtifSem.forEach(p=>{
         const key = String(p.carga)+'_'+String(p.pedido);
         if(vistoSemOtif.has(key)) return;
         vistoSemOtif.add(key);
@@ -19604,19 +19611,19 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
            entRE:reTotal, onTimeRE, inFullRE, otifRE };
 }
 
-// Fonte única de OTIF — busca e calcula uma vez por mês, cache compartilhado por todos os displays
-let _otifCache = null, _otifCacheMes = null, _otifCachePromise = null;
+// Fonte única de OTIF — cache por mês (Map) para suportar consultas simultâneas sem corrida
+const _otifCacheMap = new Map();
+const _otifPromiseMap = new Map();
 async function _carregarOtifMes(mes){
-  if(_otifCache && _otifCacheMes === mes) return _otifCache;
-  // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo
-  if(_otifCachePromise && _otifCacheMes === mes) return _otifCachePromise;
-  _otifCache = null; _otifCacheMes = mes;
-  _otifCachePromise = (async()=>{
+  if(_otifCacheMap.has(mes)) return _otifCacheMap.get(mes);
+  // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo para o mesmo mês
+  if(_otifPromiseMap.has(mes)) return _otifPromiseMap.get(mes);
+  const promise = (async()=>{
   const proximo = _proximoMes(mes);
   // Busca rotas, lançamentos e saídas primeiro para descobrir cargas do mês
   const [rotasRows, lancRows, saidaRows] = await Promise.all([
     supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`,{_quiet:true}).catch(()=>[]),
-    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proximo}-01T00:00:00&select=carga,ts`,{_quiet:true}).catch(()=>[]),
+    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00&select=carga,ts`,{_quiet:true}).catch(()=>[]),
     supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proximo}-01&select=carga,data_saida`,{_quiet:true}).catch(()=>[]),
   ]);
   // Atualizar ROTAS_RI com cadastro para getRireFromRota classificar corretamente
@@ -19643,11 +19650,13 @@ async function _carregarOtifMes(mes){
     ocorrRows = ocorrRows.concat(rOcorr || []);
   }
   const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
-  _otifCache = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
-  _otifCachePromise = null;
-  return _otifCache;
+  const result = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
+  _otifCacheMap.set(mes, result);
+  _otifPromiseMap.delete(mes);
+  return result;
   })();
-  return _otifCachePromise;
+  _otifPromiseMap.set(mes, promise);
+  return promise;
 }
 
 async function renderDashOtif(){
