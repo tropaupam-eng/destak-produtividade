@@ -7166,6 +7166,38 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
     return {ok:false, msg:e.message};
   }
 }
+
+// Atualiza status_fiscal OU status_armazem sem tocar no status principal da carga
+async function _patchStatusIndependente(demandaId, campo, valor){
+  try{
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
+      method:'PATCH', body:JSON.stringify({[campo]:valor})
+    });
+    const cached = (_demandasCache||[]).find(d=>d.id===demandaId);
+    if(cached) cached[campo] = valor;
+  }catch(e){ console.warn('_patchStatusIndependente:', e.message); }
+}
+
+// Verifica se fiscal E armazém estão ambos 'concluido' e avança o status geral da carga.
+// Quando ambos concluem, a carga vai direto para aguardando_manifesto (sem bloquear um pelo outro).
+async function _checarAmbosConcluidosEAvancar(demandaId, carga){
+  try{
+    const rows = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=status,status_fiscal,status_armazem`);
+    const d = rows?.[0];
+    if(!d || d.status_fiscal!=='concluido' || d.status_armazem!=='concluido') return false;
+    const passosAteManifesto = ['pendente','separacao','carregamento','aguardando_nf'];
+    if(!passosAteManifesto.includes(d.status)) return false; // já avançou
+    // Avança step-a-step (trigger valida cada transição individualmente)
+    let stAtual = d.status;
+    for(const prox of passosAteManifesto.slice(passosAteManifesto.indexOf(stAtual)+1)){
+      const r = await _patchStatusDemanda(demandaId, prox, 'ambos_concluidos_step');
+      if(!r.ok) return false;
+      stAtual = prox;
+    }
+    const r2 = await _patchStatusDemanda(demandaId, 'aguardando_manifesto', 'ambos_concluidos');
+    return r2.ok;
+  }catch(e){ console.warn('_checarAmbosConcluidosEAvancar:', e.message); return false; }
+}
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ══ AUTH ══════════════════════════════════════════════
@@ -22968,7 +23000,7 @@ async function carregarPortalFiscal(){
   try{
     // Inclui separacao: conferente já está conferindo → fiscal já pode ver e agir
     const statusFiscalAtivos = ['separacao','carregamento','aguardando_nf'];
-    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status`) || [];
+    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem`) || [];
     const cargasAtivas = new Set(demandasAtivas.map(d=>d.carga));
     const cargasStr = [...cargasAtivas].join(',');
 
@@ -23040,6 +23072,12 @@ async function carregarPortalFiscal(){
       const pedNOK  = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
       const pedPend = pedidos.filter(p=>!dados.confMap[p]).length;
 
+      // Badges de status independente
+      const sfMap = {concluido:['#059669','#d1fae5','✅ Fiscal OK'], em_andamento:['#2563eb','#dbeafe','🔄 Fiscal Andamento'], pendente:['#6b7280','rgba(107,114,128,.12)','⏳ Fiscal Pendente']};
+      const saMap = {concluido:['#059669','#d1fae5','✅ Armazém OK'], em_andamento:['#f59e0b','rgba(245,158,11,.12)','🚛 Armazém Andamento'], pendente:['#6b7280','rgba(107,114,128,.12)','⏳ Armazém Pendente']};
+      const [sfClr, sfBg, sfTxt] = sfMap[dem.status_fiscal||'pendente']||sfMap.pendente;
+      const [saClr, saBg, saTxt] = saMap[dem.status_armazem||'pendente']||saMap.pendente;
+
       return `<div style="background:var(--bg-card);border:1.5px solid var(--border);border-top:3px solid ${cor};border-radius:14px;margin-bottom:18px;overflow:hidden">
         <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg-card2);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -23047,6 +23085,8 @@ async function carregarPortalFiscal(){
             <span style="font-size:.85rem;font-weight:700;color:var(--text-primary)">${dem.rota||'—'}</span>
             <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
             <span style="font-size:.72rem;background:${cor}22;color:${cor};padding:2px 8px;border-radius:5px;font-weight:700">${stLabel[stAtual]||stAtual}</span>
+            <span style="font-size:.68rem;background:${sfBg};color:${sfClr};border:1px solid ${sfClr}44;padding:2px 8px;border-radius:5px;font-weight:700">${sfTxt}</span>
+            <span style="font-size:.68rem;background:${saBg};color:${saClr};border:1px solid ${saClr}44;padding:2px 8px;border-radius:5px;font-weight:700">${saTxt}</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             ${pedOK?`<span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">✅ ${pedOK} OK</span>`:''}
@@ -23189,13 +23229,14 @@ async function concluirFiscalPortal(carga){
     const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
     const id = dem?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    // Fiscal conclui independente do status da demanda
+    // Marcar atribuições fiscais como concluídas
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
-    // Se armazém já finalizou (status=aguardando_nf), avança para manifesto agora
-    if(dem[0].status === 'aguardando_nf'){
-      const r = await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal_concluir');
-      if(r.ok) showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
-      else showToast('✅ Fiscal concluído — erro ao avançar status: '+r.msg,'warning');
+    // Marcar status_fiscal = concluido (independente do armazém)
+    await _patchStatusIndependente(id, 'status_fiscal', 'concluido');
+    // Verificar se armazém também concluiu → avança para aguardando_manifesto
+    const avancou = await _checarAmbosConcluidosEAvancar(id, carga);
+    if(avancou){
+      showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     } else {
       showToast('✅ Fiscal concluído — aguardando finalização do armazém.','success');
     }
@@ -23213,6 +23254,10 @@ async function pegarPedidoFiscal(carga, pedido){
       carga, pedido, fiscal_id:USUARIO_LOGADO.id, fiscal_nome:USUARIO_LOGADO.nome,
       status:'em_andamento', criado_em:new Date().toISOString()
     })});
+    // Marca status_fiscal = em_andamento se ainda pendente
+    await supaFetch(`demandas_rota?carga=eq.${carga}&status_fiscal=eq.pendente`,{
+      method:'PATCH', body:JSON.stringify({status_fiscal:'em_andamento'})
+    });
     showToast('✅ Pedido '+pedido+' atribuído a você','success');
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -24770,14 +24815,21 @@ async function concluirCarregamentoConferente(carga){
 
     if(!confirm('Confirmar carregamento concluído da carga '+carga+'?')) return;
 
-    const r = await _patchStatusDemanda(dem.id, 'aguardando_nf', 'conferente_concluir', {extra:{arm_status:'carregado_ok'}});
-    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
-    // Se fiscal já concluiu, avança automaticamente para aguardando_manifesto
-    const fiscalOk = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&status=eq.concluido&select=id&limit=1`).catch(()=>[]) || [];
-    if(fiscalOk.length){
-      await _patchStatusDemanda(dem.id, 'aguardando_manifesto', 'armazem_auto_manifesto').catch(()=>{});
+    // Marcar arm_status=carregado_ok e status_armazem=concluido
+    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{
+      method:'PATCH', body:JSON.stringify({arm_status:'carregado_ok', status_armazem:'concluido'})
+    });
+    const _cached = (_demandasCache||[]).find(d=>d.id===dem.id);
+    if(_cached){ _cached.arm_status='carregado_ok'; _cached.status_armazem='concluido'; }
+
+    // Verificar se fiscal também concluiu → avança direto para aguardando_manifesto
+    const avancouAmbos = await _checarAmbosConcluidosEAvancar(dem.id, carga);
+    if(avancouAmbos){
       showToast('✅ Carga '+carga+' carregada! Fiscal já concluído — enviada para Seguros e Caixa.','success');
     } else {
+      // Fiscal ainda não concluiu: avança para aguardando_nf (aguardando emissão de NF)
+      const r = await _patchStatusDemanda(dem.id, 'aguardando_nf', 'conferente_concluir');
+      if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
       showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
     }
     await carregarPortalConferente();
@@ -25597,11 +25649,13 @@ async function _executarConclusaoFiscal(){
     const demRow = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
     const id = demandaId || demRow?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    // Fiscal conclui independente do status da demanda
+    // Marcar atribuições fiscais como concluídas
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
-    // Se armazém já finalizou (status=aguardando_nf), avança para manifesto agora
-    if(demRow?.[0]?.status === 'aguardando_nf'){
-      await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal_xml_concluir');
+    // Marcar status_fiscal = concluido (independente do armazém)
+    await _patchStatusIndependente(id, 'status_fiscal', 'concluido');
+    // Verificar se armazém também concluiu → avança para aguardando_manifesto
+    const avancou = await _checarAmbosConcluidosEAvancar(id, carga);
+    if(avancou){
       showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     } else {
       showToast('✅ Fiscal concluído — aguardando finalização do armazém.','success');
@@ -25920,10 +25974,15 @@ async function renderArmazem(){
             const badgeTxt  = semConf?'⚠️ Sem conferente':'🚛 Carregando';
             const okPct  = total>0?Math.round((pedOk/total)*100):0;
             const nkPct  = total>0?Math.round((pedNok/total)*100):0;
+            const _sfAMap = {concluido:['#059669','✅ Fiscal OK'], em_andamento:['#2563eb','🔄 Fiscal And.'], pendente:['#6b7280','⏳ Fiscal Pend.']};
+            const [_sfC, _sfT] = _sfAMap[d.status_fiscal||'pendente']||_sfAMap.pendente;
             return `<div style="background:var(--bg-card);border:1px solid ${corBorda}33;border-left:3px solid ${corBorda};border-radius:10px;padding:12px 13px">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px">
                 <span style="font-size:.88rem;font-weight:900;color:var(--text-primary)">Carga ${d.carga}</span>
-                <span style="background:${badgeBg};color:${badgeClr};border:1px solid ${badgeClr}55;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${badgeTxt}</span>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+                  <span style="background:${badgeBg};color:${badgeClr};border:1px solid ${badgeClr}55;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${badgeTxt}</span>
+                  <span style="background:${_sfC}18;color:${_sfC};border:1px solid ${_sfC}44;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${_sfT}</span>
+                </div>
               </div>
               <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:7px">📍 ${d.rota||'—'}</div>
               <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:7px;font-size:.67rem">
@@ -26593,15 +26652,29 @@ async function salvarStatusArmazem(demandaId, status){
 
     if(stAtual && statusArmAzem.includes(stAtual)){
       if(status === 'carregado_ok'){
-        const r = await _patchStatusDemanda(demandaId, 'aguardando_nf', 'armazem_arm_status', {extra:{arm_status:'carregado_ok'}}).catch(()=>({ok:false}));
-        if(r.ok) showToast('✅ Carregamento concluído! Carga enviada para o Fiscal.','success');
+        // Armazém conclui: marcar status_armazem=concluido e verificar se fiscal também concluiu
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'concluido');
+        const cargaNum = dem3[0]?.carga;
+        const avancouAmbos = await _checarAmbosConcluidosEAvancar(demandaId, cargaNum);
+        if(avancouAmbos){
+          // arm_status também precisa ser atualizado para carregado_ok
+          await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok'})});
+          showToast('✅ Armazém e Fiscal concluídos! Carga enviada para Seguros e Caixa.','success');
+        } else {
+          // Fiscal ainda não concluiu: avança para aguardando_nf (aguardando NF)
+          const r = await _patchStatusDemanda(demandaId, 'aguardando_nf', 'armazem_arm_status', {extra:{arm_status:'carregado_ok'}}).catch(()=>({ok:false}));
+          if(r.ok) showToast('✅ Carregamento concluído! Carga enviada para o Fiscal.','success');
+        }
       } else if(status === 'carregamento' && ['pendente','separacao'].includes(stAtual)){
         await _patchStatusDemanda(demandaId, 'carregamento', 'armazem_arm_status').catch(()=>{});
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'em_andamento');
       } else if(status === 'separacao' && stAtual === 'pendente'){
         await _patchStatusDemanda(demandaId, 'separacao', 'armazem_arm_status').catch(()=>{});
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'em_andamento');
       } else if(status === 'pendente' && ['separacao','carregamento'].includes(stAtual)){
         // Retrocesso intencional pelo armazém (ADM)
         await _patchStatusDemanda(demandaId, 'pendente', 'armazem_retrocesso_adm', {bypassValidacao:true, extra:{ts_separacao:null, ts_carregamento:null}}).catch(()=>{});
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'pendente');
       }
     }
     // Atualizar KPIs (atualizar cache local para KPI imediato)
