@@ -7542,6 +7542,33 @@ async function pushBaseData(records){
 
   showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
   if(typeof renderBancoStatus==='function') renderBancoStatus();
+
+  // 4. Sincronizar quantidade_pedidos/valor_total em demandas_rota (background, fire-and-forget)
+  // Garante que o cache de contagem na tabela de demandas reflita a planilha recém-enviada
+  (async()=>{
+    try{
+      const porCarga = {};
+      records.forEach(r=>{
+        if(!r.carga||!r.pedido) return;
+        const c = Math.round(Number(r.carga));
+        if(!porCarga[c]) porCarga[c] = {pedidos:new Set(), valor:0};
+        const k = String(r.pedido);
+        if(!porCarga[c].pedidos.has(k)){
+          porCarga[c].pedidos.add(k);
+          porCarga[c].valor += Number(r.valor)||0;
+        }
+      });
+      const cargasKeys = Object.keys(porCarga);
+      for(let i=0; i<cargasKeys.length; i+=5){
+        await Promise.all(cargasKeys.slice(i,i+5).map(c =>
+          supaFetch(`demandas_rota?carga=eq.${c}`,{
+            method:'PATCH',
+            body: JSON.stringify({quantidade_pedidos: porCarga[c].pedidos.size, valor_total: porCarga[c].valor})
+          }).catch(()=>{})
+        ));
+      }
+    }catch(_){}
+  })();
 }
 
 async function normalizarCondutorBanco(){
@@ -11218,8 +11245,7 @@ async function confirmarModalKmCarga(){
           const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${demRow.id}&select=km_inicial,data_saida&limit=1`).catch(()=>[]) || [];
           if(rv[0]?.km_inicial != null){
             const { rota='', veiculo='' } = demRow;
-            const _RI2 = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
-            const rire2 = _RI2.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
+            const rire2 = ROTAS_RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
             const newId = Date.now().toString(36)+Math.random().toString(36).slice(2);
             const tsIni = rv[0].data_saida ? rv[0].data_saida+'T00:00:00Z' : agora;
             await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
@@ -16014,7 +16040,7 @@ async function salvarVincularCarga(){
     // Calcular RI/RE pela rota final
     // Rotas internas conhecidas = R.I.; tudo mais (rotas externas, cidades) = R.E.
     const _rotaUp = (rotaFinal||'').toUpperCase().trim();
-    const rireFinal = ['PETRO','JUA','CEASA','RETIRA'].includes(_rotaUp) ? 'R.I.' : 'R.E.';
+    const rireFinal = ROTAS_RI.has(_rotaUp) ? 'R.I.' : 'R.E.';
 
     // Atualizar demanda com carga e totais reais
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
