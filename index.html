@@ -19279,7 +19279,7 @@ async function renderDashInterna(){
 
     // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
     const _dadosOtif = await _carregarOtifMes(mesFiltro);
-    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas);
+    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     let otifTot, otifOk, onTimeTot, onTimeOk, inFullTot, inFullOk;
     if(rireFiltro === 'RI'){
       otifTot = _otifInterna.riTotal; otifOk = _otifInterna.otifRI;
@@ -26967,6 +26967,49 @@ async function gerarPagamentos(btn){
       }
     });
 
+    // ── BÔNUS KM PARA MOTORISTAS RE (DC-01) ─────────────────────────
+    // gerarPagamentos não buscava km_cargas → motoristas RE recebiam R$0
+    const _mesGerPag = mesSel || new Date().toISOString().slice(0,7);
+    try{
+      const kmCargasMes = await supaFetch(
+        `km_cargas?mes_ano=eq.${_mesGerPag}&select=carga,km_inicial,km_final,rota,motorista_nome`
+      ).catch(()=>[]) || [];
+      kmCargasMes.forEach(km=>{
+        if(km.km_inicial==null||km.km_final==null) return;
+        const kmRodado = km.km_final - km.km_inicial;
+        if(kmRodado<=0) return;
+        const cfg = getValorRota(km.rota||'');
+        if(cfg.ri) return; // RI recebe por pedido, não por KM
+        const bonusKm = kmRodado * (cfg.valorKm||0.20);
+        const motNome = (km.motorista_nome||'').trim().toUpperCase();
+        if(!motNome) return;
+        const chave = motNome+'__'+_mesGerPag+'__MOT';
+        if(pessoaMap[chave]){
+          pessoaMap[chave].total    += bonusKm;
+          pessoaMap[chave].km_bonus  = (pessoaMap[chave].km_bonus||0)+bonusKm;
+        }
+      });
+    }catch(_){}
+
+    // ── BÔNUS ADM CONFIRMADO (DC-06) ────────────────────────────────
+    // gerarPagamentos ignorava configuracoes.bonus_adm → Portal do Motorista divergia
+    try{
+      const cfgAdm = await supaFetch(`configuracoes?chave=eq.bonus_adm_${_mesGerPag}&select=valor`).catch(()=>[]) || [];
+      if(cfgAdm[0]?.valor){
+        const listaAdm = JSON.parse(cfgAdm[0].valor);
+        listaAdm.forEach(entry=>{
+          const motNome = (entry.motorista||'').toUpperCase().trim();
+          const valAdm  = Number(entry.valor)||0;
+          if(!motNome||valAdm<=0) return;
+          const chave = motNome+'__'+_mesGerPag+'__MOT';
+          if(pessoaMap[chave]){
+            pessoaMap[chave].total     += valAdm;
+            pessoaMap[chave].bonus_adm  = valAdm;
+          }
+        });
+      }
+    }catch(_){}
+
     // ── Recalcular val_entrega como taxa média real (Total ÷ Entregas) ──
     Object.values(pessoaMap).forEach(p=>{
       p.val_entrega = p.entregas > 0 ? p.total / p.entregas : 0;
@@ -30506,7 +30549,7 @@ async function carregarTV(){
 
     // ── OTIF do Mês — fonte única compartilhada com Painel e Dashboard Interno ──
     const _tvDadosOtif = await _carregarOtifMes(mesStr);
-    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif);
+    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
 
