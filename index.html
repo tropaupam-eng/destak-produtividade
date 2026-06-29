@@ -4808,6 +4808,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
       📊 Escala Fixa
     </button>
+    <button id="frota-tab-rotas" onclick="frotaAba('rotas')"
+      style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
+      🗺️ Rotas por Veículo
+    </button>
   </div>
 
   <!-- ── ABA STATUS ATUAL ── -->
@@ -4879,6 +4883,23 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <div style="font-size:2rem;margin-bottom:8px">📅</div>
           <p>Selecione o mês para visualizar o uso da frota.</p>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ABA ROTAS POR VEÍCULO ── -->
+  <div id="frota-pane-rotas" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <label style="font-size:.85rem;font-weight:600;color:var(--text-primary)">Mês:</label>
+      <input type="month" id="frota-rotas-mes"
+        style="background:var(--bg-input);color:var(--text-primary);border:1.5px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.85rem;outline:none"
+        onchange="renderFrotaRotas()"/>
+      <span style="font-size:.78rem;color:var(--text-muted)">Pedidos entregues por rota em cada veículo</span>
+    </div>
+    <div id="frota-rotas-wrap">
+      <div style="text-align:center;padding:48px;color:var(--text-muted)">
+        <div style="font-size:2rem;margin-bottom:8px">🗺️</div>
+        <p>Selecione o mês para visualizar.</p>
       </div>
     </div>
   </div>
@@ -13104,9 +13125,11 @@ function frotaAba(aba){
   const pStatus = document.getElementById('frota-pane-status');
   const pUso    = document.getElementById('frota-pane-uso');
   const pEscala = document.getElementById('frota-pane-escala');
+  const pRotas  = document.getElementById('frota-pane-rotas');
   const tStatus = document.getElementById('frota-tab-status');
   const tUso    = document.getElementById('frota-tab-uso');
   const tEscala = document.getElementById('frota-tab-escala');
+  const tRotas  = document.getElementById('frota-tab-rotas');
   if(!pStatus || !pUso) return;
 
   const _on  = el => { if(el){ el.style.background='#2563eb'; el.style.color='#fff'; } };
@@ -13114,7 +13137,8 @@ function frotaAba(aba){
 
   pStatus.style.display='none'; pUso.style.display='none';
   if(pEscala) pEscala.style.display='none';
-  _off(tStatus); _off(tUso); _off(tEscala);
+  if(pRotas)  pRotas.style.display='none';
+  _off(tStatus); _off(tUso); _off(tEscala); _off(tRotas);
 
   if(aba === 'status'){
     pStatus.style.display=''; _on(tStatus);
@@ -13124,6 +13148,11 @@ function frotaAba(aba){
     const inp = document.getElementById('frota-escala-mes');
     if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
     renderFrotaEscala();
+  } else if(aba === 'rotas'){
+    if(pRotas) pRotas.style.display=''; _on(tRotas);
+    const inp = document.getElementById('frota-rotas-mes');
+    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    renderFrotaRotas();
   } else {
     pUso.style.display=''; _on(tUso);
     const inp = document.getElementById('frota-uso-mes');
@@ -13519,6 +13548,131 @@ async function renderFrota(){
 
   }catch(e){
     grid.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626;grid-column:1/-1"><p>Erro ao carregar: ${e.message}</p></div>`;
+  }
+}
+
+let _frotaRotasChart = null;
+
+async function renderFrotaRotas(){
+  const wrap = document.getElementById('frota-rotas-wrap');
+  if(!wrap) return;
+  const mes = document.getElementById('frota-rotas-mes')?.value || new Date().toISOString().slice(0,7);
+
+  wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando...</p></div>';
+
+  try{
+    const proxMes = _proximoMes(mes);
+    const lancs = await supaFetch(
+      `lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proxMes}-01T00:00:00` +
+      `&veiculo=not.is.null&select=veiculo,rota,carga&order=veiculo.asc`
+    ) || [];
+
+    // Filtrar placas válidas
+    const lancsFilt = lancs.filter(l => {
+      const p = (l.veiculo||'').trim().toUpperCase();
+      return p && p !== 'A DEFINIR VEÍCULO' && !p.includes('FRETE');
+    });
+
+    if(!lancsFilt.length){
+      wrap.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text-muted)"><div style="font-size:2rem">🗺️</div><p>Nenhuma entrega encontrada neste mês.</p></div>';
+      return;
+    }
+
+    // Montar mapa placa → rota → pedidos
+    const mapa = {}; // {placa: {rota: qtdPedidos}}
+    const cargaMap = getCargaMap();
+
+    lancsFilt.forEach(l => {
+      const placa = (l.veiculo||'').trim().toUpperCase();
+      const rota  = (l.rota||'—').trim().toUpperCase() || '—';
+      const c     = Math.round(Number(l.carga));
+      const entry = cargaMap[c];
+      const qtd   = entry ? (entry.pedidosSemOcorr?.size || entry.pedidos?.size || 0) : 1;
+
+      if(!mapa[placa]) mapa[placa] = {};
+      mapa[placa][rota] = (mapa[placa][rota]||0) + qtd;
+    });
+
+    // Ordenar veículos por total de pedidos (maior primeiro)
+    const placas = Object.keys(mapa).sort((a,b)=>{
+      const ta = Object.values(mapa[a]).reduce((s,v)=>s+v,0);
+      const tb = Object.values(mapa[b]).reduce((s,v)=>s+v,0);
+      return tb - ta;
+    });
+
+    // Top rotas (por volume total entre todos os veículos) para definir cores
+    const rotaTotals = {};
+    placas.forEach(p => Object.entries(mapa[p]).forEach(([r,v])=>{ rotaTotals[r]=(rotaTotals[r]||0)+v; }));
+    const todasRotas = Object.keys(rotaTotals).sort((a,b)=>rotaTotals[b]-rotaTotals[a]);
+
+    const CORES = ['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6','#a855f7'];
+    const rotaCor = {};
+    todasRotas.forEach((r,i) => { rotaCor[r] = CORES[i % CORES.length]; });
+
+    // Datasets (uma série por rota)
+    const datasets = todasRotas.map(rota => ({
+      label: rota,
+      data: placas.map(p => mapa[p][rota] || 0),
+      backgroundColor: rotaCor[rota],
+      borderRadius: 4,
+      borderSkipped: false,
+    }));
+
+    // Totais por placa para exibir no label
+    const totaisPorPlaca = placas.map(p => Object.values(mapa[p]).reduce((s,v)=>s+v,0));
+
+    // Canvas
+    wrap.innerHTML = `
+      <div style="position:relative;width:100%;overflow-x:auto">
+        <canvas id="frota-rotas-chart" style="min-height:${Math.max(300, placas.length * 44)}px"></canvas>
+      </div>
+      <div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;padding:0 4px">
+        ${todasRotas.map(r=>`<span style="display:flex;align-items:center;gap:5px;font-size:.75rem;font-weight:600;color:var(--text-secondary)">
+          <span style="width:10px;height:10px;border-radius:2px;background:${rotaCor[r]};display:inline-block"></span>${r}
+        </span>`).join('')}
+      </div>`;
+
+    if(_frotaRotasChart){ _frotaRotasChart.destroy(); _frotaRotasChart = null; }
+
+    const ctx = document.getElementById('frota-rotas-chart');
+    _frotaRotasChart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels: placas, datasets },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => items[0].label,
+              label: item => ` ${item.dataset.label}: ${item.raw} pedidos`,
+              footer: items => {
+                const total = totaisPorPlaca[items[0].dataIndex];
+                return `Total: ${total} pedidos`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            stacked: true,
+            grid: { color: 'rgba(150,150,150,.1)' },
+            ticks: { color: 'var(--text-secondary)', font: { size: 11 } },
+            title: { display: true, text: 'Pedidos entregues', color: 'var(--text-muted)', font: { size: 11 } }
+          },
+          y: {
+            stacked: true,
+            grid: { display: false },
+            ticks: { color: 'var(--text-primary)', font: { size: 12, weight: '700' } }
+          }
+        }
+      }
+    });
+
+  }catch(e){
+    wrap.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro: ${e.message}</p></div>`;
   }
 }
 
