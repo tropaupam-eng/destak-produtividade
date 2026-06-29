@@ -2427,6 +2427,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div class="sidebar-item" data-page="gestao-frota" onclick="showPage('gestao-frota',this)">
     <span class="si-icon">🔧</span><span class="si-label">Manutenção</span>
   </div>
+  <div class="sidebar-item" data-page="frota-disponibilidade" onclick="showPage('frota-disponibilidade',this)">
+    <span class="si-icon">📊</span><span class="si-label">Disponibilidade</span>
+  </div>
   <div class="sidebar-divider"></div>
   <div class="sidebar-section-label">Comercial</div>
   <div class="sidebar-item" data-page="comercial-rotas" onclick="showPage('comercial-rotas',this)">
@@ -5032,6 +5035,32 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 
 </div></div><!-- /page-gestao-frota -->
+
+<!-- ══ PAGE FROTA DISPONIBILIDADE ══ -->
+<div class="page" id="page-frota-disponibilidade"><div class="container" style="max-width:1500px">
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+    <div>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">📊 Disponibilidade da Frota</h2>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Uso diário por veículo — <strong style="color:#059669">S</strong> Em viagem · <strong style="color:#d97706">C</strong> Carregando · <strong style="color:var(--text-muted)">N</strong> Ocioso</p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="font-size:.85rem;font-weight:600;color:var(--text-primary)">Mês:</label>
+      <input type="month" id="frota-disp-mes"
+        style="background:var(--bg-input);color:var(--text-primary);border:1.5px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.85rem;outline:none"
+        onchange="renderFrotaDisp()"/>
+      <button onclick="renderFrotaDisp()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+    </div>
+  </div>
+
+  <div id="frota-disp-wrap" style="background:var(--bg-card);border-radius:14px;border:1px solid var(--border);overflow:hidden">
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+      <div style="font-size:2.5rem;margin-bottom:10px">📊</div>
+      <p style="font-size:.9rem">Selecione o mês para visualizar a disponibilidade da frota.</p>
+    </div>
+  </div>
+
+</div></div><!-- /page-frota-disponibilidade -->
 
 <!-- ══ MODAL NOVA MANUTENÇÃO ══ -->
 <div id="modal-nova-manut" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:700;align-items:center;justify-content:center;padding:16px">
@@ -7719,8 +7748,8 @@ async function filtrarSidebarPorPerfil(){
 
   const restricoes = {
     // ── Distribuição ──
-    'operador':         ['dashboard','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota'],
-    'exped_admin':      ['dashboard','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','armazem','absenteismo'],
+    'operador':         ['dashboard','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','frota-disponibilidade'],
+    'exped_admin':      ['dashboard','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','frota-disponibilidade','armazem','absenteismo'],
     'adm_distribuicao': ['dashboard','dash-interna','historico','geral','financeiro','expedicao','ocorrencias','lancamento','motoristas','veiculos','absenteismo','cadastros','recursos-humanos'],
     // ── Armazém ──
     'adm_armazem':      ['dashboard','dash-interna','historico','geral','motoristas','veiculos','armazem','abs-armazem','abastecimento-loja','receitas-armazem','cadastros','recursos-humanos'],
@@ -13483,6 +13512,269 @@ async function renderFrotaUso(){
   }
 }
 
+async function renderFrotaDisp(){
+  const wrap = document.getElementById('frota-disp-wrap');
+  if(!wrap) return;
+  const mes = document.getElementById('frota-disp-mes')?.value || new Date().toISOString().slice(0,7);
+  if(!mes){ wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">Selecione o mês.</div>'; return; }
+
+  wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando disponibilidade...</p></div>';
+
+  try{
+    const proxMes = _proximoMes(mes);
+    const hojeObj = new Date();
+    const hojeStr = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
+    const hojeD   = String(hojeObj.getDate()).padStart(2,'0');
+    const ehMesAtual = mes === hojeStr;
+
+    const queries = [
+      supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
+      supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proxMes}-01T00:00:00&veiculo=not.is.null&select=veiculo,ts`),
+      supaFetch(`demandas_rota?select=veiculo,data_saida&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado)`)
+    ];
+    if(ehMesAtual){
+      queries.push(supaFetch(`demandas_rota?select=veiculo,status&veiculo=not.is.null&data_saida=is.null&status=in.(pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`));
+    }
+    const [veiculos, lancs, demandasSaida, demandasC] = await Promise.all(queries);
+
+    const todos = (veiculos||[]).filter(v => v.ativo && !(v.placa||'').toUpperCase().includes('FRETE'));
+    if(!todos.length){
+      wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum veículo ativo cadastrado.</div>';
+      return;
+    }
+
+    const [ano, numMes] = mes.split('-').map(Number);
+    const diasNoMes  = new Date(ano, numMes, 0).getDate();
+    const DIAS_SEM   = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+
+    // ── Mapa de status: dispMap[placa][dia] = 'S' | 'C' ──
+    const dispMap = {};
+    todos.forEach(v => { dispMap[v.placa] = {}; });
+
+    // S: de lançamentos confirmados
+    (lancs||[]).forEach(l => {
+      const placa = (l.veiculo||'').trim().toUpperCase();
+      if(!placa || placa === 'A DEFINIR VEÍCULO' || !dispMap[placa]) return;
+      const dia = (l.ts||'').slice(8,10);
+      if(dia) dispMap[placa][dia] = 'S';
+    });
+
+    // S: de saída registrada em demandas_rota
+    (demandasSaida||[]).forEach(d => {
+      const placa = (d.veiculo||'').trim().toUpperCase();
+      if(!placa || !dispMap[placa] || !d.data_saida) return;
+      const dia = String(d.data_saida).slice(8,10);
+      if(dia && !dispMap[placa][dia]) dispMap[placa][dia] = 'S';
+    });
+
+    // C: carregando hoje (somente mês atual)
+    if(ehMesAtual){
+      (demandasC||[]).forEach(d => {
+        const placa = (d.veiculo||'').trim().toUpperCase();
+        if(!placa || !dispMap[placa]) return;
+        if(!dispMap[placa][hojeD]) dispMap[placa][hojeD] = 'C';
+      });
+    }
+
+    // ── Colunas do calendário ──
+    // Seg–Sáb sempre; Dom só se algum veículo usou naquele dia
+    const colunas = [];
+    for(let d = 1; d <= diasNoMes; d++){
+      const dt  = new Date(ano, numMes-1, d);
+      const dow = dt.getDay();
+      const dia = String(d).padStart(2,'0');
+      const ehDom = dow === 0;
+      if(ehDom){
+        const alguemUsou = todos.some(v => dispMap[v.placa]?.[dia]);
+        if(!alguemUsou) continue;
+      }
+      colunas.push({ dia, dt, dow, ehDom, ehSeg: dow === 1, ehSab: dow === 6 });
+    }
+
+    // Dias úteis passados (excluindo domingos) para % de uso
+    const colUteis = colunas.filter(c => !c.ehDom);
+    const colPassadas = colUteis.filter(c => !ehMesAtual || c.dia <= hojeD);
+    const nPassados  = colPassadas.length;
+    const totalUteis = colUteis.length;
+
+    // ── Dados por veículo ──
+    const veiculosData = todos.map(v => {
+      let diasS = 0, diasC = 0;
+      colPassadas.forEach(({ dia }) => {
+        const st = dispMap[v.placa]?.[dia];
+        if(st === 'S') diasS++;
+        else if(st === 'C') diasC++;
+      });
+      const pct = nPassados > 0 ? Math.round(diasS / nPassados * 100) : 0;
+      return { v, diasS, diasC, pct };
+    });
+    veiculosData.sort((a,b) => b.pct - a.pct);
+
+    // ── Cabeçalho ──
+    const thDias = colunas.map(({ dia, dt, dow, ehDom, ehSeg, ehSab }) => {
+      const dsem   = DIAS_SEM[dow];
+      const ehHoje = ehMesAtual && dia === hojeD;
+      const futuro = ehMesAtual && dia > hojeD;
+      const sepL   = ehSeg ? 'border-left:3px solid #cbd5e1' : 'border-left:1px solid var(--border)';
+
+      if(ehDom){
+        return `<th style="min-width:24px;width:28px;padding:4px 1px;text-align:center;font-size:.55rem;font-weight:700;background:#f1f5f9;color:#94a3b8;border-right:1px solid var(--border);border-left:2px solid #e2e8f0;white-space:nowrap">
+          <div>${dsem}</div><div style="font-size:.72rem;font-weight:800">${parseInt(dia)}</div>
+        </th>`;
+      }
+
+      let bgTh = futuro ? 'transparent' : ehSab ? 'rgba(99,102,241,.07)' : 'var(--bg-card2)';
+      let corTh = futuro ? 'var(--border-med)' : ehSab ? '#4338ca' : 'var(--text-secondary)';
+      if(ehHoje){ bgTh='#2563eb'; corTh='#fff'; }
+
+      return `<th style="min-width:30px;padding:5px 1px;text-align:center;font-size:.6rem;font-weight:700;background:${bgTh};color:${corTh};border-right:1px solid var(--border);${sepL};white-space:nowrap">
+        <div>${dsem}</div>
+        <div style="font-size:.78rem;font-weight:800">${parseInt(dia)}</div>
+        ${ehHoje ? '<div style="font-size:.48rem;font-weight:700;letter-spacing:.5px">HOJE</div>' : ''}
+      </th>`;
+    }).join('');
+
+    // ── Linhas ──
+    const COR_S = '#059669', COR_C = '#d97706', COR_N = 'var(--border-med)';
+    const BG_S  = 'rgba(5,150,105,.14)', BG_C = 'rgba(245,158,11,.18)', BG_N = '';
+
+    const linhas = veiculosData.map(({ v, diasS, diasC, pct }) => {
+      const corPct = pct >= 80 ? '#059669' : pct >= 50 ? '#f59e0b' : '#6b7280';
+      const tipo   = v.tipo ? `<span style="font-size:.58rem;color:var(--text-muted);font-weight:400;display:block;margin-top:1px">${v.tipo}</span>` : '';
+
+      const celulas = colunas.map(({ dia, dt, dow, ehDom, ehSeg, ehSab }) => {
+        const st     = dispMap[v.placa]?.[dia] || '';
+        const ehHoje = ehMesAtual && dia === hojeD;
+        const futuro = ehMesAtual && dia > hojeD;
+        const sepL   = ehSeg ? 'border-left:3px solid #cbd5e1' : 'border-left:1px solid var(--border)';
+
+        if(ehDom){
+          const bg  = st === 'S' ? BG_S : st === 'C' ? BG_C : '#f8fafc';
+          const cor = st === 'S' ? COR_S : st === 'C' ? COR_C : '#cbd5e1';
+          const txt = st || '—';
+          return `<td style="padding:3px 1px;text-align:center;background:${bg};border-right:1px solid var(--border);border-left:2px solid #e2e8f0">
+            <span style="font-size:.65rem;font-weight:800;color:${cor}">${txt}</span>
+          </td>`;
+        }
+
+        if(futuro){
+          return `<td style="padding:3px 1px;text-align:center;border-right:1px solid var(--border);${sepL};background:transparent">
+            <span style="font-size:.6rem;color:transparent">·</span>
+          </td>`;
+        }
+
+        const bg  = st === 'S' ? BG_S : st === 'C' ? BG_C : (ehHoje ? 'rgba(37,99,235,.04)' : ehSab ? 'rgba(99,102,241,.03)' : BG_N);
+        const cor = st === 'S' ? COR_S : st === 'C' ? COR_C : COR_N;
+        const txt = st || 'N';
+        const fw  = st ? '900' : '500';
+
+        return `<td style="padding:3px 1px;text-align:center;background:${bg};border-right:1px solid var(--border);${sepL}">
+          <span style="font-size:.78rem;font-weight:${fw};color:${cor}">${txt}</span>
+        </td>`;
+      }).join('');
+
+      return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
+        <td style="padding:7px 12px;font-family:monospace;font-weight:800;font-size:.82rem;color:var(--text-primary);white-space:nowrap;position:sticky;left:0;background:var(--bg-card);border-right:2px solid var(--border-med);z-index:1">
+          ${v.placa}${tipo}
+        </td>
+        ${celulas}
+        <td style="padding:5px 10px;text-align:center;border-left:2px solid var(--border-med);white-space:nowrap;min-width:60px">
+          <div style="font-size:.62rem;color:var(--text-muted);font-weight:600;margin-bottom:2px">Uso</div>
+          <div style="font-weight:800;font-size:.8rem;color:${corPct}">${diasS}/${nPassados}</div>
+          <div style="font-size:.68rem;background:${corPct}22;color:${corPct};border-radius:8px;padding:1px 6px;font-weight:700;margin-top:2px">${pct}%</div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    // ── KPIs ──
+    const totalS = veiculosData.reduce((s,x) => s + x.diasS, 0);
+    const maxPoss = todos.length * nPassados;
+    const pctGeral = maxPoss > 0 ? Math.round(totalS / maxPoss * 100) : 0;
+    const corGeral = pctGeral >= 80 ? '#059669' : pctGeral >= 50 ? '#f59e0b' : '#6b7280';
+
+    const emViagemHoje  = ehMesAtual ? todos.filter(v => dispMap[v.placa]?.[hojeD] === 'S').length : 0;
+    const carregandoHoje = ehMesAtual ? todos.filter(v => dispMap[v.placa]?.[hojeD] === 'C').length : 0;
+    const ociosHoje      = ehMesAtual ? todos.length - emViagemHoje - carregandoHoje : 0;
+
+    // ── Linha de totais ──
+    const linhaTotal = `<tr style="background:var(--bg-card2);border-top:2px solid var(--border-med);font-weight:800">
+      <td style="padding:8px 12px;font-size:.75rem;color:var(--text-secondary);position:sticky;left:0;background:var(--bg-card2);border-right:2px solid var(--border-med);z-index:1;white-space:nowrap">TOTAL FROTA</td>
+      ${colunas.map(c => `<td style="border-right:1px solid var(--border);${c.ehSeg?'border-left:3px solid #cbd5e1':'border-left:1px solid var(--border)'}"></td>`).join('')}
+      <td style="padding:6px 10px;text-align:center;border-left:2px solid var(--border-med)">
+        <div style="font-size:.62rem;color:var(--text-muted)">Total</div>
+        <div style="font-weight:800;font-size:.8rem;color:${corGeral}">${totalS}/${maxPoss}</div>
+        <div style="font-size:.68rem;background:${corGeral}22;color:${corGeral};border-radius:8px;padding:1px 6px;font-weight:700;margin-top:2px">${pctGeral}%</div>
+      </td>
+    </tr>`;
+
+    wrap.innerHTML = `
+      <!-- KPIs -->
+      <div style="padding:20px 20px 16px;background:linear-gradient(135deg,#f8fafc,var(--bg-card));border-bottom:2px solid var(--border)">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+          <div style="flex:1;min-width:130px;background:var(--bg-card);border:1.5px solid ${corGeral}40;border-left:4px solid ${corGeral};border-radius:12px;padding:14px 16px;box-shadow:0 2px 8px ${corGeral}15">
+            <div style="font-size:2.2rem;font-weight:900;color:${corGeral};line-height:1">${pctGeral}%</div>
+            <div style="font-size:.72rem;color:var(--text-muted);font-weight:600;margin-top:3px">Uso médio no mês</div>
+            <div style="font-size:.7rem;margin-top:4px;color:${corGeral};font-weight:700">${totalS} dias em viagem</div>
+          </div>
+          ${ehMesAtual ? `
+          <div style="flex:1;min-width:120px;background:var(--bg-card);border:1.5px solid #05966940;border-left:4px solid #059669;border-radius:12px;padding:14px 16px">
+            <div style="font-size:2.2rem;font-weight:900;color:#059669;line-height:1">${emViagemHoje}</div>
+            <div style="font-size:.72rem;color:var(--text-muted);font-weight:600;margin-top:3px">Em viagem hoje</div>
+          </div>
+          <div style="flex:1;min-width:120px;background:var(--bg-card);border:1.5px solid #f59e0b40;border-left:4px solid #f59e0b;border-radius:12px;padding:14px 16px">
+            <div style="font-size:2.2rem;font-weight:900;color:#d97706;line-height:1">${carregandoHoje}</div>
+            <div style="font-size:.72rem;color:var(--text-muted);font-weight:600;margin-top:3px">Carregando hoje</div>
+          </div>
+          <div style="flex:1;min-width:120px;background:var(--bg-card);border:1.5px solid #6b728040;border-left:4px solid #6b7280;border-radius:12px;padding:14px 16px">
+            <div style="font-size:2.2rem;font-weight:900;color:#6b7280;line-height:1">${ociosHoje}</div>
+            <div style="font-size:.72rem;color:var(--text-muted);font-weight:600;margin-top:3px">Ociosos hoje</div>
+          </div>` : ''}
+        </div>
+        <!-- Legenda -->
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+          <span style="display:flex;align-items:center;gap:6px;font-size:.73rem">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:rgba(5,150,105,.14);border-radius:5px;font-weight:900;color:#059669;font-size:.78rem">S</span>
+            <span style="color:var(--text-secondary);font-weight:600">Em viagem</span>
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;font-size:.73rem">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:rgba(245,158,11,.18);border-radius:5px;font-weight:900;color:#d97706;font-size:.78rem">C</span>
+            <span style="color:var(--text-secondary);font-weight:600">Carregando</span>
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;font-size:.73rem">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:var(--bg-card2);border:1px solid var(--border);border-radius:5px;font-weight:600;color:var(--border-med);font-size:.78rem">N</span>
+            <span style="color:var(--text-secondary);font-weight:600">Ocioso</span>
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;font-size:.73rem;margin-left:4px">
+            <span style="display:inline-block;width:24px;height:24px;background:#f1f5f9;border:2px solid #e2e8f0;border-radius:5px"></span>
+            <span style="color:var(--text-muted);font-weight:600">Domingo (só exibido se houver uso)</span>
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;font-size:.73rem">
+            <span style="display:inline-block;width:6px;height:24px;background:#cbd5e1;border-radius:3px"></span>
+            <span style="color:var(--text-muted);font-weight:600">Início de semana</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- Tabela calendário -->
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          <thead>
+            <tr style="background:var(--bg-card2)">
+              <th style="padding:8px 12px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-secondary);white-space:nowrap;position:sticky;left:0;background:var(--bg-card2);border-right:2px solid var(--border-med);z-index:2;min-width:100px">Veículo</th>
+              ${thDias}
+              <th style="padding:5px 10px;text-align:center;font-size:.65rem;font-weight:700;color:var(--text-secondary);white-space:nowrap;border-left:2px solid var(--border-med);min-width:60px">Uso<br>Mensal</th>
+            </tr>
+          </thead>
+          <tbody>${linhas}${linhaTotal}</tbody>
+        </table>
+      </div>`;
+
+  }catch(e){
+    wrap.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro ao carregar: ${e.message}</p></div>`;
+    console.error('renderFrotaDisp:', e);
+  }
+}
+
 async function renderFrota(){
   const grid = document.getElementById('frota-grid');
   if(!grid) return;
@@ -17007,6 +17299,11 @@ function showPage(name,tab){
   },'expedicao');
   else if(name==='agendamento') safe(()=>initAgendMes(),'agendamento');
   else if(name==='frota') safe(()=>renderFrota(),'frota');
+  else if(name==='frota-disponibilidade') safe(()=>{
+    const inp = document.getElementById('frota-disp-mes');
+    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    renderFrotaDisp();
+  },'frota-disponibilidade');
   else if(name==='gestao-frota') safe(()=>{
     if(VEICULOS_CACHE.length===0){ carregarVeiculos().then(carregarGestaoFrota).catch(()=>carregarGestaoFrota()); }
     else { carregarGestaoFrota(); }
