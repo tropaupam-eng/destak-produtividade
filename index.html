@@ -10310,21 +10310,30 @@ async function calcularPagamentos(){
 async function confirmarPagamento(ajId, ajNome, mes, entregas, valor){
   if(!confirm(`Confirmar pagamento de R$ ${valor} para ${ajNome} ref. ${mes}?`)) return;
   try{
-    // Verificar se já existe
-    const exist = await supaFetch(`pagamentos?ajudante_id=eq.${ajId}&mes_ano=eq.${mes}&select=id`);
+    const nomeUp = (ajNome||'').toUpperCase().trim();
+    // Verificar se já existe (por ajudante_id ou por nome+mes_ano)
+    const exist = await supaFetch(`pagamentos?ajudante_id=eq.${ajId}&mes_ano=eq.${mes}&select=id`)
+      || await supaFetch(`pagamentos?nome=eq.${encodeURIComponent(nomeUp)}&mes_ano=eq.${mes}&tipo=eq.ajudante&select=id`);
     if(exist&&exist[0]){
       await supaFetch(`pagamentos?id=eq.${exist[0].id}`,{
         method:'PATCH',
-        body: JSON.stringify({status:'pago',valor_pago:valor,confirmado_em:new Date().toISOString()})
+        body: JSON.stringify({status:'pago', valor_pago:valor, total:valor, confirmado_em:new Date().toISOString()})
       });
     } else {
       await supaFetch('pagamentos',{
         method:'POST',
         body: JSON.stringify({
-          ajudante_id:ajId, mes_ano:mes,
-          total_entregas:entregas, valor_calculado:valor,
-          valor_pago:valor, status:'pago',
-          confirmado_em:new Date().toISOString()
+          ajudante_id: ajId,
+          nome:        nomeUp,
+          tipo:        'ajudante',
+          mes_ano:     mes,
+          entregas:    entregas,
+          total_entregas: entregas,
+          valor_calculado: valor,
+          total:       valor,
+          valor_pago:  valor,
+          status:      'pago',
+          confirmado_em: new Date().toISOString()
         })
       });
     }
@@ -16481,15 +16490,11 @@ async function carregarPortalMotorista(){
       setKpi('mot-kpi-pos',   minhaPosRI > 0 ? minhaPosRI+'º' : '-');
       setKpi('mot-kpi-pos-re',minhaPosRE > 0 ? minhaPosRE+'º' : '-');
 
-      // Bônus ADM — buscar de configuracoes
+      // Bônus ADM — lê da tabela bonus_adm (fonte oficial)
       let bonusADM = null;
       try{
-        const cfgBonus = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mesStr}&select=valor`).catch(()=>[]) || [];
-        if(cfgBonus[0]?.valor){
-          const lista = JSON.parse(cfgBonus[0].valor);
-          const entry = lista.find(e=>(e.motorista||'').toUpperCase()===nomeDB);
-          if(entry) bonusADM = Number(entry.valor)||0;
-        }
+        const admRows = await supaFetch(`bonus_adm?mes_ano=eq.${mesStr}&motorista_nome=eq.${encodeURIComponent(nomeDB)}&select=valor`).catch(()=>[]) || [];
+        if(admRows[0]) bonusADM = Number(admRows[0].valor)||0;
       }catch(_){}
 
       if(bonusADM !== null){
@@ -16595,21 +16600,19 @@ async function renderBonusAdmTabela(mesStr){
   if(!tbody) return;
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-muted)">Carregando...</td></tr>';
   try{
-    const cfg = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mesStr}&select=valor`).catch(()=>[]) || [];
-    let lista = [];
-    if(cfg[0]?.valor){ try{ lista = JSON.parse(cfg[0].valor); }catch(_){} }
+    const lista = await supaFetch(`bonus_adm?mes_ano=eq.${mesStr}&select=id,motorista_nome,valor,criado_por&order=motorista_nome.asc`).catch(()=>[]) || [];
     if(!lista.length){
       tbody.innerHTML='<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-muted)">Nenhum bônus lançado para este mês</td></tr>';
       return;
     }
     const fmtMes = m=>{ const [y,mo]=m.split('-'); return new Date(y,Number(mo)-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}); };
-    tbody.innerHTML = lista.map((e,i)=>`
+    tbody.innerHTML = lista.map(e=>`
       <tr>
-        <td style="font-weight:700">${e.motorista||'—'}</td>
+        <td style="font-weight:700">${e.motorista_nome||'—'}</td>
         <td>${fmtMes(mesStr)}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">R$ ${Number(e.valor||0).toFixed(2).replace('.',',')}</td>
-        <td style="color:var(--text-muted)">${e.motivo||'—'}</td>
-        <td style="text-align:center"><button onclick="excluirBonusAdm('${mesStr}',${i})" style="background:transparent;border:1px solid #ef4444;color:#ef4444;border-radius:6px;padding:3px 10px;font-size:.75rem;cursor:pointer">🗑</button></td>
+        <td style="color:var(--text-muted)">${e.criado_por||'—'}</td>
+        <td style="text-align:center"><button onclick="excluirBonusAdm('${e.id}')" style="background:transparent;border:1px solid #ef4444;color:#ef4444;border-radius:6px;padding:3px 10px;font-size:.75rem;cursor:pointer">🗑</button></td>
       </tr>`).join('');
   }catch(e){
     tbody.innerHTML=`<tr><td colspan="5" style="color:#ef4444;padding:12px">Erro: ${e.message}</td></tr>`;
@@ -16625,19 +16628,12 @@ async function salvarBonusAdm(){
   if(!mes){ showToast('Selecione o mês','warning'); return; }
   if(!valor || valor<=0){ showToast('Informe o valor do bônus','warning'); return; }
   try{
-    // Buscar lista atual
-    const cfg = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}&select=valor`).catch(()=>[]) || [];
-    let lista = [];
-    if(cfg[0]?.valor){ try{ lista=JSON.parse(cfg[0].valor); }catch(_){} }
-    // Remover entrada anterior do mesmo motorista/mês
-    lista = lista.filter(e=>(e.motorista||'').toUpperCase() !== motorista);
-    lista.push({ motorista, valor, motivo });
-    const novoJson = JSON.stringify(lista);
-    if(cfg[0]){
-      await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({valor:novoJson})});
-    } else {
-      await supaFetch('configuracoes',{method:'POST',prefer:'return=minimal',body:JSON.stringify({chave:`bonus_adm_${mes}`,valor:novoJson})});
-    }
+    // UPSERT: unique(motorista_nome, mes_ano) — sobrescreve se já existir
+    await supaFetch('bonus_adm?on_conflict=motorista_nome,mes_ano',{
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({ motorista_nome: motorista, mes_ano: mes, valor, criado_por: motivo||null })
+    });
     showToast(`✅ Bônus lançado para ${motorista}: R$ ${valor.toFixed(2).replace('.',',')}`, 'success');
     document.getElementById('bonus-adm-valor').value='';
     document.getElementById('bonus-adm-motivo').value='';
@@ -16645,16 +16641,12 @@ async function salvarBonusAdm(){
   }catch(e){ showToast('Erro ao salvar: '+e.message,'warning'); }
 }
 
-async function excluirBonusAdm(mes, idx){
+async function excluirBonusAdm(id){
   if(!confirm('Remover este bônus?')) return;
   try{
-    const cfg = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}&select=valor`).catch(()=>[]) || [];
-    let lista = [];
-    if(cfg[0]?.valor){ try{ lista=JSON.parse(cfg[0].valor); }catch(_){} }
-    lista.splice(idx,1);
-    const novoJson = JSON.stringify(lista);
-    await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({valor:novoJson})});
+    await supaFetch(`bonus_adm?id=eq.${id}`,{method:'DELETE',prefer:'return=minimal'});
     showToast('Bônus removido','success');
+    const mes = document.getElementById('bonus-adm-mes')?.value || new Date().toISOString().slice(0,7);
     await renderBonusAdmTabela(mes);
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -27026,22 +27018,19 @@ async function gerarPagamentos(btn){
     }catch(_){}
 
     // ── BÔNUS ADM CONFIRMADO (DC-06) ────────────────────────────────
-    // gerarPagamentos ignorava configuracoes.bonus_adm → Portal do Motorista divergia
+    // Bônus ADM: lê da tabela bonus_adm (fonte oficial — substitui configuracoes.bonus_adm_*)
     try{
-      const cfgAdm = await supaFetch(`configuracoes?chave=eq.bonus_adm_${_mesGerPag}&select=valor`).catch(()=>[]) || [];
-      if(cfgAdm[0]?.valor){
-        const listaAdm = JSON.parse(cfgAdm[0].valor);
-        listaAdm.forEach(entry=>{
-          const motNome = (entry.motorista||'').toUpperCase().trim();
-          const valAdm  = Number(entry.valor)||0;
-          if(!motNome||valAdm<=0) return;
-          const chave = motNome+'__'+_mesGerPag+'__MOT';
-          if(pessoaMap[chave]){
-            pessoaMap[chave].total     += valAdm;
-            pessoaMap[chave].bonus_adm  = valAdm;
-          }
-        });
-      }
+      const bonusAdmRows = await supaFetch(`bonus_adm?mes_ano=eq.${_mesGerPag}&select=motorista_nome,valor`).catch(()=>[]) || [];
+      bonusAdmRows.forEach(entry=>{
+        const motNome = (entry.motorista_nome||'').toUpperCase().trim();
+        const valAdm  = Number(entry.valor)||0;
+        if(!motNome||valAdm<=0) return;
+        const chave = motNome+'__'+_mesGerPag+'__MOT';
+        if(pessoaMap[chave]){
+          pessoaMap[chave].total     += valAdm;
+          pessoaMap[chave].bonus_adm  = (pessoaMap[chave].bonus_adm||0) + valAdm;
+        }
+      });
     }catch(_){}
 
     // ── Recalcular val_entrega como taxa média real (Total ÷ Entregas) ──
