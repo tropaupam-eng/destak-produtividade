@@ -7791,7 +7791,12 @@ function _filtrarBaseDataMesRecente(rows) {
 function _cargaMesMapDeDemandas(demandas) {
   const m = {};
   (demandas||[]).forEach(d => {
-    if(d.carga && d.data_saida) m[d.carga] = String(d.data_saida).substring(0,7);
+    if(!d.carga) return;
+    // mes_ano: mês da planilha importada (fonte definitiva).
+    // Fallback criado_em: backfill automático em registros antigos.
+    // NÃO usar data_saida — a saída pode ser no mês seguinte à planilha.
+    const ref = d.mes_ano || (d.criado_em ? String(d.criado_em).substring(0,7) : null);
+    if(ref) m[d.carga] = ref;
   });
   return m;
 }
@@ -15717,7 +15722,8 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
             body: JSON.stringify({
               carga: cargaNum,
               quantidade_pedidos: totalPedidos,
-              valor_total: totalValor
+              valor_total: totalValor,
+              mes_ano: novos[0]?.mes_ano || ''
             })
           }).catch(e=>console.warn(e));
 
@@ -16042,10 +16048,11 @@ async function salvarVincularCarga(){
     const _rotaUp = (rotaFinal||'').toUpperCase().trim();
     const rireFinal = ROTAS_RI.has(_rotaUp) ? 'R.I.' : 'R.E.';
 
-    // Atualizar demanda com carga e totais reais
+    // Atualizar demanda com carga e totais reais (mes_ano = mês da planilha importada)
+    const _mesAnoVinc = linhasDaCarga[0]?.mes_ano || '';
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
       method:'PATCH',
-      body: JSON.stringify({carga, quantidade_pedidos:pedidosFinal, valor_total:valorFinal})
+      body: JSON.stringify({carga, quantidade_pedidos:pedidosFinal, valor_total:valorFinal, mes_ano:_mesAnoVinc})
     });
 
     // Verificar se já existe lançamento para essa carga (evitar duplicata)
@@ -23081,7 +23088,7 @@ async function carregarPortalFiscal(){
   try{
     // Inclui separacao: conferente já está conferindo → fiscal já pode ver e agir
     const statusFiscalAtivos = ['separacao','carregamento','aguardando_nf'];
-    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem`) || [];
+    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem,mes_ano,criado_em`) || [];
     const cargasAtivas = new Set(demandasAtivas.map(d=>d.carga));
     const cargasStr = [...cargasAtivas].join(',');
 
@@ -25423,14 +25430,7 @@ async function carregarPaginaFiscal(){
     ]);
     const _fiscalUnd = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim().toUpperCase();
     const todosPedidos = (_todosPedidosFRaw||[]).filter(r=>{
-      const m=_fiscalCargaMes[r.carga];
-      if(m&&r.mes_ano&&r.mes_ano!==m){
-        // Aceita também o mês anterior ao data_saida: carga programada para o próximo mês
-        // pode ter pedidos importados da planilha do mês corrente (ex: saída 2026-07, dados 2026-06)
-        const [y,mo] = m.split('-').map(Number);
-        const prevMes = mo===1 ? `${y-1}-12` : `${y}-${String(mo-1).padStart(2,'0')}`;
-        if(r.mes_ano !== prevMes) return false;
-      }
+      const m=_fiscalCargaMes[r.carga]; if(m&&r.mes_ano&&r.mes_ano!==m) return false;
       if(_fiscalUnd&&r.und&&(r.und||'').trim().toUpperCase()!==_fiscalUnd) return false;
       return true;
     });
