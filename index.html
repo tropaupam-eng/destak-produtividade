@@ -5496,6 +5496,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Carga</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Rota</th>
               <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Pedidos</th>
+              <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">👷 Ajudante</th>
+              <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">R$/ped</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">💰 Bônus</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Data</th>
             </tr>
@@ -7166,6 +7168,38 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
     return {ok:false, msg:e.message};
   }
 }
+
+// Atualiza status_fiscal OU status_armazem sem tocar no status principal da carga
+async function _patchStatusIndependente(demandaId, campo, valor){
+  try{
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
+      method:'PATCH', body:JSON.stringify({[campo]:valor})
+    });
+    const cached = (_demandasCache||[]).find(d=>d.id===demandaId);
+    if(cached) cached[campo] = valor;
+  }catch(e){ console.warn('_patchStatusIndependente:', e.message); }
+}
+
+// Verifica se fiscal E armazém estão ambos 'concluido' e avança o status geral da carga.
+// Quando ambos concluem, a carga vai direto para aguardando_manifesto (sem bloquear um pelo outro).
+async function _checarAmbosConcluidosEAvancar(demandaId, carga){
+  try{
+    const rows = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=status,status_fiscal,status_armazem`);
+    const d = rows?.[0];
+    if(!d || d.status_fiscal!=='concluido' || d.status_armazem!=='concluido') return false;
+    const passosAteManifesto = ['pendente','separacao','carregamento','aguardando_nf'];
+    if(!passosAteManifesto.includes(d.status)) return false; // já avançou
+    // Avança step-a-step (trigger valida cada transição individualmente)
+    let stAtual = d.status;
+    for(const prox of passosAteManifesto.slice(passosAteManifesto.indexOf(stAtual)+1)){
+      const r = await _patchStatusDemanda(demandaId, prox, 'ambos_concluidos_step');
+      if(!r.ok) return false;
+      stAtual = prox;
+    }
+    const r2 = await _patchStatusDemanda(demandaId, 'aguardando_manifesto', 'ambos_concluidos');
+    return r2.ok;
+  }catch(e){ console.warn('_checarAmbosConcluidosEAvancar:', e.message); return false; }
+}
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ══ AUTH ══════════════════════════════════════════════
@@ -7508,6 +7542,33 @@ async function pushBaseData(records){
 
   showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
   if(typeof renderBancoStatus==='function') renderBancoStatus();
+
+  // 4. Sincronizar quantidade_pedidos/valor_total em demandas_rota (background, fire-and-forget)
+  // Garante que o cache de contagem na tabela de demandas reflita a planilha recém-enviada
+  (async()=>{
+    try{
+      const porCarga = {};
+      records.forEach(r=>{
+        if(!r.carga||!r.pedido) return;
+        const c = Math.round(Number(r.carga));
+        if(!porCarga[c]) porCarga[c] = {pedidos:new Set(), valor:0};
+        const k = String(r.pedido);
+        if(!porCarga[c].pedidos.has(k)){
+          porCarga[c].pedidos.add(k);
+          porCarga[c].valor += Number(r.valor)||0;
+        }
+      });
+      const cargasKeys = Object.keys(porCarga);
+      for(let i=0; i<cargasKeys.length; i+=5){
+        await Promise.all(cargasKeys.slice(i,i+5).map(c =>
+          supaFetch(`demandas_rota?carga=eq.${c}`,{
+            method:'PATCH',
+            body: JSON.stringify({quantidade_pedidos: porCarga[c].pedidos.size, valor_total: porCarga[c].valor})
+          }).catch(()=>{})
+        ));
+      }
+    }catch(_){}
+  })();
 }
 
 async function normalizarCondutorBanco(){
@@ -7730,7 +7791,12 @@ function _filtrarBaseDataMesRecente(rows) {
 function _cargaMesMapDeDemandas(demandas) {
   const m = {};
   (demandas||[]).forEach(d => {
-    if(d.carga && d.data_saida) m[d.carga] = String(d.data_saida).substring(0,7);
+    if(!d.carga) return;
+    // mes_ano: mês da planilha importada (fonte definitiva).
+    // Fallback criado_em: backfill automático em registros antigos.
+    // NÃO usar data_saida — a saída pode ser no mês seguinte à planilha.
+    const ref = d.mes_ano || (d.criado_em ? String(d.criado_em).substring(0,7) : null);
+    if(ref) m[d.carga] = ref;
   });
   return m;
 }
@@ -7786,12 +7852,24 @@ function getCargaMapEntry(carga, und){
 }
 function getCargaMap(){ return window._cargaMapCache || (buildCargaMapCache(), window._cargaMapCache); }
 
+// SSoT para contagem de pedidos por carga — sempre lê do cache buildCargaMapCache()
+function getPedidosDaCarga(carga, und){
+  const e = getCargaMapEntry(carga, und);
+  if(!e) return {count:0, countSemOcorr:0, valor:0, pedidos:new Set(), pedidosSemOcorr:new Set(), ajudante:''};
+  return {
+    count:           e.pedidos.size,
+    countSemOcorr:   e.pedidosSemOcorr.size,
+    valor:           e.valor||0,
+    pedidos:         e.pedidos,
+    pedidosSemOcorr: e.pedidosSemOcorr,
+    ajudante:        e.ajudante||''
+  };
+}
+
 // Rotas RI/RE — definidas globalmente para uso em todo o sistema
 // Inclui nomes abreviados E completos; syncConfig() adiciona rotas do banco dinamicamente
 const ROTAS_RI       = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
 const ROTAS_CONTAGEM = new Set(['PETRO','JUA','CEASA','PETROLINA','JUAZEIRO']);
-// Cópia imutável de ROTAS_RI — nunca modificada por syncConfig; usada como árbitro final no filtro RI
-const ROTAS_RI_ORIG  = Object.freeze(new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']));
 
 // ── Helper: retorna a unidade do usuário logado (admin = '' = sem filtro) ──
 async function _getUnidadeUsuario(){
@@ -9705,16 +9783,7 @@ function renderBonus(){
   const f_rire = document.getElementById('m-rire').value.trim();
   const f_rota = document.getElementById('m-rota').value.trim();
 
-  const cargaDados2 = {};
-  BASE_DATA.forEach(r=>{
-    if(!r.pedido||!r.carga) return;
-    const c=Math.round(Number(r.carga));
-    if(!cargaDados2[c]) cargaDados2[c]={pedidos:new Set(),pedidosSemOcorr:new Set(),ajudante:''};
-    cargaDados2[c].pedidos.add(String(r.pedido));
-    if(Number(r.ocorrencia||0)!==1) cargaDados2[c].pedidosSemOcorr.add(String(r.pedido));
-    if(!cargaDados2[c].ajudante && r.ajudante && r.ajudante.trim())
-      cargaDados2[c].ajudante=r.ajudante.trim();
-  });
+  // Pedidos por carga lidos do cache SSoT (buildCargaMapCache) via getCargaMapEntry()
 
   const vistas=new Set();
   const linhas=[];
@@ -9737,12 +9806,12 @@ function renderBonus(){
         if(mes!==f_mes) return;
       }catch(e){return;}
     }
-    const dados=cargaDados2[carga];
+    const dados=getCargaMapEntry(carga, und);
     if(!dados||dados.pedidos.size===0) return;
     vistas.add(carga);
 
     // Contar só pedidos SEM ocorrência para bonificação
-    const qtd = (dados.pedidosSemOcorr||dados.pedidos).size;
+    const qtd = dados.pedidosSemOcorr.size || dados.pedidos.size;
     if(qtd===0) return;
     const ajudante= l.ajudante || dados.ajudante || '';
     const temAjud = !!ajudante;
@@ -10241,21 +10310,30 @@ async function calcularPagamentos(){
 async function confirmarPagamento(ajId, ajNome, mes, entregas, valor){
   if(!confirm(`Confirmar pagamento de R$ ${valor} para ${ajNome} ref. ${mes}?`)) return;
   try{
-    // Verificar se já existe
-    const exist = await supaFetch(`pagamentos?ajudante_id=eq.${ajId}&mes_ano=eq.${mes}&select=id`);
+    const nomeUp = (ajNome||'').toUpperCase().trim();
+    // Verificar se já existe (por ajudante_id ou por nome+mes_ano)
+    const exist = await supaFetch(`pagamentos?ajudante_id=eq.${ajId}&mes_ano=eq.${mes}&select=id`)
+      || await supaFetch(`pagamentos?nome=eq.${encodeURIComponent(nomeUp)}&mes_ano=eq.${mes}&tipo=eq.ajudante&select=id`);
     if(exist&&exist[0]){
       await supaFetch(`pagamentos?id=eq.${exist[0].id}`,{
         method:'PATCH',
-        body: JSON.stringify({status:'pago',valor_pago:valor,confirmado_em:new Date().toISOString()})
+        body: JSON.stringify({status:'pago', valor_pago:valor, total:valor, confirmado_em:new Date().toISOString()})
       });
     } else {
       await supaFetch('pagamentos',{
         method:'POST',
         body: JSON.stringify({
-          ajudante_id:ajId, mes_ano:mes,
-          total_entregas:entregas, valor_calculado:valor,
-          valor_pago:valor, status:'pago',
-          confirmado_em:new Date().toISOString()
+          ajudante_id: ajId,
+          nome:        nomeUp,
+          tipo:        'ajudante',
+          mes_ano:     mes,
+          entregas:    entregas,
+          total_entregas: entregas,
+          valor_calculado: valor,
+          total:       valor,
+          valor_pago:  valor,
+          status:      'pago',
+          confirmado_em: new Date().toISOString()
         })
       });
     }
@@ -10544,9 +10622,10 @@ async function fazerLoginCPF(){
     if(ajs.length){
       const aj = ajs[0];
 
+      // Ajudantes não têm data_nasc — primeiro acesso é apenas quando falta email ou senha
       const semEmail = !aj.email || aj.email.trim() === '';
-      const semDataNasc = !aj.data_nasc && !aj.data_nascimento;
-      const primeiroAcesso = semEmail || semDataNasc;
+      const semSenha = !aj.senha || aj.senha.trim() === '';
+      const primeiroAcesso = semEmail || semSenha;
 
       if(primeiroAcesso){
         // Primeiro acesso: liberar mesmo que ativo=false
@@ -11180,8 +11259,7 @@ async function confirmarModalKmCarga(){
           const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${demRow.id}&select=km_inicial,data_saida&limit=1`).catch(()=>[]) || [];
           if(rv[0]?.km_inicial != null){
             const { rota='', veiculo='' } = demRow;
-            const _RI2 = new Set(['PETRO','JUA','CEASA','RETIRA','PETROLINA','JUAZEIRO']);
-            const rire2 = _RI2.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
+            const rire2 = ROTAS_RI.has((rota||'').toUpperCase()) ? 'RI' : 'RE';
             const newId = Date.now().toString(36)+Math.random().toString(36).slice(2);
             const tsIni = rv[0].data_saida ? rv[0].data_saida+'T00:00:00Z' : agora;
             await supaFetch('km_cargas',{ method:'POST', body:JSON.stringify({
@@ -15653,7 +15731,8 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
             body: JSON.stringify({
               carga: cargaNum,
               quantidade_pedidos: totalPedidos,
-              valor_total: totalValor
+              valor_total: totalValor,
+              mes_ano: novos[0]?.mes_ano || ''
             })
           }).catch(e=>console.warn(e));
 
@@ -15976,12 +16055,13 @@ async function salvarVincularCarga(){
     // Calcular RI/RE pela rota final
     // Rotas internas conhecidas = R.I.; tudo mais (rotas externas, cidades) = R.E.
     const _rotaUp = (rotaFinal||'').toUpperCase().trim();
-    const rireFinal = ['PETRO','JUA','CEASA','RETIRA'].includes(_rotaUp) ? 'R.I.' : 'R.E.';
+    const rireFinal = ROTAS_RI.has(_rotaUp) ? 'R.I.' : 'R.E.';
 
-    // Atualizar demanda com carga e totais reais
+    // Atualizar demanda com carga e totais reais (mes_ano = mês da planilha importada)
+    const _mesAnoVinc = linhasDaCarga[0]?.mes_ano || '';
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
       method:'PATCH',
-      body: JSON.stringify({carga, quantidade_pedidos:pedidosFinal, valor_total:valorFinal})
+      body: JSON.stringify({carga, quantidade_pedidos:pedidosFinal, valor_total:valorFinal, mes_ano:_mesAnoVinc})
     });
 
     // Verificar se já existe lançamento para essa carga (evitar duplicata)
@@ -16092,7 +16172,7 @@ async function carregarPortalMotorista(){
 
   setKpi('mot-kpi-ent-ri','...'); setKpi('mot-kpi-ent-re','...'); setKpi('mot-kpi-val','...'); setKpi('mot-kpi-pos','...');
   const tbody = document.getElementById('mot-tbody-cargas');
-  if(tbody) tbody.innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:#6b7280">⏳ Carregando...</td></tr>';
+  if(tbody) tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:#6b7280">⏳ Carregando...</td></tr>';
 
   try{
     await syncConfig().catch(()=>{});
@@ -16198,8 +16278,8 @@ async function carregarPortalMotorista(){
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
     const cargasDoMes = [...new Set(lancs.map(l=>Math.round(Number(l.carga))).filter(Boolean))];
-    // Busca bdMot + km_cargas + demandas_rota + rotas_viagem em paralelo
-    const [bdMot, kmCargasPortal, demsMot, rvPortal] = await Promise.all([
+    // Busca bdMot + km_cargas + demandas_rota + rotas_viagem + ajudante_cargas em paralelo
+    const [bdMot, kmCargasPortal, demsMot, rvPortal, ajCargasPortal] = await Promise.all([
       cargasDoMes.length > 0
         ? supaFetch(`base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`).catch(()=>[])
         : Promise.resolve([]),
@@ -16211,6 +16291,9 @@ async function carregarPortalMotorista(){
         : Promise.resolve([]),
       cargasDoMes.length > 0
         ? supaFetch(`rotas_viagem?carga=in.(${cargasDoMes.join(',')})&select=carga,km_inicial,km_final&order=criado_em.desc`).catch(()=>[])
+        : Promise.resolve([]),
+      cargasDoMes.length > 0
+        ? supaFetch(`ajudante_cargas?carga=in.(${cargasDoMes.join(',')})&mes_ano=eq.${mesStr}&ativo=eq.true&select=carga,ajudante_id,ajudante_nome`).catch(()=>[])
         : Promise.resolve([])
     ]);
     // Indexar KM por carga — rotas_viagem como base, km_cargas sobrepõe (fonte mais confiável)
@@ -16220,6 +16303,25 @@ async function carregarPortalMotorista(){
       if(!kmPorCargaPortal[c]) kmPorCargaPortal[c] = r;
     });
     (kmCargasPortal||[]).forEach(r => { kmPorCargaPortal[Math.round(Number(r.carga))] = r; });
+
+    // Mapa carga → nome do ajudante via ajudante_cargas (sistema UUID — fonte mais confiável)
+    const ajCargasNomeMap = {};
+    (ajCargasPortal||[]).forEach(a => {
+      const c = String(Math.round(Number(a.carga)));
+      if(!ajCargasNomeMap[c]) ajCargasNomeMap[c] = (a.ajudante_nome||'').toUpperCase().trim();
+    });
+    // Buscar nomes para registros sem ajudante_nome (por UUID)
+    const ajIdsSemNome = [...new Set((ajCargasPortal||[]).filter(a=>!a.ajudante_nome&&a.ajudante_id).map(a=>a.ajudante_id))];
+    if(ajIdsSemNome.length > 0){
+      const ajNomesLkp = await supaFetch(`ajudantes?id=in.(${ajIdsSemNome.join(',')})&select=id,nome`).catch(()=>[]) || [];
+      const ajIdNomeMap = {};
+      ajNomesLkp.forEach(a=>{ ajIdNomeMap[a.id]=(a.nome||'').toUpperCase().trim(); });
+      (ajCargasPortal||[]).forEach(a=>{
+        const c = String(Math.round(Number(a.carga)));
+        if(!ajCargasNomeMap[c] && a.ajudante_id && ajIdNomeMap[a.ajudante_id])
+          ajCargasNomeMap[c] = ajIdNomeMap[a.ajudante_id];
+      });
+    }
 
     // Filtrar pedidos válidos (ocorrência != 1)
     const pedidosMes = bdMot.filter(r => {
@@ -16290,11 +16392,15 @@ async function carregarPortalMotorista(){
       const c     = Math.round(Number(l.carga));
       const rire  = (l.rire||'').replace(/\./g,'').trim().toUpperCase();
       const isRE  = rire==='RE' || (!rire && !ROTAS_RI.has((l.rota||'').trim().toUpperCase()));
-      const cfg   = getValorRota(l.rota||'');
-      const temAj = !!(l.ajudante&&l.ajudante.trim());
-      const taxa  = isRE ? 0 : (temAj ? (cfg.motCom||0) : (cfg.motSem||0));
-      const nPed  = pedPorCarga[c] ? pedPorCarga[c].size : 0;
-      const bonus = taxa * nPed;
+      const cfg         = getValorRota(l.rota||'');
+      // Verificar ajudante: lancamentos.ajudante (legado) OU ajudante_cargas (UUID — fonte mais confiável)
+      const ajNomeLanc  = (l.ajudante||'').trim();
+      const ajNomeCargas= ajCargasNomeMap[String(c)] || '';
+      const ajNome      = ajNomeLanc || ajNomeCargas;
+      const temAj       = !!ajNome;
+      const taxa        = isRE ? 0 : (temAj ? (cfg.motCom||0) : (cfg.motSem||0));
+      const nPed        = pedPorCarga[c] ? pedPorCarga[c].size : 0;
+      const bonus       = taxa * nPed;
       // Bônus KM para rotas RE: km_rodado × valor_km
       const kmReg = kmPorCargaPortal[c];
       const kmRodado = isRE && kmReg && kmReg.km_inicial != null && kmReg.km_final != null
@@ -16302,7 +16408,12 @@ async function carregarPortalMotorista(){
       const kmBonusRE = kmRodado * (cfg.valorKm || 0.20);
       if(isRE) totalKmRE += kmRodado;
       totalVal += bonus + kmBonusRE;
-      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, kmRodado, ts:l.ts, isRE });
+      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, kmRodado, ts:l.ts, isRE, ajudante:ajNome, taxa, motSem:cfg.motSem||0, motCom:cfg.motCom||0, temAj });
+      // Backfill silencioso: se ajudante_cargas tem registro mas lancamentos.ajudante está vazio → atualizar
+      if(ajNomeCargas && !ajNomeLanc){
+        supaFetch(`lancamentos?carga=eq.${l.carga}&motorista=eq.${encodeURIComponent(nomeDB)}`,
+          {method:'PATCH', body:JSON.stringify({ajudante: ajNomeCargas}), _quiet:true}).catch(()=>{});
+      }
     });
 
     setKpi('mot-kpi-ent-ri', pedidosRI.size || 0);
@@ -16379,15 +16490,11 @@ async function carregarPortalMotorista(){
       setKpi('mot-kpi-pos',   minhaPosRI > 0 ? minhaPosRI+'º' : '-');
       setKpi('mot-kpi-pos-re',minhaPosRE > 0 ? minhaPosRE+'º' : '-');
 
-      // Bônus ADM — buscar de configuracoes
+      // Bônus ADM — lê da tabela bonus_adm (fonte oficial)
       let bonusADM = null;
       try{
-        const cfgBonus = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mesStr}&select=valor`).catch(()=>[]) || [];
-        if(cfgBonus[0]?.valor){
-          const lista = JSON.parse(cfgBonus[0].valor);
-          const entry = lista.find(e=>(e.motorista||'').toUpperCase()===nomeDB);
-          if(entry) bonusADM = Number(entry.valor)||0;
-        }
+        const admRows = await supaFetch(`bonus_adm?mes_ano=eq.${mesStr}&motorista_nome=eq.${encodeURIComponent(nomeDB)}&select=valor`).catch(()=>[]) || [];
+        if(admRows[0]) bonusADM = Number(admRows[0].valor)||0;
       }catch(_){}
 
       if(bonusADM !== null){
@@ -16416,24 +16523,34 @@ async function carregarPortalMotorista(){
 
     // ── TABELA DE ENTREGAS ────────────────────────────
     if(tbody){
-      tbody.innerHTML = linhasTabela.length ? linhasTabela.map(l=>`
-        <tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
+      tbody.innerHTML = linhasTabela.length ? linhasTabela.map(l=>{
+        const ajLabel = l.ajudante
+          ? `<span style="color:#a78bfa;font-weight:700;font-size:.75rem">👷 ${l.ajudante}</span>`
+          : `<span style="color:#475569;font-size:.72rem;font-style:italic">— sozinho</span>`;
+        const taxaLabel = l.isRE
+          ? `<span style="color:#64748b;font-size:.72rem">KM</span>`
+          : (l.taxa > 0
+            ? `<span style="color:${l.temAj?'#a78bfa':'#93c5fd'};font-weight:700">R$ ${l.taxa.toFixed(2).replace('.',',')}</span>`
+            : `<span style="color:#475569;font-size:.72rem">—</span>`);
+        const bonusLabel = l.isRE
+          ? (l.kmBonusRE > 0
+            ? `<span style="color:#fb923c;font-weight:700">R$ ${l.kmBonusRE.toFixed(2).replace('.',',')}</span><span style="color:#475569;font-size:.68rem;margin-left:4px">KM</span>`
+            : '<span style="color:#475569;font-size:.78rem">Ag. KM Final</span>')
+          : (l.pedidos ? `<span style="color:#34d399">R$ ${l.bonus.toFixed(2).replace('.',',')}</span>` : '<span style="color:#475569">—</span>');
+        return `<tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
           <td style="padding:10px 14px;font-weight:700;color:#e2e8f0">#${l.carga}</td>
           <td style="padding:10px 14px">
             <span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${l.rota}</span>
             ${l.rire?`<span style="margin-left:4px;background:${l.rire.includes('I')?'rgba(5,150,105,.2)':'rgba(234,179,8,.2)'};color:${l.rire.includes('I')?'#34d399':'#fbbf24'};padding:1px 6px;border-radius:4px;font-size:.7rem;font-weight:700">${l.rire}</span>`:''}
           </td>
           <td style="padding:10px 14px;text-align:center;font-weight:700;color:#e2e8f0">${l.pedidos||0}</td>
-          <td style="padding:10px 14px;font-weight:700">
-            ${l.isRE
-              ? (l.kmBonusRE > 0
-                ? `<span style="color:#fb923c;font-weight:700">R$ ${l.kmBonusRE.toFixed(2).replace('.',',')}</span><span style="color:#475569;font-size:.68rem;margin-left:4px">KM</span>`
-                : '<span style="color:#475569;font-size:.78rem">Ag. KM Final</span>')
-              : (l.pedidos ? `<span style="color:#34d399">R$ ${l.bonus.toFixed(2).replace('.',',')}</span>` : '<span style="color:#475569">—</span>')}
-          </td>
+          <td style="padding:10px 14px">${ajLabel}</td>
+          <td style="padding:10px 14px;text-align:center">${taxaLabel}</td>
+          <td style="padding:10px 14px;font-weight:700">${bonusLabel}</td>
           <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${l.ts?new Date(l.ts).toLocaleDateString('pt-BR'):'-'}</td>
-        </tr>`).join('')
-      : '<tr><td colspan="5" style="text-align:center;padding:28px;color:#475569">Nenhuma entrega este mês</td></tr>';
+        </tr>`;
+      }).join('')
+      : '<tr><td colspan="7" style="text-align:center;padding:28px;color:#475569">Nenhuma entrega este mês</td></tr>';
     }
 
   }catch(e){
@@ -16483,21 +16600,19 @@ async function renderBonusAdmTabela(mesStr){
   if(!tbody) return;
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-muted)">Carregando...</td></tr>';
   try{
-    const cfg = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mesStr}&select=valor`).catch(()=>[]) || [];
-    let lista = [];
-    if(cfg[0]?.valor){ try{ lista = JSON.parse(cfg[0].valor); }catch(_){} }
+    const lista = await supaFetch(`bonus_adm?mes_ano=eq.${mesStr}&select=id,motorista_nome,valor,criado_por&order=motorista_nome.asc`).catch(()=>[]) || [];
     if(!lista.length){
       tbody.innerHTML='<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-muted)">Nenhum bônus lançado para este mês</td></tr>';
       return;
     }
     const fmtMes = m=>{ const [y,mo]=m.split('-'); return new Date(y,Number(mo)-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}); };
-    tbody.innerHTML = lista.map((e,i)=>`
+    tbody.innerHTML = lista.map(e=>`
       <tr>
-        <td style="font-weight:700">${e.motorista||'—'}</td>
+        <td style="font-weight:700">${e.motorista_nome||'—'}</td>
         <td>${fmtMes(mesStr)}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">R$ ${Number(e.valor||0).toFixed(2).replace('.',',')}</td>
-        <td style="color:var(--text-muted)">${e.motivo||'—'}</td>
-        <td style="text-align:center"><button onclick="excluirBonusAdm('${mesStr}',${i})" style="background:transparent;border:1px solid #ef4444;color:#ef4444;border-radius:6px;padding:3px 10px;font-size:.75rem;cursor:pointer">🗑</button></td>
+        <td style="color:var(--text-muted)">${e.criado_por||'—'}</td>
+        <td style="text-align:center"><button onclick="excluirBonusAdm('${e.id}')" style="background:transparent;border:1px solid #ef4444;color:#ef4444;border-radius:6px;padding:3px 10px;font-size:.75rem;cursor:pointer">🗑</button></td>
       </tr>`).join('');
   }catch(e){
     tbody.innerHTML=`<tr><td colspan="5" style="color:#ef4444;padding:12px">Erro: ${e.message}</td></tr>`;
@@ -16513,19 +16628,12 @@ async function salvarBonusAdm(){
   if(!mes){ showToast('Selecione o mês','warning'); return; }
   if(!valor || valor<=0){ showToast('Informe o valor do bônus','warning'); return; }
   try{
-    // Buscar lista atual
-    const cfg = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}&select=valor`).catch(()=>[]) || [];
-    let lista = [];
-    if(cfg[0]?.valor){ try{ lista=JSON.parse(cfg[0].valor); }catch(_){} }
-    // Remover entrada anterior do mesmo motorista/mês
-    lista = lista.filter(e=>(e.motorista||'').toUpperCase() !== motorista);
-    lista.push({ motorista, valor, motivo });
-    const novoJson = JSON.stringify(lista);
-    if(cfg[0]){
-      await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({valor:novoJson})});
-    } else {
-      await supaFetch('configuracoes',{method:'POST',prefer:'return=minimal',body:JSON.stringify({chave:`bonus_adm_${mes}`,valor:novoJson})});
-    }
+    // UPSERT: unique(motorista_nome, mes_ano) — sobrescreve se já existir
+    await supaFetch('bonus_adm?on_conflict=motorista_nome,mes_ano',{
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({ motorista_nome: motorista, mes_ano: mes, valor, criado_por: motivo||null })
+    });
     showToast(`✅ Bônus lançado para ${motorista}: R$ ${valor.toFixed(2).replace('.',',')}`, 'success');
     document.getElementById('bonus-adm-valor').value='';
     document.getElementById('bonus-adm-motivo').value='';
@@ -16533,16 +16641,12 @@ async function salvarBonusAdm(){
   }catch(e){ showToast('Erro ao salvar: '+e.message,'warning'); }
 }
 
-async function excluirBonusAdm(mes, idx){
+async function excluirBonusAdm(id){
   if(!confirm('Remover este bônus?')) return;
   try{
-    const cfg = await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}&select=valor`).catch(()=>[]) || [];
-    let lista = [];
-    if(cfg[0]?.valor){ try{ lista=JSON.parse(cfg[0].valor); }catch(_){} }
-    lista.splice(idx,1);
-    const novoJson = JSON.stringify(lista);
-    await supaFetch(`configuracoes?chave=eq.bonus_adm_${mes}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({valor:novoJson})});
+    await supaFetch(`bonus_adm?id=eq.${id}`,{method:'DELETE',prefer:'return=minimal'});
     showToast('Bônus removido','success');
+    const mes = document.getElementById('bonus-adm-mes')?.value || new Date().toISOString().slice(0,7);
     await renderBonusAdmTabela(mes);
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -19118,7 +19222,7 @@ async function renderDashInterna(){
     } else {
       // Padrão: R.I.
       // Prioridade: lançamento.rire → lançamento.rota → base_data.rota → base_data.rire → ROTAS_CONTAGEM
-      // ROTAS_RI_ORIG é usado como árbitro: nunca sofre mutação pelo banco de dados
+      // ROTAS_RI é o árbitro — populado do banco via syncConfig(), mais rotas base hardcoded
       bd = baseDataSupa.filter(r => {
         const c = Math.round(Number(r.carga));
         // 1) Lançamento marcado RE → excluir sempre (fonte mais confiável)
@@ -19126,20 +19230,19 @@ async function renderDashInterna(){
         // 2) Verificar CONFIG pela rota do lançamento (mais confiável que base_data.rota)
         const lancRota = cargaRota[c];
         if(lancRota) {
-          if(ROTAS_RI_ORIG.has(lancRota)) return true; // rota hardcoded → sempre RI
+          if(ROTAS_RI.has(lancRota)) return true; // rota RI conhecida → sempre RI
           const cfgLancRota = CONFIG.rotas?.[lancRota];
           if(cfgLancRota) return cfgLancRota.ri && cfgLancRota.prazoOtif !== null;
         }
         // 3) Lançamento confirma RI mas rota sem config → aceitar
         if(cargaIsRI.hasOwnProperty(c) && cargaIsRI[c]) return true;
-        // 4) Sem lançamento: verificar base_data.rota — mas exigir que esteja em ROTAS_RI_ORIG
-        //    para evitar que rotas RE mal configuradas no banco contaminem o filtro RI
+        // 4) Sem lançamento: verificar base_data.rota via ROTAS_RI (banco + hardcoded)
         const rotaKey = (r.rota||'').toUpperCase().trim();
-        if(ROTAS_RI_ORIG.has(rotaKey)) return true; // hardcoded RI
+        if(ROTAS_RI.has(rotaKey)) return true; // rota RI conhecida
         const cfgRota = CONFIG.rotas?.[rotaKey];
         if(cfgRota && !cfgRota.ri) return false; // CONFIG diz explicitamente RE → excluir
-        // CONFIG diz RI mas rota não está em ROTAS_RI_ORIG: exige confirmação por lançamento
-        // (sem lançamento e rota não hardcoded → cair para base_data.rire)
+        // CONFIG diz RI mas rota não está em ROTAS_RI: exige confirmação por lançamento
+        // (sem lançamento e rota não reconhecida → cair para base_data.rire)
         // 5) Último recurso: base_data.rire e ROTAS_CONTAGEM
         const rireStr = (r.rire||'').replace(/\./g,'').trim().toUpperCase();
         if(rireStr === 'RE') return false;
@@ -19203,7 +19306,7 @@ async function renderDashInterna(){
 
     // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
     const _dadosOtif = await _carregarOtifMes(mesFiltro);
-    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas);
+    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     let otifTot, otifOk, onTimeTot, onTimeOk, inFullTot, inFullOk;
     if(rireFiltro === 'RI'){
       otifTot = _otifInterna.riTotal; otifOk = _otifInterna.otifRI;
@@ -19408,18 +19511,17 @@ async function renderDashInterna(){
         const c = Math.round(Number(p.carga));
         let rota = cargaRota[c] || (p.rota||'—').toUpperCase().trim();
         // No filtro RI: garantir que o rótulo seja uma rota RI conhecida.
-        // Usa ROTAS_RI_ORIG (imutável, hardcoded) como árbitro — CONFIG.rotas pode ter
-        // rotas RE mal classificadas no banco (ex.: CAPIM GROSSO com tipo='RI').
+        // Usa ROTAS_RI (banco + hardcoded) como árbitro de classificação.
         if(rireFiltro === 'RI' && rota && rota !== '—'){
-          const byHardcode = ROTAS_RI_ORIG.has(rota);
+          const byRI     = ROTAS_RI.has(rota);
           // CONFIG só confirma RI se o lançamento também confirma (evita contaminação do banco)
-          const byConfig   = CONFIG.rotas?.[rota]?.ri === true && cargaIsRI[c] === true;
-          const rotaRI = byHardcode || byConfig;
+          const byConfig = CONFIG.rotas?.[rota]?.ri === true && cargaIsRI[c] === true;
+          const rotaRI = byRI || byConfig;
           if(!rotaRI){
             const bdRota = (p.rota||'').toUpperCase().trim();
-            const bdHard = ROTAS_RI_ORIG.has(bdRota);
+            const bdRI2  = ROTAS_RI.has(bdRota);
             const bdCfg  = CONFIG.rotas?.[bdRota]?.ri === true && cargaIsRI[c] === true;
-            rota = (bdRota && bdRota !== rota && (bdHard || bdCfg)) ? bdRota : '—';
+            rota = (bdRota && bdRota !== rota && (bdRI2 || bdCfg)) ? bdRota : '—';
           }
         }
         if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0};
@@ -19601,7 +19703,11 @@ async function renderDashInterna(){
         if(!dataFim && ent.saida)                      dataFim = ent.saida;
         if(!dataFim && carga && saidaMapCarga[carga])  dataFim = saidaMapCarga[carga];
         if(!dataFim && carga && lancDtMapOtif[carga])  dataFim = lancDtMapOtif[carga];
-        if(!dataFim) return;
+        if(!dataFim){
+          // Sem data de entrega/saída registrada → conta no denominador como não entregue no prazo
+          semOtif[semIdx].t++;
+          return;
+        }
 
         // diffHoras — mesmo cálculo do _computeOtifStats
         const diffHoras = (new Date(dataFim) - new Date(p.data_pedido)) / 3600000;
@@ -19701,7 +19807,13 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     if(!dataFim&&ent.saida) dataFim=ent.saida;
     if(!dataFim&&carga&&saidaMap[carga]) dataFim=saidaMap[carga];
     if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancDtMap[carga];
-    if(!dataFim) continue; // sem data de referência — não entra no cálculo
+    if(!dataFim){
+      // Sem data de entrega/saída — conta no denominador como não entregue no prazo
+      total++;
+      entG++;
+      if(bd.rire==='R.I.'){ riTotal++; } else { reTotal++; }
+      continue;
+    }
     const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
     if(diffHoras<0) continue; // data inconsistente — ignorar
     const isOnTime=diffHoras<=prazoH;
@@ -19752,7 +19864,7 @@ async function _carregarOtifMes(mes){
   for(let i=0; i<pedidoList.length; i+=400){
     const chunk = pedidoList.slice(i,i+400);
     const [rEnt, rOcorr] = await Promise.all([
-      supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&select=pedido,tipo`,{_quiet:true}).catch(()=>[]),
     ]);
     entRows   = entRows.concat(rEnt   || []);
@@ -22968,7 +23080,7 @@ async function carregarPortalFiscal(){
   try{
     // Inclui separacao: conferente já está conferindo → fiscal já pode ver e agir
     const statusFiscalAtivos = ['separacao','carregamento','aguardando_nf'];
-    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status`) || [];
+    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem,mes_ano,criado_em`) || [];
     const cargasAtivas = new Set(demandasAtivas.map(d=>d.carga));
     const cargasStr = [...cargasAtivas].join(',');
 
@@ -23040,6 +23152,12 @@ async function carregarPortalFiscal(){
       const pedNOK  = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
       const pedPend = pedidos.filter(p=>!dados.confMap[p]).length;
 
+      // Badges de status independente
+      const sfMap = {concluido:['#059669','#d1fae5','✅ Fiscal OK'], em_andamento:['#2563eb','#dbeafe','🔄 Fiscal Andamento'], pendente:['#6b7280','rgba(107,114,128,.12)','⏳ Fiscal Pendente']};
+      const saMap = {concluido:['#059669','#d1fae5','✅ Armazém OK'], em_andamento:['#f59e0b','rgba(245,158,11,.12)','🚛 Armazém Andamento'], pendente:['#6b7280','rgba(107,114,128,.12)','⏳ Armazém Pendente']};
+      const [sfClr, sfBg, sfTxt] = sfMap[dem.status_fiscal||'pendente']||sfMap.pendente;
+      const [saClr, saBg, saTxt] = saMap[dem.status_armazem||'pendente']||saMap.pendente;
+
       return `<div style="background:var(--bg-card);border:1.5px solid var(--border);border-top:3px solid ${cor};border-radius:14px;margin-bottom:18px;overflow:hidden">
         <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg-card2);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -23047,6 +23165,8 @@ async function carregarPortalFiscal(){
             <span style="font-size:.85rem;font-weight:700;color:var(--text-primary)">${dem.rota||'—'}</span>
             <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
             <span style="font-size:.72rem;background:${cor}22;color:${cor};padding:2px 8px;border-radius:5px;font-weight:700">${stLabel[stAtual]||stAtual}</span>
+            <span style="font-size:.68rem;background:${sfBg};color:${sfClr};border:1px solid ${sfClr}44;padding:2px 8px;border-radius:5px;font-weight:700">${sfTxt}</span>
+            <span style="font-size:.68rem;background:${saBg};color:${saClr};border:1px solid ${saClr}44;padding:2px 8px;border-radius:5px;font-weight:700">${saTxt}</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             ${pedOK?`<span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">✅ ${pedOK} OK</span>`:''}
@@ -23189,13 +23309,14 @@ async function concluirFiscalPortal(carga){
     const dem = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
     const id = dem?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    // Fiscal conclui independente do status da demanda
+    // Marcar atribuições fiscais como concluídas
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
-    // Se armazém já finalizou (status=aguardando_nf), avança para manifesto agora
-    if(dem[0].status === 'aguardando_nf'){
-      const r = await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal_concluir');
-      if(r.ok) showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
-      else showToast('✅ Fiscal concluído — erro ao avançar status: '+r.msg,'warning');
+    // Marcar status_fiscal = concluido (independente do armazém)
+    await _patchStatusIndependente(id, 'status_fiscal', 'concluido');
+    // Verificar se armazém também concluiu → avança para aguardando_manifesto
+    const avancou = await _checarAmbosConcluidosEAvancar(id, carga);
+    if(avancou){
+      showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     } else {
       showToast('✅ Fiscal concluído — aguardando finalização do armazém.','success');
     }
@@ -23213,6 +23334,10 @@ async function pegarPedidoFiscal(carga, pedido){
       carga, pedido, fiscal_id:USUARIO_LOGADO.id, fiscal_nome:USUARIO_LOGADO.nome,
       status:'em_andamento', criado_em:new Date().toISOString()
     })});
+    // Marca status_fiscal = em_andamento se ainda pendente
+    await supaFetch(`demandas_rota?carga=eq.${carga}&status_fiscal=eq.pendente`,{
+      method:'PATCH', body:JSON.stringify({status_fiscal:'em_andamento'})
+    });
     showToast('✅ Pedido '+pedido+' atribuído a você','success');
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -24770,14 +24895,21 @@ async function concluirCarregamentoConferente(carga){
 
     if(!confirm('Confirmar carregamento concluído da carga '+carga+'?')) return;
 
-    const r = await _patchStatusDemanda(dem.id, 'aguardando_nf', 'conferente_concluir', {extra:{arm_status:'carregado_ok'}});
-    if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
-    // Se fiscal já concluiu, avança automaticamente para aguardando_manifesto
-    const fiscalOk = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&status=eq.concluido&select=id&limit=1`).catch(()=>[]) || [];
-    if(fiscalOk.length){
-      await _patchStatusDemanda(dem.id, 'aguardando_manifesto', 'armazem_auto_manifesto').catch(()=>{});
+    // Marcar arm_status=carregado_ok e status_armazem=concluido
+    await supaFetch(`demandas_rota?id=eq.${dem.id}`,{
+      method:'PATCH', body:JSON.stringify({arm_status:'carregado_ok', status_armazem:'concluido'})
+    });
+    const _cached = (_demandasCache||[]).find(d=>d.id===dem.id);
+    if(_cached){ _cached.arm_status='carregado_ok'; _cached.status_armazem='concluido'; }
+
+    // Verificar se fiscal também concluiu → avança direto para aguardando_manifesto
+    const avancouAmbos = await _checarAmbosConcluidosEAvancar(dem.id, carga);
+    if(avancouAmbos){
       showToast('✅ Carga '+carga+' carregada! Fiscal já concluído — enviada para Seguros e Caixa.','success');
     } else {
+      // Fiscal ainda não concluiu: avança para aguardando_nf (aguardando emissão de NF)
+      const r = await _patchStatusDemanda(dem.id, 'aguardando_nf', 'conferente_concluir');
+      if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
       showToast('✅ Carga '+carga+' carregada! Aguardando emissão de NF.','success');
     }
     await carregarPortalConferente();
@@ -25597,11 +25729,13 @@ async function _executarConclusaoFiscal(){
     const demRow = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
     const id = demandaId || demRow?.[0]?.id;
     if(!id){ showToast('Demanda não encontrada','warning'); return; }
-    // Fiscal conclui independente do status da demanda
+    // Marcar atribuições fiscais como concluídas
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'concluido'})});
-    // Se armazém já finalizou (status=aguardando_nf), avança para manifesto agora
-    if(demRow?.[0]?.status === 'aguardando_nf'){
-      await _patchStatusDemanda(id, 'aguardando_manifesto', 'fiscal_xml_concluir');
+    // Marcar status_fiscal = concluido (independente do armazém)
+    await _patchStatusIndependente(id, 'status_fiscal', 'concluido');
+    // Verificar se armazém também concluiu → avança para aguardando_manifesto
+    const avancou = await _checarAmbosConcluidosEAvancar(id, carga);
+    if(avancou){
       showToast('✅ Carga '+carga+' enviada para Seguros e Caixa!','success');
     } else {
       showToast('✅ Fiscal concluído — aguardando finalização do armazém.','success');
@@ -25920,10 +26054,15 @@ async function renderArmazem(){
             const badgeTxt  = semConf?'⚠️ Sem conferente':'🚛 Carregando';
             const okPct  = total>0?Math.round((pedOk/total)*100):0;
             const nkPct  = total>0?Math.round((pedNok/total)*100):0;
+            const _sfAMap = {concluido:['#059669','✅ Fiscal OK'], em_andamento:['#2563eb','🔄 Fiscal And.'], pendente:['#6b7280','⏳ Fiscal Pend.']};
+            const [_sfC, _sfT] = _sfAMap[d.status_fiscal||'pendente']||_sfAMap.pendente;
             return `<div style="background:var(--bg-card);border:1px solid ${corBorda}33;border-left:3px solid ${corBorda};border-radius:10px;padding:12px 13px">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px">
                 <span style="font-size:.88rem;font-weight:900;color:var(--text-primary)">Carga ${d.carga}</span>
-                <span style="background:${badgeBg};color:${badgeClr};border:1px solid ${badgeClr}55;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${badgeTxt}</span>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+                  <span style="background:${badgeBg};color:${badgeClr};border:1px solid ${badgeClr}55;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${badgeTxt}</span>
+                  <span style="background:${_sfC}18;color:${_sfC};border:1px solid ${_sfC}44;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${_sfT}</span>
+                </div>
               </div>
               <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:7px">📍 ${d.rota||'—'}</div>
               <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:7px;font-size:.67rem">
@@ -26593,15 +26732,29 @@ async function salvarStatusArmazem(demandaId, status){
 
     if(stAtual && statusArmAzem.includes(stAtual)){
       if(status === 'carregado_ok'){
-        const r = await _patchStatusDemanda(demandaId, 'aguardando_nf', 'armazem_arm_status', {extra:{arm_status:'carregado_ok'}}).catch(()=>({ok:false}));
-        if(r.ok) showToast('✅ Carregamento concluído! Carga enviada para o Fiscal.','success');
+        // Armazém conclui: marcar status_armazem=concluido e verificar se fiscal também concluiu
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'concluido');
+        const cargaNum = dem3[0]?.carga;
+        const avancouAmbos = await _checarAmbosConcluidosEAvancar(demandaId, cargaNum);
+        if(avancouAmbos){
+          // arm_status também precisa ser atualizado para carregado_ok
+          await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok'})});
+          showToast('✅ Armazém e Fiscal concluídos! Carga enviada para Seguros e Caixa.','success');
+        } else {
+          // Fiscal ainda não concluiu: avança para aguardando_nf (aguardando NF)
+          const r = await _patchStatusDemanda(demandaId, 'aguardando_nf', 'armazem_arm_status', {extra:{arm_status:'carregado_ok'}}).catch(()=>({ok:false}));
+          if(r.ok) showToast('✅ Carregamento concluído! Carga enviada para o Fiscal.','success');
+        }
       } else if(status === 'carregamento' && ['pendente','separacao'].includes(stAtual)){
         await _patchStatusDemanda(demandaId, 'carregamento', 'armazem_arm_status').catch(()=>{});
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'em_andamento');
       } else if(status === 'separacao' && stAtual === 'pendente'){
         await _patchStatusDemanda(demandaId, 'separacao', 'armazem_arm_status').catch(()=>{});
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'em_andamento');
       } else if(status === 'pendente' && ['separacao','carregamento'].includes(stAtual)){
         // Retrocesso intencional pelo armazém (ADM)
         await _patchStatusDemanda(demandaId, 'pendente', 'armazem_retrocesso_adm', {bypassValidacao:true, extra:{ts_separacao:null, ts_carregamento:null}}).catch(()=>{});
+        await _patchStatusIndependente(demandaId, 'status_armazem', 'pendente');
       }
     }
     // Atualizar KPIs (atualizar cache local para KPI imediato)
@@ -26839,6 +26992,46 @@ async function gerarPagamentos(btn){
         pessoaMap[chaveAj].ent_com += qtd;
       }
     });
+
+    // ── BÔNUS KM PARA MOTORISTAS RE (DC-01) ─────────────────────────
+    // gerarPagamentos não buscava km_cargas → motoristas RE recebiam R$0
+    const _mesGerPag = mesSel || new Date().toISOString().slice(0,7);
+    try{
+      const kmCargasMes = await supaFetch(
+        `km_cargas?mes_ano=eq.${_mesGerPag}&select=carga,km_inicial,km_final,rota,motorista_nome`
+      ).catch(()=>[]) || [];
+      kmCargasMes.forEach(km=>{
+        if(km.km_inicial==null||km.km_final==null) return;
+        const kmRodado = km.km_final - km.km_inicial;
+        if(kmRodado<=0) return;
+        const cfg = getValorRota(km.rota||'');
+        if(cfg.ri) return; // RI recebe por pedido, não por KM
+        const bonusKm = kmRodado * (cfg.valorKm||0.20);
+        const motNome = (km.motorista_nome||'').trim().toUpperCase();
+        if(!motNome) return;
+        const chave = motNome+'__'+_mesGerPag+'__MOT';
+        if(pessoaMap[chave]){
+          pessoaMap[chave].total    += bonusKm;
+          pessoaMap[chave].km_bonus  = (pessoaMap[chave].km_bonus||0)+bonusKm;
+        }
+      });
+    }catch(_){}
+
+    // ── BÔNUS ADM CONFIRMADO (DC-06) ────────────────────────────────
+    // Bônus ADM: lê da tabela bonus_adm (fonte oficial — substitui configuracoes.bonus_adm_*)
+    try{
+      const bonusAdmRows = await supaFetch(`bonus_adm?mes_ano=eq.${_mesGerPag}&select=motorista_nome,valor`).catch(()=>[]) || [];
+      bonusAdmRows.forEach(entry=>{
+        const motNome = (entry.motorista_nome||'').toUpperCase().trim();
+        const valAdm  = Number(entry.valor)||0;
+        if(!motNome||valAdm<=0) return;
+        const chave = motNome+'__'+_mesGerPag+'__MOT';
+        if(pessoaMap[chave]){
+          pessoaMap[chave].total     += valAdm;
+          pessoaMap[chave].bonus_adm  = (pessoaMap[chave].bonus_adm||0) + valAdm;
+        }
+      });
+    }catch(_){}
 
     // ── Recalcular val_entrega como taxa média real (Total ÷ Entregas) ──
     Object.values(pessoaMap).forEach(p=>{
@@ -30379,7 +30572,7 @@ async function carregarTV(){
 
     // ── OTIF do Mês — fonte única compartilhada com Painel e Dashboard Interno ──
     const _tvDadosOtif = await _carregarOtifMes(mesStr);
-    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif);
+    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
 
