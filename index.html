@@ -5496,6 +5496,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Carga</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Rota</th>
               <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Pedidos</th>
+              <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">👷 Ajudante</th>
+              <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">R$/ped</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">💰 Bônus</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Data</th>
             </tr>
@@ -16125,7 +16127,7 @@ async function carregarPortalMotorista(){
 
   setKpi('mot-kpi-ent-ri','...'); setKpi('mot-kpi-ent-re','...'); setKpi('mot-kpi-val','...'); setKpi('mot-kpi-pos','...');
   const tbody = document.getElementById('mot-tbody-cargas');
-  if(tbody) tbody.innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:#6b7280">⏳ Carregando...</td></tr>';
+  if(tbody) tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:#6b7280">⏳ Carregando...</td></tr>';
 
   try{
     await syncConfig().catch(()=>{});
@@ -16231,8 +16233,8 @@ async function carregarPortalMotorista(){
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
     const cargasDoMes = [...new Set(lancs.map(l=>Math.round(Number(l.carga))).filter(Boolean))];
-    // Busca bdMot + km_cargas + demandas_rota + rotas_viagem em paralelo
-    const [bdMot, kmCargasPortal, demsMot, rvPortal] = await Promise.all([
+    // Busca bdMot + km_cargas + demandas_rota + rotas_viagem + ajudante_cargas em paralelo
+    const [bdMot, kmCargasPortal, demsMot, rvPortal, ajCargasPortal] = await Promise.all([
       cargasDoMes.length > 0
         ? supaFetch(`base_data?carga=in.(${cargasDoMes.join(',')})&select=pedido,ocorrencia,carga,valor&limit=10000`).catch(()=>[])
         : Promise.resolve([]),
@@ -16244,6 +16246,9 @@ async function carregarPortalMotorista(){
         : Promise.resolve([]),
       cargasDoMes.length > 0
         ? supaFetch(`rotas_viagem?carga=in.(${cargasDoMes.join(',')})&select=carga,km_inicial,km_final&order=criado_em.desc`).catch(()=>[])
+        : Promise.resolve([]),
+      cargasDoMes.length > 0
+        ? supaFetch(`ajudante_cargas?carga=in.(${cargasDoMes.join(',')})&mes_ano=eq.${mesStr}&ativo=eq.true&select=carga,ajudante_id,ajudante_nome`).catch(()=>[])
         : Promise.resolve([])
     ]);
     // Indexar KM por carga — rotas_viagem como base, km_cargas sobrepõe (fonte mais confiável)
@@ -16253,6 +16258,25 @@ async function carregarPortalMotorista(){
       if(!kmPorCargaPortal[c]) kmPorCargaPortal[c] = r;
     });
     (kmCargasPortal||[]).forEach(r => { kmPorCargaPortal[Math.round(Number(r.carga))] = r; });
+
+    // Mapa carga → nome do ajudante via ajudante_cargas (sistema UUID — fonte mais confiável)
+    const ajCargasNomeMap = {};
+    (ajCargasPortal||[]).forEach(a => {
+      const c = String(Math.round(Number(a.carga)));
+      if(!ajCargasNomeMap[c]) ajCargasNomeMap[c] = (a.ajudante_nome||'').toUpperCase().trim();
+    });
+    // Buscar nomes para registros sem ajudante_nome (por UUID)
+    const ajIdsSemNome = [...new Set((ajCargasPortal||[]).filter(a=>!a.ajudante_nome&&a.ajudante_id).map(a=>a.ajudante_id))];
+    if(ajIdsSemNome.length > 0){
+      const ajNomesLkp = await supaFetch(`ajudantes?id=in.(${ajIdsSemNome.join(',')})&select=id,nome`).catch(()=>[]) || [];
+      const ajIdNomeMap = {};
+      ajNomesLkp.forEach(a=>{ ajIdNomeMap[a.id]=(a.nome||'').toUpperCase().trim(); });
+      (ajCargasPortal||[]).forEach(a=>{
+        const c = String(Math.round(Number(a.carga)));
+        if(!ajCargasNomeMap[c] && a.ajudante_id && ajIdNomeMap[a.ajudante_id])
+          ajCargasNomeMap[c] = ajIdNomeMap[a.ajudante_id];
+      });
+    }
 
     // Filtrar pedidos válidos (ocorrência != 1)
     const pedidosMes = bdMot.filter(r => {
@@ -16323,11 +16347,15 @@ async function carregarPortalMotorista(){
       const c     = Math.round(Number(l.carga));
       const rire  = (l.rire||'').replace(/\./g,'').trim().toUpperCase();
       const isRE  = rire==='RE' || (!rire && !ROTAS_RI.has((l.rota||'').trim().toUpperCase()));
-      const cfg   = getValorRota(l.rota||'');
-      const temAj = !!(l.ajudante&&l.ajudante.trim());
-      const taxa  = isRE ? 0 : (temAj ? (cfg.motCom||0) : (cfg.motSem||0));
-      const nPed  = pedPorCarga[c] ? pedPorCarga[c].size : 0;
-      const bonus = taxa * nPed;
+      const cfg         = getValorRota(l.rota||'');
+      // Verificar ajudante: lancamentos.ajudante (legado) OU ajudante_cargas (UUID — fonte mais confiável)
+      const ajNomeLanc  = (l.ajudante||'').trim();
+      const ajNomeCargas= ajCargasNomeMap[String(c)] || '';
+      const ajNome      = ajNomeLanc || ajNomeCargas;
+      const temAj       = !!ajNome;
+      const taxa        = isRE ? 0 : (temAj ? (cfg.motCom||0) : (cfg.motSem||0));
+      const nPed        = pedPorCarga[c] ? pedPorCarga[c].size : 0;
+      const bonus       = taxa * nPed;
       // Bônus KM para rotas RE: km_rodado × valor_km
       const kmReg = kmPorCargaPortal[c];
       const kmRodado = isRE && kmReg && kmReg.km_inicial != null && kmReg.km_final != null
@@ -16335,7 +16363,12 @@ async function carregarPortalMotorista(){
       const kmBonusRE = kmRodado * (cfg.valorKm || 0.20);
       if(isRE) totalKmRE += kmRodado;
       totalVal += bonus + kmBonusRE;
-      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, kmRodado, ts:l.ts, isRE });
+      linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, kmRodado, ts:l.ts, isRE, ajudante:ajNome, taxa, motSem:cfg.motSem||0, motCom:cfg.motCom||0, temAj });
+      // Backfill silencioso: se ajudante_cargas tem registro mas lancamentos.ajudante está vazio → atualizar
+      if(ajNomeCargas && !ajNomeLanc){
+        supaFetch(`lancamentos?carga=eq.${l.carga}&motorista=eq.${encodeURIComponent(nomeDB)}`,
+          {method:'PATCH', body:JSON.stringify({ajudante: ajNomeCargas}), _quiet:true}).catch(()=>{});
+      }
     });
 
     setKpi('mot-kpi-ent-ri', pedidosRI.size || 0);
@@ -16449,24 +16482,34 @@ async function carregarPortalMotorista(){
 
     // ── TABELA DE ENTREGAS ────────────────────────────
     if(tbody){
-      tbody.innerHTML = linhasTabela.length ? linhasTabela.map(l=>`
-        <tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
+      tbody.innerHTML = linhasTabela.length ? linhasTabela.map(l=>{
+        const ajLabel = l.ajudante
+          ? `<span style="color:#a78bfa;font-weight:700;font-size:.75rem">👷 ${l.ajudante}</span>`
+          : `<span style="color:#475569;font-size:.72rem;font-style:italic">— sozinho</span>`;
+        const taxaLabel = l.isRE
+          ? `<span style="color:#64748b;font-size:.72rem">KM</span>`
+          : (l.taxa > 0
+            ? `<span style="color:${l.temAj?'#a78bfa':'#93c5fd'};font-weight:700">R$ ${l.taxa.toFixed(2).replace('.',',')}</span>`
+            : `<span style="color:#475569;font-size:.72rem">—</span>`);
+        const bonusLabel = l.isRE
+          ? (l.kmBonusRE > 0
+            ? `<span style="color:#fb923c;font-weight:700">R$ ${l.kmBonusRE.toFixed(2).replace('.',',')}</span><span style="color:#475569;font-size:.68rem;margin-left:4px">KM</span>`
+            : '<span style="color:#475569;font-size:.78rem">Ag. KM Final</span>')
+          : (l.pedidos ? `<span style="color:#34d399">R$ ${l.bonus.toFixed(2).replace('.',',')}</span>` : '<span style="color:#475569">—</span>');
+        return `<tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
           <td style="padding:10px 14px;font-weight:700;color:#e2e8f0">#${l.carga}</td>
           <td style="padding:10px 14px">
             <span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${l.rota}</span>
             ${l.rire?`<span style="margin-left:4px;background:${l.rire.includes('I')?'rgba(5,150,105,.2)':'rgba(234,179,8,.2)'};color:${l.rire.includes('I')?'#34d399':'#fbbf24'};padding:1px 6px;border-radius:4px;font-size:.7rem;font-weight:700">${l.rire}</span>`:''}
           </td>
           <td style="padding:10px 14px;text-align:center;font-weight:700;color:#e2e8f0">${l.pedidos||0}</td>
-          <td style="padding:10px 14px;font-weight:700">
-            ${l.isRE
-              ? (l.kmBonusRE > 0
-                ? `<span style="color:#fb923c;font-weight:700">R$ ${l.kmBonusRE.toFixed(2).replace('.',',')}</span><span style="color:#475569;font-size:.68rem;margin-left:4px">KM</span>`
-                : '<span style="color:#475569;font-size:.78rem">Ag. KM Final</span>')
-              : (l.pedidos ? `<span style="color:#34d399">R$ ${l.bonus.toFixed(2).replace('.',',')}</span>` : '<span style="color:#475569">—</span>')}
-          </td>
+          <td style="padding:10px 14px">${ajLabel}</td>
+          <td style="padding:10px 14px;text-align:center">${taxaLabel}</td>
+          <td style="padding:10px 14px;font-weight:700">${bonusLabel}</td>
           <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${l.ts?new Date(l.ts).toLocaleDateString('pt-BR'):'-'}</td>
-        </tr>`).join('')
-      : '<tr><td colspan="5" style="text-align:center;padding:28px;color:#475569">Nenhuma entrega este mês</td></tr>';
+        </tr>`;
+      }).join('')
+      : '<tr><td colspan="7" style="text-align:center;padding:28px;color:#475569">Nenhuma entrega este mês</td></tr>';
     }
 
   }catch(e){
