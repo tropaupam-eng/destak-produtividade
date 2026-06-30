@@ -19792,6 +19792,8 @@ async function renderDashInterna(){
         : '⏱ Sem planilha — OTIF pela saída registrada no sistema';
 
     // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
+    // Mês atual: invalida cache antes de buscar para garantir dados frescos a cada renderização
+    if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(mesFiltro);
     const _dadosOtif = await _carregarOtifMes(mesFiltro);
     const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     let otifTot, otifOk, onTimeTot, onTimeOk, inFullTot, inFullOk;
@@ -20268,9 +20270,11 @@ async function renderDashInterna(){
 }
 
 // Cálculo OTIF unificado — usado pelo Dashboard Interno e pela TV
-// Prioridade data_entrega: entrega_datas (planilha real) → lancamentos.ts → demandas_rota.data_saida (mesmo dia = no prazo)
-// OTIF unificado — início: data_pedido; fim: data_entrega real ou data_saida provisória; prazoMap em horas
-function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows){
+// isOnTime EXIGE entrega real (ent.entrega de entrega_datas). Fallbacks (data_saida / lancamentos.ts)
+// indicam apenas que o veículo saiu — sem entrega confirmada não conta como no prazo.
+// Pedidos dentro do prazo sem entrega: pendentes (não contam). Prazo vencido sem entrega: conta como atrasado.
+function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr){
+  if(!hojeStr) hojeStr = new Date().toISOString().slice(0,10);
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
   (rotasRows||[]).forEach(r=>{
@@ -20311,20 +20315,39 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const prazoEntry=Object.prototype.hasOwnProperty.call(prazoMap,bd.rota)?prazoMap[bd.rota]:undefined;
     if(prazoEntry===null) continue; // rota sem prazo (ex: CEASA)
     const prazoH=prazoEntry!=null?prazoEntry:(bd.rire==='R.I.'?24:192);
-    // Data final: entrega real → saida por pedido → saida por carga → ts lançamento
+    // Data final: entrega real (fonte confiável) → fallbacks indicam apenas saída do veículo
     let dataFim=ent.entrega||null;
+    const hasEntrega=!!dataFim; // true = data_entrega real confirmada
     if(!dataFim&&ent.saida) dataFim=ent.saida;
     if(!dataFim&&carga&&saidaMap[carga]) dataFim=saidaMap[carga];
     if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancDtMap[carga];
     if(!dataFim){
-      // Sem data de entrega/saída — conta no denominador como não entregue no prazo
-      total++;
-      entG++;
-      if(bd.rire==='R.I.'){ riTotal++; } else { reTotal++; }
+      // Sem qualquer data — verifica se prazo já venceu
+      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-new Date(bd.dataPedido+'T00:00:00'))/3600000;
+      if(horasDecorridas>prazoH){
+        total++; entG++;
+        if(bd.rire==='R.I.'){ riTotal++; } else { reTotal++; }
+      }
+      // Dentro do prazo sem dados → pendente, não conta ainda
       continue;
     }
     const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
-    if(diffHoras<0) continue; // data inconsistente — ignorar
+    if(diffHoras<0){
+      // Data inconsistente — conta no denominador mas não como on time
+      total++; entG++;
+      if(bd.rire==='R.I.'){ riTotal++; } else { reTotal++; }
+      continue;
+    }
+    // Sem entrega real confirmada: verifica se prazo venceu
+    if(!hasEntrega){
+      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-new Date(bd.dataPedido+'T00:00:00'))/3600000;
+      if(horasDecorridas<=prazoH) continue; // pendente — não conta ainda
+      // Prazo vencido sem entrega → conta como não entregue
+      total++; entG++;
+      if(bd.rire==='R.I.'){ riTotal++; } else { reTotal++; }
+      continue;
+    }
+    // Entrega real confirmada — calcula isOnTime normalmente
     const isOnTime=diffHoras<=prazoH;
     const isInFull=!ocorrSet.has(ped); // pedido sem ocorrência na Expedição = In Full
     const isOTIF=isOnTime&&isInFull;
