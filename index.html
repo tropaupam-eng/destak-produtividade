@@ -11061,13 +11061,28 @@ async function carregarPortalAjudante(){
     const pedCount = {};
     (ajPedidos||[]).forEach(p=>{ const c=String(p.carga); pedCount[c]=(pedCount[c]||0)+1; });
 
+    // Quantidade/valor só são liberados quando a carga tiver lançamento oficial
+    // (lancamentos) ou já estiver na expedição (demandas_rota). Até lá, fica pendente.
+    const cargasNums = [...new Set((ajCargas||[]).map(c=>Number(c.carga)))];
+    const liberadas  = new Set();
+    if(cargasNums.length){
+      const listaIn = cargasNums.join(',');
+      const [lancsLib, demsLib] = await Promise.all([
+        supaFetch(`lancamentos?carga=in.(${listaIn})&select=carga`).catch(()=>[]),
+        supaFetch(`demandas_rota?carga=in.(${listaIn})&select=carga`).catch(()=>[])
+      ]);
+      (lancsLib||[]).forEach(l=>liberadas.add(Number(l.carga)));
+      (demsLib||[]).forEach(d=>liberadas.add(Number(d.carga)));
+    }
+
     function getBonusAj(rota){ return getValorRota(rota).ajud || 0.50; }
 
     let totalPed=0, totalCargas=0, totalValor=0;
     (ajCargas||[]).forEach(c=>{
+      totalCargas++;
+      if(!liberadas.has(Number(c.carga))) return;
       const cnt = pedCount[String(c.carga)]||0;
       totalPed   += cnt;
-      totalCargas++;
       totalValor += cnt * getBonusAj(c.rota);
     });
 
@@ -11085,19 +11100,26 @@ async function carregarPortalAjudante(){
     }
 
     tbody.innerHTML = ajCargas.map(c=>{
+      const lib  = liberadas.has(Number(c.carga));
       const cnt  = pedCount[String(c.carga)]||0;
       const taxa = getBonusAj(c.rota);
       const val  = cnt * taxa;
       const dt   = new Date(c.ts).toLocaleDateString('pt-BR');
+      const colQtd = lib
+        ? `<td style="padding:10px 14px;text-align:center;font-weight:800;color:#e2e8f0">${cnt}</td>`
+        : `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
+      const colVal = lib
+        ? `<td style="padding:10px 14px">
+          <div style="color:#34d399;font-weight:700">R$ ${val.toFixed(2).replace('.',',')}</div>
+          <div style="font-size:.68rem;color:#475569">${cnt} × R$${taxa.toFixed(2)}</div>
+        </td>`
+        : `<td style="padding:10px 14px;color:#64748b;font-size:.78rem">—</td>`;
       return `<tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
         <td style="padding:10px 14px;font-weight:800;color:#f8fafc">#${c.carga}</td>
         <td style="padding:10px 14px;font-size:.8rem;color:#94a3b8">${c.motorista||'—'}</td>
         <td style="padding:10px 14px"><span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${c.rota||'—'}</span></td>
-        <td style="padding:10px 14px;text-align:center;font-weight:800;color:#e2e8f0">${cnt}</td>
-        <td style="padding:10px 14px">
-          <div style="color:#34d399;font-weight:700">R$ ${val.toFixed(2).replace('.',',')}</div>
-          <div style="font-size:.68rem;color:#475569">${cnt} × R$${taxa.toFixed(2)}</div>
-        </td>
+        ${colQtd}
+        ${colVal}
         <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${dt}</td>
       </tr>`;
     }).join('');
@@ -11116,16 +11138,21 @@ async function vincularAjudanteCarga(){
   const setBtnState = (txt,dis)=>{ if(btn){ btn.textContent=txt; btn.disabled=dis; }};
   setBtnState('Verificando...',true);
   try{
-    const lanc = await supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano&limit=1`);
-    if(!lanc||!lanc.length){ showToast(`Carga #${carga} não encontrada`,'warning'); return; }
-
     const jaVinc = await supaFetch(`ajudante_cargas?carga=eq.${carga}&ajudante_id=eq.${AJUDANTE.id}&ativo=eq.true&select=id`);
     if(jaVinc&&jaVinc.length){ showToast(`Você já está vinculado à Carga #${carga}`,'warning'); return; }
+
+    // Ajudante pode lançar mesmo sem lançamento oficial ainda existir — fica pendente
+    // até a carga aparecer em lancamentos ou demandas_rota (expedição).
+    const [lanc, dem] = await Promise.all([
+      supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano&limit=1`).catch(()=>[]),
+      supaFetch(`demandas_rota?carga=eq.${carga}&select=carga,motorista,rota&limit=1`).catch(()=>[])
+    ]);
+    const origem = (lanc&&lanc.length) ? lanc[0] : ((dem&&dem.length) ? dem[0] : {});
 
     const existentes = await supaFetch(`ajudante_cargas?carga=eq.${carga}&ativo=eq.true&select=id`);
     const primeiro   = !existentes||!existentes.length;
 
-    const { motorista='', rota='', mes_ano } = lanc[0];
+    const { motorista='', rota='', mes_ano } = origem;
     const mesAno = mes_ano||new Date().toISOString().slice(0,7);
 
     await supaFetch('ajudante_cargas',{method:'POST',body:JSON.stringify({
@@ -11154,7 +11181,10 @@ async function vincularAjudanteCarga(){
         }
         showToast(`✅ Carga #${carga} vinculada! ${peds.length} pedidos atribuídos.`,'success');
       } else {
-        showToast(`✅ Carga #${carga} vinculada!`,'success');
+        const msg = (lanc&&lanc.length)||(dem&&dem.length)
+          ? `✅ Carga #${carga} vinculada!`
+          : `✅ Carga #${carga} vinculada! Aguardando lançamento ou expedição para liberar quantidade e valores.`;
+        showToast(msg,'success');
       }
     } else {
       showToast(`✅ Vinculado à Carga #${carga}! Admin vai distribuir os pedidos.`,'success');
