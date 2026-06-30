@@ -17355,7 +17355,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   // Alerta de manutenção vencida só é verificado ao abrir a aba Gestão de Frota
   // Restaurar última página visitada (qualidade vai direto para checklist)
   const _pfLogin = USUARIO_LOGADO?.perfil || '';
-  const ultimaPag = _pfLogin === 'qualidade' ? 'checklist-alho' : (localStorage.getItem('destak_pagina_atual') || 'motoristas');
+  const ultimaPag = _pfLogin === 'qualidade' ? 'checklist-alho' : (localStorage.getItem('destak_pagina_atual') || 'dashboard');
   const tabEl = document.querySelector('.sidebar-item[data-page="'+ultimaPag+'"]');
   showPage(ultimaPag, tabEl || undefined);
   // Atualizar badge de erros periodicamente (a cada 5 min)
@@ -18527,6 +18527,7 @@ async function cadAdicionarRota(){
       await supaFetch(`rotas?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify(payload)});
       showCadMsg('msg-cad-rota',`✅ ${nome} atualizada!`);
       showToast(`✅ Rota ${nome} atualizada!`,'success');
+      _otifCacheMap.clear(); _otifPromiseMap.clear(); // prazo_otif mudou — recalcular OTIF
       await cadCarregarRotas();
       await syncConfig();
       return;
@@ -18537,6 +18538,7 @@ async function cadAdicionarRota(){
     ['cad-rota-mot-sem','cad-rota-mot-com','cad-rota-ajudante','cad-rota-conferente','cad-rota-valor-km','cad-rota-prazo-otif'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
     showCadMsg('msg-cad-rota','✅ Rota adicionada!');
     showToast('✅ Rota '+nome+' cadastrada!','success');
+    _otifCacheMap.clear(); _otifPromiseMap.clear();
     await cadCarregarRotas();
   }catch(e){ showCadMsg('msg-cad-rota','Erro: '+e.message,false); }
 }
@@ -18554,6 +18556,7 @@ async function salvarRota(id){
       valor_padrao:meta, mot_sem_aj:motSem, mot_com_aj:motCom, val_ajudante:ajud, valor_km:valorKm, prazo_otif:prazoOtif
     })});
     showToast('✅ Rota atualizada!','success');
+    _otifCacheMap.clear(); _otifPromiseMap.clear(); // prazo_otif pode ter mudado
     // Destacar linha salva
     const row = document.getElementById(`rota-row-${id}`);
     if(row){ row.style.background='rgba(5,150,105,.08)'; setTimeout(()=>row.style.background='',2000); }
@@ -20136,7 +20139,7 @@ async function renderDashInterna(){
 
       // prazoMap por rota
       const prazoMapOtif = {};
-      (rotasRowsOtif||[]).forEach(r=>{ prazoMapOtif[(r.nome||'').toUpperCase()] = r.prazo_otif; });
+      (rotasRowsOtif||[]).forEach(r=>{ prazoMapOtif[normalizarRota(r.nome||'')||(r.nome||'').toUpperCase()] = r.prazo_otif; });
 
       // saidaMap e lancDtMap por carga (para calcular dataFim)
       const saidaMapCarga = {};
@@ -20193,7 +20196,7 @@ async function renderDashInterna(){
         if(semIdx < 0 || semIdx > 4) return;
 
         const ped   = String(p.pedido);
-        const rota  = (p.rota||'').toUpperCase();
+        const rota  = normalizarRota(p.rota||'')||(p.rota||'').toUpperCase();
         const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
         if(prazoEntry === null) return; // rota sem prazo (ex: CEASA)
         const rireNorm = normRire(p.rire)||getRireFromRota(rota)||'R.E.';
@@ -20220,7 +20223,7 @@ async function renderDashInterna(){
         const diffHoras = (new Date(dataFim) - new Date(p.data_pedido)) / 3600000;
         if(diffHoras < 0) return;
 
-        const isOnTime = hasEntRegSem && diffHoras <= prazoH;
+        const isOnTime = diffHoras <= prazoH;
         const isInFull = !hasOcorrSem;
         semOtif[semIdx].t++;
         if(isOnTime)             semOtif[semIdx].ot++;
@@ -20274,7 +20277,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
   (rotasRows||[]).forEach(r=>{
-    const nome=(r.nome||'').toUpperCase();
+    const nome=normalizarRota(r.nome||'')||(r.nome||'').toUpperCase();
     prazoMap[nome]=r.prazo_otif; // null do banco = sem prazo; número = horas
   });
   const saidaMap={};
@@ -20286,7 +20289,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const k=String(b.pedido);
     if(pedMap[k]) return;
     const rireNorm=normRire(b.rire)||getRireFromRota(b.rota)||'R.E.';
-    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:(b.rota||'').toUpperCase(), rire:rireNorm, dataPedido:b.data_pedido||null };
+    pedMap[k]={ carga:b.carga!=null?String(b.carga):null, rota:normalizarRota(b.rota||'')||(b.rota||'').toUpperCase(), rire:rireNorm, dataPedido:b.data_pedido||null };
   });
   const entMap={};
   (entRows||[]).forEach(e=>{
@@ -20328,7 +20331,8 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     }
     const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
     if(diffHoras<0) continue; // data inconsistente — ignorar
-    const isOnTime=hasEntregaReal&&diffHoras<=prazoH;
+    // isOnTime: usa dataFim (entrega real ou data de saída como proxy) vs prazo da rota
+    const isOnTime=diffHoras<=prazoH;
     const isInFull=!hasOcorr; // pedido sem ocorrência na Expedição = In Full
     const isOTIF=isOnTime&&isInFull;
     total++;
@@ -20377,7 +20381,7 @@ async function _carregarOtifMes(mes){
     const chunk = pedidoList.slice(i,i+400);
     const [rEnt, rOcorr] = await Promise.all([
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
-      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&select=pedido,tipo`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00&criado_em=lt.${proximo}-01T00:00:00&select=pedido,tipo`,{_quiet:true}).catch(()=>[]),
     ]);
     entRows   = entRows.concat(rEnt   || []);
     ocorrRows = ocorrRows.concat(rOcorr || []);
@@ -28601,6 +28605,11 @@ async function iniciarApp(){
     });
     const tabExp = document.querySelector('.nav-tab[onclick*="expedicao"]');
     if(tabExp) showPage('expedicao', tabExp);
+  } else {
+    // Admin e outros perfis sem redirect específico: restaurar última página ou ir para dashboard
+    const _lastPag = localStorage.getItem('destak_pagina_atual') || 'dashboard';
+    const _tabEl = document.querySelector('.sidebar-item[data-page="'+_lastPag+'"]');
+    showPage(_lastPag, _tabEl || undefined);
   }
   // ── Limpar duplicatas do BASE_DATA no localStorage (fix valores inflados) ──
   try{
@@ -28780,7 +28789,7 @@ async function enviarCadastroSelf(){
     const saved = localStorage.getItem('usuario_logado');
     if(saved){
       const u = JSON.parse(saved);
-      if(u && u.email && u.perfil){
+      if(u && u.id && u.email){
         USUARIO_LOGADO = u;
         iniciarApp().then(()=>clearTimeout(safetyTimer)).catch(err=>{
           clearTimeout(safetyTimer);
