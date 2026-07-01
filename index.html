@@ -2396,6 +2396,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <span class="si-icon">📦</span>
     <span class="si-label">Dashboard Interna</span>
   </div>
+  <div class="sidebar-item" data-page="otif-diario" data-perfil="admin,adm_fiscal,fiscal_admin,adm_distribuicao,adm_armazem,operador,exped_admin" onclick="showPage('otif-diario',this)">
+    <span class="si-icon">🎯</span>
+    <span class="si-label">OTIF Diário</span>
+  </div>
   <div class="sidebar-item" data-page="motoristas" onclick="showPage('motoristas',this)">
     <span class="si-icon">🚗</span><span class="si-label">Motoristas</span>
   </div>
@@ -3327,6 +3331,39 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <h3 style="font-size:.93rem;font-weight:800;color:var(--text-primary);margin-bottom:14px">🎯 OTIF por Semana</h3>
     <div id="dash-sem-otif-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px"></div>
   </div>
+</div></div>
+
+<!-- ══ OTIF DIÁRIO ══ -->
+<div class="page" id="page-otif-diario"><div class="container">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px">
+    <div>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">🎯 OTIF Diário</h2>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Semáforo em tempo real por carga — pedidos atrasados e alertas de entrega</p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="date" id="otif-diario-data" onchange="renderOtifDiario()" style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <button onclick="renderOtifDiario()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:.85rem;font-weight:700;cursor:pointer">🔄 Atualizar</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+    <select id="otif-diario-rota" onchange="renderOtifDiario()" style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)"><option value="">Todas as rotas</option></select>
+    <select id="otif-diario-motorista" onchange="renderOtifDiario()" style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)"><option value="">Todos os motoristas</option></select>
+    <select id="otif-diario-und" onchange="renderOtifDiario()" style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)"><option value="">Todas as unidades</option></select>
+    <select id="otif-diario-semaforo" onchange="renderOtifDiario()" style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)">
+      <option value="">Todos os status</option>
+      <option value="atrasado">🔴 Atrasado</option>
+      <option value="alerta">🟡 Em Alerta</option>
+      <option value="ok">🟢 No Prazo</option>
+    </select>
+    <select id="otif-diario-rire" onchange="renderOtifDiario()" style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)">
+      <option value="">R.I. + R.E.</option>
+      <option value="R.I.">🔵 R.I. (Interna)</option>
+      <option value="R.E.">🟠 R.E. (Externa)</option>
+    </select>
+  </div>
+  <div id="otif-diario-kpis" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:20px"></div>
+  <div id="otif-diario-tabela" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden"></div>
+  <p id="otif-diario-atualizado" style="font-size:.72rem;color:var(--text-muted);text-align:right;margin-top:8px"></p>
 </div></div>
 
 <!-- ══ AGENDAMENTO DE ROTAS ══ -->
@@ -17340,6 +17377,7 @@ function showPage(name,tab){
   else if(name==='historico') safe(()=>carregarHistoricoRotas(),'historico');
   else if(name==='dashboard') safe(()=>renderDashboard(),'dashboard');
   else if(name==='dash-interna') safe(()=>renderDashInterna(),'dash-interna');
+  else if(name==='otif-diario') safe(()=>renderOtifDiario(),'otif-diario');
   else if(name==='cadastros') safe(()=>renderCadastros(),'cadastros');
   else if(name==='recursos-humanos') safe(()=>renderRH(),'recursos-humanos');
   else if(name==='expedicao') safe(()=>{
@@ -20529,6 +20567,228 @@ async function renderDashOtif(){
   }catch(e){ console.warn('renderDashOtif:',e); el.innerHTML=''; }
 }
 
+let _otifDiarioTimer = null;
+
+async function renderOtifDiario(){
+  const kpisEl  = document.getElementById('otif-diario-kpis');
+  const tabelaEl= document.getElementById('otif-diario-tabela');
+  const atuEl   = document.getElementById('otif-diario-atualizado');
+  if(!kpisEl||!tabelaEl) return;
+
+  const dataInput = document.getElementById('otif-diario-data');
+  if(dataInput && !dataInput.value) dataInput.value = new Date().toISOString().slice(0,10);
+  const dataSel = (dataInput?.value) || new Date().toISOString().slice(0,10);
+
+  kpisEl.innerHTML = '<p style="color:var(--text-muted);font-size:.85rem;padding:8px 0">Carregando dados...</p>';
+  tabelaEl.innerHTML = '';
+  if(atuEl) atuEl.textContent = '';
+
+  try{
+    const demandasR = await supaFetch('demandas_rota?data_saida=eq.'+dataSel+'&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal&order=carga');
+    const demandas  = Array.isArray(demandasR) ? demandasR : [];
+    const cargaList = [...new Set(demandas.map(d=>d.carga).filter(c=>c!=null))];
+
+    if(!cargaList.length){
+      kpisEl.innerHTML = '<p style="color:var(--text-muted);font-size:.85rem;padding:8px 0">Nenhuma carga encontrada para '+dataSel+'</p>';
+      return;
+    }
+
+    const cargaIn = cargaList.join(',');
+    const [lancR, bdR, entR, rotasR] = await Promise.all([
+      supaFetch('lancamentos?carga=in.('+cargaIn+')&select=carga,motorista,rota,ts').catch(()=>[]),
+      supaFetch('base_data?carga=in.('+cargaIn+')&select=pedido,carga,rota,rire,und,data_pedido,ocorrencia').catch(()=>[]),
+      supaFetch('entrega_datas?carga=in.('+cargaIn+')&select=pedido,carga,data_entrega').catch(()=>[]),
+      supaFetch('rotas?select=nome,prazo_otif&ativo=eq.true').catch(()=>[])
+    ]);
+
+    const lancs    = Array.isArray(lancR)   ? lancR   : [];
+    const bdRows   = Array.isArray(bdR)     ? bdR     : [];
+    const entRows  = Array.isArray(entR)    ? entR    : [];
+    const rotasArr = Array.isArray(rotasR)  ? rotasR  : [];
+
+    const demandaMap = {};
+    demandas.forEach(d=>{ if(d.carga!=null) demandaMap[String(d.carga)]=d; });
+
+    const lancMap = {};
+    lancs.forEach(l=>{ if(l.carga!=null) lancMap[String(l.carga)]=l; });
+
+    const entMap = {};
+    entRows.forEach(e=>{
+      const k=String(e.pedido);
+      if(e.data_entrega && (!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
+    });
+
+    const prazoMap = {};
+    rotasArr.forEach(r=>{
+      if(r.nome) prazoMap[normalizarRota(r.nome)||(r.nome||'').toUpperCase()] = r.prazo_otif;
+    });
+
+    function getPrazoH(rotaNorm, rire){
+      if(Object.prototype.hasOwnProperty.call(prazoMap, rotaNorm)){
+        const p=prazoMap[rotaNorm];
+        if(p===null) return null;
+        if(p!=null) return p;
+      }
+      return rire==='R.I.' ? 24 : 192;
+    }
+
+    const nowMs = Date.now();
+
+    function getSemaforo(pedido, rotaNorm, rire, dataPedido){
+      if(entMap[String(pedido)]) return 'ok';
+      if(!dataPedido) return 'ok';
+      const prazoH=getPrazoH(rotaNorm,rire);
+      if(prazoH===null) return 'ok';
+      const prazoMs=prazoH*3600000;
+      const inicioMs=new Date(dataPedido+'T00:00:00').getTime();
+      const deadline=inicioMs+prazoMs;
+      if(nowMs>deadline) return 'atrasado';
+      if(nowMs>inicioMs+prazoMs*0.75) return 'alerta';
+      return 'ok';
+    }
+
+    const cargaStats = {};
+    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,semOtif:0}; });
+
+    bdRows.forEach(p=>{
+      if(p.carga==null) return;
+      const ck=String(p.carga);
+      if(!cargaStats[ck]) return;
+      const rireNorm=normRire(p.rire)||getRireFromRota(p.rota)||'R.E.';
+      const rotaNorm=normalizarRota(p.rota||'')||(p.rota||'').toUpperCase();
+      const prazoH=getPrazoH(rotaNorm,rireNorm);
+      if(prazoH===null){ cargaStats[ck].semOtif++; return; }
+      const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido);
+      const entregue=!!entMap[String(p.pedido)];
+      cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm});
+      if(entregue) cargaStats[ck].entregues++;
+      if(sem==='atrasado') cargaStats[ck].atrasados++;
+      else if(sem==='alerta') cargaStats[ck].alerta++;
+      else cargaStats[ck].ok++;
+    });
+
+    function cargaSem(stats){ return stats.atrasados>0?'atrasado':stats.alerta>0?'alerta':'ok'; }
+
+    let cargaRows = cargaList.map(carga=>{
+      const ck=String(carga);
+      const stats=cargaStats[ck];
+      const dem=demandaMap[ck]||{};
+      const lanc=lancMap[ck]||{};
+      const rota=dem.rota||lanc.rota||(stats.pedidos[0]||{}).rota||'';
+      const motorista=dem.motorista||lanc.motorista||'';
+      const samplePed=stats.pedidos[0]||{};
+      const rire=samplePed.rireNorm||normRire(samplePed.rire)||getRireFromRota(rota)||'';
+      const sem=cargaSem(stats);
+      const total=stats.pedidos.length;
+      const pctAtend=total?Math.round(stats.entregues/total*100):0;
+      return {carga,ck,rota,motorista,rire,sem,stats,total,pctAtend};
+    });
+
+    // Populate filter selects (preserve current value)
+    function populateFilter(id, values){
+      const sel=document.getElementById(id);
+      if(!sel) return;
+      const cur=sel.value;
+      const first=sel.options[0]?.outerHTML||'<option value="">—</option>';
+      sel.innerHTML=first+values.map(v=>`<option value="${v}">${v}</option>`).join('');
+      if(values.includes(cur)) sel.value=cur;
+    }
+    populateFilter('otif-diario-rota',     [...new Set(cargaRows.map(r=>r.rota).filter(Boolean))].sort());
+    populateFilter('otif-diario-motorista',[...new Set(cargaRows.map(r=>r.motorista).filter(Boolean))].sort());
+    populateFilter('otif-diario-und',      [...new Set(bdRows.map(p=>p.und).filter(Boolean))].sort());
+
+    const fRota=document.getElementById('otif-diario-rota')?.value||'';
+    const fMot =document.getElementById('otif-diario-motorista')?.value||'';
+    const fUnd =document.getElementById('otif-diario-und')?.value||'';
+    const fSem =document.getElementById('otif-diario-semaforo')?.value||'';
+    const fRire=document.getElementById('otif-diario-rire')?.value||'';
+
+    if(fRota) cargaRows=cargaRows.filter(r=>r.rota===fRota);
+    if(fMot)  cargaRows=cargaRows.filter(r=>r.motorista===fMot);
+    if(fUnd)  cargaRows=cargaRows.filter(r=>r.stats.pedidos.some(p=>p.und===fUnd));
+    if(fSem)  cargaRows=cargaRows.filter(r=>r.sem===fSem);
+    if(fRire) cargaRows=cargaRows.filter(r=>r.rire===fRire);
+
+    const semOrd={atrasado:0,alerta:1,ok:2};
+    cargaRows.sort((a,b)=>(semOrd[a.sem]??3)-(semOrd[b.sem]??3)||(a.carga-b.carga));
+
+    const totalCargas  = cargaRows.length;
+    const cargasConc   = cargaRows.filter(r=>r.pctAtend===100).length;
+    const totalPeds    = cargaRows.reduce((s,r)=>s+r.total,0);
+    const totalEnt     = cargaRows.reduce((s,r)=>s+r.stats.entregues,0);
+    const totalAtras   = cargaRows.reduce((s,r)=>s+r.stats.atrasados,0);
+    const cArgAtras    = cargaRows.filter(r=>r.sem==='atrasado').length;
+    const otifPct      = totalPeds ? Math.round(totalEnt/totalPeds*100) : 0;
+
+    function kCard(icon,label,val,sub,cor){
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px">
+        <div style="font-size:1.25rem;margin-bottom:2px">${icon}</div>
+        <div style="font-size:1.5rem;font-weight:900;color:${cor||'var(--text-primary)'}">${val}</div>
+        <div style="font-size:.73rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-top:2px">${label}</div>
+        ${sub?`<div style="font-size:.69rem;color:var(--text-muted);margin-top:2px">${sub}</div>`:''}
+      </div>`;
+    }
+    const corOtif=otifPct>=95?'#16a34a':otifPct>=80?'#f59e0b':'#dc2626';
+    kpisEl.innerHTML=
+      kCard('🎯','OTIF do Dia',otifPct+'%',totalEnt+'/'+totalPeds+' pedidos entregues',corOtif)+
+      kCard('🚚','Cargas Programadas',totalCargas,dataSel,'#2563eb')+
+      kCard('✅','Cargas Concluídas',cargasConc,'100% dos pedidos entregues','#16a34a')+
+      kCard('⏰','Pedidos Atrasados',totalAtras,'prazo vencido sem entrega','#dc2626')+
+      kCard('🔴','Cargas c/ Atraso',cArgAtras,'ao menos 1 pedido atrasado',cArgAtras>0?'#dc2626':'#16a34a');
+
+    if(!cargaRows.length){
+      tabelaEl.innerHTML='<p style="padding:24px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhuma carga com os filtros selecionados</p>';
+    } else {
+      const sIcon={atrasado:'🔴',alerta:'🟡',ok:'🟢'};
+      const sLbl={atrasado:'Atrasado',alerta:'Em Alerta',ok:'No Prazo'};
+      const sCor={atrasado:'#dc2626',alerta:'#d97706',ok:'#16a34a'};
+      tabelaEl.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:.82rem">
+        <thead><tr style="background:var(--bg-hover);border-bottom:2px solid var(--border)">
+          <th style="padding:10px 12px;text-align:left;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Status</th>
+          <th style="padding:10px 12px;text-align:left;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Carga</th>
+          <th style="padding:10px 12px;text-align:left;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Rota</th>
+          <th style="padding:10px 12px;text-align:left;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Motorista</th>
+          <th style="padding:10px 12px;text-align:left;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">RI/RE</th>
+          <th style="padding:10px 12px;text-align:center;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Pedidos</th>
+          <th style="padding:10px 12px;text-align:left;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Atendimento</th>
+          <th style="padding:10px 12px;text-align:center;font-size:.71rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted)">Atrasados</th>
+        </tr></thead>
+        <tbody>${cargaRows.map((r,i)=>{
+          const bg=i%2?'var(--bg-hover)':'transparent';
+          const barCor=r.pctAtend===100?'#16a34a':r.stats.atrasados>0?'#dc2626':r.stats.alerta>0?'#f59e0b':'#2563eb';
+          const rireBg=r.rire==='R.I.'?'#dbeafe':'#fef3c7';
+          const rireFg=r.rire==='R.I.'?'#1d4ed8':'#92400e';
+          return `<tr style="border-bottom:1px solid var(--border);background:${bg}">
+            <td style="padding:10px 12px;white-space:nowrap"><span>${sIcon[r.sem]}</span><span style="font-size:.71rem;color:${sCor[r.sem]};font-weight:700;margin-left:4px">${sLbl[r.sem]}</span></td>
+            <td style="padding:10px 12px;font-weight:800;color:var(--text-primary)">${r.carga}</td>
+            <td style="padding:10px 12px;color:var(--text-secondary)">${r.rota||'—'}</td>
+            <td style="padding:10px 12px;color:var(--text-secondary)">${r.motorista||'—'}</td>
+            <td style="padding:10px 12px"><span style="font-size:.71rem;font-weight:800;background:${rireBg};color:${rireFg};border-radius:6px;padding:2px 7px">${r.rire||'—'}</span></td>
+            <td style="padding:10px 12px;text-align:center;font-weight:700">${r.stats.entregues}/${r.total}</td>
+            <td style="padding:10px 12px;min-width:130px">
+              <div style="background:var(--border);border-radius:999px;height:6px;overflow:hidden"><div style="width:${r.pctAtend}%;background:${barCor};height:100%;border-radius:999px"></div></div>
+              <span style="font-size:.69rem;color:var(--text-muted);margin-top:2px;display:block">${r.pctAtend}% atendido</span>
+            </td>
+            <td style="padding:10px 12px;text-align:center">${r.stats.atrasados>0?`<span style="font-weight:800;color:#dc2626;font-size:.82rem">${r.stats.atrasados}</span>`:'<span style="color:var(--text-muted)">—</span>'}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
+    }
+
+    if(atuEl){
+      const t=new Date();
+      atuEl.textContent='Última atualização: '+t.toLocaleTimeString('pt-BR')+' — auto-refresh a cada 5 min';
+    }
+    if(_otifDiarioTimer) clearTimeout(_otifDiarioTimer);
+    if(document.querySelector('.sidebar-item[data-page="otif-diario"]')?.classList.contains('active')){
+      _otifDiarioTimer=setTimeout(()=>renderOtifDiario(),300000);
+    }
+
+  }catch(e){
+    console.error('renderOtifDiario:',e);
+    kpisEl.innerHTML='<p style="color:#dc2626;padding:8px 0">Erro ao carregar dados: '+e.message+'</p>';
+  }
+}
 
 async function renderDashboard(){
   const kpisEl = document.getElementById('dash-kpis');
