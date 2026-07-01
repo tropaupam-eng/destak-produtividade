@@ -19116,25 +19116,21 @@ function popularFormLancamento(){
   }
 }
 
-function previewCargaLanc(val){
-  const carga = parseInt(val);
-  const prev  = document.getElementById('carga-preview');
-  if(!carga || carga <= 0){ if(prev) prev.style.display='none'; return; }
-  const linhas = (BASE_DATA||[]).filter(x=>Number(x.carga)===carga && x.pedido);
-  if(!linhas.length){ if(prev) prev.style.display='none'; return; }
-  const pedidos  = [...new Set(linhas.map(x=>x.pedido))];
-  const valor    = linhas.reduce((s,r)=>s+(Number(r.valor)||0),0);
-  const rotaBase = normalizarRota(linhas[0]?.rota||'') || linhas[0]?.rota || '';
-  const condutor = linhas[0]?.condutor||'';
-  // Verificar se já há lançamento para esta carga
-  const lancExist = (lancamentos||[]).find(l=>Math.round(Number(l.carga))===carga);
-  const rotaLanc  = lancExist ? (normalizarRota(lancExist.rota||'')||lancExist.rota||'') : '';
-  const title = document.getElementById('preview-title');
-  const grid  = document.getElementById('preview-grid');
-  if(title) title.textContent = lancExist
-    ? `⚠️ Carga ${carga} já lançada — Motorista: ${lancExist.motorista||'—'}`
-    : `✅ Carga ${carga} encontrada na base`;
-  if(title) title.style.color = lancExist ? '#b45309' : '';
+function _renderPreviewCargaLanc(carga, linhas, lancExist){
+  const prev    = document.getElementById('carga-preview');
+  const title   = document.getElementById('preview-title');
+  const grid    = document.getElementById('preview-grid');
+  const pedidos = [...new Set(linhas.map(x=>x.pedido))];
+  const valor   = linhas.reduce((s,r)=>s+(Number(r.valor)||0),0);
+  const rotaBase= normalizarRota(linhas[0]?.rota||'') || linhas[0]?.rota || '';
+  const condutor= linhas[0]?.condutor||'';
+  const rotaLanc= lancExist ? (normalizarRota(lancExist.rota||'')||lancExist.rota||'') : '';
+  if(title){
+    title.textContent = lancExist
+      ? `⚠️ Carga ${carga} já lançada — Motorista: ${lancExist.motorista||'—'}`
+      : `✅ Carga ${carga} encontrada na base`;
+    title.style.color = lancExist ? '#b45309' : '';
+  }
   const rotaLabel = rotaLanc
     ? `<span>🗺️ Rota lançada: <b style="color:#059669">${rotaLanc}</b>${rotaBase && rotaBase!==rotaLanc ? ` <span style="color:#9ca3af;font-size:.8em">(planilha: ${rotaBase})</span>` : ''}</span>`
     : (rotaBase ? `<span>🗺️ Rota: <b>${rotaBase}</b></span>` : '');
@@ -19145,12 +19141,40 @@ function previewCargaLanc(val){
     condutor?`<span>🚗 Condutor: <b>${condutor}</b></span>`:'',
   ].filter(Boolean).join('');
   if(prev) prev.style.display='block';
-  // Auto-preencher rota se ainda não selecionada — usa rota do lançamento existente se houver
+  // Auto-preencher rota se ainda não selecionada — usa rota real do lançamento se houver
   const rotaParaFill = rotaLanc || rotaBase;
   const rotaSel = document.getElementById('l-rota-input');
   if(rotaSel && !rotaSel.value && rotaParaFill){
     const opt = [...rotaSel.options].find(o=>normalizarRota(o.value)===normalizarRota(rotaParaFill));
     if(opt) rotaSel.value = opt.value;
+  }
+}
+
+async function previewCargaLanc(val){
+  const carga = parseInt(val);
+  const prev  = document.getElementById('carga-preview');
+  if(!carga || carga <= 0){ if(prev) prev.style.display='none'; return; }
+  const linhas = (BASE_DATA||[]).filter(x=>Number(x.carga)===carga && x.pedido);
+  if(!linhas.length){ if(prev) prev.style.display='none'; return; }
+
+  // 1ª tentativa: array em memória (rápido, cobre 2000 lançamentos mais recentes)
+  let lancExist = (lancamentos||[]).find(l=>Math.round(Number(l.carga))===carga);
+
+  // Renderiza imediatamente com o que temos (evita delay perceptível)
+  _renderPreviewCargaLanc(carga, linhas, lancExist||null);
+
+  // 2ª tentativa: se não encontrado em memória, consulta Supabase diretamente
+  // (carga pode ser anterior aos 2000 do cache, ou o sync ainda não terminou)
+  if(!lancExist){
+    try{
+      const res = await supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,rire,und&limit=1`);
+      if(res && res.length > 0){
+        lancExist = res[0];
+        // Re-renderiza com dados reais do banco
+        const inputAtual = parseInt(document.getElementById('l-carga')?.value);
+        if(inputAtual === carga) _renderPreviewCargaLanc(carga, linhas, lancExist);
+      }
+    }catch(e){}
   }
 }
 
