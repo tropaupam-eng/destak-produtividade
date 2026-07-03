@@ -20894,6 +20894,9 @@ async function renderOtifDiario(){
   if(atuEl) atuEl.textContent = '';
 
   try{
+    const mesAno  = dataSel.slice(0,7);
+
+    // Cargas programadas para o dia (demandas_rota) — fonte do universo diário
     const demandasR = await supaFetch('demandas_rota?data_saida=eq.'+dataSel+'&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal&order=carga');
     const demandas  = Array.isArray(demandasR) ? demandasR : [];
     const cargaList = [...new Set(demandas.map(d=>d.carga).filter(c=>c!=null))];
@@ -20903,31 +20906,44 @@ async function renderOtifDiario(){
       return;
     }
 
-    const cargaIn = cargaList.join(',');
-    const mesAno  = dataSel.slice(0,7);
-    const [lancR, bdR, entR, rotasR] = await Promise.all([
-      supaFetch('lancamentos?carga=in.('+cargaIn+')&select=carga,motorista,rota,ts').catch(()=>[]),
-      supaFetch('base_data?carga=in.('+cargaIn+')&select=pedido,carga,rota,rire,und,data_pedido,ocorrencia').catch(()=>[]),
-      supaFetch('entrega_datas?mes_ano=eq.'+mesAno+'&select=pedido,data_entrega').catch(()=>[]),
-      supaFetch('rotas?select=nome,prazo_otif&ativo=eq.true').catch(()=>[])
-    ]);
+    // Fonte unificada: mesmos dados que o Dashboard Interno, Painel e TV
+    const _userUnd = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
+    const dadosMes = await _carregarOtifMes(mesAno, _userUnd);
 
-    const lancs    = Array.isArray(lancR)   ? lancR   : [];
-    const bdRows   = Array.isArray(bdR)     ? bdR     : [];
-    const entRows  = Array.isArray(entR)    ? entR    : [];
-    const rotasArr = Array.isArray(rotasR)  ? rotasR  : [];
+    // Filtrar para as cargas do dia selecionado
+    const cargasHoje = new Set(cargaList.map(c=>String(c)));
+    const bdRows   = (dadosMes?.bdRows  ||[]).filter(b=>cargasHoje.has(String(b.carga)));
+    const entRows  =  dadosMes?.entRows ||[];
+    const rotasArr =  dadosMes?.rotasRows||[];
+    const ocorrRows=  dadosMes?.ocorrRows||[];
+
+    // Para cargas do dia não cobertas pelo _carregarOtifMes (ainda sem lançamento),
+    // buscar base_data diretamente como fallback
+    const cargasComBd = new Set(bdRows.map(b=>String(b.carga)));
+    const cargasSemBd = cargaList.filter(c=>!cargasComBd.has(String(c)));
+    let bdExtra = [];
+    if(cargasSemBd.length){
+      bdExtra = await supaFetch('base_data?carga=in.('+cargasSemBd.join(',')+')'
+        +'&select=pedido,carga,rota,rire,und,data_pedido,ocorrencia').catch(()=>[]) || [];
+    }
+    const bdAll = [...bdRows, ...bdExtra];
+
+    // Fonte de lançamentos — da mesma consulta do mês
+    const lancs = (dadosMes?.lancRows||[]).filter(l=>cargasHoje.has(String(l.carga)));
+
+    // Construir entMap e ocorrSet — mesma lógica de _computeOtifStats
+    const entMap = {};
+    entRows.forEach(e=>{
+      const k=String(e.pedido);
+      if(e.data_entrega&&(!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
+    });
+    const ocorrSet = new Set((ocorrRows||[]).map(o=>String(o.pedido)).filter(Boolean));
 
     const demandaMap = {};
     demandas.forEach(d=>{ if(d.carga!=null) demandaMap[String(d.carga)]=d; });
 
     const lancMap = {};
     lancs.forEach(l=>{ if(l.carga!=null) lancMap[String(l.carga)]=l; });
-
-    const entMap = {};
-    entRows.forEach(e=>{
-      const k=String(e.pedido);
-      if(e.data_entrega && (!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
-    });
 
     const prazoMap = {};
     rotasArr.forEach(r=>{
@@ -20959,9 +20975,9 @@ async function renderOtifDiario(){
     }
 
     const cargaStats = {};
-    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,semOtif:0}; });
+    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,semOtif:0,inFull:0}; });
 
-    bdRows.forEach(p=>{
+    bdAll.forEach(p=>{
       if(p.carga==null) return;
       const ck=String(p.carga);
       if(!cargaStats[ck]) return;
@@ -20971,8 +20987,10 @@ async function renderOtifDiario(){
       if(prazoH===null){ cargaStats[ck].semOtif++; return; }
       const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido);
       const entregue=!!entMap[String(p.pedido)];
-      cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm});
+      const isInFull=!ocorrSet.has(String(p.pedido));
+      cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm,isInFull});
       if(entregue) cargaStats[ck].entregues++;
+      if(isInFull) cargaStats[ck].inFull++;
       if(sem==='atrasado') cargaStats[ck].atrasados++;
       else if(sem==='alerta') cargaStats[ck].alerta++;
       else cargaStats[ck].ok++;
@@ -21006,7 +21024,7 @@ async function renderOtifDiario(){
     }
     populateFilter('otif-diario-rota',     [...new Set(cargaRows.map(r=>r.rota).filter(Boolean))].sort());
     populateFilter('otif-diario-motorista',[...new Set(cargaRows.map(r=>r.motorista).filter(Boolean))].sort());
-    populateFilter('otif-diario-und',      [...new Set(bdRows.map(p=>p.und).filter(Boolean))].sort());
+    populateFilter('otif-diario-und',      [...new Set(bdAll.map(p=>p.und).filter(Boolean))].sort());
 
     const fRota=document.getElementById('otif-diario-rota')?.value||'';
     const fMot =document.getElementById('otif-diario-motorista')?.value||'';
@@ -21027,9 +21045,11 @@ async function renderOtifDiario(){
     const cargasConc   = cargaRows.filter(r=>r.pctAtend===100).length;
     const totalPeds    = cargaRows.reduce((s,r)=>s+r.total,0);
     const totalEnt     = cargaRows.reduce((s,r)=>s+r.stats.entregues,0);
+    const totalInFull  = cargaRows.reduce((s,r)=>s+r.stats.inFull,0);
     const totalAtras   = cargaRows.reduce((s,r)=>s+r.stats.atrasados,0);
     const cArgAtras    = cargaRows.filter(r=>r.sem==='atrasado').length;
     const otifPct      = totalPeds ? Math.round(totalEnt/totalPeds*100) : 0;
+    const inFullPct    = totalPeds ? Math.round(totalInFull/totalPeds*100) : 0;
 
     function kCard(icon,label,val,sub,cor){
       return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px">
@@ -21041,11 +21061,11 @@ async function renderOtifDiario(){
     }
     const corOtif=otifPct>=95?'#16a34a':otifPct>=80?'#f59e0b':'#dc2626';
     kpisEl.innerHTML=
-      kCard('🎯','OTIF do Dia',otifPct+'%',totalEnt+'/'+totalPeds+' pedidos entregues',corOtif)+
+      kCard('🎯','On Time (Entregues)',otifPct+'%',totalEnt+'/'+totalPeds+' pedidos',corOtif)+
+      kCard('📦','In Full (Sem Ocorrência)',inFullPct+'%',totalInFull+'/'+totalPeds+' pedidos',inFullPct>=95?'#16a34a':inFullPct>=80?'#f59e0b':'#dc2626')+
       kCard('🚚','Cargas Programadas',totalCargas,dataSel,'#2563eb')+
       kCard('✅','Cargas Concluídas',cargasConc,'100% dos pedidos entregues','#16a34a')+
-      kCard('⏰','Pedidos Atrasados',totalAtras,'prazo vencido sem entrega','#dc2626')+
-      kCard('🔴','Cargas c/ Atraso',cArgAtras,'ao menos 1 pedido atrasado',cArgAtras>0?'#dc2626':'#16a34a');
+      kCard('⏰','Pedidos Atrasados',totalAtras,'prazo vencido sem entrega','#dc2626');
 
     if(!cargaRows.length){
       tabelaEl.innerHTML='<p style="padding:24px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhuma carga com os filtros selecionados</p>';
