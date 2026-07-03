@@ -20147,9 +20147,11 @@ async function renderDashInterna(){
         : '⏱ Sem planilha — OTIF pela saída registrada no sistema';
 
     // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
-    // Mês atual: invalida cache antes de buscar para garantir dados frescos a cada renderização
-    if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(mesFiltro);
-    const _dadosOtif = await _carregarOtifMes(mesFiltro);
+    // Usa o mesmo filtro de unidade do restante do dashboard (undFiltro da UI ou unidade do usuário)
+    const _userUndDash = undFiltro || (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+    const _dashCacheKey = _userUndDash ? `${mesFiltro}__${_userUndDash}` : mesFiltro;
+    if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_dashCacheKey);
+    const _dadosOtif = await _carregarOtifMes(mesFiltro, _userUndDash||undefined);
     const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     let otifTot, otifOk, onTimeTot, onTimeOk, inFullTot, inFullOk;
     if(rireFiltro === 'RI'){
@@ -20563,11 +20565,18 @@ async function renderDashInterna(){
         if(!dataFim){
           // Sem qualquer data — conta como falha apenas se prazo já venceu
           const horasDecorridas = (new Date(hoje+'T23:59:59') - new Date(p.data_pedido+'T00:00:00')) / 3600000;
-          if(horasDecorridas > prazoH){ semOtif[semIdx].t++; }
+          if(horasDecorridas > prazoH){
+            semOtif[semIdx].t++;
+            if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
+          }
           return; // pendente ou falha sem data — sem mais nada a fazer
         }
         const diffHoras = (new Date(dataFim) - new Date(p.data_pedido)) / 3600000;
-        if(diffHoras < 0){ semOtif[semIdx].t++; return; } // data inconsistente — conta como falha
+        if(diffHoras < 0){
+          semOtif[semIdx].t++;
+          if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
+          return; // data inconsistente — conta como falha
+        }
         // isOnTime: exige entrega real (data_entrega) registrada E dentro do prazo
         const isOnTime = hasEntrega && diffHoras <= prazoH;
         const isInFull = !ocorrSetOtif.has(ped);
@@ -20576,6 +20585,7 @@ async function renderDashInterna(){
           const horasDecorridas = (new Date(hoje+'T23:59:59') - new Date(p.data_pedido+'T00:00:00')) / 3600000;
           if(horasDecorridas <= prazoH) return; // pendente — não conta ainda
           semOtif[semIdx].t++;
+          if(isInFull) semOtif[semIdx].ifull++;
           return; // prazo vencido sem entrega confirmada → falha de On Time
         }
         semOtif[semIdx].t++;
@@ -20716,19 +20726,21 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
            entRE:reTotal, onTimeRE, inFullRE, otifRE };
 }
 
-// Fonte única de OTIF — cache por mês (Map) para suportar consultas simultâneas sem corrida
+// Fonte única de OTIF — cache por mês+unidade (Map) para suportar consultas simultâneas sem corrida
 const _otifCacheMap = new Map();
 const _otifPromiseMap = new Map();
-async function _carregarOtifMes(mes){
-  if(_otifCacheMap.has(mes)) return _otifCacheMap.get(mes);
+async function _carregarOtifMes(mes, und){
+  const cacheKey = und ? `${mes}__${und}` : mes;
+  if(_otifCacheMap.has(cacheKey)) return _otifCacheMap.get(cacheKey);
   // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo para o mesmo mês
-  if(_otifPromiseMap.has(mes)) return _otifPromiseMap.get(mes);
+  if(_otifPromiseMap.has(cacheKey)) return _otifPromiseMap.get(cacheKey);
   const promise = (async()=>{
   const proximo = _proximoMes(mes);
+  const undFilter = und ? `&und=eq.${encodeURIComponent(und)}` : '';
   // Busca rotas, lançamentos e saídas primeiro para descobrir cargas do mês
   const [rotasRows, lancRows, saidaRows] = await Promise.all([
     supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`,{_quiet:true}).catch(()=>[]),
-    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00&select=carga,ts`,{_quiet:true}).catch(()=>[]),
+    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00${undFilter}&select=carga,ts`,{_quiet:true}).catch(()=>[]),
     supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proximo}-01&select=carga,data_saida`,{_quiet:true}).catch(()=>[]),
   ]);
   // Atualizar ROTAS_RI com cadastro para getRireFromRota classificar corretamente
@@ -20741,6 +20753,7 @@ async function _carregarOtifMes(mes){
   const cargasMes = new Set(
     (lancRows||[]).map(l=>String(l.carga)).filter(Boolean)
   );
+  // base_data filtrada apenas pelas cargas (unidade já garantida via lancamentos acima)
   const bdRows = cargasMes.size
     ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido`,{_quiet:true}).catch(()=>[]) || []
     : [];
@@ -20758,11 +20771,11 @@ async function _carregarOtifMes(mes){
   }
   const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
   const result = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
-  _otifCacheMap.set(mes, result);
-  _otifPromiseMap.delete(mes);
+  _otifCacheMap.set(cacheKey, result);
+  _otifPromiseMap.delete(cacheKey);
   return result;
   })();
-  _otifPromiseMap.set(mes, promise);
+  _otifPromiseMap.set(cacheKey, promise);
   return promise;
 }
 
@@ -20771,9 +20784,10 @@ async function renderDashOtif(){
   if(!el) return;
   try{
     const mesAtual = new Date().toISOString().slice(0,7);
+    const _undAtual = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
 
-    // Fonte única: _carregarOtifMes calcula e armazena em cache
-    const _dados = await _carregarOtifMes(mesAtual);
+    // Fonte única: _carregarOtifMes calcula e armazena em cache (filtrado por unidade do usuário)
+    const _dados = await _carregarOtifMes(mesAtual, _undAtual);
     if(!_dados || !_dados.bdRows.length){ el.innerHTML=''; return; }
     const s = _dados.stats;
     const { total, riTotal, reTotal, entG, onTimeG, inFullG, otifG,
@@ -20880,6 +20894,9 @@ async function renderOtifDiario(){
   if(atuEl) atuEl.textContent = '';
 
   try{
+    const mesAno  = dataSel.slice(0,7);
+
+    // Cargas programadas para o dia (demandas_rota) — fonte do universo diário
     const demandasR = await supaFetch('demandas_rota?data_saida=eq.'+dataSel+'&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal&order=carga');
     const demandas  = Array.isArray(demandasR) ? demandasR : [];
     const cargaList = [...new Set(demandas.map(d=>d.carga).filter(c=>c!=null))];
@@ -20889,31 +20906,44 @@ async function renderOtifDiario(){
       return;
     }
 
-    const cargaIn = cargaList.join(',');
-    const mesAno  = dataSel.slice(0,7);
-    const [lancR, bdR, entR, rotasR] = await Promise.all([
-      supaFetch('lancamentos?carga=in.('+cargaIn+')&select=carga,motorista,rota,ts').catch(()=>[]),
-      supaFetch('base_data?carga=in.('+cargaIn+')&select=pedido,carga,rota,rire,und,data_pedido,ocorrencia').catch(()=>[]),
-      supaFetch('entrega_datas?mes_ano=eq.'+mesAno+'&select=pedido,data_entrega').catch(()=>[]),
-      supaFetch('rotas?select=nome,prazo_otif&ativo=eq.true').catch(()=>[])
-    ]);
+    // Fonte unificada: mesmos dados que o Dashboard Interno, Painel e TV
+    const _userUnd = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
+    const dadosMes = await _carregarOtifMes(mesAno, _userUnd);
 
-    const lancs    = Array.isArray(lancR)   ? lancR   : [];
-    const bdRows   = Array.isArray(bdR)     ? bdR     : [];
-    const entRows  = Array.isArray(entR)    ? entR    : [];
-    const rotasArr = Array.isArray(rotasR)  ? rotasR  : [];
+    // Filtrar para as cargas do dia selecionado
+    const cargasHoje = new Set(cargaList.map(c=>String(c)));
+    const bdRows   = (dadosMes?.bdRows  ||[]).filter(b=>cargasHoje.has(String(b.carga)));
+    const entRows  =  dadosMes?.entRows ||[];
+    const rotasArr =  dadosMes?.rotasRows||[];
+    const ocorrRows=  dadosMes?.ocorrRows||[];
+
+    // Para cargas do dia não cobertas pelo _carregarOtifMes (ainda sem lançamento),
+    // buscar base_data diretamente como fallback
+    const cargasComBd = new Set(bdRows.map(b=>String(b.carga)));
+    const cargasSemBd = cargaList.filter(c=>!cargasComBd.has(String(c)));
+    let bdExtra = [];
+    if(cargasSemBd.length){
+      bdExtra = await supaFetch('base_data?carga=in.('+cargasSemBd.join(',')+')'
+        +'&select=pedido,carga,rota,rire,und,data_pedido,ocorrencia').catch(()=>[]) || [];
+    }
+    const bdAll = [...bdRows, ...bdExtra];
+
+    // Fonte de lançamentos — da mesma consulta do mês
+    const lancs = (dadosMes?.lancRows||[]).filter(l=>cargasHoje.has(String(l.carga)));
+
+    // Construir entMap e ocorrSet — mesma lógica de _computeOtifStats
+    const entMap = {};
+    entRows.forEach(e=>{
+      const k=String(e.pedido);
+      if(e.data_entrega&&(!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
+    });
+    const ocorrSet = new Set((ocorrRows||[]).map(o=>String(o.pedido)).filter(Boolean));
 
     const demandaMap = {};
     demandas.forEach(d=>{ if(d.carga!=null) demandaMap[String(d.carga)]=d; });
 
     const lancMap = {};
     lancs.forEach(l=>{ if(l.carga!=null) lancMap[String(l.carga)]=l; });
-
-    const entMap = {};
-    entRows.forEach(e=>{
-      const k=String(e.pedido);
-      if(e.data_entrega && (!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
-    });
 
     const prazoMap = {};
     rotasArr.forEach(r=>{
@@ -20945,9 +20975,9 @@ async function renderOtifDiario(){
     }
 
     const cargaStats = {};
-    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,semOtif:0}; });
+    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,semOtif:0,inFull:0}; });
 
-    bdRows.forEach(p=>{
+    bdAll.forEach(p=>{
       if(p.carga==null) return;
       const ck=String(p.carga);
       if(!cargaStats[ck]) return;
@@ -20957,8 +20987,10 @@ async function renderOtifDiario(){
       if(prazoH===null){ cargaStats[ck].semOtif++; return; }
       const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido);
       const entregue=!!entMap[String(p.pedido)];
-      cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm});
+      const isInFull=!ocorrSet.has(String(p.pedido));
+      cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm,isInFull});
       if(entregue) cargaStats[ck].entregues++;
+      if(isInFull) cargaStats[ck].inFull++;
       if(sem==='atrasado') cargaStats[ck].atrasados++;
       else if(sem==='alerta') cargaStats[ck].alerta++;
       else cargaStats[ck].ok++;
@@ -20992,7 +21024,7 @@ async function renderOtifDiario(){
     }
     populateFilter('otif-diario-rota',     [...new Set(cargaRows.map(r=>r.rota).filter(Boolean))].sort());
     populateFilter('otif-diario-motorista',[...new Set(cargaRows.map(r=>r.motorista).filter(Boolean))].sort());
-    populateFilter('otif-diario-und',      [...new Set(bdRows.map(p=>p.und).filter(Boolean))].sort());
+    populateFilter('otif-diario-und',      [...new Set(bdAll.map(p=>p.und).filter(Boolean))].sort());
 
     const fRota=document.getElementById('otif-diario-rota')?.value||'';
     const fMot =document.getElementById('otif-diario-motorista')?.value||'';
@@ -21013,9 +21045,11 @@ async function renderOtifDiario(){
     const cargasConc   = cargaRows.filter(r=>r.pctAtend===100).length;
     const totalPeds    = cargaRows.reduce((s,r)=>s+r.total,0);
     const totalEnt     = cargaRows.reduce((s,r)=>s+r.stats.entregues,0);
+    const totalInFull  = cargaRows.reduce((s,r)=>s+r.stats.inFull,0);
     const totalAtras   = cargaRows.reduce((s,r)=>s+r.stats.atrasados,0);
     const cArgAtras    = cargaRows.filter(r=>r.sem==='atrasado').length;
     const otifPct      = totalPeds ? Math.round(totalEnt/totalPeds*100) : 0;
+    const inFullPct    = totalPeds ? Math.round(totalInFull/totalPeds*100) : 0;
 
     function kCard(icon,label,val,sub,cor){
       return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px">
@@ -21027,11 +21061,11 @@ async function renderOtifDiario(){
     }
     const corOtif=otifPct>=95?'#16a34a':otifPct>=80?'#f59e0b':'#dc2626';
     kpisEl.innerHTML=
-      kCard('🎯','OTIF do Dia',otifPct+'%',totalEnt+'/'+totalPeds+' pedidos entregues',corOtif)+
+      kCard('🎯','On Time (Entregues)',otifPct+'%',totalEnt+'/'+totalPeds+' pedidos',corOtif)+
+      kCard('📦','In Full (Sem Ocorrência)',inFullPct+'%',totalInFull+'/'+totalPeds+' pedidos',inFullPct>=95?'#16a34a':inFullPct>=80?'#f59e0b':'#dc2626')+
       kCard('🚚','Cargas Programadas',totalCargas,dataSel,'#2563eb')+
       kCard('✅','Cargas Concluídas',cargasConc,'100% dos pedidos entregues','#16a34a')+
-      kCard('⏰','Pedidos Atrasados',totalAtras,'prazo vencido sem entrega','#dc2626')+
-      kCard('🔴','Cargas c/ Atraso',cArgAtras,'ao menos 1 pedido atrasado',cArgAtras>0?'#dc2626':'#16a34a');
+      kCard('⏰','Pedidos Atrasados',totalAtras,'prazo vencido sem entrega','#dc2626');
 
     if(!cargaRows.length){
       tabelaEl.innerHTML='<p style="padding:24px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhuma carga com os filtros selecionados</p>';
@@ -31972,7 +32006,8 @@ async function carregarTV(){
     _tvRenderTicker(demRota||[]);
 
     // ── OTIF do Mês — fonte única compartilhada com Painel e Dashboard Interno ──
-    const _tvDadosOtif = await _carregarOtifMes(mesStr);
+    const _tvUnd = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
+    const _tvDadosOtif = await _carregarOtifMes(mesStr, _tvUnd);
     const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
