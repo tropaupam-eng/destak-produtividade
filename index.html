@@ -4567,9 +4567,36 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <h3 style="font-size:1rem;font-weight:700;color:var(--text-primary);margin-bottom:4px">🔐 Perfis de Acesso</h3>
         <p style="font-size:.82rem;color:var(--text-muted)">Mapa completo de permissões por perfil do sistema</p>
       </div>
-      <button onclick="abrirModalCriarPerfil()" style="background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;border:none;border-radius:10px;padding:9px 18px;font-size:.83rem;font-weight:700;cursor:pointer">➕ Novo Perfil</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="abrirAuditoriaPerfis()" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:#fff;border:none;border-radius:10px;padding:9px 18px;font-size:.83rem;font-weight:700;cursor:pointer">🔍 Auditoria</button>
+        <button onclick="abrirModalCriarPerfil()" style="background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;border:none;border-radius:10px;padding:9px 18px;font-size:.83rem;font-weight:700;cursor:pointer">➕ Novo Perfil</button>
+      </div>
     </div>
     <div id="perfis-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px"></div>
+  </div>
+
+  <!-- ── PAINEL AUDITORIA DE PERMISSÕES ── -->
+  <div id="modal-auditoria-perfis" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:800;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto">
+    <div style="background:var(--bg-card);border-radius:18px;width:100%;max-width:760px;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+      <div style="background:linear-gradient(135deg,#0891b2,#0e7490);padding:20px 24px;color:#fff;display:flex;justify-content:space-between;align-items:center;border-radius:18px 18px 0 0;position:sticky;top:0;z-index:1">
+        <div>
+          <h3 style="font-size:1.05rem;font-weight:800;margin:0">🔍 Auditoria de Permissões</h3>
+          <p style="font-size:.78rem;opacity:.8;margin:3px 0 0">Simule o que cada perfil pode ver e identifique divergências</p>
+        </div>
+        <button onclick="document.getElementById('modal-auditoria-perfis').style.display='none'" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 14px;cursor:pointer;font-size:.9rem">✕</button>
+      </div>
+      <div style="padding:24px">
+        <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:20px;flex-wrap:wrap">
+          <div style="flex:1;min-width:180px">
+            <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Perfil a auditar</label>
+            <select id="audit-perfil-sel" onchange="renderAuditoriaPerfil()" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;color:var(--text-primary);outline:none">
+              <option value="">Selecione um perfil...</option>
+            </select>
+          </div>
+        </div>
+        <div id="audit-resultado"></div>
+      </div>
+    </div>
   </div>
 
   <!-- ── FORNECEDORES ── -->
@@ -17742,6 +17769,155 @@ function abrirModalCriarPerfil(){
   document.getElementById('modal-criar-perfil').style.display = 'flex';
 }
 
+// ══ AUDITORIA DE PERMISSÕES ══════════════════════════════
+async function abrirAuditoriaPerfis(){
+  const modal = document.getElementById('modal-auditoria-perfis');
+  if(!modal) return;
+  modal.style.display = 'flex';
+  // Popula lista de perfis
+  const sel = document.getElementById('audit-perfil-sel');
+  if(sel && sel.options.length <= 1){
+    const todos = window._todosPerfis || {};
+    // Garante que perfis de sistema estejam disponíveis
+    const CHAVES_SISTEMA = ['admin','adm_distribuicao','adm_armazem','adm_fiscal','fiscal_admin','fiscal_op','operador','comercial','seguros','caixa','qualidade','separador','conferente','motorista','ajudante'];
+    const todasChaves = [...new Set([...CHAVES_SISTEMA, ...Object.keys(todos)])].sort();
+    sel.innerHTML = '<option value="">Selecione um perfil...</option>' +
+      todasChaves.map(k=>`<option value="${k}">${k}</option>`).join('');
+  }
+  document.getElementById('audit-resultado').innerHTML = '<p style="color:var(--text-muted);font-size:.85rem">Selecione um perfil acima para ver a auditoria.</p>';
+}
+
+async function renderAuditoriaPerfil(){
+  const perfil = document.getElementById('audit-perfil-sel')?.value;
+  const out = document.getElementById('audit-resultado');
+  if(!perfil || !out) return;
+  out.innerHTML = '<p style="color:var(--text-muted);font-size:.85rem">Carregando...</p>';
+
+  // 1. Buscar override salvo no banco
+  const ovKey = 'perfil_override_'+perfil;
+  const custKey = 'perfil_custom_'+perfil;
+  const [ovRows, custRows] = await Promise.all([
+    supaFetch(`configuracoes?chave=eq.${ovKey}&select=valor`).catch(()=>[]),
+    supaFetch(`configuracoes?chave=eq.${custKey}&select=valor`).catch(()=>[])
+  ]);
+  const ovRow = ovRows?.[0];
+  const custRow = custRows?.[0];
+
+  let fonte = 'hardcoded';
+  let permissoesBanco = null;
+  let paginasBanco = [];
+
+  if(ovRow){
+    fonte = 'override (Cadastro > Perfis)';
+    try{ const p = typeof ovRow.valor==='string'?JSON.parse(ovRow.valor):ovRow.valor; permissoesBanco=p.permissoes||null; paginasBanco=p.paginas||[]; }catch(e){}
+  } else if(custRow){
+    fonte = 'perfil customizado';
+    try{ const p = typeof custRow.valor==='string'?JSON.parse(custRow.valor):custRow.valor; permissoesBanco=p.permissoes||null; paginasBanco=p.paginas||[]; }catch(e){}
+  }
+
+  // 2. Permissões hardcoded (restricoes[] de filtrarSidebarPorPerfil)
+  const RESTRICOES = {
+    'operador':['dashboard','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','frota-disponibilidade'],
+    'adm_distribuicao':['dashboard','dash-interna','historico','geral','financeiro','expedicao','ocorrencias','lancamento','motoristas','veiculos','absenteismo','cadastros','recursos-humanos'],
+    'adm_armazem':['dashboard','dash-interna','historico','geral','motoristas','veiculos','armazem','abs-armazem','abastecimento-loja','receitas-armazem','cadastros','recursos-humanos'],
+    'fiscal_op':['dashboard','fiscal'],
+    'fiscal_admin':['dashboard','fiscal','gestao-fiscal','seguros','motoristas','veiculos','geral','financeiro','historico'],
+    'adm_fiscal':['dashboard','fiscal','gestao-fiscal','seguros','caixa','motoristas','veiculos','geral','financeiro','historico','cadastros'],
+    'comercial':['dashboard','comercial-rotas','historico','geral'],
+    'seguros':['dashboard','seguros'],
+    'caixa':['dashboard','caixa'],
+    'qualidade':['checklist-alho'],
+    'admin':null
+  };
+  const paginasHard = RESTRICOES[perfil] ?? null;
+
+  // 3. O que realmente vai ser aplicado (mesma prioridade de filtrarSidebarPorPerfil)
+  const paginasEfetivas = paginasBanco.length ? paginasBanco : (paginasHard || []);
+  const fonteEfetiva = paginasBanco.length ? fonte : 'hardcoded (restricoes[])';
+
+  // 4. Portais dedicados que ignoram a sidebar
+  const PORTAIS_DEDICADOS = ['seguros','caixa','separador','operador_separador','conferente','motorista','ajudante'];
+  const temPortal = PORTAIS_DEDICADOS.includes(perfil);
+  const overrideIgnorado = temPortal && !ovRow; // portal ativo E sem override salvo
+
+  // 5. Sidebar items disponíveis para este perfil
+  const sidebarItems = Array.from(document.querySelectorAll('.sidebar-item[data-page]'))
+    .map(el=>el.dataset.page).filter(Boolean);
+  const menuLiberados = perfil==='admin' ? sidebarItems : sidebarItems.filter(p=>paginasEfetivas.includes(p));
+  const menuBloqueados = sidebarItems.filter(p=>!menuLiberados.includes(p));
+
+  // 6. _todosPerfis — o que getPermissao() usa em runtime
+  const perfilRuntime = window._todosPerfis?.[perfil];
+  const temNoRuntime = !!perfilRuntime;
+
+  const badge = (txt,bg,cor) => `<span style="background:${bg};color:${cor};font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:4px">${txt}</span>`;
+  const ok = txt => badge('✅ '+txt,'#d1fae5','#065f46');
+  const warn = txt => badge('⚠️ '+txt,'#fef9c3','#92400e');
+  const err = txt => badge('❌ '+txt,'#fee2e2','#991b1b');
+  const info = txt => badge('ℹ️ '+txt,'#dbeafe','#1d4ed8');
+
+  out.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:16px">
+
+      <!-- Fonte das permissões -->
+      <div style="background:var(--bg-card2);border:1.5px solid var(--border);border-radius:10px;padding:14px">
+        <p style="font-size:.75rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">📦 Fonte das Permissões</p>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.82rem">Override salvo no banco (Cadastro &gt; Perfis)</span>
+            ${ovRow ? ok('Encontrado') : err('Não encontrado')}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.82rem">Perfil customizado</span>
+            ${custRow ? ok('Encontrado') : info('Não existe')}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.82rem">Regra hardcoded (restricoes[])</span>
+            ${paginasHard ? ok(paginasHard.length+' páginas') : (perfil==='admin'?ok('Admin — acesso total'):err('Não configurado'))}
+          </div>
+          <div style="margin-top:4px;padding:8px 10px;background:${paginasBanco.length?'#d1fae5':'#fef9c3'};border-radius:6px">
+            <strong style="font-size:.78rem">Fonte ativa:</strong> <span style="font-size:.78rem">${fonteEfetiva}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Portal dedicado -->
+      ${temPortal ? `
+      <div style="background:${overrideIgnorado?'#fee2e2':'#d1fae5'};border:1.5px solid ${overrideIgnorado?'#fca5a5':'#6ee7b7'};border-radius:10px;padding:14px">
+        <p style="font-size:.75rem;font-weight:800;color:${overrideIgnorado?'#991b1b':'#065f46'};text-transform:uppercase;margin-bottom:4px">🚪 Portal Dedicado</p>
+        <p style="font-size:.82rem;color:${overrideIgnorado?'#991b1b':'#065f46'}">
+          ${overrideIgnorado
+            ? 'Este perfil tem portal dedicado ativo. Sem override salvo, o usuário NUNCA chega ao app principal — as configurações de permissão são ignoradas. Salve um override em Cadastro &gt; Perfis para ativar o acesso ao app.'
+            : 'Override encontrado — este perfil usará o app principal com sidebar filtrada (portal dedicado desativado).'}
+        </p>
+      </div>` : ''}
+
+      <!-- Runtime -->
+      <div style="background:var(--bg-card2);border:1.5px solid var(--border);border-radius:10px;padding:14px">
+        <p style="font-size:.75rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">⚡ Runtime (getPermissao / podeEditar / temAcesso)</p>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:.82rem">Perfil em window._todosPerfis</span>
+          ${temNoRuntime ? ok('Indexado') : warn('Não indexado — getPermissao() retorna vazio')}
+        </div>
+        ${!temNoRuntime?`<p style="font-size:.75rem;color:#92400e;margin-top:6px">Visite Banco de Dados &gt; Perfis para indexar, ou faça logout e login novamente (corrigido pelo Bug Fix #3).</p>`:''}
+      </div>
+
+      <!-- Menus liberados -->
+      <div style="background:var(--bg-card2);border:1.5px solid var(--border);border-radius:10px;padding:14px">
+        <p style="font-size:.75rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">📋 Menus (Sidebar)</p>
+        <div style="margin-bottom:8px">
+          <span style="font-size:.75rem;font-weight:700;color:#059669;display:block;margin-bottom:4px">✅ Liberados (${menuLiberados.length})</span>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${menuLiberados.map(p=>`<span style="font-size:.7rem;background:#d1fae5;color:#065f46;padding:2px 7px;border-radius:4px">${p}</span>`).join('')||'<span style="font-size:.75rem;color:var(--text-muted)">Nenhum</span>'}</div>
+        </div>
+        <div>
+          <span style="font-size:.75rem;font-weight:700;color:#dc2626;display:block;margin-bottom:4px">🔒 Bloqueados (${menuBloqueados.length})</span>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${menuBloqueados.map(p=>`<span style="font-size:.7rem;background:#fee2e2;color:#991b1b;padding:2px 7px;border-radius:4px">${p}</span>`).join('')||'<span style="font-size:.75rem;color:var(--text-muted)">Nenhum</span>'}</div>
+        </div>
+      </div>
+
+    </div>`;
+}
+
 async function salvarNovoPerfil(){
   const nome = document.getElementById('np-nome').value.trim();
   const desc = document.getElementById('np-desc').value.trim();
@@ -29000,13 +29176,19 @@ async function iniciarApp(){
     return;
   }
 
-  // Seguros
+  // Seguros — se o admin configurou um override de permissões (Cadastro > Perfis),
+  // usa o app principal com sidebar filtrada; caso contrário, portal dedicado
   if(USUARIO_LOGADO.perfil === 'seguros'){
-    document.getElementById('login-screen').style.display='none';
-    document.getElementById('portal-seguros-wrapper').style.display='block';
-    document.getElementById('seguros-nome-topbar').textContent = USUARIO_LOGADO.nome;
-    await carregarPortalSeguros();
-    return;
+    const _ovSegRaw = await supaFetch('configuracoes?chave=eq.perfil_override_seguros&select=valor').catch(()=>[]);
+    if(!_ovSegRaw || !_ovSegRaw.length){
+      // Sem override — portal dedicado padrão
+      document.getElementById('login-screen').style.display='none';
+      document.getElementById('portal-seguros-wrapper').style.display='block';
+      document.getElementById('seguros-nome-topbar').textContent = USUARIO_LOGADO.nome;
+      await carregarPortalSeguros();
+      return;
+    }
+    // Com override salvo pelo admin → cai no fluxo normal (sidebar filtrada pelas permissões configuradas)
   }
 
   // Operador (Separador) — portal dedicado de separação
@@ -29065,9 +29247,11 @@ async function iniciarApp(){
     return;
   }
 
-  // Carregar perfis customizados antes de filtrar sidebar — popula _perfisCustom para dropdowns e getPermissao()
+  // Carregar perfis customizados antes de filtrar sidebar — popula _perfisCustom e _perfisOverrides
   await carregarPerfisCustom();
-  _indexarPerfis(window._perfisCustom || []);
+  // Indexar tanto perfis custom quanto overrides de perfis de sistema, para que
+  // getPermissao() / podeEditar() / temAcesso() funcionem corretamente para todos os perfis
+  _indexarPerfis([...(window._perfisCustom||[]), ...Object.values(window._perfisOverrides||{})]);
 
   await mostrarApp();
   document.getElementById('usuario-nome').textContent = USUARIO_LOGADO.nome;
