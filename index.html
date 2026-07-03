@@ -20774,19 +20774,23 @@ async function _carregarOtifMes(mes, und){
     (lancRows||[]).map(l=>String(l.carga)).filter(Boolean)
   );
   // base_data filtrada apenas pelas cargas (unidade já garantida via lancamentos acima)
+  // limit=20000 evita truncamento silencioso do PostgREST (padrão = 1000 linhas)
   const bdRows = cargasMes.size
-    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido`,{_quiet:true}).catch(()=>[]) || []
+    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || []
     : [];
   // Busca entrega_datas e ocorrencias_distribuicao pelos pedidos reais do mês
   const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
   let entRows = [], ocorrRows = [];
   for(let i=0; i<pedidoList.length; i+=400){
     const chunk = pedidoList.slice(i,i+400);
-    const [rEnt, rOcorr] = await Promise.all([
+    // Busca mes atual E próximo mês para capturar entregas cross-month
+    // (pedido de junho entregue em julho: planilha grava mes_ano='2026-07')
+    const [rEnt, rEntProx, rOcorr] = await Promise.all([
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${proximo}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00&criado_em=lt.${proximo}-01T00:00:00&select=pedido,tipo`,{_quiet:true}).catch(()=>[]),
     ]);
-    entRows   = entRows.concat(rEnt   || []);
+    entRows   = entRows.concat(rEnt || [], rEntProx || []);
     ocorrRows = ocorrRows.concat(rOcorr || []);
   }
   const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
