@@ -3060,6 +3060,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </button>
   </div>
 
+  <!-- ── CHIPS DE MÊS ── -->
+  <div id="fin-mes-chips" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px"></div>
+
   <!-- ── TABELA ── -->
 
   <!-- Container dinâmico de tabelas por unidade -->
@@ -27825,19 +27828,24 @@ async function renderFinanceiro(){
 }
 
 async function popularFiltrosFinanceiro(){
-  // Todos os meses disponíveis do BASE_DATA
+  // Se já há cache gerado, usar como fonte dos meses (mais preciso)
+  if(_pagamentosCache && _pagamentosCache.length){
+    _popularFiltrosDoCache();
+    return;
+  }
+
+  // Fallback: meses disponíveis do BASE_DATA (antes de gerar pagamentos)
   const todosMeses = [...new Set(BASE_DATA.map(r=>r.mes_ano).filter(Boolean))].sort().reverse();
   const todosAnos  = [...new Set(todosMeses.map(m=>m.slice(0,4)))].sort().reverse();
 
-  // Popular select de ano
   const selAno = document.getElementById('fin-filtro-ano');
   if(selAno){
     const anoAtual = selAno.value || String(new Date().getFullYear());
-    selAno.innerHTML = todosAnos.map(a=>`<option value="${a}" ${a===anoAtual?'selected':''}>${a}</option>`).join('');
+    const anosOpts = todosAnos.length ? todosAnos : [anoAtual];
+    selAno.innerHTML = anosOpts.map(a=>`<option value="${a}" ${a===anoAtual?'selected':''}>${a}</option>`).join('');
     if(!selAno.value) selAno.value = anoAtual;
   }
 
-  // Filtrar meses pelo ano selecionado
   const anoSel = selAno?.value || String(new Date().getFullYear());
   const meses = todosMeses.filter(m=>m.startsWith(anoSel));
 
@@ -27846,11 +27854,9 @@ async function popularFiltrosFinanceiro(){
     const cur = selMes.value;
     selMes.innerHTML = '<option value="">Todos os meses</option>' +
       meses.map(m=>`<option value="${m}" ${m===cur?'selected':''}>${formatarMesAno(m)}</option>`).join('');
-    // Se o mês selecionado não está no ano atual, limpa
     if(cur && !meses.includes(cur)) selMes.value = '';
   }
 
-  // Pessoas (motoristas + ajudantes)
   const pessoas = [...new Set([
     ...lancamentos.map(l=>l.motorista).filter(Boolean),
     ...lancamentos.map(l=>l.ajudante).filter(Boolean)
@@ -28172,6 +28178,7 @@ async function gerarPagamentos(btn){
       };
     }).sort((a,b)=>b.total-a.total);
 
+    _popularFiltrosDoCache();
     renderTabelaFinanceiro();
     atualizarKPIsFinanceiro();
     showToast(`✅ ${_pagamentosCache.length} registros gerados!`, 'success');
@@ -28188,6 +28195,7 @@ function renderTabelaFinanceiro(){
   const pessoaSel = document.getElementById('fin-filtro-pessoa')?.value || '';
   const statusSel = document.getElementById('fin-filtro-status')?.value || '';
   const tipoSel   = document.getElementById('fin-filtro-tipo')?.value || '';
+  _renderizarChipsMes(mesSel);
 
   let dados = _pagamentosCache;
   if(mesSel)    dados = dados.filter(d=>d.mes_ano===mesSel);
@@ -28421,6 +28429,56 @@ function limparFiltrosFinanceiro(){
   ['fin-filtro-mes','fin-filtro-pessoa','fin-filtro-status','fin-filtro-tipo'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value='';
   });
+  _renderizarChipsMes('');
+  renderTabelaFinanceiro();
+}
+
+function _popularFiltrosDoCache(){
+  if(!_pagamentosCache || !_pagamentosCache.length) return;
+  const anoSel = document.getElementById('fin-filtro-ano')?.value || String(new Date().getFullYear());
+  const meses = [...new Set(_pagamentosCache.map(p=>p.mes_ano).filter(Boolean))].sort().reverse()
+                  .filter(m=>m.startsWith(anoSel));
+
+  const selMes = document.getElementById('fin-filtro-mes');
+  if(selMes){
+    const cur = selMes.value;
+    selMes.innerHTML = '<option value="">Todos os meses</option>' +
+      meses.map(m=>`<option value="${m}">${formatarMesAno(m)}</option>`).join('');
+    selMes.value = (cur && meses.includes(cur)) ? cur : (meses.length===1 ? meses[0] : cur);
+  }
+
+  const nomes = [...new Set(_pagamentosCache.map(p=>p.nome).filter(Boolean))].sort();
+  const selPessoa = document.getElementById('fin-filtro-pessoa');
+  if(selPessoa){
+    const cur = selPessoa.value;
+    selPessoa.innerHTML = '<option value="">Todos</option>' +
+      nomes.map(n=>`<option value="${n}">${n}</option>`).join('');
+    if(cur && nomes.includes(cur)) selPessoa.value = cur;
+  }
+
+  _renderizarChipsMes(selMes?.value || '');
+}
+
+function _renderizarChipsMes(mesSelecionado){
+  const el = document.getElementById('fin-mes-chips');
+  if(!el) return;
+  if(!_pagamentosCache || !_pagamentosCache.length){ el.innerHTML=''; return; }
+  const anoSel = document.getElementById('fin-filtro-ano')?.value || String(new Date().getFullYear());
+  const meses = [...new Set(_pagamentosCache.map(p=>p.mes_ano).filter(Boolean))].sort().reverse()
+                  .filter(m=>m.startsWith(anoSel));
+  if(!meses.length){ el.innerHTML=''; return; }
+  el.innerHTML =
+    `<button onclick="_selecionarMesChip('')" style="background:${!mesSelecionado?'var(--red)':'var(--bg-card2)'};color:${!mesSelecionado?'#fff':'var(--text-secondary)'};border:1px solid ${!mesSelecionado?'var(--red)':'var(--border)'};border-radius:20px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer;transition:all .15s">Todos</button>` +
+    meses.map(m=>{
+      const ativo = mesSelecionado===m;
+      return `<button onclick="_selecionarMesChip('${m}')" style="background:${ativo?'var(--blue)':'var(--bg-card2)'};color:${ativo?'#fff':'var(--text-secondary)'};border:1px solid ${ativo?'var(--blue)':'var(--border)'};border-radius:20px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer;transition:all .15s">${formatarMesAno(m)}</button>`;
+    }).join('');
+}
+
+function _selecionarMesChip(mes){
+  const sel = document.getElementById('fin-filtro-mes');
+  if(sel) sel.value = mes;
+  _renderizarChipsMes(mes);
   renderTabelaFinanceiro();
 }
 
