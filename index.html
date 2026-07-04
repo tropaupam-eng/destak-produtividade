@@ -7659,11 +7659,16 @@ async function pushBaseData(records){
   const mesesNoUpload = [...new Set(records.map(r=>r.mes_ano).filter(Boolean))];
   showToast(`📤 Gravando ${records.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
 
-  // 1. Deletar meses que serão re-inseridos (preserva histórico de outros meses)
-  for(const mes of mesesNoUpload){
-    await supaFetch(`base_data?mes_ano=eq.${mes}`,{
+  // 1. Deletar APENAS o mês principal (o que tem mais registros).
+  // Meses secundários (pedidos cross-month criados no mês anterior) NÃO são deletados —
+  // eles serão atualizados via upsert (merge-duplicates) sem apagar dados existentes.
+  // Isso evita que uma planilha de julho apague dados de junho que ainda estão no banco.
+  const _contPorMes = records.reduce((m,r)=>{ if(r.mes_ano) m.set(r.mes_ano,(m.get(r.mes_ano)||0)+1); return m; }, new Map());
+  const mesPrincipal = [..._contPorMes.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
+  if(mesPrincipal){
+    await supaFetch(`base_data?mes_ano=eq.${mesPrincipal}`,{
       method:'DELETE', prefer:'return=minimal'
-    }); // erro aqui sobe para o chamador
+    });
   }
 
   // 2. Inserir em lotes
