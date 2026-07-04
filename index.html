@@ -20653,12 +20653,16 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   const saidaMap={};
   (saidaRows||[]).forEach(d=>{ if(d.carga!=null&&d.data_saida) saidaMap[String(d.carga)]=d.data_saida; });
   const lancDtMap={};
+  const lancTsMap={}; // timestamp completo do lançamento — início do prazo para rotas RE (Regra 2)
   const lancRotaMap={};
   const lancRireMap={};
   (lancRows||[]).forEach(l=>{
     if(l.carga==null) return;
     const ck=String(l.carga);
-    if(l.ts) lancDtMap[ck]=l.ts.slice(0,10);
+    if(l.ts){
+      lancDtMap[ck]=l.ts.slice(0,10);
+      if(!lancTsMap[ck]) lancTsMap[ck]=l.ts;
+    }
     if(l.rota&&!lancRotaMap[ck]) lancRotaMap[ck]=normalizarRota(l.rota)||l.rota.toUpperCase();
     if(l.rire&&!lancRireMap[ck]) lancRireMap[ck]=normRire(l.rire)||l.rire;
   });
@@ -20667,11 +20671,10 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const k=String(b.pedido);
     if(pedMap[k]) return;
     const carga=b.carga!=null?String(b.carga):null;
-    // rota: base_data tem prioridade; fallback = rota do lançamento (importante para CEASA e outras RI sem rota na planilha)
-    const rotaBd=normalizarRota(b.rota||'')||(b.rota||'').toUpperCase();
-    const rota=rotaBd||(carga&&lancRotaMap[carga])||'';
-    // rire: base_data → derivado da rota real → lançamento → padrão RE
-    const rireNorm=normRire(b.rire)||getRireFromRota(rota)||normRire(carga&&lancRireMap[carga]||'')||'R.E.';
+    // Rota SEMPRE do lançamento — base_data.rota não é fonte confiável
+    const rota=(carga&&lancRotaMap[carga])||'';
+    // rire derivado da rota do lançamento
+    const rireNorm=getRireFromRota(rota)||normRire(carga&&lancRireMap[carga]||'')||'R.E.';
     pedMap[k]={ carga, rota, rire:rireNorm, dataPedido:b.data_pedido||null };
   });
   const entMap={};
@@ -20697,6 +20700,17 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const prazoEntry=Object.prototype.hasOwnProperty.call(prazoMap,bd.rota)?prazoMap[bd.rota]:undefined;
     if(prazoEntry===null) continue; // rota cadastrada sem prazo (prazo_otif = null no banco)
     const prazoH=prazoEntry!=null?prazoEntry:(bd.rire==='R.I.'?24:192);
+    // Regra 1 (RI): data_pedido com corte 16h — se criado >=16h, inicia no dia seguinte às 08:00
+    // Regra 2 (RE): lancamentos.ts como início do prazo (momento da criação da carga na expedição)
+    let inicioPrazo;
+    if(bd.rire==='R.I.'){
+      const dpMs=new Date(bd.dataPedido+'T00:00:00');
+      if(dpMs.getHours()>=16){ dpMs.setDate(dpMs.getDate()+1); dpMs.setHours(8,0,0,0); }
+      inicioPrazo=dpMs;
+    } else {
+      const ts=carga&&lancTsMap[carga];
+      inicioPrazo=ts?new Date(ts):new Date(bd.dataPedido+'T00:00:00');
+    }
     // Data final: entrega real (fonte confiável) → fallbacks indicam apenas saída do veículo
     let dataFim=ent.entrega||null;
     const hasEntregaReal=!!dataFim;
@@ -20705,7 +20719,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancDtMap[carga];
     if(!dataFim){
       // Sem qualquer data — conta como falha apenas se prazo já venceu
-      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-new Date(bd.dataPedido+'T00:00:00'))/3600000;
+      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-inicioPrazo)/3600000;
       if(horasDecorridas>prazoH){
         const isInFull=!ocorrSet.has(ped);
         total++; entG++; if(isInFull) inFullG++;
@@ -20713,7 +20727,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       }
       continue; // pendente ou falha sem data — sem mais nada a fazer
     }
-    const diffHoras=(new Date(dataFim)-new Date(bd.dataPedido))/3600000;
+    const diffHoras=(new Date(dataFim)-inicioPrazo)/3600000;
     if(diffHoras<0){
       // Data inconsistente — conta no denominador mas não como on time
       const isInFull=!ocorrSet.has(ped);
@@ -20723,7 +20737,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     }
     // Sem entrega real confirmada: só conta se prazo já venceu (evita 100% artificial em semanas recentes)
     if(!hasEntregaReal){
-      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-new Date(bd.dataPedido+'T00:00:00'))/3600000;
+      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-inicioPrazo)/3600000;
       if(horasDecorridas<=prazoH) continue; // pendente — não conta ainda
       // Prazo vencido sem entrega confirmada → falha de On Time (In Full ainda conta)
       const isInFull=!ocorrSet.has(ped);
@@ -20985,13 +20999,21 @@ async function renderOtifDiario(){
 
     const nowMs = Date.now();
 
-    function getSemaforo(pedido, rotaNorm, rire, dataPedido){
+    function getSemaforo(pedido, rotaNorm, rire, dataPedido, lancTs){
       if(entMap[String(pedido)]) return 'ok';
       if(!dataPedido) return 'ok';
       const prazoH=getPrazoH(rotaNorm,rire);
       if(prazoH===null) return 'ok';
       const prazoMs=prazoH*3600000;
-      const inicioMs=new Date(dataPedido+'T00:00:00').getTime();
+      // Regra 1 (RI): data_pedido + corte 16h; Regra 2 (RE): lancamentos.ts
+      let inicioMs;
+      if(rire==='R.I.'){
+        const dpMs=new Date(dataPedido+'T00:00:00');
+        if(dpMs.getHours()>=16){ dpMs.setDate(dpMs.getDate()+1); dpMs.setHours(8,0,0,0); }
+        inicioMs=dpMs.getTime();
+      } else {
+        inicioMs=lancTs?new Date(lancTs).getTime():new Date(dataPedido+'T00:00:00').getTime();
+      }
       const deadline=inicioMs+prazoMs;
       if(nowMs>deadline) return 'atrasado';
       if(nowMs>inicioMs+prazoMs*0.75) return 'alerta';
@@ -21005,11 +21027,14 @@ async function renderOtifDiario(){
       if(p.carga==null) return;
       const ck=String(p.carga);
       if(!cargaStats[ck]) return;
-      const rireNorm=normRire(p.rire)||getRireFromRota(p.rota)||'R.E.';
-      const rotaNorm=normalizarRota(p.rota||'')||(p.rota||'').toUpperCase();
+      // Rota SEMPRE do lançamento — fallback para base_data apenas se sem lançamento
+      const rotaLanc=(lancMap[ck]?.rota)||'';
+      const rotaNorm=normalizarRota(rotaLanc)||rotaLanc.toUpperCase()||normalizarRota(p.rota||'')||(p.rota||'').toUpperCase();
+      const rireNorm=getRireFromRota(rotaNorm)||normRire(p.rire)||'R.E.';
       const prazoH=getPrazoH(rotaNorm,rireNorm);
       if(prazoH===null){ cargaStats[ck].semOtif++; return; }
-      const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido);
+      const lancTs=lancMap[ck]?.ts||null;
+      const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido,lancTs);
       const entregue=!!entMap[String(p.pedido)];
       const isInFull=!ocorrSet.has(String(p.pedido));
       cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm,isInFull});
