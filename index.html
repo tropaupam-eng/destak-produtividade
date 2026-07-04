@@ -20063,11 +20063,18 @@ async function renderDashInterna(){
       baseDataSupa = await supaFetch(
         `base_data?carga=in.(${[...cargasUndLanc].join(',')})&select=${BD_SELECT}&limit=20000`
       ).catch(()=>[]) || [];
-      // Fallback: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
+      // Fallback 1: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
       // (cobre casos em que a planilha foi importada localmente mas ainda não subiu ao banco)
       if(!baseDataSupa.length && BASE_DATA.length){
         const localFB = BASE_DATA.filter(r => r.carga!=null && cargasUndLanc.has(String(Math.round(Number(r.carga)))));
         if(localFB.length) baseDataSupa = localFB;
+      }
+      // Fallback 2: cargas WMS (13xxx) nunca batem com cargas internas (2312+)
+      // Busca por mes_ano diretamente quando o join por carga retorna vazio
+      if(!baseDataSupa.length){
+        baseDataSupa = await supaFetch(
+          `base_data?mes_ano=eq.${mesFiltro}&select=${BD_SELECT}&limit=20000`
+        ).catch(()=>[]) || [];
       }
     }
 
@@ -20826,9 +20833,13 @@ async function _carregarOtifMes(mes, und){
   let bdRows = cargasMes.size
     ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || []
     : [];
-  // Fallback: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
+  // Fallback 1: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
   if(!bdRows.length && cargasMes.size && BASE_DATA.length){
     bdRows = BASE_DATA.filter(r => r.carga!=null && cargasMes.has(String(Math.round(Number(r.carga)))));
+  }
+  // Fallback 2: cargas WMS (13xxx) ≠ cargas internas — busca por mes_ano quando join por carga retorna vazio
+  if(!bdRows.length && cargasMes.size){
+    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
   }
   // Busca entrega_datas e ocorrencias_distribuicao pelos pedidos reais do mês
   const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
