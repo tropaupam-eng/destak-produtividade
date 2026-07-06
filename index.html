@@ -17118,7 +17118,7 @@ async function carregarPortalMotorista(){
         let kmAtiva = null;
         if(da.carga && USUARIO_LOGADO.id){
           const [kmR, rvR] = await Promise.all([
-            supaFetch(`km_cargas?carga=eq.${da.carga}&motorista_id=eq.${USUARIO_LOGADO.id}&select=km_inicial,km_final&limit=1`).catch(()=>[]),
+            supaFetch(`km_cargas?carga=eq.${da.carga}&motorista_id=eq.${USUARIO_LOGADO.id}&select=km_inicial,km_final&order=id.desc&limit=1`).catch(()=>[]),
             supaFetch(`rotas_viagem?demanda_id=eq.${da.id}&select=km_inicial,km_final&limit=1`).catch(()=>[])
           ]);
           kmAtiva = (kmR||[])[0] || (rvR||[])[0] || null;
@@ -17161,10 +17161,13 @@ async function carregarPortalMotorista(){
                   style="flex:1;min-width:160px;background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
                   🏁 Registrar Chegada
                 </button>` : `
-                <button onclick="motIniciarViagem('${da.id}',${da.carga||0},'${(da.rota||'').replace(/'/g,"\\'")}','${da.motorista||''}')"
-                  style="flex:1;min-width:160px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
-                  🚛 Iniciar Viagem
-                </button>`}
+                ${da.status==='pronto_viagem'
+                  ? `<button onclick="motIniciarViagem('${da.id}',${da.carga||0},'${(da.rota||'').replace(/'/g,"\\'")}','${(da.motorista||'').replace(/'/g,"\\'")}')"
+                      style="flex:1;min-width:160px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
+                      🚛 Iniciar Viagem
+                    </button>`
+                  : `<div style="flex:1;padding:10px;border-radius:10px;background:rgba(255,255,255,.04);font-size:.78rem;color:#64748b;text-align:center">Aguardando liberação pela expedição</div>`
+                }`}
             </div>
           </div>`;
         // Mostrar painel de entregas quando carga está em rota
@@ -17173,7 +17176,7 @@ async function carregarPortalMotorista(){
           _motEntregasCarga = da.carga;
         }
       }
-    }catch(e){}
+    }catch(e){ console.error('Carga ativa erro:', e); }
 
     // ── DADOS DO MOTORISTA ─────────────────────────────
     const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
@@ -17521,7 +17524,7 @@ async function carregarPortalMotorista(){
   }catch(e){
     console.error('Portal motorista erro:', e);
     setKpi('mot-kpi-ent','0'); setKpi('mot-kpi-val','R$ 0,00'); setKpi('mot-kpi-pos','-');
-    if(tbody) tbody.innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:#ef4444">⚠️ Erro ao carregar. Tente novamente.</td></tr>';
+    if(tbody) tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:#ef4444">⚠️ Erro ao carregar. Tente novamente.</td></tr>';
   }
 }
 
@@ -17730,7 +17733,7 @@ async function confirmarEntregaMot(pedido, rota, valor, carga){
     });
 
     // Salvar/atualizar geolocalização do cliente se tiver GPS
-    if(lat && lng){
+    if(lat !== null && lng !== null){
       await supaFetch('geolocalizacao_clientes?on_conflict=codigo_cliente', {
         method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
         body: JSON.stringify({
@@ -17752,7 +17755,7 @@ async function confirmarEntregaMot(pedido, rota, valor, carga){
           carga: Number(carga), pedido: Number(pedido),
           motorista_1_id: String(outroConf.motorista_id),
           motorista_1_nome: outroConf.motorista_nome,
-          motorista_1_data: new Date().toISOString(),
+          motorista_1_data: outroConf.data_confirmacao || new Date().toISOString(),
           motorista_2_id: String(motId),
           motorista_2_nome: motNome,
           motorista_2_data: new Date().toISOString(),
@@ -17785,16 +17788,22 @@ async function buscarPedidoManualMot(){
       return;
     }
     const p = dados[0];
-    const carga = _motEntregasCarga || p.carga;
-    result.innerHTML = `<div style="background:rgba(255,255,255,.05);border-radius:8px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div>
-        <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
-        <div style="font-size:.72rem;color:#94a3b8">Carga #${p.carga} | ${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
+    const cargaAtiva = _motEntregasCarga;
+    const cargaPedido = p.carga;
+    const cargaDiferente = cargaAtiva && String(cargaAtiva) !== String(cargaPedido);
+    const cargaUsar = cargaAtiva || cargaPedido;
+    result.innerHTML = `<div style="background:rgba(255,255,255,.05);border-radius:8px;padding:12px">
+      ${cargaDiferente ? `<div style="font-size:.72rem;color:#f59e0b;margin-bottom:8px">⚠️ Pedido pertence à carga #${cargaPedido} — será vinculado à sua carga ativa #${cargaAtiva}</div>` : ''}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div>
+          <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
+          <div style="font-size:.72rem;color:#94a3b8">Carga #${p.carga} | ${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
+        </div>
+        <button onclick="confirmarEntregaMot(${p.pedido},'${(p.rota||'').replace(/'/g,"\\'")}',${p.valor||0},${cargaUsar})"
+          style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap">
+          ✅ Confirmar
+        </button>
       </div>
-      <button onclick="confirmarEntregaMot(${p.pedido},'${(p.rota||'').replace(/'/g,"\\'")}',${p.valor||0},${carga})"
-        style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap">
-        ✅ Confirmar
-      </button>
     </div>`;
   }catch(e){
     result.innerHTML = `<div style="color:#f87171;font-size:.8rem">Erro: ${e.message}</div>`;
