@@ -7833,16 +7833,29 @@ async function pushBaseData(records){
     }
   }
 
-  // 3. Validar: contagem do primeiro mês deve ser > 0
-  const esperadosPorMes = records.filter(r=>r.mes_ano===mesesNoUpload[0]).length;
-  if(esperadosPorMes > 0 && mesesNoUpload[0]){
-    const verificacao = await supaFetch(`base_data?mes_ano=eq.${mesesNoUpload[0]}&select=pedido`).catch(()=>[]);
-    if(!verificacao || verificacao.length === 0){
-      throw new Error(`Validação pós-gravação falhou: 0 registros encontrados no banco para ${mesesNoUpload[0]}`);
+  // 3. Validar: contagem no banco deve bater com o que foi enviado (tolerância 1%)
+  if(mesPrincipal){
+    const esperadosPorMes = records.filter(r=>r.mes_ano===mesPrincipal&&r.carga&&r.pedido).length;
+    if(esperadosPorMes > 0){
+      const verificacao = await supaFetch(
+        `base_data?mes_ano=eq.${mesPrincipal}&select=pedido&limit=10000`
+      ).catch(()=>[]);
+      const gravados = (verificacao||[]).length;
+      if(gravados === 0){
+        throw new Error(`Validação falhou: nenhum registro encontrado no banco para ${mesPrincipal}`);
+      }
+      const diff = Math.abs(gravados - esperadosPorMes);
+      const pct  = diff / esperadosPorMes;
+      if(pct > 0.01){
+        throw new Error(`Validação falhou: esperado ${esperadosPorMes} registros em ${mesPrincipal}, banco tem ${gravados} (diferença ${diff})`);
+      }
+      showToast(`✅ ${records.length} registros gravados e validados (${gravados}/${esperadosPorMes} em ${mesPrincipal}). Disponível em todos os dispositivos.`,'success');
+    } else {
+      showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
     }
+  } else {
+    showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
   }
-
-  showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
   if(typeof renderBancoStatus==='function') renderBancoStatus();
 
   // 4. Sincronizar quantidade_pedidos/valor_total em demandas_rota (background, fire-and-forget)
@@ -8327,10 +8340,8 @@ async function carregarPlanilha(file) {
           const volume      = parseValorBR(r['Volume'] ?? r['VOLUME'] ?? r['volume'] ?? 0);
           const nota_origem = safeStr(r['Nota Origem'] ?? r['NOTA ORIGEM'] ?? r['Nota_Origem'] ?? r['NF Origem'] ?? '');
 
-          // Filtrar RETIRA
-          if(rota.toUpperCase() === 'RETIRA') return;
-          // Filtrar placa inválida
-          if(placa === '111000000') return;
+          // Placa fantasma: limpar mas manter o pedido (placa real vem do lançamento)
+          if(placa === '111000000' || placa === '111111111') placa = '';
 
           if(carga) cargasBase.add(carga);
 
@@ -8381,8 +8392,6 @@ async function carregarPlanilha(file) {
         const grouped2 = {};
         shDados.forEach(r => {
           const c = parseInt(r['Carga']); if(!c) return;
-          const rota = String(r['ROTA']||'').trim();
-          if(rota.toUpperCase()==='RETIRA') return;
           if(!grouped2[c]) grouped2[c]=[];
           grouped2[c].push(r);
         });
@@ -8508,7 +8517,6 @@ async function carregarCSV(file) {
           const rire   = iRire>=0   ? cols[iRire].trim()  : '';
           const dtRaw  = iData>=0   ? parseData(cols[iData]) : null;
           if(!carga && !pedido) continue;
-          if(rota.toUpperCase()==='RETIRA') continue;
           if(carga) cargasBase.add(carga);
           const condutor = (iCondutor>=0 ? cols[iCondutor].trim() : '').toUpperCase();
           const cod_forn    = iCodForn>=0    ? cols[iCodForn].trim()    : '';
@@ -8690,8 +8698,6 @@ function buildCargaMap(shDados, motMap, auxMap) {
   const grouped = {};
   shDados.forEach(r => {
     const c = parseInt(r['Carga']); if(!c) return;
-    const rota = String(r['ROTA']||'').trim();
-    if(rota.toUpperCase()==='RETIRA') return;
     if(!grouped[c]) grouped[c]=[];
     grouped[c].push(r);
   });
