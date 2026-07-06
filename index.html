@@ -7621,11 +7621,12 @@ async function deleteLancamento(carga){
 async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
   if(!carga) return;
   try{
-    // Buscar ajudante_cargas desta carga onde motorista ainda está vazio (vinculação pendente)
-    const pendentes = await supaFetch(
-      `ajudante_cargas?carga=eq.${Number(carga)}&ativo=eq.true&or=(motorista.eq.,motorista.is.null)&select=id,ajudante_id,ajudante_nome,mes_ano`
+    // Buscar TODOS os ajudante_cargas ativos desta carga (não só os sem motorista)
+    // — pedidos precisam ser distribuídos mesmo quando motorista já foi preenchido antes da planilha
+    const todos = await supaFetch(
+      `ajudante_cargas?carga=eq.${Number(carga)}&ativo=eq.true&select=id,ajudante_id,ajudante_nome,mes_ano,motorista`
     ).catch(()=>[]) || [];
-    if(!pendentes.length) return;
+    if(!todos.length) return;
 
     const mesAnoFinal = mesAno || new Date().toISOString().slice(0,7);
     const agora = new Date().toISOString();
@@ -7634,16 +7635,19 @@ async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
     const bd = await supaFetch(`base_data?carga=eq.${Number(carga)}&select=pedido,ocorrencia`).catch(()=>[]) || [];
     const peds = [...new Set(bd.filter(r=>Number(r.ocorrencia)!==1).map(r=>r.pedido))];
 
-    for(const aj of pendentes){
-      // Atualizar motorista/rota/mes_ano (apenas se tiver valor)
-      const patch = { mes_ano: mesAnoFinal };
-      if(motorista) patch.motorista = motorista;
-      if(rota)      patch.rota      = rota;
-      await supaFetch(`ajudante_cargas?id=eq.${aj.id}`,{
-        method:'PATCH', body:JSON.stringify(patch)
-      }).catch(()=>{});
+    for(const aj of todos){
+      // Atualizar motorista/rota/mes_ano apenas se ainda estiver vazio
+      const semMot = !aj.motorista || aj.motorista.trim() === '';
+      if(semMot){
+        const patch = { mes_ano: mesAnoFinal };
+        if(motorista) patch.motorista = motorista;
+        if(rota)      patch.rota      = rota;
+        await supaFetch(`ajudante_cargas?id=eq.${aj.id}`,{
+          method:'PATCH', body:JSON.stringify(patch)
+        }).catch(()=>{});
+      }
 
-      // Distribuir pedidos se ainda não foram atribuídos
+      // Distribuir pedidos se ainda não foram atribuídos (independente de ter motorista)
       if(peds.length){
         const jaTemPeds = await supaFetch(
           `ajudante_pedidos?carga=eq.${Number(carga)}&ajudante_id=eq.${aj.ajudante_id}&select=id&limit=1`
@@ -7655,14 +7659,14 @@ async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
                 id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
                 carga: Number(carga), pedido: ped,
                 ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
-                mes_ano: mesAnoFinal, ts: agora
+                mes_ano: aj.mes_ano || mesAnoFinal, ts: agora
               }))
             )}).catch(()=>{});
           }
         }
       }
     }
-    console.log(`preencherAjudantesPendentes: ${pendentes.length} ajudante(s) preenchido(s) na carga ${carga}`);
+    console.log(`preencherAjudantesPendentes: ${todos.length} ajudante(s) processado(s) na carga ${carga}`);
   }catch(e){ console.warn('preencherAjudantesPendentes:', e); }
 }
 
@@ -11623,7 +11627,7 @@ async function confirmarModalKmCarga(){
         await carregarPortalMotorista().catch(()=>{});
       }
       // Auto-liberar veículo se não tiver manutenção ativa agendada
-      if(reg.veiculo) gfAutoLiberarVeiculo(reg.veiculo).catch(()=>{});
+      if(regFinal?.veiculo) gfAutoLiberarVeiculo(regFinal.veiculo).catch(()=>{});
     }
     await carregarKmMotorista();
   }catch(e){ showToast('Erro ao salvar KM: '+e.message,'warning'); }
@@ -11642,7 +11646,7 @@ async function carregarKmMotorista(){
   try{
     // Buscar cargas: demandas_rota + lancamentos (fallback) + KM de ambas as tabelas
     const [demandas, lancsKm, kmRegs] = await Promise.all([
-      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&data_saida=gte.${mesStr}-01&data_saida=lt.${_proximoMes(mesStr)}-01&status=neq.cancelado&select=carga,rota,status,data_saida,veiculo&order=data_saida.desc`).catch(()=>[]) || [],
+      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&status=neq.cancelado&select=carga,rota,status,data_saida,ts_saiu,veiculo&order=ts_saiu.desc`).catch(()=>[]) || [],
       supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire&order=ts.desc`).catch(()=>[]) || [],
       supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*`).catch(()=>[]) || []
     ]);
@@ -17297,9 +17301,22 @@ async function carregarPortalMotorista(){
     try{
       const undFilter = undDB ? `&und=eq.${encodeURIComponent(undDB)}` : '';
       // Busca com carga incluso — fonte de verdade de quem fez o quê
-      const todosLanc = await supaFetch(
-        `lancamentos?ts=gte.${mesStr}-01&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z${undFilter}&select=motorista,rota,rire,carga&limit=2000`
+      const todosLancTs = await supaFetch(
+        `lancamentos?ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z${undFilter}&select=motorista,rota,rire,carga&limit=2000`
       ).catch(()=>[]) || [];
+      // Cargas que saíram este mês mas o lancamento foi criado no mês anterior
+      const demsDoMesRank = await supaFetch(
+        `demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
+      ).catch(()=>[]) || [];
+      const cargasJaNoLancRank = new Set(todosLancTs.filter(l=>l.carga).map(l=>Math.round(Number(l.carga))));
+      const cargasExtraRank = [...new Set(demsDoMesRank.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))).filter(c=>!cargasJaNoLancRank.has(c)))];
+      let todosLanc = todosLancTs;
+      if(cargasExtraRank.length > 0){
+        const lancsExtRank = await supaFetch(
+          `lancamentos?carga=in.(${cargasExtraRank.join(',')})${undFilter}&select=motorista,rota,rire,carga&limit=500`
+        ).catch(()=>[]) || [];
+        todosLanc = [...todosLancTs, ...lancsExtRank];
+      }
 
       const _isRI = l=>{ const r=(l.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((l.rota||'').trim().toUpperCase()); };
 
@@ -17535,7 +17552,7 @@ async function carregarEntregasMot(carga){
 
   try{
     const [pedidos, confirmadas] = await Promise.all([
-      supaFetch(`base_data?carga=eq.${carga}&select=pedido,rota,valor&order=pedido.asc&limit=500`).catch(()=>[]),
+      supaFetch(`base_data?carga=eq.${carga}&ocorrencia=neq.1&select=pedido,rota,valor&order=pedido.asc&limit=500`).catch(()=>[]),
       supaFetch(`entregas_motorista?carga=eq.${carga}&select=pedido,motorista_id,motorista_nome,data_confirmacao`).catch(()=>[])
     ]);
 
