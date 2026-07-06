@@ -4922,6 +4922,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div id="frota-kpi-indisp" style="font-size:1.6rem;font-weight:800;color:#991b1b">—</div>
         <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Indisponíveis</div>
       </div>
+      <div style="flex:1;min-width:110px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #a78bfa;border-radius:10px;padding:12px 16px">
+        <div id="frota-kpi-aguard" style="font-size:1.6rem;font-weight:800;color:#6d28d9">—</div>
+        <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Aguard. Liberação</div>
+      </div>
       <div style="flex:1;min-width:110px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #818cf8;border-radius:10px;padding:12px 16px">
         <div id="frota-kpi-total" style="font-size:1.6rem;font-weight:800;color:var(--text-primary)">—</div>
         <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Total</div>
@@ -5560,6 +5564,39 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
     <!-- Carga Atual em destaque -->
     <div id="mot-carga-atual" style="margin-bottom:20px"></div>
+
+    <!-- ══ PORTAL DE ENTREGAS ══ -->
+    <div id="mot-entregas-painel" style="display:none;margin-bottom:20px">
+      <div style="background:#1e293b;border:1px solid rgba(16,185,129,.3);border-radius:14px;overflow:hidden">
+        <div style="padding:14px 18px;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(5,150,105,.08));border-bottom:1px solid rgba(16,185,129,.15);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div>
+            <h3 style="font-size:.9rem;font-weight:800;color:#34d399;margin:0">📦 Confirmar Entregas</h3>
+            <p id="mot-ent-progresso" style="font-size:.72rem;color:#64748b;margin:4px 0 0">Toque em "Ver Pedidos" para carregar</p>
+          </div>
+          <button onclick="toggleEntregasMot()" id="mot-ent-toggle-btn"
+            style="background:rgba(16,185,129,.2);border:1px solid rgba(16,185,129,.35);color:#34d399;border-radius:8px;padding:7px 16px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap">
+            Ver Pedidos
+          </button>
+        </div>
+        <div id="mot-ent-body" style="display:none;padding:16px">
+          <div id="mot-ent-lista"></div>
+          <!-- Lançamento manual -->
+          <div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06)">
+            <p style="font-size:.76rem;font-weight:700;color:#94a3b8;margin:0 0 10px">➕ Pedido não aparece na lista? Lançamento manual:</p>
+            <div style="display:flex;gap:8px">
+              <input id="mot-ent-pedido-manual" type="number" placeholder="Nº do pedido"
+                onkeydown="if(event.key==='Enter') buscarPedidoManualMot()"
+                style="flex:1;background:#0f172a;border:1.5px solid rgba(255,255,255,.12);color:#f0f0f8;border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;-moz-appearance:textfield"/>
+              <button onclick="buscarPedidoManualMot()"
+                style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:.82rem;font-weight:700;cursor:pointer">
+                Buscar
+              </button>
+            </div>
+            <div id="mot-ent-manual-resultado" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- KPIs linha 1: Pedidos RI + Pedidos RE -->
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px">
@@ -7555,6 +7592,10 @@ async function pushLancamento(l){
         body: JSON.stringify({carga:l.carga,motorista:l.motorista,ajudante:l.ajudante||'',rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid})
       });
       if(res&&res[0]) l._id = res[0].id;
+      // Preencher ajudantes que se vincularam antes deste lançamento existir
+      if(l.carga && l.motorista){
+        preencherAjudantesPendentes(l.carga, l.motorista, l.rota||'', l.mes_ano||new Date().toISOString().slice(0,7)).catch(()=>{});
+      }
     }
     // #3 — Atualiza condutor em base_data para todos os pedidos desta carga
     if(l.carga && l.motorista){
@@ -7573,6 +7614,60 @@ async function deleteLancamento(carga){
       await supaFetch(`lancamentos?id=eq.${l._id}`,{method:'DELETE',prefer:'',headers:{'Prefer':''}});
     }
   }catch(e){ console.warn('Delete erro:',e.message); }
+}
+
+// Preenche ajudantes que se vincularam antes da carga existir no sistema.
+// Chamado automaticamente quando um lançamento é criado ou a planilha é enviada.
+async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
+  if(!carga) return;
+  try{
+    // Buscar TODOS os ajudante_cargas ativos desta carga (não só os sem motorista)
+    // — pedidos precisam ser distribuídos mesmo quando motorista já foi preenchido antes da planilha
+    const todos = await supaFetch(
+      `ajudante_cargas?carga=eq.${Number(carga)}&ativo=eq.true&select=id,ajudante_id,ajudante_nome,mes_ano,motorista`
+    ).catch(()=>[]) || [];
+    if(!todos.length) return;
+
+    const mesAnoFinal = mesAno || new Date().toISOString().slice(0,7);
+    const agora = new Date().toISOString();
+
+    // Buscar pedidos disponíveis em base_data para esta carga
+    const bd = await supaFetch(`base_data?carga=eq.${Number(carga)}&select=pedido,ocorrencia`).catch(()=>[]) || [];
+    const peds = [...new Set(bd.filter(r=>Number(r.ocorrencia)!==1).map(r=>r.pedido))];
+
+    for(const aj of todos){
+      // Atualizar motorista/rota/mes_ano apenas se ainda estiver vazio
+      const semMot = !aj.motorista || aj.motorista.trim() === '';
+      if(semMot){
+        const patch = { mes_ano: mesAnoFinal };
+        if(motorista) patch.motorista = motorista;
+        if(rota)      patch.rota      = rota;
+        await supaFetch(`ajudante_cargas?id=eq.${aj.id}`,{
+          method:'PATCH', body:JSON.stringify(patch)
+        }).catch(()=>{});
+      }
+
+      // Distribuir pedidos se ainda não foram atribuídos (independente de ter motorista)
+      if(peds.length){
+        const jaTemPeds = await supaFetch(
+          `ajudante_pedidos?carga=eq.${Number(carga)}&ajudante_id=eq.${aj.ajudante_id}&select=id&limit=1`
+        ).catch(()=>[]) || [];
+        if(!jaTemPeds.length){
+          for(let i=0; i<peds.length; i+=50){
+            await supaFetch('ajudante_pedidos',{method:'POST',body:JSON.stringify(
+              peds.slice(i,i+50).map((ped,j)=>({
+                id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
+                carga: Number(carga), pedido: ped,
+                ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
+                mes_ano: aj.mes_ano || mesAnoFinal, ts: agora
+              }))
+            )}).catch(()=>{});
+          }
+        }
+      }
+    }
+    console.log(`preencherAjudantesPendentes: ${todos.length} ajudante(s) processado(s) na carga ${carga}`);
+  }catch(e){ console.warn('preencherAjudantesPendentes:', e); }
 }
 
 // ── SYNC BASE_DATA ────────────────────────────────────
@@ -7736,6 +7831,16 @@ async function pushBaseData(records){
             body: JSON.stringify({quantidade_pedidos: porCarga[c].pedidos.size, valor_total: porCarga[c].valor})
           }).catch(()=>{})
         ));
+      }
+      // Preencher ajudantes que se vincularam antes da planilha existir
+      for(const c of cargasKeys){
+        const ex = records.find(r => Math.round(Number(r.carga)) === Number(c));
+        await preencherAjudantesPendentes(
+          Number(c),
+          (ex?.condutor||'').toUpperCase().trim(),
+          ex?.rota||'',
+          ex?.mes_ano||''
+        ).catch(()=>{});
       }
     }catch(_){}
   })();
@@ -11522,7 +11627,7 @@ async function confirmarModalKmCarga(){
         await carregarPortalMotorista().catch(()=>{});
       }
       // Auto-liberar veículo se não tiver manutenção ativa agendada
-      if(reg.veiculo) gfAutoLiberarVeiculo(reg.veiculo).catch(()=>{});
+      if(regFinal?.veiculo) gfAutoLiberarVeiculo(regFinal.veiculo).catch(()=>{});
     }
     await carregarKmMotorista();
   }catch(e){ showToast('Erro ao salvar KM: '+e.message,'warning'); }
@@ -11541,7 +11646,7 @@ async function carregarKmMotorista(){
   try{
     // Buscar cargas: demandas_rota + lancamentos (fallback) + KM de ambas as tabelas
     const [demandas, lancsKm, kmRegs] = await Promise.all([
-      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&data_saida=gte.${mesStr}-01&data_saida=lt.${_proximoMes(mesStr)}-01&status=neq.cancelado&select=carga,rota,status,data_saida,veiculo&order=data_saida.desc`).catch(()=>[]) || [],
+      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&status=neq.cancelado&select=carga,rota,status,data_saida,ts_saiu,veiculo&order=ts_saiu.desc`).catch(()=>[]) || [],
       supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire&order=ts.desc`).catch(()=>[]) || [],
       supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*`).catch(()=>[]) || []
     ]);
@@ -13273,11 +13378,18 @@ async function renderFrotaStatus(){
 
   const _preViagem = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem']);
 
-  // Em rota: status saiu (fim_viagem já volta disponível)
+  // Em rota: status saiu
   const emRota = new Map();
   _demandasCache.forEach(d=>{
     if(d.status==='saiu' && d.veiculo)
       emRota.set(d.veiculo, d);
+  });
+
+  // Retornou: status fim_viagem (aguardando liberação pela frota)
+  const retornou = new Map();
+  _demandasCache.forEach(d=>{
+    if(d.status==='fim_viagem' && d.veiculo)
+      retornou.set(d.veiculo, d);
   });
 
   // Agendado: veículo vinculado a demanda pendente (ainda não saiu)
@@ -13296,16 +13408,23 @@ async function renderFrotaStatus(){
     return;
   }
 
-  const ativos = todos.filter(v => v.ativo);
-  if(!ativos.length){
+  // Mostrar ativos + retornados (ativo=false mas com fim_viagem)
+  const visiveis = todos.filter(v => v.ativo || retornou.has(v.placa));
+  if(!visiveis.length){
     grid.innerHTML = '<span style="color:var(--text-muted);font-size:.78rem">Nenhum veículo disponível no momento</span>';
     return;
   }
 
-  grid.innerHTML = ativos.map(v=>{
+  grid.innerHTML = visiveis.map(v=>{
     const placa = v.placa||'';
     const subtipo = v.tipo ? `<span style="font-size:.65rem;font-weight:400;opacity:.75;margin-left:2px">${v.tipo}</span>` : '';
 
+    if(retornou.has(placa)){
+      const dem = retornou.get(placa);
+      return `<div title="Retornou — Aguard. Liberação: ${dem.rota||''}" style="background:#ede9fe;color:#4c1d95;border:1.5px solid #c4b5fd;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;display:flex;align-items:center;gap:3px;white-space:nowrap;cursor:default">
+        🟣 ${placa}${subtipo}
+      </div>`;
+    }
     if(emRota.has(placa)){
       const dem = emRota.get(placa);
       return `<div title="Em Rota: ${dem.rota||''}" style="background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;display:flex;align-items:center;gap:3px;white-space:nowrap;cursor:default">
@@ -13940,23 +14059,30 @@ async function renderFrota(){
   try{
     const [veiculos, demandas] = await Promise.all([
       supaFetch('veiculos?select=*&order=placa.asc'),
-      supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=veiculo,rota,motorista,carga,data_saida,status')
+      supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=id,veiculo,rota,motorista,carga,data_saida,status')
     ]);
-    const todos   = veiculos  || [];
-    const emViagem = demandas || [];
+    const todos    = veiculos  || [];
+    const emViagem = demandas  || [];
 
-    // Mapa placa → demanda ativa
-    const rotaMap = new Map();
-    emViagem.forEach(d=>{ if(d.veiculo) rotaMap.set(d.veiculo, d); });
+    // Mapas separados: saiu (em rota) e fim_viagem (retornou, aguardando liberação)
+    const saiuMap    = new Map();
+    const retornMap  = new Map();
+    emViagem.forEach(d=>{
+      if(!d.veiculo) return;
+      if(d.status === 'saiu')        saiuMap.set(d.veiculo, d);
+      else if(d.status==='fim_viagem') retornMap.set(d.veiculo, d);
+    });
 
     // KPIs
-    const nRota   = todos.filter(v=> v.ativo && rotaMap.has(v.placa)).length;
-    const nDisp   = todos.filter(v=> v.ativo && !rotaMap.has(v.placa)).length;
-    const nIndisp = todos.filter(v=>!v.ativo).length;
+    const nRota   = todos.filter(v=> saiuMap.has(v.placa)).length;
+    const nAguard = retornMap.size;
+    const nDisp   = todos.filter(v=> v.ativo && !saiuMap.has(v.placa) && !retornMap.has(v.placa)).length;
+    const nIndisp = todos.filter(v=> !v.ativo && !retornMap.has(v.placa)).length;
     const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
     set('frota-kpi-rota',   nRota);
     set('frota-kpi-disp',   nDisp);
     set('frota-kpi-indisp', nIndisp);
+    set('frota-kpi-aguard', nAguard);
     set('frota-kpi-total',  todos.length);
 
     if(!todos.length){
@@ -13966,18 +14092,24 @@ async function renderFrota(){
 
     const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : '—';
 
-    // Ordenar: em rota primeiro, depois disponíveis, depois indisponíveis
-    const ordemFn = v => !v.ativo ? 2 : rotaMap.has(v.placa) ? 0 : 1;
+    // Ordenar: retornou primeiro, depois em rota, depois disponível, depois indisponível
+    const ordemFn = v => retornMap.has(v.placa) ? 0 : saiuMap.has(v.placa) ? 1 : v.ativo ? 2 : 3;
     todos.sort((a,b) => ordemFn(a) - ordemFn(b) || (a.placa||'').localeCompare(b.placa||''));
 
     grid.innerHTML = todos.map(v=>{
-      const dem = rotaMap.get(v.placa);
+      const demSaiu   = saiuMap.get(v.placa);
+      const demRetorn = retornMap.get(v.placa);
+      const dem = demRetorn || demSaiu;
       let borderColor, headerBg, headerColor, badgeBg, badgeColor, badgeIcon, statusLabel;
 
-      if(!v.ativo){
+      if(demRetorn){
+        // Veículo retornou — aguardando decisão da frota
+        borderColor='#c4b5fd'; headerBg='#ede9fe'; headerColor='#4c1d95';
+        badgeBg='#ede9fe'; badgeColor='#4c1d95'; badgeIcon='🟣'; statusLabel='Retornou';
+      } else if(!v.ativo){
         borderColor='#fca5a5'; headerBg='#fee2e2'; headerColor='#991b1b';
         badgeBg='#fee2e2'; badgeColor='#991b1b'; badgeIcon='🔴'; statusLabel='Indisponível';
-      } else if(dem){
+      } else if(demSaiu){
         borderColor='#fcd34d'; headerBg='#fef3c7'; headerColor='#92400e';
         badgeBg='#fef3c7'; badgeColor='#92400e'; badgeIcon='🟡'; statusLabel='Em Rota';
       } else {
@@ -13991,7 +14123,18 @@ async function renderFrota(){
           ${dem.motorista ? `<div><span style="color:var(--text-muted)">Motorista:</span> <strong>${dem.motorista}</strong></div>` : ''}
           ${dem.carga     ? `<div><span style="color:var(--text-muted)">Carga:</span> <strong>${dem.carga}</strong></div>` : ''}
           <div><span style="color:var(--text-muted)">Saída:</span> <strong>${fmtData(dem.data_saida)}</strong></div>
-          ${dem.status==='fim_viagem' ? `<div style="color:#7c3aed;font-weight:700;font-size:.72rem">🏁 Fim de Viagem — aguardando retorno</div>` : ''}
+        </div>` : '';
+
+      const botoesLiberar = demRetorn ? `
+        <div style="margin-top:10px;display:flex;gap:7px">
+          <button onclick="liberarVeiculoFrota('${v.placa}','${demRetorn.id}')"
+            style="flex:1;background:#059669;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
+            ✅ Liberar
+          </button>
+          <button onclick="enviarManutencaoFrota('${v.placa}','${demRetorn.id}')"
+            style="flex:1;background:#dc2626;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
+            🔧 Manutenção
+          </button>
         </div>` : '';
 
       const infoVeic = v.tipo || v.peso_max_kg || v.cubagem_m3 ? `
@@ -14009,8 +14152,9 @@ async function renderFrota(){
         <div style="padding:10px 14px">
           ${infoVeic}
           ${infoRota}
+          ${botoesLiberar}
           ${!dem && v.ativo ? '<div style="margin-top:8px;font-size:.75rem;color:var(--text-muted)">Sem demanda ativa no momento</div>' : ''}
-          ${!v.ativo ? '<div style="margin-top:8px;font-size:.75rem;color:#991b1b;font-weight:600">Veículo desativado no cadastro</div>' : ''}
+          ${!v.ativo && !demRetorn ? '<div style="margin-top:8px;font-size:.75rem;color:#991b1b;font-weight:600">Veículo em manutenção ou desativado</div>' : ''}
         </div>
       </div>`;
     }).join('');
@@ -15575,6 +15719,54 @@ async function gfAutoLiberarVeiculo(placa){
   }catch(e){ console.warn('gfAutoLiberarVeiculo:', e); }
 }
 
+// Libera veículo após retorno de rota (sem manutenção)
+async function liberarVeiculoFrota(placa, demId){
+  if(!confirm(`Confirmar liberação do veículo ${placa}?\nSem manutenção — veículo voltará a ficar disponível.`)) return;
+  try{
+    await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placa)}`,{
+      method:'PATCH', body:JSON.stringify({ ativo:true })
+    });
+    if(demId){
+      await supaFetch(`demandas_rota?id=eq.${demId}`,{
+        method:'PATCH', body:JSON.stringify({ status:'concluido' })
+      }).catch(()=>{});
+    }
+    showToast(`✅ Veículo ${placa} liberado para uso!`, 'success');
+    await carregarDemandas().catch(()=>{});
+    renderFrota();
+  }catch(e){ showToast('Erro: '+e.message, 'warning'); }
+}
+
+// Envia veículo para manutenção após retorno de rota
+async function enviarManutencaoFrota(placa, demId){
+  const tipo = prompt(`Tipo de manutenção para ${placa}:\n(Ex: revisão, pneus, freio, elétrica, funilaria)`);
+  if(!tipo) return;
+  const descr = prompt('Descrição / Observação (opcional):') || '';
+  const u = USUARIO_LOGADO || {};
+  try{
+    await supaFetch('manutencoes_frota',{
+      method:'POST',
+      body:JSON.stringify({
+        veiculo: placa,
+        tipo: tipo.trim(),
+        status: 'agendada',
+        descricao: descr.trim() || null,
+        data_inicio: new Date().toISOString().slice(0,10),
+        usuario_id: u.id || null,
+        usuario_nome: u.nome || null
+      })
+    });
+    if(demId){
+      await supaFetch(`demandas_rota?id=eq.${demId}`,{
+        method:'PATCH', body:JSON.stringify({ status:'concluido' })
+      }).catch(()=>{});
+    }
+    showToast(`🔧 Manutenção registrada para ${placa}. Veículo permanece indisponível.`, 'success');
+    await carregarDemandas().catch(()=>{});
+    renderFrota();
+  }catch(e){ showToast('Erro: '+e.message, 'warning'); }
+}
+
 function badgePesoVeiculo(placa, carga, temCarga){
   if(!placa || !temCarga || !carga) return '';
   const vd = VEICULOS_CACHE.find(v => (v.placa||'').toUpperCase() === placa.toUpperCase());
@@ -15797,12 +15989,15 @@ function renderDemandasCards(){
             if(d.status==='cancelado') return `<span style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700">❌ Cancelado</span>`;
             if(d.status==='concluido') return `<span style="background:#d1fae5;color:#065f46;border:1px solid #a7f3d0;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700">✅ Concluído</span>`;
             if(d.status==='aguardando_nf'){
-              if((d.status_fiscal||'pendente')==='concluido'){
-                // Fiscal já concluiu — deixa mostrar botão de avançar normalmente
-              } else if(d.status_fiscal==='em_andamento'){
-                return `<span style="background:#fef9c3;color:#92400e;border:1px solid #fcd34d;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700" title="Fiscal em andamento">🔒 Fiscal</span>`;
-              } else {
-                return `<span style="background:#fef3c7;color:#b45309;border:1px solid #fcd34d;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700" title="Aguardando fiscal pegar a carga">⏳ Fiscal Pend.</span>`;
+              if((d.status_fiscal||'pendente')!=='concluido'){
+                // Fiscal ainda não concluiu — mostra badge informativo mas NÃO bloqueia a expedição
+                const sfBadge = d.status_fiscal==='em_andamento'
+                  ? `<span style="background:#fef9c3;color:#92400e;border:1px solid #fcd34d;border-radius:6px;padding:4px 8px;font-size:.72rem;font-weight:700" title="Fiscal em andamento">🔒 Fiscal</span>`
+                  : `<span style="background:#fef3c7;color:#b45309;border:1px solid #fcd34d;border-radius:6px;padding:4px 8px;font-size:.72rem;font-weight:700" title="Aguardando fiscal pegar a carga">⏳ Fiscal Pend.</span>`;
+                return sfBadge + ` <button onclick="atualizarStatusDemanda('${d.id}','aguardando_manifesto')"
+                  style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap">
+                  → 🛡️ Man.
+                </button>`;
               }
             }
             return nextLabel ? `<button onclick="atualizarStatusDemanda('${d.id}','${nextStatus}')"
@@ -16123,6 +16318,16 @@ async function confirmarSaidaRota(){
     _demandaSaidaId   = null;
     _demandaSaidaData = null;
     if(dem && dem.status !== undefined){ dem.status='saiu'; dem.ts_saiu=tsSaiu; }
+    // Sincronizar mes_ano dos ajudantes pelo mês real de saída da carga
+    if(dem?.carga){
+      const mesRealSaida = tsSaiu.slice(0,7);
+      supaFetch(`ajudante_cargas?carga=eq.${dem.carga}&mes_ano=neq.${mesRealSaida}`,{
+        method:'PATCH', body:JSON.stringify({ mes_ano: mesRealSaida })
+      }).catch(()=>{});
+      supaFetch(`ajudante_pedidos?carga=eq.${dem.carga}&mes_ano=neq.${mesRealSaida}`,{
+        method:'PATCH', body:JSON.stringify({ mes_ano: mesRealSaida })
+      }).catch(()=>{});
+    }
     // Registrar no absenteísmo
     await registrarRotaComCarga(savedId, data).catch(()=>{});
     // ── Marcar agendamento: realizado (no prazo) ou atrasado (saiu depois) ───
@@ -16804,9 +17009,12 @@ async function carregarPortalMotorista(){
   const lblMesE = document.getElementById('mot-mes-label');
   if(lblMesE) lblMesE.textContent = mesNome;
 
-  // Limpar carga atual
+  // Limpar carga atual e painel de entregas
   const elCargaAtual = document.getElementById('mot-carga-atual');
   if(elCargaAtual) elCargaAtual.innerHTML = '';
+  const elEntPainel = document.getElementById('mot-entregas-painel');
+  if(elEntPainel) elEntPainel.style.display = 'none';
+  _motEntregasCarga = null;
 
   setKpi('mot-kpi-ent-ri','...'); setKpi('mot-kpi-ent-re','...'); setKpi('mot-kpi-val','...'); setKpi('mot-kpi-pos','...');
   const tbody = document.getElementById('mot-tbody-cargas');
@@ -16876,6 +17084,11 @@ async function carregarPortalMotorista(){
                 </button>`}
             </div>
           </div>`;
+        // Mostrar painel de entregas quando carga está em rota
+        if(da.status === 'saiu' && da.carga && elEntPainel){
+          elEntPainel.style.display = 'block';
+          _motEntregasCarga = da.carga;
+        }
       }
     }catch(e){}
 
@@ -16909,9 +17122,26 @@ async function carregarPortalMotorista(){
     }catch(e){ setKpi('mot-kpi-folgas-mes','—'); setKpi('mot-kpi-folgas-total','—'); }
 
     // ── LANÇAMENTOS DO MÊS ────────────────────────────
-    const lancs = await supaFetch(
+    // Fonte 1: lançamentos criados no mês
+    const lancsDoMes = await supaFetch(
       `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
     ).catch(()=>[]) || [];
+
+    // Fonte 2: demandas que saíram neste mês (ts_saiu) — captura cargas lançadas em mês anterior
+    const demsComSaida = await supaFetch(
+      `demandas_rota?motorista=eq.${encodeURIComponent(nomeDB)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
+    ).catch(()=>[]) || [];
+
+    const cargasJaNos = new Set(lancsDoMes.map(l=>Math.round(Number(l.carga))));
+    const cargasExtras = [...new Set(demsComSaida.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))))].filter(c=>!cargasJaNos.has(c));
+
+    let lancs = lancsDoMes;
+    if(cargasExtras.length > 0){
+      const lancsExtras = await supaFetch(
+        `lancamentos?carga=in.(${cargasExtras.join(',')})&motorista=eq.${encodeURIComponent(nomeDB)}&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=500`
+      ).catch(()=>[]) || [];
+      lancs = [...lancsDoMes, ...lancsExtras];
+    }
 
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
@@ -16931,7 +17161,7 @@ async function carregarPortalMotorista(){
         ? supaFetch(`rotas_viagem?carga=in.(${cargasDoMes.join(',')})&select=carga,km_inicial,km_final&order=criado_em.desc`).catch(()=>[])
         : Promise.resolve([]),
       cargasDoMes.length > 0
-        ? supaFetch(`ajudante_cargas?carga=in.(${cargasDoMes.join(',')})&mes_ano=eq.${mesStr}&ativo=eq.true&select=carga,ajudante_id,ajudante_nome`).catch(()=>[])
+        ? supaFetch(`ajudante_cargas?carga=in.(${cargasDoMes.join(',')})&ativo=eq.true&select=carga,ajudante_id,ajudante_nome`).catch(()=>[])
         : Promise.resolve([])
     ]);
     // Indexar KM por carga — rotas_viagem como base, km_cargas sobrepõe (fonte mais confiável)
@@ -17074,9 +17304,22 @@ async function carregarPortalMotorista(){
     try{
       const undFilter = undDB ? `&und=eq.${encodeURIComponent(undDB)}` : '';
       // Busca com carga incluso — fonte de verdade de quem fez o quê
-      const todosLanc = await supaFetch(
-        `lancamentos?ts=gte.${mesStr}-01&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z${undFilter}&select=motorista,rota,rire,carga&limit=2000`
+      const todosLancTs = await supaFetch(
+        `lancamentos?ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z${undFilter}&select=motorista,rota,rire,carga&limit=2000`
       ).catch(()=>[]) || [];
+      // Cargas que saíram este mês mas o lancamento foi criado no mês anterior
+      const demsDoMesRank = await supaFetch(
+        `demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
+      ).catch(()=>[]) || [];
+      const cargasJaNoLancRank = new Set(todosLancTs.filter(l=>l.carga).map(l=>Math.round(Number(l.carga))));
+      const cargasExtraRank = [...new Set(demsDoMesRank.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))).filter(c=>!cargasJaNoLancRank.has(c)))];
+      let todosLanc = todosLancTs;
+      if(cargasExtraRank.length > 0){
+        const lancsExtRank = await supaFetch(
+          `lancamentos?carga=in.(${cargasExtraRank.join(',')})${undFilter}&select=motorista,rota,rire,carga&limit=500`
+        ).catch(()=>[]) || [];
+        todosLanc = [...todosLancTs, ...lancsExtRank];
+      }
 
       const _isRI = l=>{ const r=(l.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((l.rota||'').trim().toUpperCase()); };
 
@@ -17290,6 +17533,191 @@ async function excluirBonusAdm(id){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
+// ══ PORTAL DE ENTREGAS — Confirmação por pedido + GPS ══════════════════════
+let _motEntregasCarga = null;
+
+function toggleEntregasMot(){
+  const body = document.getElementById('mot-ent-body');
+  const btn  = document.getElementById('mot-ent-toggle-btn');
+  if(!body) return;
+  const abrindo = body.style.display === 'none';
+  body.style.display = abrindo ? 'block' : 'none';
+  if(btn) btn.textContent = abrindo ? 'Fechar' : 'Ver Pedidos';
+  if(abrindo && _motEntregasCarga) carregarEntregasMot(_motEntregasCarga);
+}
+
+async function carregarEntregasMot(carga){
+  _motEntregasCarga = carga;
+  const lista = document.getElementById('mot-ent-lista');
+  const prog  = document.getElementById('mot-ent-progresso');
+  if(!lista) return;
+  lista.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b;font-size:.82rem">⏳ Carregando pedidos...</div>';
+
+  try{
+    const [pedidos, confirmadas] = await Promise.all([
+      supaFetch(`base_data?carga=eq.${carga}&ocorrencia=neq.1&select=pedido,rota,valor&order=pedido.asc&limit=500`).catch(()=>[]),
+      supaFetch(`entregas_motorista?carga=eq.${carga}&select=pedido,motorista_id,motorista_nome,data_confirmacao`).catch(()=>[])
+    ]);
+
+    const confirmMap = {};
+    (confirmadas||[]).forEach(c => {
+      if(!confirmMap[c.pedido]) confirmMap[c.pedido] = [];
+      confirmMap[c.pedido].push(c);
+    });
+
+    const motId   = String(USUARIO_LOGADO?.id || USUARIO_LOGADO?._motoristaId || '');
+    const motNome = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
+    const total   = (pedidos||[]).length;
+    const confPorMim = Object.keys(confirmMap).filter(p =>
+      confirmMap[p].some(c => String(c.motorista_id) === motId)
+    ).length;
+
+    if(prog) prog.textContent = `${confPorMim}/${total} confirmadas`;
+
+    if(!pedidos || pedidos.length === 0){
+      lista.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b;font-size:.82rem">Nenhum pedido vinculado a esta carga.<br>Use o lançamento manual abaixo.</div>';
+      return;
+    }
+
+    lista.innerHTML = (pedidos||[]).map(p => {
+      const confs = confirmMap[p.pedido] || [];
+      const confMinha = confs.find(c => String(c.motorista_id) === motId);
+      const confOutra = confs.find(c => String(c.motorista_id) !== motId);
+      const isConf = !!confMinha;
+      const conflito = !!confOutra;
+
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px;margin-bottom:6px;background:${isConf?'rgba(16,185,129,.12)':'rgba(255,255,255,.04)'}${conflito?';outline:1px solid rgba(239,68,68,.4)':''}">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
+          <div style="font-size:.72rem;color:#64748b">${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
+          ${isConf  ? `<div style="font-size:.68rem;color:#34d399;margin-top:2px">✅ Confirmado por mim</div>` : ''}
+          ${conflito? `<div style="font-size:.68rem;color:#f87171;margin-top:2px">⚠️ Também confirmado por ${confOutra.motorista_nome} — conflito registrado</div>` : ''}
+        </div>
+        ${!isConf
+          ? `<button onclick="confirmarEntregaMot(${p.pedido},'${(p.rota||'').replace(/'/g,"\\'")}',${p.valor||0},${carga})"
+               style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap;margin-left:8px;flex-shrink:0">
+               ✅ Confirmar
+             </button>`
+          : `<span style="color:#34d399;font-size:1.1rem;margin-left:10px;flex-shrink:0">✅</span>`}
+      </div>`;
+    }).join('');
+
+    if(confPorMim >= total && total > 0){
+      lista.innerHTML += `<div style="text-align:center;margin-top:16px;padding:14px;background:rgba(16,185,129,.1);border-radius:10px">
+        <div style="font-size:.9rem;color:#34d399;font-weight:800">🎉 Todas as ${total} entregas confirmadas!</div>
+      </div>`;
+    }
+  }catch(e){
+    lista.innerHTML = `<div style="text-align:center;padding:20px;color:#f87171;font-size:.82rem">Erro: ${e.message}</div>`;
+  }
+}
+
+async function confirmarEntregaMot(pedido, rota, valor, carga){
+  const btnEl = event?.target;
+  if(btnEl){ btnEl.disabled=true; btnEl.textContent='⏳'; }
+
+  try{
+    let lat=null, lng=null;
+    try{
+      const pos = await new Promise((res,rej) =>
+        navigator.geolocation.getCurrentPosition(res, rej, {timeout:8000, maximumAge:30000, enableHighAccuracy:true})
+      );
+      lat = pos.coords.latitude;
+      lng = pos.coords.longitude;
+    }catch(_){ /* GPS indisponível — registrar sem coordenadas */ }
+
+    const motId   = USUARIO_LOGADO?.id || USUARIO_LOGADO?._motoristaId || '';
+    const motNome = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
+
+    // Verificar conflito antes de salvar
+    const existentes = await supaFetch(
+      `entregas_motorista?carga=eq.${carga}&pedido=eq.${pedido}&select=id,motorista_id,motorista_nome`
+    ).catch(()=>[]) || [];
+    const outroConf = existentes.find(e => String(e.motorista_id) !== String(motId));
+
+    // Salvar confirmação
+    await supaFetch('entregas_motorista', {
+      method:'POST', prefer:'return=minimal',
+      body: JSON.stringify({
+        carga: Number(carga), pedido: Number(pedido),
+        motorista_id: String(motId), motorista_nome: motNome,
+        rota: rota||'', latitude: lat, longitude: lng,
+        data_confirmacao: new Date().toISOString()
+      })
+    });
+
+    // Salvar/atualizar geolocalização do cliente se tiver GPS
+    if(lat && lng){
+      await supaFetch('geolocalizacao_clientes?on_conflict=codigo_cliente', {
+        method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
+        body: JSON.stringify({
+          codigo_cliente: String(pedido),
+          nome_cliente: `Pedido #${pedido}`,
+          endereco: rota||'',
+          latitude: lat, longitude: lng,
+          atualizado_por: motNome,
+          atualizado_em: new Date().toISOString()
+        })
+      }).catch(()=>{});
+    }
+
+    // Registrar conflito se outro motorista já confirmou
+    if(outroConf){
+      await supaFetch('conflitos_entrega', {
+        method:'POST', prefer:'return=minimal',
+        body: JSON.stringify({
+          carga: Number(carga), pedido: Number(pedido),
+          motorista_1_id: String(outroConf.motorista_id),
+          motorista_1_nome: outroConf.motorista_nome,
+          motorista_1_data: new Date().toISOString(),
+          motorista_2_id: String(motId),
+          motorista_2_nome: motNome,
+          motorista_2_data: new Date().toISOString(),
+          status:'pendente'
+        })
+      }).catch(()=>{});
+      showToast('⚠️ Registrado com conflito — setor será notificado','warning');
+    } else {
+      showToast(`✅ Pedido #${pedido} confirmado${lat?' 📍 com GPS':''}!`,'success');
+    }
+
+    await carregarEntregasMot(carga);
+  }catch(e){
+    showToast('Erro ao confirmar: '+e.message,'warning');
+    if(btnEl){ btnEl.disabled=false; btnEl.textContent='✅ Confirmar'; }
+  }
+}
+
+async function buscarPedidoManualMot(){
+  const input  = document.getElementById('mot-ent-pedido-manual');
+  const result = document.getElementById('mot-ent-manual-resultado');
+  if(!input||!result) return;
+  const pedNum = parseInt(input.value);
+  if(!pedNum){ showToast('Informe o número do pedido','warning'); return; }
+  result.innerHTML = '<div style="color:#64748b;font-size:.8rem">⏳ Buscando...</div>';
+  try{
+    const dados = await supaFetch(`base_data?pedido=eq.${pedNum}&select=pedido,carga,rota,valor&limit=1`).catch(()=>[]) || [];
+    if(!dados||dados.length===0){
+      result.innerHTML = '<div style="color:#f87171;font-size:.8rem">❌ Pedido não encontrado.</div>';
+      return;
+    }
+    const p = dados[0];
+    const carga = _motEntregasCarga || p.carga;
+    result.innerHTML = `<div style="background:rgba(255,255,255,.05);border-radius:8px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div>
+        <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
+        <div style="font-size:.72rem;color:#94a3b8">Carga #${p.carga} | ${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
+      </div>
+      <button onclick="confirmarEntregaMot(${p.pedido},'${(p.rota||'').replace(/'/g,"\\'")}',${p.valor||0},${carga})"
+        style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap">
+        ✅ Confirmar
+      </button>
+    </div>`;
+  }catch(e){
+    result.innerHTML = `<div style="color:#f87171;font-size:.8rem">Erro: ${e.message}</div>`;
+  }
+}
+
 async function motoristaChegarViagem(demId){
   try{
     const dem = await supaFetch(`demandas_rota?id=eq.${demId}&select=carga,rota,motorista,status&limit=1`).catch(()=>[]) || [];
@@ -17301,6 +17729,13 @@ async function motoristaChegarViagem(demId){
     if(dem[0]?.carga){
       // Registrar fim_viagem via wrapper (valida + loga histórico)
       await _patchStatusDemanda(demId, 'fim_viagem', 'portal_motorista').catch(()=>{});
+      // Marcar veículo como indisponível até a frota liberar
+      const demFull = await supaFetch(`demandas_rota?id=eq.${demId}&select=veiculo&limit=1`).catch(()=>[]);
+      if(demFull?.[0]?.veiculo){
+        await supaFetch(`veiculos?placa=eq.${demFull[0].veiculo}`,{
+          method:'PATCH', body:JSON.stringify({ ativo:false })
+        }).catch(()=>{});
+      }
       await carregarPortalMotorista().catch(()=>{});
       _fimViagemDemId = demId;
       lancarKmCarga(dem[0].carga, 'final');
@@ -20691,7 +21126,11 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     prazoMap[nome]=r.prazo_otif; // null do banco = sem prazo; número = horas
   });
   const saidaMap={};
-  (saidaRows||[]).forEach(d=>{ if(d.carga!=null&&d.data_saida) saidaMap[String(d.carga)]=d.data_saida; });
+  (saidaRows||[]).forEach(d=>{
+    if(d.carga==null) return;
+    const dt = d.data_saida || (d.ts_saiu ? d.ts_saiu.slice(0,10) : null);
+    if(dt) saidaMap[String(d.carga)] = dt;
+  });
   const lancDtMap={};
   const lancTsMap={}; // timestamp completo do lançamento — início do prazo para rotas RE (Regra 2)
   const lancRotaMap={};
@@ -23873,6 +24312,14 @@ async function confirmarFimViagem(){
       })
     });
     registrarHistoricoStatus(_demandaFimId, 'saiu', 'fim_viagem', 'modal_fim_viagem');
+
+    // Marcar veículo como indisponível até a frota liberar
+    if(dem?.veiculo){
+      await supaFetch(`veiculos?placa=eq.${dem.veiculo}`,{
+        method:'PATCH',
+        body:JSON.stringify({ ativo:false })
+      }).catch(()=>{});
+    }
 
     document.getElementById('modal-fim-viagem').style.display = 'none';
     _demandaFimId = null;
@@ -32078,17 +32525,17 @@ async function carregarTV(){
            veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, entRows,
            lancRows, demSaida] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=in.(pronto_viagem,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida&order=data_saida.desc&limit=60`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.(pronto_viagem,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida,quantidade_pedidos&order=data_saida.desc&limit=60`).catch(()=>[]),
       supaFetch(`veiculos?ativo=eq.true&select=placa`).catch(()=>[]),
       supaFetch(`manutencoes_frota?status=in.(agendada,em_andamento)&select=veiculo`).catch(()=>[]),
       supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status`).catch(()=>[]),
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
-      supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&status=in.(saiu,fim_viagem)&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&status=in.(saiu,fim_viagem)&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00&ts=lt.${_prox}-01T00:00:00&select=carga,ts`).catch(()=>[]),
-      supaFetch(`demandas_rota?data_saida=gte.${mesStr}-01&data_saida=lt.${_prox}-01&select=carga,data_saida`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_prox}-01T00:00:00Z&select=carga,ts_saiu`).catch(()=>[]),
     ]);
 
     // 2ª fase: base_data filtrado pelas cargas que saíram no mês
@@ -32299,7 +32746,10 @@ function _tvRenderTicker(demandas){
     </div>
     <div style="font-size:.72rem;color:#60a5fa;font-weight:700">🗺️ ${d.rota||'—'}</div>
     <div style="font-size:.65rem;color:rgba(255,255,255,.5);margin-top:2px">🚗 ${d.motorista||'—'}</div>
-    <div style="font-size:.6rem;color:rgba(255,255,255,.35);margin-top:1px">📦 #${d.carga||'—'}</div>
+    <div style="font-size:.6rem;color:rgba(255,255,255,.35);margin-top:1px;display:flex;gap:8px">
+      <span>📦 #${d.carga||'—'}</span>
+      ${d.quantidade_pedidos ? `<span style="color:rgba(52,211,153,.6)">· ${d.quantidade_pedidos} ped</span>` : ''}
+    </div>
   </div>`;
   const cards = demandas.map(card).join('');
   track.innerHTML = cards+cards;
