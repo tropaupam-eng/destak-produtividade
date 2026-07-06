@@ -7592,6 +7592,10 @@ async function pushLancamento(l){
         body: JSON.stringify({carga:l.carga,motorista:l.motorista,ajudante:l.ajudante||'',rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid})
       });
       if(res&&res[0]) l._id = res[0].id;
+      // Preencher ajudantes que se vincularam antes deste lançamento existir
+      if(l.carga && l.motorista){
+        preencherAjudantesPendentes(l.carga, l.motorista, l.rota||'', l.mes_ano||new Date().toISOString().slice(0,7)).catch(()=>{});
+      }
     }
     // #3 — Atualiza condutor em base_data para todos os pedidos desta carga
     if(l.carga && l.motorista){
@@ -7610,6 +7614,56 @@ async function deleteLancamento(carga){
       await supaFetch(`lancamentos?id=eq.${l._id}`,{method:'DELETE',prefer:'',headers:{'Prefer':''}});
     }
   }catch(e){ console.warn('Delete erro:',e.message); }
+}
+
+// Preenche ajudantes que se vincularam antes da carga existir no sistema.
+// Chamado automaticamente quando um lançamento é criado ou a planilha é enviada.
+async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
+  if(!carga) return;
+  try{
+    // Buscar ajudante_cargas desta carga onde motorista ainda está vazio (vinculação pendente)
+    const pendentes = await supaFetch(
+      `ajudante_cargas?carga=eq.${Number(carga)}&ativo=eq.true&or=(motorista.eq.,motorista.is.null)&select=id,ajudante_id,ajudante_nome,mes_ano`
+    ).catch(()=>[]) || [];
+    if(!pendentes.length) return;
+
+    const mesAnoFinal = mesAno || new Date().toISOString().slice(0,7);
+    const agora = new Date().toISOString();
+
+    // Buscar pedidos disponíveis em base_data para esta carga
+    const bd = await supaFetch(`base_data?carga=eq.${Number(carga)}&select=pedido,ocorrencia`).catch(()=>[]) || [];
+    const peds = [...new Set(bd.filter(r=>Number(r.ocorrencia)!==1).map(r=>r.pedido))];
+
+    for(const aj of pendentes){
+      // Atualizar motorista/rota/mes_ano (apenas se tiver valor)
+      const patch = { mes_ano: mesAnoFinal };
+      if(motorista) patch.motorista = motorista;
+      if(rota)      patch.rota      = rota;
+      await supaFetch(`ajudante_cargas?id=eq.${aj.id}`,{
+        method:'PATCH', body:JSON.stringify(patch)
+      }).catch(()=>{});
+
+      // Distribuir pedidos se ainda não foram atribuídos
+      if(peds.length){
+        const jaTemPeds = await supaFetch(
+          `ajudante_pedidos?carga=eq.${Number(carga)}&ajudante_id=eq.${aj.ajudante_id}&select=id&limit=1`
+        ).catch(()=>[]) || [];
+        if(!jaTemPeds.length){
+          for(let i=0; i<peds.length; i+=50){
+            await supaFetch('ajudante_pedidos',{method:'POST',body:JSON.stringify(
+              peds.slice(i,i+50).map((ped,j)=>({
+                id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
+                carga: Number(carga), pedido: ped,
+                ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
+                mes_ano: mesAnoFinal, ts: agora
+              }))
+            )}).catch(()=>{});
+          }
+        }
+      }
+    }
+    console.log(`preencherAjudantesPendentes: ${pendentes.length} ajudante(s) preenchido(s) na carga ${carga}`);
+  }catch(e){ console.warn('preencherAjudantesPendentes:', e); }
 }
 
 // ── SYNC BASE_DATA ────────────────────────────────────
@@ -7773,6 +7827,16 @@ async function pushBaseData(records){
             body: JSON.stringify({quantidade_pedidos: porCarga[c].pedidos.size, valor_total: porCarga[c].valor})
           }).catch(()=>{})
         ));
+      }
+      // Preencher ajudantes que se vincularam antes da planilha existir
+      for(const c of cargasKeys){
+        const ex = records.find(r => Math.round(Number(r.carga)) === Number(c));
+        await preencherAjudantesPendentes(
+          Number(c),
+          (ex?.condutor||'').toUpperCase().trim(),
+          ex?.rota||'',
+          ex?.mes_ano||''
+        ).catch(()=>{});
       }
     }catch(_){}
   })();
