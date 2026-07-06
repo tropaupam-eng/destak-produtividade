@@ -4922,6 +4922,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div id="frota-kpi-indisp" style="font-size:1.6rem;font-weight:800;color:#991b1b">—</div>
         <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Indisponíveis</div>
       </div>
+      <div style="flex:1;min-width:110px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #a78bfa;border-radius:10px;padding:12px 16px">
+        <div id="frota-kpi-aguard" style="font-size:1.6rem;font-weight:800;color:#6d28d9">—</div>
+        <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Aguard. Liberação</div>
+      </div>
       <div style="flex:1;min-width:110px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #818cf8;border-radius:10px;padding:12px 16px">
         <div id="frota-kpi-total" style="font-size:1.6rem;font-weight:800;color:var(--text-primary)">—</div>
         <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Total</div>
@@ -13306,11 +13310,18 @@ async function renderFrotaStatus(){
 
   const _preViagem = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem']);
 
-  // Em rota: status saiu (fim_viagem já volta disponível)
+  // Em rota: status saiu
   const emRota = new Map();
   _demandasCache.forEach(d=>{
     if(d.status==='saiu' && d.veiculo)
       emRota.set(d.veiculo, d);
+  });
+
+  // Retornou: status fim_viagem (aguardando liberação pela frota)
+  const retornou = new Map();
+  _demandasCache.forEach(d=>{
+    if(d.status==='fim_viagem' && d.veiculo)
+      retornou.set(d.veiculo, d);
   });
 
   // Agendado: veículo vinculado a demanda pendente (ainda não saiu)
@@ -13329,16 +13340,23 @@ async function renderFrotaStatus(){
     return;
   }
 
-  const ativos = todos.filter(v => v.ativo);
-  if(!ativos.length){
+  // Mostrar ativos + retornados (ativo=false mas com fim_viagem)
+  const visiveis = todos.filter(v => v.ativo || retornou.has(v.placa));
+  if(!visiveis.length){
     grid.innerHTML = '<span style="color:var(--text-muted);font-size:.78rem">Nenhum veículo disponível no momento</span>';
     return;
   }
 
-  grid.innerHTML = ativos.map(v=>{
+  grid.innerHTML = visiveis.map(v=>{
     const placa = v.placa||'';
     const subtipo = v.tipo ? `<span style="font-size:.65rem;font-weight:400;opacity:.75;margin-left:2px">${v.tipo}</span>` : '';
 
+    if(retornou.has(placa)){
+      const dem = retornou.get(placa);
+      return `<div title="Retornou — Aguard. Liberação: ${dem.rota||''}" style="background:#ede9fe;color:#4c1d95;border:1.5px solid #c4b5fd;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;display:flex;align-items:center;gap:3px;white-space:nowrap;cursor:default">
+        🟣 ${placa}${subtipo}
+      </div>`;
+    }
     if(emRota.has(placa)){
       const dem = emRota.get(placa);
       return `<div title="Em Rota: ${dem.rota||''}" style="background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d;border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:700;display:flex;align-items:center;gap:3px;white-space:nowrap;cursor:default">
@@ -13973,23 +13991,30 @@ async function renderFrota(){
   try{
     const [veiculos, demandas] = await Promise.all([
       supaFetch('veiculos?select=*&order=placa.asc'),
-      supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=veiculo,rota,motorista,carga,data_saida,status')
+      supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=id,veiculo,rota,motorista,carga,data_saida,status')
     ]);
-    const todos   = veiculos  || [];
-    const emViagem = demandas || [];
+    const todos    = veiculos  || [];
+    const emViagem = demandas  || [];
 
-    // Mapa placa → demanda ativa
-    const rotaMap = new Map();
-    emViagem.forEach(d=>{ if(d.veiculo) rotaMap.set(d.veiculo, d); });
+    // Mapas separados: saiu (em rota) e fim_viagem (retornou, aguardando liberação)
+    const saiuMap    = new Map();
+    const retornMap  = new Map();
+    emViagem.forEach(d=>{
+      if(!d.veiculo) return;
+      if(d.status === 'saiu')        saiuMap.set(d.veiculo, d);
+      else if(d.status==='fim_viagem') retornMap.set(d.veiculo, d);
+    });
 
     // KPIs
-    const nRota   = todos.filter(v=> v.ativo && rotaMap.has(v.placa)).length;
-    const nDisp   = todos.filter(v=> v.ativo && !rotaMap.has(v.placa)).length;
-    const nIndisp = todos.filter(v=>!v.ativo).length;
+    const nRota   = todos.filter(v=> saiuMap.has(v.placa)).length;
+    const nAguard = retornMap.size;
+    const nDisp   = todos.filter(v=> v.ativo && !saiuMap.has(v.placa) && !retornMap.has(v.placa)).length;
+    const nIndisp = todos.filter(v=> !v.ativo && !retornMap.has(v.placa)).length;
     const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
     set('frota-kpi-rota',   nRota);
     set('frota-kpi-disp',   nDisp);
     set('frota-kpi-indisp', nIndisp);
+    set('frota-kpi-aguard', nAguard);
     set('frota-kpi-total',  todos.length);
 
     if(!todos.length){
@@ -13999,18 +14024,24 @@ async function renderFrota(){
 
     const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : '—';
 
-    // Ordenar: em rota primeiro, depois disponíveis, depois indisponíveis
-    const ordemFn = v => !v.ativo ? 2 : rotaMap.has(v.placa) ? 0 : 1;
+    // Ordenar: retornou primeiro, depois em rota, depois disponível, depois indisponível
+    const ordemFn = v => retornMap.has(v.placa) ? 0 : saiuMap.has(v.placa) ? 1 : v.ativo ? 2 : 3;
     todos.sort((a,b) => ordemFn(a) - ordemFn(b) || (a.placa||'').localeCompare(b.placa||''));
 
     grid.innerHTML = todos.map(v=>{
-      const dem = rotaMap.get(v.placa);
+      const demSaiu   = saiuMap.get(v.placa);
+      const demRetorn = retornMap.get(v.placa);
+      const dem = demRetorn || demSaiu;
       let borderColor, headerBg, headerColor, badgeBg, badgeColor, badgeIcon, statusLabel;
 
-      if(!v.ativo){
+      if(demRetorn){
+        // Veículo retornou — aguardando decisão da frota
+        borderColor='#c4b5fd'; headerBg='#ede9fe'; headerColor='#4c1d95';
+        badgeBg='#ede9fe'; badgeColor='#4c1d95'; badgeIcon='🟣'; statusLabel='Retornou';
+      } else if(!v.ativo){
         borderColor='#fca5a5'; headerBg='#fee2e2'; headerColor='#991b1b';
         badgeBg='#fee2e2'; badgeColor='#991b1b'; badgeIcon='🔴'; statusLabel='Indisponível';
-      } else if(dem){
+      } else if(demSaiu){
         borderColor='#fcd34d'; headerBg='#fef3c7'; headerColor='#92400e';
         badgeBg='#fef3c7'; badgeColor='#92400e'; badgeIcon='🟡'; statusLabel='Em Rota';
       } else {
@@ -14024,7 +14055,18 @@ async function renderFrota(){
           ${dem.motorista ? `<div><span style="color:var(--text-muted)">Motorista:</span> <strong>${dem.motorista}</strong></div>` : ''}
           ${dem.carga     ? `<div><span style="color:var(--text-muted)">Carga:</span> <strong>${dem.carga}</strong></div>` : ''}
           <div><span style="color:var(--text-muted)">Saída:</span> <strong>${fmtData(dem.data_saida)}</strong></div>
-          ${dem.status==='fim_viagem' ? `<div style="color:#7c3aed;font-weight:700;font-size:.72rem">🏁 Fim de Viagem — aguardando retorno</div>` : ''}
+        </div>` : '';
+
+      const botoesLiberar = demRetorn ? `
+        <div style="margin-top:10px;display:flex;gap:7px">
+          <button onclick="liberarVeiculoFrota('${v.placa}','${demRetorn.id}')"
+            style="flex:1;background:#059669;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
+            ✅ Liberar
+          </button>
+          <button onclick="enviarManutencaoFrota('${v.placa}','${demRetorn.id}')"
+            style="flex:1;background:#dc2626;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
+            🔧 Manutenção
+          </button>
         </div>` : '';
 
       const infoVeic = v.tipo || v.peso_max_kg || v.cubagem_m3 ? `
@@ -14042,8 +14084,9 @@ async function renderFrota(){
         <div style="padding:10px 14px">
           ${infoVeic}
           ${infoRota}
+          ${botoesLiberar}
           ${!dem && v.ativo ? '<div style="margin-top:8px;font-size:.75rem;color:var(--text-muted)">Sem demanda ativa no momento</div>' : ''}
-          ${!v.ativo ? '<div style="margin-top:8px;font-size:.75rem;color:#991b1b;font-weight:600">Veículo desativado no cadastro</div>' : ''}
+          ${!v.ativo && !demRetorn ? '<div style="margin-top:8px;font-size:.75rem;color:#991b1b;font-weight:600">Veículo em manutenção ou desativado</div>' : ''}
         </div>
       </div>`;
     }).join('');
@@ -15606,6 +15649,54 @@ async function gfAutoLiberarVeiculo(placa){
       await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placa)}`,{ method:'PATCH', body:JSON.stringify({ ativo:true }) }).catch(()=>{});
     }
   }catch(e){ console.warn('gfAutoLiberarVeiculo:', e); }
+}
+
+// Libera veículo após retorno de rota (sem manutenção)
+async function liberarVeiculoFrota(placa, demId){
+  if(!confirm(`Confirmar liberação do veículo ${placa}?\nSem manutenção — veículo voltará a ficar disponível.`)) return;
+  try{
+    await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placa)}`,{
+      method:'PATCH', body:JSON.stringify({ ativo:true })
+    });
+    if(demId){
+      await supaFetch(`demandas_rota?id=eq.${demId}`,{
+        method:'PATCH', body:JSON.stringify({ status:'concluido' })
+      }).catch(()=>{});
+    }
+    showToast(`✅ Veículo ${placa} liberado para uso!`, 'success');
+    await carregarDemandas().catch(()=>{});
+    renderFrota();
+  }catch(e){ showToast('Erro: '+e.message, 'warning'); }
+}
+
+// Envia veículo para manutenção após retorno de rota
+async function enviarManutencaoFrota(placa, demId){
+  const tipo = prompt(`Tipo de manutenção para ${placa}:\n(Ex: revisão, pneus, freio, elétrica, funilaria)`);
+  if(!tipo) return;
+  const descr = prompt('Descrição / Observação (opcional):') || '';
+  const u = USUARIO_LOGADO || {};
+  try{
+    await supaFetch('manutencoes_frota',{
+      method:'POST',
+      body:JSON.stringify({
+        veiculo: placa,
+        tipo: tipo.trim(),
+        status: 'agendada',
+        descricao: descr.trim() || null,
+        data_inicio: new Date().toISOString().slice(0,10),
+        usuario_id: u.id || null,
+        usuario_nome: u.nome || null
+      })
+    });
+    if(demId){
+      await supaFetch(`demandas_rota?id=eq.${demId}`,{
+        method:'PATCH', body:JSON.stringify({ status:'concluido' })
+      }).catch(()=>{});
+    }
+    showToast(`🔧 Manutenção registrada para ${placa}. Veículo permanece indisponível.`, 'success');
+    await carregarDemandas().catch(()=>{});
+    renderFrota();
+  }catch(e){ showToast('Erro: '+e.message, 'warning'); }
 }
 
 function badgePesoVeiculo(placa, carga, temCarga){
@@ -17527,6 +17618,13 @@ async function motoristaChegarViagem(demId){
     if(dem[0]?.carga){
       // Registrar fim_viagem via wrapper (valida + loga histórico)
       await _patchStatusDemanda(demId, 'fim_viagem', 'portal_motorista').catch(()=>{});
+      // Marcar veículo como indisponível até a frota liberar
+      const demFull = await supaFetch(`demandas_rota?id=eq.${demId}&select=veiculo&limit=1`).catch(()=>[]);
+      if(demFull?.[0]?.veiculo){
+        await supaFetch(`veiculos?placa=eq.${demFull[0].veiculo}`,{
+          method:'PATCH', body:JSON.stringify({ ativo:false })
+        }).catch(()=>{});
+      }
       await carregarPortalMotorista().catch(()=>{});
       _fimViagemDemId = demId;
       lancarKmCarga(dem[0].carga, 'final');
@@ -24099,6 +24197,14 @@ async function confirmarFimViagem(){
       })
     });
     registrarHistoricoStatus(_demandaFimId, 'saiu', 'fim_viagem', 'modal_fim_viagem');
+
+    // Marcar veículo como indisponível até a frota liberar
+    if(dem?.veiculo){
+      await supaFetch(`veiculos?placa=eq.${dem.veiculo}`,{
+        method:'PATCH',
+        body:JSON.stringify({ ativo:false })
+      }).catch(()=>{});
+    }
 
     document.getElementById('modal-fim-viagem').style.display = 'none';
     _demandaFimId = null;
