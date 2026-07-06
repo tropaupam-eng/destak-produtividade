@@ -17115,9 +17115,26 @@ async function carregarPortalMotorista(){
     }catch(e){ setKpi('mot-kpi-folgas-mes','—'); setKpi('mot-kpi-folgas-total','—'); }
 
     // ── LANÇAMENTOS DO MÊS ────────────────────────────
-    const lancs = await supaFetch(
+    // Fonte 1: lançamentos criados no mês
+    const lancsDoMes = await supaFetch(
       `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
     ).catch(()=>[]) || [];
+
+    // Fonte 2: demandas que saíram neste mês (ts_saiu) — captura cargas lançadas em mês anterior
+    const demsComSaida = await supaFetch(
+      `demandas_rota?motorista=eq.${encodeURIComponent(nomeDB)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
+    ).catch(()=>[]) || [];
+
+    const cargasJaNos = new Set(lancsDoMes.map(l=>Math.round(Number(l.carga))));
+    const cargasExtras = [...new Set(demsComSaida.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))))].filter(c=>!cargasJaNos.has(c));
+
+    let lancs = lancsDoMes;
+    if(cargasExtras.length > 0){
+      const lancsExtras = await supaFetch(
+        `lancamentos?carga=in.(${cargasExtras.join(',')})&motorista=eq.${encodeURIComponent(nomeDB)}&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=500`
+      ).catch(()=>[]) || [];
+      lancs = [...lancsDoMes, ...lancsExtras];
+    }
 
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
@@ -17137,7 +17154,7 @@ async function carregarPortalMotorista(){
         ? supaFetch(`rotas_viagem?carga=in.(${cargasDoMes.join(',')})&select=carga,km_inicial,km_final&order=criado_em.desc`).catch(()=>[])
         : Promise.resolve([]),
       cargasDoMes.length > 0
-        ? supaFetch(`ajudante_cargas?carga=in.(${cargasDoMes.join(',')})&mes_ano=eq.${mesStr}&ativo=eq.true&select=carga,ajudante_id,ajudante_nome`).catch(()=>[])
+        ? supaFetch(`ajudante_cargas?carga=in.(${cargasDoMes.join(',')})&ativo=eq.true&select=carga,ajudante_id,ajudante_nome`).catch(()=>[])
         : Promise.resolve([])
     ]);
     // Indexar KM por carga — rotas_viagem como base, km_cargas sobrepõe (fonte mais confiável)
