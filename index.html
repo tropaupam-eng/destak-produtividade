@@ -21040,9 +21040,8 @@ async function renderDashInterna(){
 
         const ped   = String(p.pedido);
         const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
-        // rota: base_data tem prioridade; fallback = rota do lançamento (ex: CEASA sem rota na planilha)
-        const rotaBd = normalizarRota(p.rota||'')||(p.rota||'').toUpperCase();
-        const rota   = rotaBd || (carga && lancRotaMapOtif[carga]) || '';
+        // rota: SEMPRE do lançamento (sistema) — base_data.rota não é fonte confiável
+        const rota   = (carga && lancRotaMapOtif[carga]) || normalizarRota(p.rota||'')||(p.rota||'').toUpperCase();
         if(rota === 'RETIRA') return;
         const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
         if(prazoEntry === null) return; // rota cadastrada sem prazo (prazo_otif = null no banco)
@@ -21266,7 +21265,7 @@ async function _carregarOtifMes(mes, und){
   const [rotasRows, lancRows, saidaRows] = await Promise.all([
     supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`,{_quiet:true}).catch(()=>[]),
     supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00${undFilter}&select=carga,ts,rota,rire`,{_quiet:true}).catch(()=>[]),
-    supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proximo}-01&select=carga,data_saida`,{_quiet:true}).catch(()=>[]),
+    supaFetch(`demandas_rota?ts_saiu=gte.${mes}-01T00:00:00Z&ts_saiu=lt.${proximo}-01T00:00:00Z&select=carga,data_saida,ts_saiu`,{_quiet:true}).catch(()=>[]),
   ]);
   // Atualizar ROTAS_RI com cadastro para getRireFromRota classificar corretamente
   (rotasRows||[]).forEach(r=>{
@@ -21433,8 +21432,13 @@ async function renderOtifDiario(){
   try{
     const mesAno  = dataSel.slice(0,7);
 
-    // Cargas programadas para o dia (demandas_rota) — fonte do universo diário
-    const demandasR = await supaFetch('demandas_rota?data_saida=eq.'+dataSel+'&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal&order=carga');
+    // Cargas que saíram no dia (ts_saiu) + planejadas sem saída real (data_saida, ts_saiu null)
+    const [demTs, demDs] = await Promise.all([
+      supaFetch(`demandas_rota?ts_saiu=gte.${dataSel}T00:00:00Z&ts_saiu=lte.${dataSel}T23:59:59Z&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
+      supaFetch(`demandas_rota?data_saida=eq.${dataSel}&ts_saiu=is.null&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
+    ]);
+    const _demVistosIds = new Set();
+    const demandasR = [...(demTs||[]),...(demDs||[])].filter(d=>{ if(_demVistosIds.has(d.id)) return false; _demVistosIds.add(d.id); return true; });
     const demandas  = Array.isArray(demandasR) ? demandasR : [];
     const cargaList = [...new Set(demandas.map(d=>d.carga).filter(c=>c!=null))];
 
