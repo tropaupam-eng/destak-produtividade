@@ -7695,21 +7695,26 @@ async function syncBaseData(mesFiltro){
 
     if(allRaw.length > 0){
       const mapped = allRaw.map(r=>({
-        carga:      r.carga,
-        pedido:     r.pedido,
-        valor:      r.valor||0,
-        peso_kg:    r.peso_kg||0,
-        und:        r.und||'',
-        rire:       r.rire||'',
-        rota:       r.rota||'',
-        placa:      r.placa||'',
-        condutor:   r.condutor||'',
-        ajudante:   r.ajudante||'',
-        ocorrencia: r.ocorrencia||0,
-        mes_ano:    r.mes_ano||'',
-        semana_mes: r.semana_mes||0,
-        data_pedido:r.data_pedido||null,
-        _source:    'planilha'
+        carga:       r.carga,
+        pedido:      r.pedido,
+        valor:       r.valor||0,
+        peso_kg:     r.peso_kg||0,
+        und:         r.und||'',
+        rire:        r.rire||'',
+        rota:        r.rota||'',
+        placa:       r.placa||'',
+        condutor:    r.condutor||'',
+        ajudante:    r.ajudante||'',
+        ocorrencia:  r.ocorrencia||0,
+        mes_ano:     r.mes_ano||'',
+        semana_mes:  r.semana_mes||0,
+        data_pedido: r.data_pedido||null,
+        cod_forn:    r.cod_forn||null,
+        cliente:     r.cliente||null,
+        bairro:      r.bairro||null,
+        volume:      r.volume||null,
+        nota_origem: r.nota_origem||null,
+        _source:     'planilha'
       }));
 
       // Deduplicar por carga+pedido
@@ -7760,13 +7765,8 @@ async function pushBaseData(records){
   // Isso evita que uma planilha de julho apague dados de junho que ainda estão no banco.
   const _contPorMes = records.reduce((m,r)=>{ if(r.mes_ano) m.set(r.mes_ano,(m.get(r.mes_ano)||0)+1); return m; }, new Map());
   const mesPrincipal = [..._contPorMes.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
-  if(mesPrincipal){
-    await supaFetch(`base_data?mes_ano=eq.${mesPrincipal}`,{
-      method:'DELETE', prefer:'return=minimal'
-    });
-  }
 
-  // 2. Inserir em lotes
+  // 1. Inserir/atualizar PRIMEIRO via upsert — sem DELETE ainda
   const LOTE = 300;
   let enviados = 0;
   for(let i=0; i<records.length; i+=LOTE){
@@ -7792,13 +7792,45 @@ async function pushBaseData(records){
       nota_origem: r.nota_origem||null
     })).filter(r=>r.carga!=null&&r.pedido!=null);
 
-    await supaFetch('base_data?on_conflict=carga,pedido',{
-      method:'POST',
-      prefer:'resolution=merge-duplicates,return=minimal',
-      body: JSON.stringify(lote)
-    });
+    // Retry uma vez em caso de falha transitória
+    let ok = false;
+    for(let tentativa=0; tentativa<2 && !ok; tentativa++){
+      try{
+        await supaFetch('base_data?on_conflict=carga,pedido',{
+          method:'POST',
+          prefer:'resolution=merge-duplicates,return=minimal',
+          body: JSON.stringify(lote)
+        });
+        ok = true;
+      }catch(err){
+        if(tentativa===1) throw err; // segunda falha: propaga
+        await new Promise(r=>setTimeout(r,2000));
+      }
+    }
     enviados += lote.length;
     showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
+  }
+
+  // 2. Só depois que todos os lotes gravaram: limpar pedidos do mês que foram removidos da planilha
+  // (pedidos que estavam no banco mas não vieram na nova planilha)
+  if(mesPrincipal){
+    const pedidosNoPush = new Set(
+      records.filter(r=>r.mes_ano===mesPrincipal&&r.carga&&r.pedido)
+             .map(r=>Number(r.carga)+'_'+Number(r.pedido))
+    );
+    if(pedidosNoPush.size > 0){
+      // Buscar o que está no banco para esse mês
+      const noDb = await supaFetch(`base_data?mes_ano=eq.${mesPrincipal}&select=carga,pedido`).catch(()=>[]);
+      const obsoletos = (noDb||[]).filter(r=>!pedidosNoPush.has(Number(r.carga)+'_'+Number(r.pedido)));
+      if(obsoletos.length > 0){
+        // Deletar em lotes de pedidos específicos para não apagar o mês inteiro
+        for(let i=0; i<obsoletos.length; i+=100){
+          const grupo = obsoletos.slice(i,i+100);
+          const ids = grupo.map(r=>`and(carga.eq.${r.carga},pedido.eq.${r.pedido})`).join(',');
+          await supaFetch(`base_data?or=(${ids})`,{method:'DELETE',prefer:'return=minimal'}).catch(()=>{});
+        }
+      }
+    }
   }
 
   // 3. Validar: contagem do primeiro mês deve ser > 0
@@ -8399,8 +8431,15 @@ async function carregarCSV(file) {
     reader.onload = function(e) {
       try {
         const bytes = new Uint8Array(e.target.result);
-        let text = '';
-        for(let i=0;i<bytes.length;i++) text += String.fromCharCode(bytes[i]);
+        // Detectar encoding: UTF-8 BOM ou heurística de bytes altos
+        const hasUtf8Bom = bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF;
+        const hasHighBytes = bytes.slice(0,2000).some(b=>b>0x7F);
+        let text;
+        try {
+          text = new TextDecoder(hasUtf8Bom ? 'utf-8' : 'windows-1252').decode(bytes);
+        } catch(_) {
+          text = new TextDecoder('latin1').decode(bytes);
+        }
 
         const lines = text.split('\n').filter(l=>l.trim());
         const sep = lines[0].includes(';') ? ';' : ',';
