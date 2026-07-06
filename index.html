@@ -5561,6 +5561,39 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <!-- Carga Atual em destaque -->
     <div id="mot-carga-atual" style="margin-bottom:20px"></div>
 
+    <!-- ══ PORTAL DE ENTREGAS ══ -->
+    <div id="mot-entregas-painel" style="display:none;margin-bottom:20px">
+      <div style="background:#1e293b;border:1px solid rgba(16,185,129,.3);border-radius:14px;overflow:hidden">
+        <div style="padding:14px 18px;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(5,150,105,.08));border-bottom:1px solid rgba(16,185,129,.15);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div>
+            <h3 style="font-size:.9rem;font-weight:800;color:#34d399;margin:0">📦 Confirmar Entregas</h3>
+            <p id="mot-ent-progresso" style="font-size:.72rem;color:#64748b;margin:4px 0 0">Toque em "Ver Pedidos" para carregar</p>
+          </div>
+          <button onclick="toggleEntregasMot()" id="mot-ent-toggle-btn"
+            style="background:rgba(16,185,129,.2);border:1px solid rgba(16,185,129,.35);color:#34d399;border-radius:8px;padding:7px 16px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap">
+            Ver Pedidos
+          </button>
+        </div>
+        <div id="mot-ent-body" style="display:none;padding:16px">
+          <div id="mot-ent-lista"></div>
+          <!-- Lançamento manual -->
+          <div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06)">
+            <p style="font-size:.76rem;font-weight:700;color:#94a3b8;margin:0 0 10px">➕ Pedido não aparece na lista? Lançamento manual:</p>
+            <div style="display:flex;gap:8px">
+              <input id="mot-ent-pedido-manual" type="number" placeholder="Nº do pedido"
+                onkeydown="if(event.key==='Enter') buscarPedidoManualMot()"
+                style="flex:1;background:#0f172a;border:1.5px solid rgba(255,255,255,.12);color:#f0f0f8;border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;-moz-appearance:textfield"/>
+              <button onclick="buscarPedidoManualMot()"
+                style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:.82rem;font-weight:700;cursor:pointer">
+                Buscar
+              </button>
+            </div>
+            <div id="mot-ent-manual-resultado" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- KPIs linha 1: Pedidos RI + Pedidos RE -->
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px">
       <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);border-radius:14px;padding:16px;text-align:center;box-shadow:0 4px 16px rgba(37,99,235,.3)">
@@ -16804,9 +16837,12 @@ async function carregarPortalMotorista(){
   const lblMesE = document.getElementById('mot-mes-label');
   if(lblMesE) lblMesE.textContent = mesNome;
 
-  // Limpar carga atual
+  // Limpar carga atual e painel de entregas
   const elCargaAtual = document.getElementById('mot-carga-atual');
   if(elCargaAtual) elCargaAtual.innerHTML = '';
+  const elEntPainel = document.getElementById('mot-entregas-painel');
+  if(elEntPainel) elEntPainel.style.display = 'none';
+  _motEntregasCarga = null;
 
   setKpi('mot-kpi-ent-ri','...'); setKpi('mot-kpi-ent-re','...'); setKpi('mot-kpi-val','...'); setKpi('mot-kpi-pos','...');
   const tbody = document.getElementById('mot-tbody-cargas');
@@ -16876,6 +16912,11 @@ async function carregarPortalMotorista(){
                 </button>`}
             </div>
           </div>`;
+        // Mostrar painel de entregas quando carga está em rota
+        if(da.status === 'saiu' && da.carga && elEntPainel){
+          elEntPainel.style.display = 'block';
+          _motEntregasCarga = da.carga;
+        }
       }
     }catch(e){}
 
@@ -17288,6 +17329,191 @@ async function excluirBonusAdm(id){
     const mes = document.getElementById('bonus-adm-mes')?.value || new Date().toISOString().slice(0,7);
     await renderBonusAdmTabela(mes);
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// ══ PORTAL DE ENTREGAS — Confirmação por pedido + GPS ══════════════════════
+let _motEntregasCarga = null;
+
+function toggleEntregasMot(){
+  const body = document.getElementById('mot-ent-body');
+  const btn  = document.getElementById('mot-ent-toggle-btn');
+  if(!body) return;
+  const abrindo = body.style.display === 'none';
+  body.style.display = abrindo ? 'block' : 'none';
+  if(btn) btn.textContent = abrindo ? 'Fechar' : 'Ver Pedidos';
+  if(abrindo && _motEntregasCarga) carregarEntregasMot(_motEntregasCarga);
+}
+
+async function carregarEntregasMot(carga){
+  _motEntregasCarga = carga;
+  const lista = document.getElementById('mot-ent-lista');
+  const prog  = document.getElementById('mot-ent-progresso');
+  if(!lista) return;
+  lista.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b;font-size:.82rem">⏳ Carregando pedidos...</div>';
+
+  try{
+    const [pedidos, confirmadas] = await Promise.all([
+      supaFetch(`base_data?carga=eq.${carga}&select=pedido,rota,valor&order=pedido.asc&limit=500`).catch(()=>[]),
+      supaFetch(`entregas_motorista?carga=eq.${carga}&select=pedido,motorista_id,motorista_nome,data_confirmacao`).catch(()=>[])
+    ]);
+
+    const confirmMap = {};
+    (confirmadas||[]).forEach(c => {
+      if(!confirmMap[c.pedido]) confirmMap[c.pedido] = [];
+      confirmMap[c.pedido].push(c);
+    });
+
+    const motId   = String(USUARIO_LOGADO?.id || USUARIO_LOGADO?._motoristaId || '');
+    const motNome = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
+    const total   = (pedidos||[]).length;
+    const confPorMim = Object.keys(confirmMap).filter(p =>
+      confirmMap[p].some(c => String(c.motorista_id) === motId)
+    ).length;
+
+    if(prog) prog.textContent = `${confPorMim}/${total} confirmadas`;
+
+    if(!pedidos || pedidos.length === 0){
+      lista.innerHTML = '<div style="text-align:center;padding:20px;color:#64748b;font-size:.82rem">Nenhum pedido vinculado a esta carga.<br>Use o lançamento manual abaixo.</div>';
+      return;
+    }
+
+    lista.innerHTML = (pedidos||[]).map(p => {
+      const confs = confirmMap[p.pedido] || [];
+      const confMinha = confs.find(c => String(c.motorista_id) === motId);
+      const confOutra = confs.find(c => String(c.motorista_id) !== motId);
+      const isConf = !!confMinha;
+      const conflito = !!confOutra;
+
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px;margin-bottom:6px;background:${isConf?'rgba(16,185,129,.12)':'rgba(255,255,255,.04)'}${conflito?';outline:1px solid rgba(239,68,68,.4)':''}">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
+          <div style="font-size:.72rem;color:#64748b">${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
+          ${isConf  ? `<div style="font-size:.68rem;color:#34d399;margin-top:2px">✅ Confirmado por mim</div>` : ''}
+          ${conflito? `<div style="font-size:.68rem;color:#f87171;margin-top:2px">⚠️ Também confirmado por ${confOutra.motorista_nome} — conflito registrado</div>` : ''}
+        </div>
+        ${!isConf
+          ? `<button onclick="confirmarEntregaMot(${p.pedido},'${(p.rota||'').replace(/'/g,"\\'")}',${p.valor||0},${carga})"
+               style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap;margin-left:8px;flex-shrink:0">
+               ✅ Confirmar
+             </button>`
+          : `<span style="color:#34d399;font-size:1.1rem;margin-left:10px;flex-shrink:0">✅</span>`}
+      </div>`;
+    }).join('');
+
+    if(confPorMim >= total && total > 0){
+      lista.innerHTML += `<div style="text-align:center;margin-top:16px;padding:14px;background:rgba(16,185,129,.1);border-radius:10px">
+        <div style="font-size:.9rem;color:#34d399;font-weight:800">🎉 Todas as ${total} entregas confirmadas!</div>
+      </div>`;
+    }
+  }catch(e){
+    lista.innerHTML = `<div style="text-align:center;padding:20px;color:#f87171;font-size:.82rem">Erro: ${e.message}</div>`;
+  }
+}
+
+async function confirmarEntregaMot(pedido, rota, valor, carga){
+  const btnEl = event?.target;
+  if(btnEl){ btnEl.disabled=true; btnEl.textContent='⏳'; }
+
+  try{
+    let lat=null, lng=null;
+    try{
+      const pos = await new Promise((res,rej) =>
+        navigator.geolocation.getCurrentPosition(res, rej, {timeout:8000, maximumAge:30000, enableHighAccuracy:true})
+      );
+      lat = pos.coords.latitude;
+      lng = pos.coords.longitude;
+    }catch(_){ /* GPS indisponível — registrar sem coordenadas */ }
+
+    const motId   = USUARIO_LOGADO?.id || USUARIO_LOGADO?._motoristaId || '';
+    const motNome = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
+
+    // Verificar conflito antes de salvar
+    const existentes = await supaFetch(
+      `entregas_motorista?carga=eq.${carga}&pedido=eq.${pedido}&select=id,motorista_id,motorista_nome`
+    ).catch(()=>[]) || [];
+    const outroConf = existentes.find(e => String(e.motorista_id) !== String(motId));
+
+    // Salvar confirmação
+    await supaFetch('entregas_motorista', {
+      method:'POST', prefer:'return=minimal',
+      body: JSON.stringify({
+        carga: Number(carga), pedido: Number(pedido),
+        motorista_id: String(motId), motorista_nome: motNome,
+        rota: rota||'', latitude: lat, longitude: lng,
+        data_confirmacao: new Date().toISOString()
+      })
+    });
+
+    // Salvar/atualizar geolocalização do cliente se tiver GPS
+    if(lat && lng){
+      await supaFetch('geolocalizacao_clientes?on_conflict=codigo_cliente', {
+        method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
+        body: JSON.stringify({
+          codigo_cliente: String(pedido),
+          nome_cliente: `Pedido #${pedido}`,
+          endereco: rota||'',
+          latitude: lat, longitude: lng,
+          atualizado_por: motNome,
+          atualizado_em: new Date().toISOString()
+        })
+      }).catch(()=>{});
+    }
+
+    // Registrar conflito se outro motorista já confirmou
+    if(outroConf){
+      await supaFetch('conflitos_entrega', {
+        method:'POST', prefer:'return=minimal',
+        body: JSON.stringify({
+          carga: Number(carga), pedido: Number(pedido),
+          motorista_1_id: String(outroConf.motorista_id),
+          motorista_1_nome: outroConf.motorista_nome,
+          motorista_1_data: new Date().toISOString(),
+          motorista_2_id: String(motId),
+          motorista_2_nome: motNome,
+          motorista_2_data: new Date().toISOString(),
+          status:'pendente'
+        })
+      }).catch(()=>{});
+      showToast('⚠️ Registrado com conflito — setor será notificado','warning');
+    } else {
+      showToast(`✅ Pedido #${pedido} confirmado${lat?' 📍 com GPS':''}!`,'success');
+    }
+
+    await carregarEntregasMot(carga);
+  }catch(e){
+    showToast('Erro ao confirmar: '+e.message,'warning');
+    if(btnEl){ btnEl.disabled=false; btnEl.textContent='✅ Confirmar'; }
+  }
+}
+
+async function buscarPedidoManualMot(){
+  const input  = document.getElementById('mot-ent-pedido-manual');
+  const result = document.getElementById('mot-ent-manual-resultado');
+  if(!input||!result) return;
+  const pedNum = parseInt(input.value);
+  if(!pedNum){ showToast('Informe o número do pedido','warning'); return; }
+  result.innerHTML = '<div style="color:#64748b;font-size:.8rem">⏳ Buscando...</div>';
+  try{
+    const dados = await supaFetch(`base_data?pedido=eq.${pedNum}&select=pedido,carga,rota,valor&limit=1`).catch(()=>[]) || [];
+    if(!dados||dados.length===0){
+      result.innerHTML = '<div style="color:#f87171;font-size:.8rem">❌ Pedido não encontrado.</div>';
+      return;
+    }
+    const p = dados[0];
+    const carga = _motEntregasCarga || p.carga;
+    result.innerHTML = `<div style="background:rgba(255,255,255,.05);border-radius:8px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div>
+        <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
+        <div style="font-size:.72rem;color:#94a3b8">Carga #${p.carga} | ${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
+      </div>
+      <button onclick="confirmarEntregaMot(${p.pedido},'${(p.rota||'').replace(/'/g,"\\'")}',${p.valor||0},${carga})"
+        style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap">
+        ✅ Confirmar
+      </button>
+    </div>`;
+  }catch(e){
+    result.innerHTML = `<div style="color:#f87171;font-size:.8rem">Erro: ${e.message}</div>`;
+  }
 }
 
 async function motoristaChegarViagem(demId){
