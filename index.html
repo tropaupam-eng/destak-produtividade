@@ -17639,7 +17639,7 @@ async function carregarEntregasMot(carga){
   try{
     const [pedidos, confirmadas] = await Promise.all([
       supaFetch(`base_data?carga=eq.${carga}&ocorrencia=neq.1&select=pedido,rota,valor&order=pedido.asc&limit=500`).catch(()=>[]),
-      supaFetch(`entregas_motorista?carga=eq.${carga}&select=pedido,motorista_id,motorista_nome,data_confirmacao`).catch(()=>[])
+      supaFetch(`entregas_motorista?carga=eq.${carga}&select=pedido,motorista_id,motorista_nome,data_confirmacao,latitude,longitude`).catch(()=>[])
     ]);
 
     const confirmMap = {};
@@ -17673,7 +17673,7 @@ async function carregarEntregasMot(carga){
         <div style="flex:1;min-width:0">
           <div style="font-size:.85rem;font-weight:700;color:#f0f0f8">Pedido #${p.pedido}</div>
           <div style="font-size:.72rem;color:#64748b">${p.rota||'—'}${p.valor?' | R$ '+Number(p.valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):''}</div>
-          ${isConf  ? `<div style="font-size:.68rem;color:#34d399;margin-top:2px">✅ Confirmado por mim</div>` : ''}
+          ${isConf  ? `<div style="font-size:.68rem;color:#34d399;margin-top:2px;font-family:monospace">✅ ${confMinha.latitude?`📍 ${confMinha.latitude.toFixed(5)}, ${confMinha.longitude.toFixed(5)}`:'sem GPS'}</div>` : ''}
           ${conflito? `<div style="font-size:.68rem;color:#f87171;margin-top:2px">⚠️ Também confirmado por ${confOutra.motorista_nome} — conflito registrado</div>` : ''}
         </div>
         ${!isConf
@@ -17707,7 +17707,7 @@ async function confirmarEntregaMot(pedido, rota, valor, carga){
       );
       lat = pos.coords.latitude;
       lng = pos.coords.longitude;
-    }catch(_){ /* GPS indisponível — registrar sem coordenadas */ }
+    }catch(_){ showToast('⚠️ GPS não capturado — entrega registrada sem localização','warning'); }
 
     const motId   = USUARIO_LOGADO?.id || USUARIO_LOGADO?._motoristaId || '';
     const motNome = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
@@ -17802,31 +17802,21 @@ async function buscarPedidoManualMot(){
 }
 
 async function motoristaChegarViagem(demId){
+  if(!confirm('Confirmar chegada e registrar KM Final?')) return;
   try{
     const dem = await supaFetch(`demandas_rota?id=eq.${demId}&select=carga,rota,motorista,status&limit=1`).catch(()=>[]) || [];
-    // Validar que a carga está em 'saiu' antes de registrar fim_viagem
     if(dem[0]?.status && dem[0].status !== 'saiu'){
       showToast(`⛔ Não é possível registrar chegada: carga está em "${dem[0].status}" (exige "saiu").`,'warning');
       return;
     }
     if(dem[0]?.carga){
-      // Registrar fim_viagem via wrapper (valida + loga histórico)
-      await _patchStatusDemanda(demId, 'fim_viagem', 'portal_motorista').catch(()=>{});
-      // Marcar veículo como indisponível até a frota liberar
-      const demFull = await supaFetch(`demandas_rota?id=eq.${demId}&select=veiculo&limit=1`).catch(()=>[]);
-      if(demFull?.[0]?.veiculo){
-        await supaFetch(`veiculos?placa=eq.${demFull[0].veiculo}`,{
-          method:'PATCH', body:JSON.stringify({ ativo:false })
-        }).catch(()=>{});
-      }
-      await carregarPortalMotorista().catch(()=>{});
+      // Status muda somente APÓS o KM Final ser salvo em confirmarModalKmCarga
       _fimViagemDemId = demId;
       lancarKmCarga(dem[0].carga, 'final');
       return;
     }
   }catch(_){}
-  // Fallback sem carga: apenas confirmar status
-  if(!confirm('Confirmar chegada / fim de viagem?')) return;
+  // Fallback sem carga: confirmar status direto
   try{
     const r = await _patchStatusDemanda(demId, 'fim_viagem', 'portal_motorista');
     if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
