@@ -20739,7 +20739,7 @@ async function renderDashInterna(){
     const _dashCacheKey = _userUndDash ? `${mesFiltro}__${_userUndDash}` : mesFiltro;
     if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_dashCacheKey);
     const _dadosOtif = await _carregarOtifMes(mesFiltro, _userUndDash||undefined);
-    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
+    const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, [], undefined, mesFiltro);
     let otifTot, otifOk, onTimeTot, onTimeOk, inFullTot, inFullOk;
     if(rireFiltro === 'RI'){
       otifTot = _otifInterna.riTotal; otifOk = _otifInterna.otifRI;
@@ -21239,7 +21239,7 @@ async function renderDashInterna(){
 // isOnTime EXIGE entrega real (ent.entrega de entrega_datas). Fallbacks (data_saida / lancamentos.ts)
 // indicam apenas que o veículo saiu — sem entrega confirmada não conta como no prazo.
 // Pedidos dentro do prazo sem entrega: pendentes (não contam). Prazo vencido sem entrega: conta como atrasado.
-function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr){
+function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr, mesFiltro){
   if(!hojeStr) hojeStr = new Date().toISOString().slice(0,10);
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
@@ -21295,6 +21295,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
   for(const [ped,bd] of Object.entries(pedMap)){
     if(!bd.dataPedido) continue; // sem data_pedido não entra no cálculo
+    if(mesFiltro && !(bd.dataPedido||'').startsWith(mesFiltro)) continue; // pedido fora do mês selecionado
     const ent=entMap[ped]||{};
     const carga=bd.carga;
     // Prazo em horas: cadastro tem prioridade; null = rota sem OTIF; undefined = usa padrão RI/RE
@@ -21375,8 +21376,8 @@ async function _carregarOtifMes(mes, und){
   // Busca rotas, lançamentos e saídas primeiro para descobrir cargas do mês
   const [rotasRows, lancRows, saidaRows] = await Promise.all([
     supaFetch(`rotas?ativo=eq.true&select=nome,tipo,prazo_otif`,{_quiet:true}).catch(()=>[]),
-    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00${undFilter}&select=carga,ts,rota,rire`,{_quiet:true}).catch(()=>[]),
-    supaFetch(`demandas_rota?ts_saiu=gte.${mes}-01T00:00:00Z&ts_saiu=lt.${proximo}-01T00:00:00Z&select=carga,data_saida,ts_saiu`,{_quiet:true}).catch(()=>[]),
+    supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proximo}-01T00:00:00-03:00${undFilter}&select=carga,ts,rota,rire&limit=20000`,{_quiet:true}).catch(()=>[]),
+    supaFetch(`demandas_rota?ts_saiu=gte.${mes}-01T00:00:00-03:00&ts_saiu=lt.${proximo}-01T00:00:00-03:00&select=carga,data_saida,ts_saiu&limit=20000`,{_quiet:true}).catch(()=>[]),
   ]);
   // Atualizar ROTAS_RI com cadastro para getRireFromRota classificar corretamente
   (rotasRows||[]).forEach(r=>{
@@ -21412,14 +21413,14 @@ async function _carregarOtifMes(mes, und){
     const [rEnt, rEntProx, rOcorr, rMotEnt] = await Promise.all([
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${proximo}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
-      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00&criado_em=lt.${proximo}-01T00:00:00&select=pedido,tipo`,{_quiet:true}).catch(()=>[]),
-      supaFetch(`entregas_motorista?pedido=in.(${chunk.join(',')})&select=pedido,data_confirmacao`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00-03:00&criado_em=lt.${proximo}-01T00:00:00-03:00&select=pedido,tipo&limit=5000`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`entregas_motorista?pedido=in.(${chunk.join(',')})&select=pedido,data_confirmacao&limit=5000`,{_quiet:true}).catch(()=>[]),
     ]);
     entRows   = entRows.concat(rEnt || [], rEntProx || []);
     (rMotEnt||[]).forEach(e=>{ if(e.pedido&&e.data_confirmacao) entRows.push({pedido:e.pedido,data_entrega:e.data_confirmacao}); });
     ocorrRows = ocorrRows.concat(rOcorr || []);
   }
-  const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows);
+  const stats = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, mes);
   const result = { stats, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
   _otifCacheMap.set(cacheKey, result);
   _otifPromiseMap.delete(cacheKey);
@@ -21436,6 +21437,10 @@ async function renderDashOtif(){
     const mesAtual = new Date().toISOString().slice(0,7);
     const _undAtual = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
 
+    // Limpa cache do mês corrente para garantir dados frescos a cada renderização do widget
+    const _otifWidgetKey = _undAtual ? `${mesAtual}__${_undAtual}` : mesAtual;
+    _otifCacheMap.delete(_otifWidgetKey);
+    _otifPromiseMap.delete(_otifWidgetKey);
     // Fonte única: _carregarOtifMes calcula e armazena em cache (filtrado por unidade do usuário)
     const _dados = await _carregarOtifMes(mesAtual, _undAtual);
     if(!_dados || !_dados.bdRows.length){ el.innerHTML=''; return; }
@@ -32723,7 +32728,7 @@ async function carregarTV(){
     // ── OTIF do Mês — fonte única compartilhada com Painel e Dashboard Interno ──
     const _tvUnd = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
     const _tvDadosOtif = await _carregarOtifMes(mesStr, _tvUnd);
-    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, []/* ocorrencias indisponíveis no fallback — In Full = 100% */);
+    const otifStats = _tvDadosOtif ? _tvDadosOtif.stats : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, [], undefined, mesStr);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
 
