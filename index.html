@@ -13581,10 +13581,20 @@ async function renderFrotaUso(){
 
   try{
     const proxMes = _proximoMes(mes);
-    const [veiculos, lancs] = await Promise.all([
+    const hojeObj = new Date();
+    const hojeStr = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
+    const hojeD   = String(hojeObj.getDate()).padStart(2,'0');
+    const ehMesAtual = mes === hojeStr;
+
+    // ── Queries: demandas_rota com range de dias (data_saida → ts_fim_viagem) ──
+    const _q = [
       supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
-      supaFetch(`lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proxMes}-01T00:00:00&veiculo=not.is.null&select=veiculo,ts,rota,motorista,ajudante,carga&order=ts.asc`)
-    ]);
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status,rota,carga&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
+    ];
+    if(ehMesAtual){
+      _q.push(supaFetch(`demandas_rota?select=veiculo,status,rota,carga&veiculo=not.is.null&data_saida=is.null&status=in.(carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,separacao)`));
+    }
+    const [veiculos, demandas, demandasC] = await Promise.all(_q);
 
     // Filtra só veículos ativos excluindo "A DEFINIR"
     const todos = (veiculos || []).filter(v => v.ativo);
@@ -13599,6 +13609,8 @@ async function renderFrotaUso(){
     const [ano, numMes] = mes.split('-').map(Number);
     const diasNoMes  = new Date(ano, numMes, 0).getDate();
     const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+    const mesInicio  = new Date(ano, numMes-1, 1);
+    const mesFim     = new Date(ano, numMes-1, diasNoMes);
 
     // Dias úteis (Seg–Sab)
     const diasUteis = [];
@@ -13609,30 +13621,42 @@ async function renderFrotaUso(){
     const totalUteis = diasUteis.length;
     const fechamento = diasUteis[diasUteis.length - 1];
 
-    // Referência de hoje
-    const hojeObj    = new Date();
-    const hojeStr    = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
-    const hojeD      = String(hojeObj.getDate()).padStart(2,'0');
-    const ehMesAtual = mes === hojeStr;
-
     const diasPassados = diasUteis.filter(d => !ehMesAtual || d <= hojeD);
     const nPassados    = diasPassados.length;
     const nRestantes   = totalUteis - nPassados;
     const pctMes       = totalUteis > 0 ? Math.round(nPassados / totalUteis * 100) : 100;
 
-    // ── Mapa de lançamentos: usageMap[placa][dia] = [{rota,motorista,carga}] ──
+    // ── Mapa de uso: usageMap[placa][dia] = {status:'S'|'C', rota, carga} ──
+    // Cada dia entre data_saida e ts_fim_viagem é marcado como em uso
     const usageMap = {};
     todos.forEach(v => { usageMap[v.placa] = {}; });
 
-    (lancs || []).forEach(l => {
-      const placa = (l.veiculo||'').trim().toUpperCase();
-      if(!placa || placa === 'A DEFINIR VEÍCULO') return;
-      const dia = (l.ts||'').slice(8,10);
-      if(!dia) return;
-      if(!usageMap[placa]) usageMap[placa] = {};
-      if(!usageMap[placa][dia]) usageMap[placa][dia] = [];
-      usageMap[placa][dia].push(l);
+    (demandas||[]).forEach(d => {
+      const placa = (d.veiculo||'').trim().toUpperCase();
+      if(!placa || !d.data_saida || !usageMap[placa]) return;
+      const dtIni = new Date(d.data_saida + 'T12:00:00');
+      let dtFim;
+      if(d.ts_fim_viagem)                                        dtFim = new Date(d.ts_fim_viagem);
+      else if(d.status === 'saiu' || d.status === 'fim_viagem') dtFim = ehMesAtual ? hojeObj : mesFim;
+      else                                                       dtFim = dtIni;
+      const ini = dtIni < mesInicio ? mesInicio : dtIni;
+      const fim = dtFim  > mesFim   ? mesFim    : dtFim;
+      const cur = new Date(ini);
+      while(cur <= fim){
+        const dia = String(cur.getDate()).padStart(2,'0');
+        if(!usageMap[placa][dia]) usageMap[placa][dia] = { status:'S', rota: d.rota||'', carga: d.carga||'' };
+        cur.setDate(cur.getDate()+1);
+      }
     });
+
+    // C: veículos carregando hoje (somente mês atual)
+    if(ehMesAtual){
+      (demandasC||[]).forEach(d => {
+        const placa = (d.veiculo||'').trim().toUpperCase();
+        if(!placa || !usageMap[placa]) return;
+        if(!usageMap[placa][hojeD]) usageMap[placa][hojeD] = { status:'C', rota: d.rota||'', carga: d.carga||'' };
+      });
+    }
 
     // ── Cabeçalho de dias ──
     const thDias = diasUteis.map(dia => {
@@ -13660,19 +13684,19 @@ async function renderFrotaUso(){
       let diasUsadosPassados = 0;
 
       const celulas = diasUteis.map(dia => {
-        const lancsDia = usageMap[v.placa]?.[dia] || [];
-        const ehHoje   = ehMesAtual && dia === hojeD;
-        const futuro   = ehMesAtual && dia > hojeD;
-        const dt       = new Date(ano, numMes-1, parseInt(dia));
-        const ehSab    = dt.getDay() === 6;
-        const ehFech   = dia === fechamento;
-        const borderR  = ehFech ? 'border-right:2.5px solid #7c3aed' : 'border-right:1px solid var(--border)';
+        const uso    = usageMap[v.placa]?.[dia] || null;
+        const ehHoje = ehMesAtual && dia === hojeD;
+        const futuro = ehMesAtual && dia > hojeD;
+        const dt     = new Date(ano, numMes-1, parseInt(dia));
+        const ehSab  = dt.getDay() === 6;
+        const ehFech = dia === fechamento;
+        const borderR = ehFech ? 'border-right:2.5px solid #7c3aed' : 'border-right:1px solid var(--border)';
 
-        if(!lancsDia.length){
+        if(!uso){
           let bg = '';
-          if(ehHoje)       bg = 'rgba(37,99,235,.06)';
-          else if(futuro)  bg = 'transparent';
-          else if(ehSab)   bg = 'rgba(99,102,241,.04)';
+          if(ehHoje)      bg = 'rgba(37,99,235,.06)';
+          else if(futuro) bg = 'transparent';
+          else if(ehSab)  bg = 'rgba(99,102,241,.04)';
           return `<td style="padding:4px 2px;text-align:center;${borderR};background:${bg}">
             <span style="color:${futuro?'transparent':'var(--border-med)'};font-size:.78rem">${futuro?'·':'—'}</span>
           </td>`;
@@ -13680,14 +13704,16 @@ async function renderFrotaUso(){
 
         if(!futuro) diasUsadosPassados++;
 
-        const rotas   = [...new Set(lancsDia.map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
-        const motoris = [...new Set(lancsDia.map(l=>l.motorista).filter(Boolean))];
-        const title   = lancsDia.map(l=>`🚛 Cg ${l.carga||'?'} | ${l.rota||'?'} | ${l.motorista||'—'}`).join('\n');
+        const bgCell  = uso.status === 'C' ? '#fef3c7' : '#dbeafe';
+        const icone   = uso.status === 'C' ? '⚙️' : '🚛';
+        const txtRota = (uso.rota||'').toUpperCase().slice(0,5) || (uso.status==='C'?'CARG':'✓');
+        const corTxt  = uso.status === 'C' ? '#b45309' : '#1d4ed8';
+        const title   = `${uso.status==='C'?'⚙️ Carregando':'🚛 Carga '+(uso.carga||'?')} | ${uso.rota||'?'}`;
 
-        return `<td style="padding:3px 2px;text-align:center;${borderR};background:#dbeafe" title="${title}">
+        return `<td style="padding:3px 2px;text-align:center;${borderR};background:${bgCell}" title="${title}">
           <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
-            <span style="font-size:.73rem">🚛</span>
-            <span style="font-size:.56rem;color:#1d4ed8;font-weight:700;max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rotas[0]?.slice(0,5)||'✓'}</span>
+            <span style="font-size:.73rem">${icone}</span>
+            <span style="font-size:.56rem;color:${corTxt};font-weight:700;max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${txtRota}</span>
           </div>
         </td>`;
       }).join('');
@@ -13829,7 +13855,7 @@ async function renderFrotaUso(){
         <!-- Ranking -->
         <div>
           <div style="font-size:.7rem;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-            📊 Uso por veículo — lançamentos confirmados (linha roxa = meta ${META_USO}%)
+            📊 Uso por veículo — dias em rota (linha roxa = meta ${META_USO}%)
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">${rankingHtml}</div>
         </div>
