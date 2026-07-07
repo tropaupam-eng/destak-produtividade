@@ -21105,13 +21105,19 @@ async function renderDashInterna(){
 
       // saidaMap, lancDtMap e lancRotaMap por carga (para calcular dataFim e rota real)
       const saidaMapCarga = {};
-      (saidaRowsOtif||[]).forEach(d=>{ if(d.carga&&d.data_saida) saidaMapCarga[String(d.carga)]=d.data_saida; });
+      const saidaTsMapOtif = {}; // ts_saiu completo — início do prazo R.E.
+      (saidaRowsOtif||[]).forEach(d=>{
+        if(!d.carga) return;
+        if(d.data_saida) saidaMapCarga[String(d.carga)] = d.data_saida;
+        if(d.ts_saiu)    saidaTsMapOtif[String(d.carga)] = d.ts_saiu;
+      });
       const lancDtMapOtif = {};
+      const lancTsMapOtif = {}; // ts completo — fallback R.E. quando ts_saiu indisponível
       const lancRotaMapOtif = {};
       (lancRowsOtif||[]).forEach(l=>{
         if(!l.carga) return;
         const ck=String(l.carga);
-        if(l.ts) lancDtMapOtif[ck]=l.ts.slice(0,10);
+        if(l.ts){ lancDtMapOtif[ck]=l.ts.slice(0,10); lancTsMapOtif[ck]=l.ts; }
         if(l.rota&&!lancRotaMapOtif[ck]) lancRotaMapOtif[ck]=normalizarRota(l.rota)||l.rota.toUpperCase();
       });
 
@@ -21160,6 +21166,15 @@ async function renderDashInterna(){
         const prazoH   = prazoEntry != null ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
         const ent   = entMapOtif[ped] || {};
 
+        // Início do prazo: R.I. = data_pedido (local); R.E. = ts_saiu > lancTs > data_pedido
+        let _inicioPrazoOtif;
+        if(rireNorm.includes('I')){
+          _inicioPrazoOtif = new Date(p.data_pedido+'T00:00:00');
+        } else {
+          const tsRe = (carga && saidaTsMapOtif[carga]) || (carga && lancTsMapOtif[carga]);
+          _inicioPrazoOtif = tsRe ? new Date(tsRe) : new Date(p.data_pedido+'T00:00:00');
+        }
+
         // dataFim — entrega real tem prioridade; fallbacks indicam apenas saída do veículo
         let dataFim    = ent.entrega || null;
         const hasEntrega = !!dataFim; // true = data_entrega real confirmada
@@ -21168,14 +21183,14 @@ async function renderDashInterna(){
         if(!dataFim && carga && lancDtMapOtif[carga])  dataFim = lancDtMapOtif[carga];
         if(!dataFim){
           // Sem qualquer data — conta como falha apenas se prazo já venceu
-          const horasDecorridas = (new Date(hoje+'T23:59:59') - new Date(p.data_pedido+'T00:00:00')) / 3600000;
+          const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
           if(horasDecorridas > prazoH){
             semOtif[semIdx].t++;
             if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
           }
           return; // pendente ou falha sem data — sem mais nada a fazer
         }
-        const diffHoras = (new Date(dataFim) - new Date(p.data_pedido)) / 3600000;
+        const diffHoras = (new Date(dataFim) - _inicioPrazoOtif) / 3600000;
         if(diffHoras < 0){
           semOtif[semIdx].t++;
           if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
@@ -21186,7 +21201,7 @@ async function renderDashInterna(){
         const isInFull = !ocorrSetOtif.has(ped);
         // Sem entrega real confirmada: só conta se prazo já venceu (evita 100% artificial em semanas recentes)
         if(!hasEntrega){
-          const horasDecorridas = (new Date(hoje+'T23:59:59') - new Date(p.data_pedido+'T00:00:00')) / 3600000;
+          const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
           if(horasDecorridas <= prazoH) return; // pendente — não conta ainda
           semOtif[semIdx].t++;
           if(isInFull) semOtif[semIdx].ifull++;
@@ -21248,13 +21263,15 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     prazoMap[nome]=r.prazo_otif; // null do banco = sem prazo; número = horas
   });
   const saidaMap={};
+  const saidaTsMap={}; // timestamp completo da saída — início do prazo para R.E. (ts_saiu)
   (saidaRows||[]).forEach(d=>{
     if(d.carga==null) return;
     const dt = d.data_saida || (d.ts_saiu ? d.ts_saiu.slice(0,10) : null);
     if(dt) saidaMap[String(d.carga)] = dt;
+    if(d.ts_saiu) saidaTsMap[String(d.carga)] = d.ts_saiu;
   });
   const lancDtMap={};
-  const lancTsMap={}; // timestamp completo do lançamento — início do prazo para rotas RE (Regra 2)
+  const lancTsMap={}; // timestamp completo do lançamento — fallback R.E. quando ts_saiu indisponível
   const lancRotaMap={};
   const lancRireMap={};
   (lancRows||[]).forEach(l=>{
@@ -21302,16 +21319,19 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const prazoEntry=Object.prototype.hasOwnProperty.call(prazoMap,bd.rota)?prazoMap[bd.rota]:undefined;
     if(prazoEntry===null) continue; // rota cadastrada sem prazo (prazo_otif = null no banco)
     const prazoH=prazoEntry!=null?prazoEntry:(bd.rire==='R.I.'?24:192);
-    // Regra 1 (RI): data_pedido com corte 16h — se criado >=16h, inicia no dia seguinte às 08:00
-    // Regra 2 (RE): lancamentos.ts como início do prazo (momento da criação da carga na expedição)
+    // Regra R.I.: data_pedido (hora_pedido quando disponível; corte 16h → próximo dia 08:00)
+    // Regra R.E.: ts_saiu = momento que a carga é liberada para rota; fallback lancamentos.ts
     let inicioPrazo;
     if(bd.rire==='R.I.'){
       const dpMs=new Date(bd.dataPedido+'T00:00:00');
+      // Corte 16h: pedidos criados >=16h iniciam prazo no dia seguinte às 08:00
+      // (hora_pedido ainda não existe em base_data — esta regra entra em vigor quando for adicionada)
       if(dpMs.getHours()>=16){ dpMs.setDate(dpMs.getDate()+1); dpMs.setHours(8,0,0,0); }
       inicioPrazo=dpMs;
     } else {
-      const ts=carga&&lancTsMap[carga];
-      inicioPrazo=ts?new Date(ts):new Date(bd.dataPedido+'T00:00:00');
+      // R.E.: ts_saiu da demanda_rota → fallback lancamentos.ts → fallback data_pedido
+      const tsRe=(carga&&saidaTsMap[carga])||(carga&&lancTsMap[carga]);
+      inicioPrazo=tsRe?new Date(tsRe):new Date(bd.dataPedido+'T00:00:00');
     }
     // Data final: entrega real (fonte confiável) → fallbacks indicam apenas saída do veículo
     let dataFim=ent.entrega||null;
@@ -21661,20 +21681,21 @@ async function renderOtifDiario(){
 
     const nowMs = Date.now();
 
-    function getSemaforo(pedido, rotaNorm, rire, dataPedido, lancTs){
+    function getSemaforo(pedido, rotaNorm, rire, dataPedido, lancTs, saidaTs){
       if(entMap[String(pedido)]) return 'ok';
       if(!dataPedido) return 'ok';
       const prazoH=getPrazoH(rotaNorm,rire);
       if(prazoH===null) return 'ok';
       const prazoMs=prazoH*3600000;
-      // Regra 1 (RI): data_pedido + corte 16h; Regra 2 (RE): lancamentos.ts
+      // Regra 1 (RI): data_pedido (local); Regra 2 (RE): ts_saiu > lancamentos.ts > data_pedido
       let inicioMs;
       if(rire==='R.I.'){
         const dpMs=new Date(dataPedido+'T00:00:00');
         if(dpMs.getHours()>=16){ dpMs.setDate(dpMs.getDate()+1); dpMs.setHours(8,0,0,0); }
         inicioMs=dpMs.getTime();
       } else {
-        inicioMs=lancTs?new Date(lancTs).getTime():new Date(dataPedido+'T00:00:00').getTime();
+        const tsRe=saidaTs||lancTs;
+        inicioMs=tsRe?new Date(tsRe).getTime():new Date(dataPedido+'T00:00:00').getTime();
       }
       const deadline=inicioMs+prazoMs;
       if(nowMs>deadline) return 'atrasado';
@@ -21696,7 +21717,8 @@ async function renderOtifDiario(){
       const prazoH=getPrazoH(rotaNorm,rireNorm);
       if(prazoH===null){ cargaStats[ck].semOtif++; return; }
       const lancTs=lancMap[ck]?.ts||null;
-      const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido,lancTs);
+      const saidaTs=demandaMap[ck]?.ts_saiu||null;
+      const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido,lancTs,saidaTs);
       const entregue=!!entMap[String(p.pedido)];
       const isInFull=!ocorrSet.has(String(p.pedido));
       cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm,isInFull});
