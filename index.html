@@ -2513,6 +2513,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div class="sidebar-item" data-page="banco-dados" data-perfil="admin" onclick="showPage('banco-dados',this)">
     <span class="si-icon">🗄️</span><span class="si-label">Banco de Dados</span>
   </div>
+  <div class="sidebar-item" data-page="erp-teste" data-perfil="admin" onclick="showPage('erp-teste',this)">
+    <span class="si-icon">🔌</span><span class="si-label">Integração ERP</span>
+  </div>
 
 </div>
 
@@ -6910,6 +6913,51 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 </div></div>
 
+<!-- ── PÁGINA: Integração ERP (TESTE) ─────────────────────────────────── -->
+<div class="page" id="page-erp-teste"><div class="container" style="max-width:900px">
+  <div style="margin-bottom:24px">
+    <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">🔌 Integração ERP — Teste</h2>
+    <p style="font-size:.83rem;color:var(--text-secondary)">Teste o recebimento de pedidos via JSON. Os dados vão para <code>base_data_erp_teste</code> — <strong>não afeta a produção</strong>.</p>
+  </div>
+
+  <!-- Upload JSON -->
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:20px">
+    <div style="font-weight:800;font-size:.92rem;color:var(--text-primary);margin-bottom:12px">📂 Enviar arquivo JSON</div>
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;background:var(--bg-card2);border:2px dashed var(--border);border-radius:10px;padding:18px 20px">
+      <span style="font-size:1.4rem">📄</span>
+      <div>
+        <div style="font-weight:700;font-size:.88rem;color:var(--text-primary)">Selecionar arquivo .json</div>
+        <div style="font-size:.75rem;color:var(--text-muted)" id="erp-file-nome">Nenhum arquivo selecionado</div>
+      </div>
+      <input type="file" accept=".json" style="display:none" onchange="erpTesteCarregarArquivo(event)">
+    </label>
+  </div>
+
+  <!-- Cole o JSON -->
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:20px">
+    <div style="font-weight:800;font-size:.92rem;color:var(--text-primary);margin-bottom:10px">✏️ Ou cole o JSON aqui</div>
+    <textarea id="erp-json-input" rows="10" placeholder='[{"id":1,"numero_pedido_erp":48403,"carga_erp":"11024.0",...}]'
+      style="width:100%;box-sizing:border-box;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:.8rem;font-family:monospace;color:var(--text-primary);resize:vertical"></textarea>
+  </div>
+
+  <!-- Botão enviar + resultado -->
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">
+    <button onclick="erpTesteEnviar()" style="background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:.88rem;font-weight:700;cursor:pointer">
+      🚀 Enviar para Teste
+    </button>
+    <button onclick="erpTesteConsultar()" style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:.88rem;font-weight:700;cursor:pointer">
+      🔍 Ver dados gravados
+    </button>
+    <button onclick="erpTesteLimpar()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:10px 22px;font-size:.88rem;font-weight:700;cursor:pointer">
+      🗑️ Limpar tabela de teste
+    </button>
+  </div>
+
+  <div id="erp-teste-resultado" style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px;font-size:.82rem;color:var(--text-secondary);min-height:60px">
+    Aguardando envio...
+  </div>
+</div></div>
+
   </div>
 </div>
 
@@ -7899,6 +7947,137 @@ async function pushBaseData(records){
       }
     }catch(_){}
   })();
+}
+
+// ── Integração ERP: recebe JSON de pedidos e salva em base_data_erp_teste ────────────────
+// ATENÇÃO: tabela de TESTE — não afeta base_data de produção.
+// Campos rota/rire/condutor/ajudante vêm do lançamento/expedição, não do JSON.
+async function integrarPedidosERP(jsonPayload){
+  let pedidos;
+  try{
+    pedidos = typeof jsonPayload === 'string' ? JSON.parse(jsonPayload) : jsonPayload;
+  }catch(e){
+    showToast('❌ JSON inválido: '+e.message, 'error');
+    return { ok: false, erro: 'JSON inválido: '+e.message };
+  }
+  if(!Array.isArray(pedidos) || pedidos.length === 0){
+    showToast('⚠️ Nenhum pedido no payload.', 'warning');
+    return { ok: false, erro: 'Array vazio ou inválido' };
+  }
+
+  const registros = pedidos.map(p => ({
+    id:                 p.id                 ?? null,
+    cliente_id:         p.cliente_id         ?? null,
+    id_erp_externo:     p.id_erp_externo     ?? null,
+    unidade_erp:        p.unidade_erp        ?? null,
+    numero_pedido_erp:  p.numero_pedido_erp  ?? null,
+    numero_documento:   p.numero_documento   ? String(p.numero_documento) : null,
+    tipo_pedido:        p.tipo_pedido        ?? null,
+    data_pedido:        p.data_pedido        ?? null,
+    data_documento:     p.data_documento     ?? null,
+    valor_liquido:      p.valor_liquido      != null ? Number(p.valor_liquido) : null,
+    peso_bruto:         p.peso_bruto         != null ? Number(p.peso_bruto)    : null,
+    peso_liquido:       p.peso_liquido       != null ? Number(p.peso_liquido)  : null,
+    volumes:            p.volumes            != null ? Number(p.volumes)       : null,
+    codigo_cliente:     p.codigo_cliente     ? String(p.codigo_cliente) : null,
+    nome_destinatario:  p.nome_destinatario  ?? null,
+    fantasia:           p.fantasia           ?? null,
+    endereco_texto:     p.endereco_texto     ?? null,
+    bairro:             p.bairro             ?? null,
+    cep:                p.cep                ? String(p.cep) : null,
+    rota_erp:           p.rota_erp           ?? null, // armazenado apenas para referência — rota real vem do lançamento
+    carga_erp:          p.carga_erp          ? String(p.carga_erp) : null,
+    lat:                p.lat                != null ? Number(p.lat) : null,
+    lng:                p.lng                != null ? Number(p.lng) : null,
+    status:             p.status             ?? 'pendente',
+    criado_em:          p.criado_em          ?? null,
+  })).filter(r => r.numero_pedido_erp != null && r.carga_erp != null);
+
+  if(registros.length === 0){
+    showToast('⚠️ Nenhum pedido válido (numero_pedido_erp e carga_erp obrigatórios).', 'warning');
+    return { ok: false, erro: 'Sem registros válidos' };
+  }
+
+  showToast(`📤 Enviando ${registros.length} pedido(s) para teste...`, 'warning');
+
+  const LOTE = 200;
+  let enviados = 0;
+  try{
+    for(let i = 0; i < registros.length; i += LOTE){
+      const lote = registros.slice(i, i + LOTE);
+      await supaFetch('base_data_erp_teste?on_conflict=id', {
+        method:  'POST',
+        prefer:  'resolution=merge-duplicates,return=minimal',
+        body:    JSON.stringify(lote),
+      });
+      enviados += lote.length;
+    }
+    showToast(`✅ ${enviados} pedido(s) gravados em base_data_erp_teste (TESTE).`, 'success');
+    return { ok: true, total: enviados };
+  }catch(err){
+    showToast('❌ Erro ao gravar pedidos ERP: '+err.message, 'error');
+    return { ok: false, erro: err.message };
+  }
+}
+
+// ── Funções de UI para página de teste ERP ───────────────────────────────────
+function erpTesteCarregarArquivo(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  document.getElementById('erp-file-nome').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById('erp-json-input').value = e.target.result; };
+  reader.readAsText(file, 'utf-8');
+}
+
+async function erpTesteEnviar(){
+  const raw = (document.getElementById('erp-json-input')?.value||'').trim();
+  if(!raw){ showToast('⚠️ Cole ou selecione um JSON primeiro.','warning'); return; }
+  const res = await integrarPedidosERP(raw);
+  const el = document.getElementById('erp-teste-resultado');
+  if(res.ok){
+    el.innerHTML = `<span style="color:#059669;font-weight:700">✅ ${res.total} pedido(s) gravados em <code>base_data_erp_teste</code>.</span><br><span style="color:var(--text-muted)">Clique em "Ver dados gravados" para conferir.</span>`;
+  } else {
+    el.innerHTML = `<span style="color:#ef4444;font-weight:700">❌ Erro: ${res.erro}</span>`;
+  }
+}
+
+async function erpTesteConsultar(){
+  const el = document.getElementById('erp-teste-resultado');
+  el.innerHTML = 'Consultando...';
+  try{
+    const rows = await supaFetch('base_data_erp_teste?select=id,numero_pedido_erp,carga_erp,nome_destinatario,data_pedido,valor_liquido,status&order=id.asc&limit=200') || [];
+    if(!rows.length){ el.innerHTML = '<span style="color:var(--text-muted)">Tabela de teste vazia.</span>'; return; }
+    let html = `<div style="font-weight:700;color:var(--text-primary);margin-bottom:10px">${rows.length} registro(s) em base_data_erp_teste:</div>`;
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.78rem">';
+    html += '<tr style="border-bottom:1px solid var(--border)"><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">ID</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Pedido ERP</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Carga</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Destinatário</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Data Pedido</th><th style="padding:6px 8px;text-align:right;color:var(--text-muted)">Valor</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Status</th></tr>';
+    rows.forEach(r=>{
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 8px;color:var(--text-muted)">${r.id}</td>
+        <td style="padding:6px 8px;font-weight:700;color:var(--text-primary)">${r.numero_pedido_erp}</td>
+        <td style="padding:6px 8px">${r.carga_erp||'—'}</td>
+        <td style="padding:6px 8px">${r.nome_destinatario||'—'}</td>
+        <td style="padding:6px 8px">${r.data_pedido||'—'}</td>
+        <td style="padding:6px 8px;text-align:right">R$ ${(Number(r.valor_liquido)||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+        <td style="padding:6px 8px"><span style="background:rgba(37,99,235,.1);color:#3b82f6;border-radius:6px;padding:2px 8px;font-size:.72rem;font-weight:700">${r.status}</span></td>
+      </tr>`;
+    });
+    html += '</table></div>';
+    el.innerHTML = html;
+  }catch(e){
+    el.innerHTML = `<span style="color:#ef4444">Erro ao consultar: ${e.message}</span>`;
+  }
+}
+
+async function erpTesteLimpar(){
+  if(!confirm('Apagar TODOS os registros de base_data_erp_teste? (Dados de produção não serão afetados.)')) return;
+  try{
+    await supaFetch('base_data_erp_teste?id=gte.0',{method:'DELETE'});
+    document.getElementById('erp-teste-resultado').innerHTML = '<span style="color:#f59e0b;font-weight:700">🗑️ Tabela de teste limpa.</span>';
+    showToast('Tabela de teste limpa.','success');
+  }catch(e){
+    showToast('Erro ao limpar: '+e.message,'error');
+  }
 }
 
 async function normalizarCondutorBanco(){
