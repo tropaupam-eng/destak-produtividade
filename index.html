@@ -21478,9 +21478,12 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   (entRows||[]).forEach(e=>{
     const k=String(e.pedido);
     if(!entMap[k]) entMap[k]={saida:null,entrega:null};
-    // Guarda a data_entrega mais antiga (primeira entrega real = OTIF)
-    if(e.data_entrega&&(!entMap[k].entrega||e.data_entrega<entMap[k].entrega)) entMap[k].entrega=e.data_entrega;
-    if(e.data_saida&&!entMap[k].saida) entMap[k].saida=e.data_saida;
+    // Normaliza para 'YYYY-MM-DD' — data_entrega no banco é timestamp UTC midnight;
+    // fatiar para data-apenas garante consistência com data_pedido e evita bug de fuso horário
+    const _de = e.data_entrega ? e.data_entrega.slice(0,10) : null;
+    const _ds = e.data_saida   ? e.data_saida.slice(0,10)   : null;
+    if(_de&&(!entMap[k].entrega||_de<entMap[k].entrega)) entMap[k].entrega=_de;
+    if(_ds&&!entMap[k].saida) entMap[k].saida=_ds;
   });
   // In Full: pedido com ocorrência na Expedição (inversão, falta, avaria, outro) = fora do In Full
   const ocorrSet=new Set();
@@ -21502,15 +21505,13 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     // Regra R.E.: ts_saiu = momento que a carga é liberada para rota; fallback lancamentos.ts
     let inicioPrazo;
     if(bd.rire==='R.I.'){
-      const dpMs=new Date(bd.dataPedido+'T00:00:00');
-      // Corte 16h: pedidos criados >=16h iniciam prazo no dia seguinte às 08:00
-      // (hora_pedido ainda não existe em base_data — esta regra entra em vigor quando for adicionada)
-      if(dpMs.getHours()>=16){ dpMs.setDate(dpMs.getDate()+1); dpMs.setHours(8,0,0,0); }
-      inicioPrazo=dpMs;
+      // data_pedido como data pura (UTC midnight) — consistente com data_entrega no banco
+      // Corte 16h ativado quando hora_pedido for adicionado à base_data
+      inicioPrazo=new Date(bd.dataPedido);
     } else {
       // R.E.: ts_saiu da demanda_rota → fallback lancamentos.ts → fallback data_pedido
       const tsRe=(carga&&saidaTsMap[carga])||(carga&&lancTsMap[carga]);
-      inicioPrazo=tsRe?new Date(tsRe):new Date(bd.dataPedido+'T00:00:00');
+      inicioPrazo=tsRe?new Date(tsRe):new Date(bd.dataPedido);
     }
     // Data final: entrega real (fonte confiável) → fallbacks indicam apenas saída do veículo
     let dataFim=ent.entrega||null;
@@ -21645,7 +21646,14 @@ async function renderDashOtif(){
     _otifPromiseMap.delete(_otifWidgetKey);
     // Fonte única: _carregarOtifMes calcula e armazena em cache (filtrado por unidade do usuário)
     const _dados = await _carregarOtifMes(mesAtual, _undAtual);
-    if(!_dados || !_dados.bdRows.length){ el.innerHTML=''; return; }
+    if(!_dados || !_dados.bdRows.length){
+      el.innerHTML=`<div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:10px">
+        <span style="font-size:1.1rem">${_connOk?'📭':'🔴'}</span>
+        <span>${_connOk?'OTIF — sem lançamentos no mês atual':'OTIF indisponível — sem conexão com o banco'}</span>
+        <button onclick="renderDashOtif()" style="margin-left:auto;background:transparent;border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.75rem;color:var(--text-secondary);cursor:pointer">🔄 Tentar novamente</button>
+      </div>`;
+      return;
+    }
     const s = _dados.stats;
     const { total, riTotal, reTotal, entG, onTimeG, inFullG, otifG,
             entRI, onTimeRI, inFullRI, otifRI, entRE, onTimeRE, inFullRE, otifRE } = s;
