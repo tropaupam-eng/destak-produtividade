@@ -16719,6 +16719,30 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
           isPrecarga = detectarFormatoPrecarga(headersRaw);
         }
 
+        // ── VALIDAÇÃO DE COLUNAS OBRIGATÓRIAS ─────────────────────────────
+        // Bloqueia upload silencioso de planilhas com formato errado
+        const hl = headersRaw.map(h=>String(h).toLowerCase().trim());
+        if(isPrecarga){
+          const faltam=[
+            !hl.some(h=>h==='pedido')&&'Pedido',
+            !hl.some(h=>h==='valor'||h===' valor ')&&'Valor',
+          ].filter(Boolean);
+          if(faltam.length){
+            showToast(`❌ Planilha inválida — coluna(s) não encontrada(s): ${faltam.join(', ')}. Verifique se é a planilha de pré-carga correta.`,'warning');
+            resolve(null); return;
+          }
+        } else {
+          const faltam=[
+            !hl.some(h=>h==='carga')&&'Carga',
+            !hl.some(h=>h==='pedido')&&'Pedido',
+            !hl.some(h=>h==='valor'||h===' valor ')&&'Valor',
+          ].filter(Boolean);
+          if(faltam.length){
+            showToast(`❌ Planilha inválida — coluna(s) não encontrada(s): ${faltam.join(', ')}. Verifique se esta é a planilha correta de expedição.`,'warning');
+            resolve(null); return;
+          }
+        }
+
         let novos = [];
 
         if(isPrecarga){
@@ -16812,7 +16836,7 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
           for(let i=0;i<novos.length;i+=LOTE){
             await supaFetch('base_data?on_conflict=carga,pedido',{
               method:'POST',
-              prefer:'resolution=ignore-duplicates,return=minimal',
+              prefer:'resolution=merge-duplicates,return=minimal',
               body: JSON.stringify(novos.slice(i,i+LOTE).map(r=>({
                 carga:r.carga, pedido:r.pedido, valor:r.valor,
                 und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
@@ -16826,14 +16850,15 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
           if((!gravados||gravados.length===0) && novos.length>0){
             throw new Error(`Validação pós-gravação falhou: 0 registros encontrados para carga ${cargaNum}`);
           }
-          // ✅ Banco confirmou — atualizar cache local
+          // ✅ Banco confirmou — atualizar cache local (merge-duplicates: substituir todos os
+          // registros da carga no cache para refletir valores atualizados, não só inserções novas)
           const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
           const filtrados  = novos.filter(r=>!chaveExist.has(Number(r.carga)+'_'+String(r.pedido)));
-          if(filtrados.length){
-            BASE_DATA = [...BASE_DATA, ...filtrados];
-            window._cargaMapCache = null;
-            try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
-          }
+          const cargasImportadas = new Set(novos.map(r=>Number(r.carga)));
+          BASE_DATA = BASE_DATA.filter(r=>!cargasImportadas.has(Number(r.carga)));
+          BASE_DATA = [...BASE_DATA, ...novos];
+          window._cargaMapCache = null;
+          try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(_){}
         }catch(e){
           try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
             mensagem:'Falha ao importar planilha (expedição): '+e.message,
@@ -21907,15 +21932,13 @@ async function renderOtifDiario(){
       const prazoH=getPrazoH(rotaNorm,rire);
       if(prazoH===null) return 'ok';
       const prazoMs=prazoH*3600000;
-      // Regra 1 (RI): data_pedido (local); Regra 2 (RE): ts_saiu > lancamentos.ts > data_pedido
+      // Mesma lógica de _computeOtifStats: date-only string = UTC midnight, consistente com data_entrega no banco
       let inicioMs;
       if(rire==='R.I.'){
-        const dpMs=new Date(dataPedido+'T00:00:00');
-        if(dpMs.getHours()>=16){ dpMs.setDate(dpMs.getDate()+1); dpMs.setHours(8,0,0,0); }
-        inicioMs=dpMs.getTime();
+        inicioMs=new Date(dataPedido).getTime();
       } else {
         const tsRe=saidaTs||lancTs;
-        inicioMs=tsRe?new Date(tsRe).getTime():new Date(dataPedido+'T00:00:00').getTime();
+        inicioMs=tsRe?new Date(tsRe).getTime():new Date(dataPedido).getTime();
       }
       const deadline=inicioMs+prazoMs;
       if(nowMs>deadline) return 'atrasado';
