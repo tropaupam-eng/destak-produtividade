@@ -13830,15 +13830,16 @@ async function renderFrotaUso(){
     const hojeD   = String(hojeObj.getDate()).padStart(2,'0');
     const ehMesAtual = mes === hojeStr;
 
-    // ── Queries: demandas_rota com range de dias (data_saida → ts_fim_viagem) ──
+    // ── Queries: demandas_rota + lançamentos manuais ──
     const _q = [
       supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status,rota,carga&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status,rota,carga&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
+      supaFetch(`lancamentos?select=veiculo,ts,rota,carga&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[])
     ];
     if(ehMesAtual){
       _q.push(supaFetch(`demandas_rota?select=veiculo,status,rota,carga&veiculo=not.is.null&data_saida=is.null&status=in.(carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,separacao)`));
     }
-    const [veiculos, demandas, demandasC] = await Promise.all(_q);
+    const [veiculos, demandas, _lancamentosUso, demandasC] = await Promise.all(_q);
 
     // Filtra só veículos ativos excluindo "A DEFINIR"
     const todos = (veiculos || []).filter(v => v.ativo);
@@ -13891,6 +13892,14 @@ async function renderFrotaUso(){
         if(!usageMap[placa][dia]) usageMap[placa][dia] = { status:'S', rota: d.rota||'', carga: d.carga||'' };
         cur.setDate(cur.getDate()+1);
       }
+    });
+
+    // S: lançamentos manuais (Distribuição > Lançamento) — dia único baseado no ts
+    (_lancamentosUso||[]).forEach(d => {
+      const placa = (d.veiculo||'').trim().toUpperCase();
+      if(!placa || !d.ts || !usageMap[placa]) return;
+      const dia = String(new Date(d.ts).getDate()).padStart(2,'0');
+      if(!usageMap[placa][dia]) usageMap[placa][dia] = { status:'S', rota: d.rota||'', carga: d.carga||'' };
     });
 
     // C: veículos carregando hoje (somente mês atual)
@@ -14162,12 +14171,13 @@ async function renderFrotaDisp(){
 
     const queries = [
       supaFetch('veiculos?select=placa,tipo,unidade,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
+      supaFetch(`lancamentos?select=veiculo,ts&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[])
     ];
     if(ehMesAtual){
       queries.push(supaFetch(`demandas_rota?select=veiculo,status&veiculo=not.is.null&data_saida=is.null&status=in.(carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,separacao)`));
     }
-    const [veiculos, demandas, demandasC] = await Promise.all(queries);
+    const [veiculos, demandas, lancamentosDisp, demandasC] = await Promise.all(queries);
 
     const todosAtivos = (veiculos||[]).filter(v => v.ativo && !(v.placa||'').toUpperCase().includes('FRETE'));
 
@@ -14214,6 +14224,14 @@ async function renderFrotaDisp(){
         dispMap[placa][dia] = 'S';
         cur.setDate(cur.getDate()+1);
       }
+    });
+
+    // S: lançamentos manuais (Distribuição > Lançamento) — dia único baseado no ts
+    (lancamentosDisp||[]).forEach(d => {
+      const placa = (d.veiculo||'').trim().toUpperCase();
+      if(!placa || !d.ts || !dispMap[placa]) return;
+      const dia = String(new Date(d.ts).getDate()).padStart(2,'0');
+      if(!dispMap[placa][dia]) dispMap[placa][dia] = 'S';
     });
 
     // C: carregando hoje (somente mês atual)
