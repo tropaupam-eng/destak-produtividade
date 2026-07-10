@@ -7842,27 +7842,57 @@ async function pushBaseData(records){
     if(lote.length) todosBatches.push(lote);
   }
 
+  const enviarLote = async lote => {
+    for(let tentativa=0; tentativa<2; tentativa++){
+      try{
+        await supaFetch('base_data?on_conflict=carga,pedido',{
+          method:'POST',
+          prefer:'resolution=merge-duplicates,return=minimal',
+          body: JSON.stringify(lote)
+        });
+        return true;
+      }catch(err){
+        if(tentativa===1) return false;
+        await new Promise(r=>setTimeout(r,2000));
+      }
+    }
+    return false;
+  };
+
   let enviados = 0;
+  const lotesFalhos = [];
+
+  // Passagem 1: todos os lotes em grupos paralelos (allSettled = nunca aborta)
   for(let g=0; g<todosBatches.length; g+=PARALELO){
     const grupo = todosBatches.slice(g, g+PARALELO);
-    await Promise.all(grupo.map(async lote => {
-      let ok = false;
-      for(let tentativa=0; tentativa<2 && !ok; tentativa++){
-        try{
-          await supaFetch('base_data?on_conflict=carga,pedido',{
-            method:'POST',
-            prefer:'resolution=merge-duplicates,return=minimal',
-            body: JSON.stringify(lote)
-          });
-          ok = true;
-        }catch(err){
-          if(tentativa===1) throw err;
-          await new Promise(r=>setTimeout(r,2000));
-        }
+    const resultados = await Promise.allSettled(grupo.map(lote => enviarLote(lote)));
+    resultados.forEach((res, idx) => {
+      const lote = grupo[idx];
+      if(res.status==='fulfilled' && res.value===true){
+        enviados += lote.length;
+      } else {
+        lotesFalhos.push(lote);
       }
-      enviados += lote.length;
       showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
-    }));
+    });
+  }
+
+  // Passagem 2: retenta lotes com falha sequencialmente (rede mais conservadora)
+  if(lotesFalhos.length > 0){
+    showToast(`⚠️ ${lotesFalhos.length} lote(s) com falha — retentando...`,'warning');
+    const aindaFalhos = [];
+    for(const lote of lotesFalhos){
+      await new Promise(r=>setTimeout(r,1000));
+      const ok = await enviarLote(lote);
+      if(ok){ enviados += lote.length; }
+      else { aindaFalhos.push(lote); }
+      showToast(`📤 Retentando... ${enviados}/${records.length}`,'warning');
+    }
+    if(aindaFalhos.length > 0){
+      const naoGravados = aindaFalhos.reduce((s,l)=>s+l.length, 0);
+      showToast(`❌ ${naoGravados} registros não foram gravados por falha de rede. Tente subir a planilha novamente.`,'error');
+      // Não lança erro — deixa a validação final detectar a divergência
+    }
   }
 
   // 2. Só depois que todos os lotes gravaram: limpar pedidos do mês que foram removidos da planilha
