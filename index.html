@@ -7812,47 +7812,57 @@ async function pushBaseData(records){
 
   // 1. Inserir/atualizar PRIMEIRO via upsert — sem DELETE ainda
   const LOTE = 300;
-  let enviados = 0;
-  for(let i=0; i<records.length; i+=LOTE){
-    const lote = records.slice(i,i+LOTE).map(r=>({
-      carga:       Number(r.carga)||null,
-      pedido:      Number(r.pedido)||null,
-      valor:       Number(r.valor)||0,
-      peso_kg:     Number(r.peso_kg||r.peso||0)||0,
-      und:         r.und||(USUARIO_LOGADO&&USUARIO_LOGADO.und)||'',
-      rire:        r.rire||'',
-      rota:        r.rota||'',
-      placa:       r.placa||'',
-      condutor:    (r.condutor||'').toUpperCase().trim(),
-      ajudante:    r.ajudante||'',
-      ocorrencia:  Number(r.ocorrencia)||0,
-      mes_ano:     r.mes_ano||'',
-      semana_mes:  Number(r.semana_mes)||0,
-      data_pedido: r.data_pedido||null,
-      cod_forn:    r.cod_forn||null,
-      cliente:     r.cliente||null,
-      bairro:      r.bairro||null,
-      volume:      Number(r.volume)||null,
-      nota_origem: r.nota_origem||null
-    })).filter(r=>r.carga!=null&&r.pedido!=null);
+  const PARALELO = 4; // lotes simultâneos → ~4x mais rápido
 
-    // Retry uma vez em caso de falha transitória
-    let ok = false;
-    for(let tentativa=0; tentativa<2 && !ok; tentativa++){
-      try{
-        await supaFetch('base_data?on_conflict=carga,pedido',{
-          method:'POST',
-          prefer:'resolution=merge-duplicates,return=minimal',
-          body: JSON.stringify(lote)
-        });
-        ok = true;
-      }catch(err){
-        if(tentativa===1) throw err; // segunda falha: propaga
-        await new Promise(r=>setTimeout(r,2000));
+  const mapear = r => ({
+    carga:       Number(r.carga)||null,
+    pedido:      Number(r.pedido)||null,
+    valor:       Number(r.valor)||0,
+    peso_kg:     Number(r.peso_kg||r.peso||0)||0,
+    und:         r.und||(USUARIO_LOGADO&&USUARIO_LOGADO.und)||'',
+    rire:        r.rire||'',
+    rota:        r.rota||'',
+    placa:       r.placa||'',
+    condutor:    (r.condutor||'').toUpperCase().trim(),
+    ajudante:    r.ajudante||'',
+    ocorrencia:  Number(r.ocorrencia)||0,
+    mes_ano:     r.mes_ano||'',
+    semana_mes:  Number(r.semana_mes)||0,
+    data_pedido: r.data_pedido||null,
+    cod_forn:    r.cod_forn||null,
+    cliente:     r.cliente||null,
+    bairro:      r.bairro||null,
+    volume:      Number(r.volume)||null,
+    nota_origem: r.nota_origem||null
+  });
+
+  const todosBatches = [];
+  for(let i=0; i<records.length; i+=LOTE){
+    const lote = records.slice(i,i+LOTE).map(mapear).filter(r=>r.carga!=null&&r.pedido!=null);
+    if(lote.length) todosBatches.push(lote);
+  }
+
+  let enviados = 0;
+  for(let g=0; g<todosBatches.length; g+=PARALELO){
+    const grupo = todosBatches.slice(g, g+PARALELO);
+    await Promise.all(grupo.map(async lote => {
+      let ok = false;
+      for(let tentativa=0; tentativa<2 && !ok; tentativa++){
+        try{
+          await supaFetch('base_data?on_conflict=carga,pedido',{
+            method:'POST',
+            prefer:'resolution=merge-duplicates,return=minimal',
+            body: JSON.stringify(lote)
+          });
+          ok = true;
+        }catch(err){
+          if(tentativa===1) throw err;
+          await new Promise(r=>setTimeout(r,2000));
+        }
       }
-    }
-    enviados += lote.length;
-    showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
+      enviados += lote.length;
+      showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
+    }));
   }
 
   // 2. Só depois que todos os lotes gravaram: limpar pedidos do mês que foram removidos da planilha
