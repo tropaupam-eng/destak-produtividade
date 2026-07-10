@@ -7820,7 +7820,7 @@ async function pushBaseData(records){
     valor:       Number(r.valor)||0,
     peso_kg:     Number(r.peso_kg||r.peso||0)||0,
     und:         r.und||(USUARIO_LOGADO&&USUARIO_LOGADO.und)||'',
-    rire:        r.rire||'',
+    rire:        normRire(r.rire)||(r.rota?getRireFromRota((r.rota||'').toUpperCase().trim()):''),
     rota:        r.rota||'',
     placa:       r.placa||'',
     condutor:    (r.condutor||'').toUpperCase().trim(),
@@ -21753,6 +21753,8 @@ async function _carregarOtifMes(mes, und){
   if(!bdRows.length && cargasMes.size){
     bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
   }
+  // Normalizar rire em todos os registros (RI → R.I., RE → R.E.) para consistência em todos os callers
+  bdRows.forEach(b=>{ if(b.rire) b.rire = normRire(b.rire) || getRireFromRota((b.rota||'').toUpperCase()) || b.rire; });
   // Busca entrega_datas e ocorrencias_distribuicao pelos pedidos reais do mês
   const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
   let entRows = [], ocorrRows = [];
@@ -21929,14 +21931,22 @@ async function renderOtifDiario(){
   try{
     const mesAno  = dataSel.slice(0,7);
 
-    // Cargas que saíram no dia (ts_saiu) + planejadas sem saída real (data_saida, ts_saiu null)
-    const [demTs, demDs] = await Promise.all([
+    // Cargas do dia: demandas_rota (saída real ou planejada) + lançamentos (fallback RI sem expedição)
+    const [demTs, demDs, lancsDia] = await Promise.all([
       supaFetch(`demandas_rota?ts_saiu=gte.${dataSel}T00:00:00Z&ts_saiu=lte.${dataSel}T23:59:59Z&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${dataSel}&ts_saiu=is.null&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
+      supaFetch(`lancamentos?ts=gte.${dataSel}T00:00:00-03:00&ts=lte.${dataSel}T23:59:59-03:00&select=carga,rota,motorista,veiculo,ts,rire`,{_quiet:true}).catch(()=>[]),
     ]);
     const _demVistosIds = new Set();
     const demandasR = [...(demTs||[]),...(demDs||[])].filter(d=>{ if(_demVistosIds.has(d.id)) return false; _demVistosIds.add(d.id); return true; });
-    const demandas  = Array.isArray(demandasR) ? demandasR : [];
+    // Incluir cargas com lançamento no dia que não aparecem em demandas_rota (ex: R.I. sem pipeline de expedição)
+    const _cargasNasDem = new Set(demandasR.map(d=>d.carga!=null?String(d.carga):null).filter(Boolean));
+    (lancsDia||[]).forEach(l=>{
+      if(!l.carga || _cargasNasDem.has(String(l.carga))) return;
+      _cargasNasDem.add(String(l.carga));
+      demandasR.push({id:null, carga:l.carga, rota:l.rota||'', motorista:l.motorista||'', veiculo:l.veiculo||'', ts_saiu:l.ts||null, status:'saiu', status_fiscal:null});
+    });
+    const demandas  = demandasR;
     const cargaList = [...new Set(demandas.map(d=>d.carga).filter(c=>c!=null))];
 
     if(!cargaList.length){
@@ -21944,16 +21954,14 @@ async function renderOtifDiario(){
       return;
     }
 
-    // Fonte unificada: mesmos dados que o Dashboard Interno, Painel e TV
-    const _userUnd = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
+    // OTIF diário mostra TODAS as cargas do dia (RI + RE) — sem filtro de unidade
     // Limpa cache apenas para o mês atual — meses passados são estáticos e não devem ser re-buscados
-    const _diarCacheKey = _userUnd ? `${mesAno}__${_userUnd}` : mesAno;
     const _mesCorrente = new Date().toISOString().slice(0,7);
     if(mesAno >= _mesCorrente){
-      _otifCacheMap.delete(_diarCacheKey);
-      _otifPromiseMap.delete(_diarCacheKey);
+      _otifCacheMap.delete(mesAno);
+      _otifPromiseMap.delete(mesAno);
     }
-    const dadosMes = await _carregarOtifMes(mesAno, _userUnd);
+    const dadosMes = await _carregarOtifMes(mesAno);
 
     // Filtrar para as cargas do dia selecionado
     const cargasHoje = new Set(cargaList.map(c=>String(c)));
