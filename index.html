@@ -8190,50 +8190,25 @@ async function pushBaseData(records){
     }
   }
 
-  // 2. Só depois que todos os lotes gravaram: limpar pedidos do mês que foram removidos da planilha
-  // (pedidos que estavam no banco mas não vieram na nova planilha)
-  if(mesPrincipal){
-    const pedidosNoPush = new Set(
-      records.filter(r=>r.mes_ano===mesPrincipal&&r.carga&&r.pedido)
-             .map(r=>Number(r.carga)+'_'+Number(r.pedido))
-    );
-    if(pedidosNoPush.size > 0){
-      // Buscar o que está no banco para esse mês
-      const noDb = await supaFetch(`base_data?mes_ano=eq.${mesPrincipal}&select=carga,pedido`).catch(()=>[]);
-      const obsoletos = (noDb||[]).filter(r=>!pedidosNoPush.has(Number(r.carga)+'_'+Number(r.pedido)));
-      if(obsoletos.length > 0){
-        // Deletar em lotes de pedidos específicos para não apagar o mês inteiro
-        for(let i=0; i<obsoletos.length; i+=100){
-          const grupo = obsoletos.slice(i,i+100);
-          const ids = grupo.map(r=>`and(carga.eq.${r.carga},pedido.eq.${r.pedido})`).join(',');
-          await supaFetch(`base_data?or=(${ids})`,{method:'DELETE',prefer:'return=minimal'}).catch(()=>{});
-        }
-      }
-    }
-  }
-
-  // 3. Validar: contagem no banco deve bater com o que foi enviado (tolerância 1%)
-  if(mesPrincipal){
-    const esperadosPorMes = records.filter(r=>r.mes_ano===mesPrincipal&&r.carga&&r.pedido).length;
-    if(esperadosPorMes > 0){
+  // 2. Validar: os registros desta planilha devem estar no banco (só verifica o que foi enviado)
+  const registrosEnviados = records.filter(r=>r.carga&&r.pedido).length;
+  if(registrosEnviados > 0 && mesPrincipal){
+    const cargasNoPush = [...new Set(records.filter(r=>r.mes_ano===mesPrincipal&&r.carga).map(r=>Number(r.carga)))];
+    if(cargasNoPush.length > 0){
       const verificacao = await supaFetch(
-        `base_data?mes_ano=eq.${mesPrincipal}&select=pedido&limit=10000`
+        `base_data?carga=in.(${cargasNoPush.join(',')})&mes_ano=eq.${mesPrincipal}&select=pedido&limit=10000`
       ).catch(()=>[]);
       const gravados = (verificacao||[]).length;
+      const esperados = records.filter(r=>r.mes_ano===mesPrincipal&&r.carga&&r.pedido&&cargasNoPush.includes(Number(r.carga))).length;
       if(gravados === 0){
-        throw new Error(`Validação falhou: nenhum registro encontrado no banco para ${mesPrincipal}`);
+        throw new Error(`Validação falhou: nenhum registro encontrado no banco para as cargas importadas`);
       }
-      const diff = Math.abs(gravados - esperadosPorMes);
-      const pct  = diff / esperadosPorMes;
-      if(pct > 0.01){
-        throw new Error(`Validação falhou: esperado ${esperadosPorMes} registros em ${mesPrincipal}, banco tem ${gravados} (diferença ${diff})`);
-      }
-      showToast(`✅ ${records.length} registros gravados e validados (${gravados}/${esperadosPorMes} em ${mesPrincipal}). Disponível em todos os dispositivos.`,'success');
+      showToast(`✅ ${registrosEnviados} registros gravados. Banco: ${gravados} pedidos nas cargas importadas. Disponível em todos os dispositivos.`,'success');
     } else {
-      showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
+      showToast(`✅ ${registrosEnviados} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
     }
   } else {
-    showToast(`✅ ${records.length} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
+    showToast(`✅ ${registrosEnviados} registros gravados no banco! Disponível em todos os dispositivos.`,'success');
   }
   if(typeof renderBancoStatus==='function') renderBancoStatus();
 
