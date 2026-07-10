@@ -14213,21 +14213,35 @@ async function renderFrotaUso(){
     // ── Queries: inclui rotas do mês anterior para carry-over (saiu em jun, voltou em jul) ──
     const _q = [
       supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,ts_concluido,status,rota,carga&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,ts_concluido,status,rota,carga&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
+      supaFetch(`lancamentos?select=veiculo,ts,rota,carga&veiculo=not.is.null&vinculado=eq.false&mes_ano=eq.${mes}`).catch(()=>[])
     ];
     if(ehMesAtual){
       _q.push(supaFetch(`demandas_rota?select=veiculo,status,rota,carga&veiculo=not.is.null&data_saida=is.null&status=in.(carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,separacao)`));
     }
-    const [veiculos, _demandasRaw, demandasC] = await Promise.all(_q);
+    const [veiculos, _demandasRaw, _lancamentosUso, demandasC] = await Promise.all(_q);
 
     // Filtro R.I./R.E.
     const tipoFiltro = (document.getElementById('frota-uso-tipo')?.value || '');
-    const demandas = tipoFiltro
-      ? (_demandasRaw||[]).filter(d => {
-          const isRI = ROTAS_RI.has((d.rota||'').trim().toUpperCase());
-          return tipoFiltro === 'RI' ? isRI : !isRI;
-        })
-      : (_demandasRaw||[]);
+    const _lancFiltrados = ((_lancamentosUso||[]).map(l=>({
+      veiculo: l.veiculo, data_saida: l.ts ? l.ts.slice(0,10) : null,
+      ts_fim_viagem: l.ts, ts_concluido: null, status: 'concluido',
+      rota: l.rota||'', carga: l.carga
+    }))).filter(l => {
+      if(!l.data_saida) return false;
+      if(!tipoFiltro) return true;
+      const isRI = ROTAS_RI.has((l.rota||'').trim().toUpperCase());
+      return tipoFiltro === 'RI' ? isRI : !isRI;
+    });
+    const demandas = [
+      ...(tipoFiltro
+        ? (_demandasRaw||[]).filter(d => {
+            const isRI = ROTAS_RI.has((d.rota||'').trim().toUpperCase());
+            return tipoFiltro === 'RI' ? isRI : !isRI;
+          })
+        : (_demandasRaw||[])),
+      ..._lancFiltrados
+    ];
 
     // Filtra só veículos ativos excluindo "A DEFINIR"
     const todos = (veiculos || []).filter(v => v.ativo);
@@ -14452,12 +14466,13 @@ async function renderFrotaDisp(){
 
     const queries = [
       supaFetch('veiculos?select=placa,tipo,unidade,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
+      supaFetch(`lancamentos?select=veiculo,ts&veiculo=not.is.null&vinculado=eq.false&mes_ano=eq.${mes}`).catch(()=>[])
     ];
     if(ehMesAtual){
       queries.push(supaFetch(`demandas_rota?select=veiculo,status&veiculo=not.is.null&data_saida=is.null&status=in.(carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,separacao)`));
     }
-    const [veiculos, demandas, demandasC] = await Promise.all(queries);
+    const [veiculos, demandas, lancamentosDisp, demandasC] = await Promise.all(queries);
 
     const todosAtivos = (veiculos||[]).filter(v => v.ativo && !(v.placa||'').toUpperCase().includes('FRETE'));
 
@@ -14504,6 +14519,14 @@ async function renderFrotaDisp(){
         dispMap[placa][dia] = 'S';
         cur.setDate(cur.getDate()+1);
       }
+    });
+
+    // S: lançamentos manuais (Distribuição > Lançamento) — dia único baseado no ts
+    (lancamentosDisp||[]).forEach(d => {
+      const placa = (d.veiculo||'').trim().toUpperCase();
+      if(!placa || !d.ts || !dispMap[placa]) return;
+      const dia = String(new Date(d.ts).getDate()).padStart(2,'0');
+      if(!dispMap[placa][dia]) dispMap[placa][dia] = 'S';
     });
 
     // C: carregando hoje (somente mês atual)
