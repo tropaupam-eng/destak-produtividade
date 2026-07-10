@@ -21726,12 +21726,19 @@ async function renderDashInterna(){
           _inicioPrazoOtif = new Date(tsRe);
         }
 
-        // dataFim — entrega real tem prioridade; fallbacks indicam apenas saída do veículo
+        // dataFim — entrega real tem prioridade;
+        // sem data_entrega: usa ts do lançamento como proxy (pedido foi despachado)
         let dataFim    = ent.entrega || null;
-        const hasEntrega = !!dataFim; // true = data_entrega real confirmada
-        if(!dataFim && ent.saida)                      dataFim = ent.saida;
-        if(!dataFim && carga && saidaMapCarga[carga])  dataFim = saidaMapCarga[carga];
-        if(!dataFim && carga && lancDtMapOtif[carga])  dataFim = lancDtMapOtif[carga];
+        let hasEntrega = !!dataFim;
+        if(!dataFim && ent.saida)                     dataFim = ent.saida;
+        if(!dataFim && carga && saidaMapCarga[carga]) dataFim = saidaMapCarga[carga];
+        if(!dataFim && carga) {
+          // Sem data_entrega: usa timestamp de saída/lançamento como proxy de entrega
+          // Usa saidaTs para R.E. (evita diffHoras negativo), lancTs para demais
+          const proxyTs = saidaTsMapOtif[carga] || lancTsMapOtif[carga];
+          if(proxyTs) { dataFim = proxyTs; hasEntrega = true; }
+          else if(lancDtMapOtif[carga]) { dataFim = lancDtMapOtif[carga]; hasEntrega = true; }
+        }
         if(!dataFim){
           // Sem qualquer data — conta como falha apenas se prazo já venceu
           const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
@@ -21739,24 +21746,19 @@ async function renderDashInterna(){
             semOtif[semIdx].t++;
             if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
           }
-          return; // pendente ou falha sem data — sem mais nada a fazer
+          return;
         }
-        const diffHoras = (new Date(dataFim) - _inicioPrazoOtif) / 3600000;
-        if(diffHoras < 0){
-          semOtif[semIdx].t++;
-          if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
-          return; // data inconsistente — conta como falha
-        }
-        // isOnTime: exige entrega real (data_entrega) registrada E dentro do prazo
+        const diffHoras = Math.max(0, (new Date(dataFim) - _inicioPrazoOtif) / 3600000);
+        // isOnTime: entrega confirmada (real ou proxy lançamento) dentro do prazo
         const isOnTime = hasEntrega && diffHoras <= prazoH;
         const isInFull = !ocorrSetOtif.has(ped);
-        // Sem entrega real confirmada: só conta se prazo já venceu (evita 100% artificial em semanas recentes)
         if(!hasEntrega){
+          // saida sem entrega confirmada: só conta se prazo já venceu
           const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
-          if(horasDecorridas <= prazoH) return; // pendente — não conta ainda
+          if(horasDecorridas <= prazoH) return;
           semOtif[semIdx].t++;
           if(isInFull) semOtif[semIdx].ifull++;
-          return; // prazo vencido sem entrega confirmada → falha de On Time
+          return;
         }
         semOtif[semIdx].t++;
         if(isOnTime)             semOtif[semIdx].ot++;
