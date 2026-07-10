@@ -14212,15 +14212,17 @@ async function renderFrotaUso(){
 
   try{
     const proxMes = _proximoMes(mes);
+    // prevMes: mês anterior para capturar rotas que saíram antes mas ainda estavam ativas neste mês
+    const prevMes = (()=>{ const [y,m]=mes.split('-').map(Number); return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,'0')}`; })();
     const hojeObj = new Date();
     const hojeStr = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
     const hojeD   = String(hojeObj.getDate()).padStart(2,'0');
     const ehMesAtual = mes === hojeStr;
 
-    // ── Queries: demandas_rota com range de dias (data_saida → ts_fim_viagem) ──
+    // ── Queries: inclui rotas do mês anterior para carry-over (saiu em jun, voltou em jul) ──
     const _q = [
       supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status,rota,carga&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,ts_concluido,status,rota,carga&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`)
     ];
     if(ehMesAtual){
       _q.push(supaFetch(`demandas_rota?select=veiculo,status,rota,carga&veiculo=not.is.null&data_saida=is.null&status=in.(carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem,separacao)`));
@@ -14267,9 +14269,10 @@ async function renderFrotaUso(){
       if(!placa || !d.data_saida || !usageMap[placa]) return;
       const dtIni = new Date(d.data_saida + 'T12:00:00');
       let dtFim;
-      if(d.ts_fim_viagem)                                        dtFim = new Date(d.ts_fim_viagem);
-      else if(d.status === 'saiu' || d.status === 'fim_viagem') dtFim = ehMesAtual ? hojeObj : mesFim;
-      else                                                       dtFim = dtIni;
+      if(d.ts_fim_viagem)                                                              dtFim = new Date(d.ts_fim_viagem);
+      else if(d.ts_concluido)                                                          dtFim = new Date(d.ts_concluido);
+      else if(d.status==='saiu'||d.status==='fim_viagem'||d.status==='concluido')     dtFim = ehMesAtual ? hojeObj : mesFim;
+      else                                                                             dtFim = dtIni;
       const ini = dtIni < mesInicio ? mesInicio : dtIni;
       const fim = dtFim  > mesFim   ? mesFim    : dtFim;
       const cur = new Date(ini);
@@ -14289,101 +14292,26 @@ async function renderFrotaUso(){
       });
     }
 
-    // ── Cabeçalho de dias ──
-    const thDias = diasUteis.map(dia => {
-      const dt     = new Date(ano, numMes-1, parseInt(dia));
-      const dsem   = DIAS_SEMANA[dt.getDay()];
-      const ehHoje = ehMesAtual && dia === hojeD;
-      const futuro = ehMesAtual && dia > hojeD;
-      const ehSab  = dt.getDay() === 6;
-      const ehFech = dia === fechamento;
-
-      let bgTh = futuro ? 'transparent' : ehSab ? 'rgba(99,102,241,.08)' : 'var(--bg-card2)';
-      let corTh = futuro ? 'var(--border-med)' : ehSab ? '#4338ca' : 'var(--text-secondary)';
-      if(ehHoje){ bgTh='#2563eb'; corTh='#fff'; }
-
-      return `<th style="min-width:36px;padding:5px 2px;text-align:center;font-size:.65rem;font-weight:700;background:${bgTh};color:${corTh};border-right:1px solid var(--border);white-space:nowrap${ehFech?';border-right:2.5px solid #7c3aed':''}">
-        <div>${dsem}</div>
-        <div style="font-size:.8rem;font-weight:800">${parseInt(dia)}</div>
-        ${ehHoje ? '<div style="font-size:.55rem;font-weight:700;letter-spacing:.5px">HOJE</div>' : ''}
-        ${ehFech && !ehHoje ? '<div style="font-size:.55rem;color:#7c3aed;font-weight:700">FIM</div>' : ''}
-      </th>`;
-    }).join('');
-
     // ── Dados por veículo ──
     const veiculosData = todos.map(v => {
       let diasUsadosPassados = 0;
 
-      const celulas = diasUteis.map(dia => {
+      diasUteis.forEach(dia => {
         const uso    = usageMap[v.placa]?.[dia] || null;
-        const ehHoje = ehMesAtual && dia === hojeD;
         const futuro = ehMesAtual && dia > hojeD;
-        const dt     = new Date(ano, numMes-1, parseInt(dia));
-        const ehSab  = dt.getDay() === 6;
-        const ehFech = dia === fechamento;
-        const borderR = ehFech ? 'border-right:2.5px solid #7c3aed' : 'border-right:1px solid var(--border)';
-
-        if(!uso){
-          let bg = '';
-          if(ehHoje)      bg = 'rgba(37,99,235,.06)';
-          else if(futuro) bg = 'transparent';
-          else if(ehSab)  bg = 'rgba(99,102,241,.04)';
-          return `<td style="padding:4px 2px;text-align:center;${borderR};background:${bg}">
-            <span style="color:${futuro?'transparent':'var(--border-med)'};font-size:.78rem">${futuro?'·':'—'}</span>
-          </td>`;
-        }
-
-        if(!futuro) diasUsadosPassados++;
-
-        const bgCell  = uso.status === 'C' ? '#fef3c7' : '#dbeafe';
-        const icone   = uso.status === 'C' ? '⚙️' : '🚛';
-        const txtRota = (uso.rota||'').toUpperCase().slice(0,5) || (uso.status==='C'?'CARG':'✓');
-        const corTxt  = uso.status === 'C' ? '#b45309' : '#1d4ed8';
-        const title   = `${uso.status==='C'?'⚙️ Carregando':'🚛 Carga '+(uso.carga||'?')} | ${uso.rota||'?'}`;
-
-        return `<td style="padding:3px 2px;text-align:center;${borderR};background:${bgCell}" title="${title}">
-          <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
-            <span style="font-size:.73rem">${icone}</span>
-            <span style="font-size:.56rem;color:${corTxt};font-weight:700;max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${txtRota}</span>
-          </div>
-        </td>`;
-      }).join('');
+        if(uso && !futuro) diasUsadosPassados++;
+      });
 
       const taxaAtual = nPassados > 0 ? diasUsadosPassados / nPassados : 0;
       const projecao  = Math.round(diasUsadosPassados + taxaAtual * nRestantes);
       const pctAtual  = nPassados > 0 ? Math.round(taxaAtual * 100) : 0;
       const pctProj   = totalUteis > 0 ? Math.round(projecao / totalUteis * 100) : 0;
 
-      return { v, celulas, diasUsadosPassados, projecao, pctAtual, pctProj };
+      return { v, diasUsadosPassados, projecao, pctAtual, pctProj };
     });
 
     // Ordenar: maior % de uso primeiro
     veiculosData.sort((a,b) => b.pctAtual - a.pctAtual);
-
-    // ── Linhas da tabela ──
-    const linhas = veiculosData.map(({ v, celulas, diasUsadosPassados, projecao, pctAtual, pctProj }) => {
-      const corAtual = pctAtual >= 80 ? '#059669' : pctAtual >= 50 ? '#f59e0b' : '#6b7280';
-      const corProj  = pctProj  >= 80 ? '#059669' : pctProj  >= 50 ? '#f59e0b' : '#ef4444';
-      const tipo     = v.tipo ? `<span style="font-size:.62rem;color:var(--text-muted);font-weight:400"> ${v.tipo}</span>` : '';
-      const isFrete  = _isFretePlaca(v.placa);
-
-      return `<tr style="border-bottom:1px solid var(--border)${isFrete?';opacity:.65':''}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
-        <td style="padding:7px 12px;font-family:monospace;font-weight:800;font-size:.82rem;color:var(--text-primary);white-space:nowrap;position:sticky;left:0;background:var(--bg-card);border-right:2px solid var(--border-med);z-index:1">
-          ${v.placa}${tipo}${isFrete?'<span style="font-size:.6rem;color:#f59e0b;margin-left:4px">FRETE</span>':''}
-        </td>
-        ${celulas}
-        <td style="padding:5px 8px;text-align:center;border-left:2px solid var(--border-med);white-space:nowrap">
-          <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Atual</div>
-          <div style="font-weight:800;font-size:.8rem;color:${corAtual}">${diasUsadosPassados}/${nPassados}</div>
-          <div style="font-size:.7rem;background:${corAtual}22;color:${corAtual};border-radius:8px;padding:1px 6px;font-weight:700">${pctAtual}%</div>
-        </td>
-        <td style="padding:5px 8px;text-align:center;white-space:nowrap;border-left:1px solid var(--border)">
-          <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Projeção</div>
-          <div style="font-weight:800;font-size:.8rem;color:${corProj}">${projecao}/${totalUteis}</div>
-          <div style="font-size:.7rem;background:${corProj}22;color:${corProj};border-radius:8px;padding:1px 6px;font-weight:700">${pctProj}%</div>
-        </td>
-      </tr>`;
-    }).join('');
 
     // ── Totais (apenas frota própria, excluindo FRETE) ──
     const propria = veiculosData.filter(x => !_isFretePlaca(x.v.placa));
@@ -14396,20 +14324,6 @@ async function renderFrotaUso(){
     const corTA = pctTotAtual >= 80 ? '#059669' : pctTotAtual >= 50 ? '#f59e0b' : '#6b7280';
     const corTP = pctTotProj  >= 80 ? '#059669' : pctTotProj  >= 50 ? '#f59e0b' : '#ef4444';
 
-    const linhaTotais = `<tr style="background:var(--bg-card2);border-top:2px solid var(--border-med);font-weight:800">
-      <td style="padding:8px 12px;font-size:.78rem;color:var(--text-secondary);position:sticky;left:0;background:var(--bg-card2);border-right:2px solid var(--border-med);z-index:1">FROTA PRÓPRIA</td>
-      ${diasUteis.map(()=>`<td style="border-right:1px solid var(--border)"></td>`).join('')}
-      <td style="padding:6px 8px;text-align:center;border-left:2px solid var(--border-med)">
-        <div style="font-size:.72rem;color:var(--text-muted)">Atual</div>
-        <div style="font-weight:800;font-size:.8rem;color:${corTA}">${totDiasUsados}/${maxPossivel}</div>
-        <div style="font-size:.7rem;background:${corTA}22;color:${corTA};border-radius:8px;padding:1px 6px;font-weight:700">${pctTotAtual}%</div>
-      </td>
-      <td style="padding:6px 8px;text-align:center;border-left:1px solid var(--border)">
-        <div style="font-size:.72rem;color:var(--text-muted)">Projeção</div>
-        <div style="font-weight:800;font-size:.8rem;color:${corTP}">${totProjecao}/${maxTotal}</div>
-        <div style="font-size:.7rem;background:${corTP}22;color:${corTP};border-radius:8px;padding:1px 6px;font-weight:700">${pctTotProj}%</div>
-      </td>
-    </tr>`;
 
     // ── Painel Meta de Uso ──
     const META_USO    = 80;
@@ -14512,18 +14426,7 @@ async function renderFrotaUso(){
         </div>
       </div>
 
-      <!-- Tabela calendário -->
-      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-        <thead>
-          <tr style="background:var(--bg-card2)">
-            <th style="padding:8px 12px;text-align:left;font-size:.75rem;font-weight:700;color:var(--text-secondary);white-space:nowrap;position:sticky;left:0;background:var(--bg-card2);border-right:2px solid var(--border-med);z-index:2">Veículo</th>
-            ${thDias}
-            <th style="padding:5px 8px;text-align:center;font-size:.68rem;font-weight:700;color:var(--text-secondary);white-space:nowrap;border-left:2px solid var(--border-med);min-width:60px">Uso<br>Atual</th>
-            <th style="padding:5px 8px;text-align:center;font-size:.68rem;font-weight:700;color:#7c3aed;white-space:nowrap;border-left:1px solid var(--border);min-width:60px">Projeção<br>Fechamento</th>
-          </tr>
-        </thead>
-        <tbody>${linhas}${linhaTotais}</tbody>
-      </table>`;
+`;
 
   }catch(e){
     wrap.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro: ${e.message}</p></div>`;
