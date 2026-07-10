@@ -14794,9 +14794,10 @@ async function renderFrota(){
   grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);grid-column:1/-1"><div style="font-size:2rem;margin-bottom:8px">⏳</div><p>Carregando frota...</p></div>';
 
   try{
-    const [veiculos, demandas] = await Promise.all([
+    const [veiculos, demandas, manutAtivas] = await Promise.all([
       supaFetch('veiculos?select=*&order=placa.asc'),
-      supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=id,veiculo,rota,motorista,carga,data_saida,status')
+      supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=id,veiculo,rota,motorista,carga,data_saida,status'),
+      supaFetch('manutencoes_frota?status=in.(agendada,em_andamento)&select=veiculo',{_quiet:true}).catch(()=>[])
     ]);
     const todos    = veiculos  || [];
     const emViagem = demandas  || [];
@@ -14806,15 +14807,26 @@ async function renderFrota(){
     const retornMap  = new Map();
     emViagem.forEach(d=>{
       if(!d.veiculo) return;
-      if(d.status === 'saiu')        saiuMap.set(d.veiculo, d);
+      if(d.status === 'saiu')          saiuMap.set(d.veiculo, d);
       else if(d.status==='fim_viagem') retornMap.set(d.veiculo, d);
     });
 
+    // Veículos em manutenção ativa (agendada ou em andamento)
+    const manutSet = new Set((manutAtivas||[]).map(m=>m.veiculo).filter(Boolean));
+
+    // Veículos órfãos: ativo=false, sem demanda fim_viagem ativa, sem manutenção
+    // → o caixa fechou a carga antes da frota validar; precisam de decisão da frota
+    const orphanSet = new Set(
+      todos
+        .filter(v => !v.ativo && !retornMap.has(v.placa) && !saiuMap.has(v.placa) && !manutSet.has(v.placa))
+        .map(v => v.placa)
+    );
+
     // KPIs
     const nRota   = todos.filter(v=> saiuMap.has(v.placa)).length;
-    const nAguard = retornMap.size;
+    const nAguard = retornMap.size + orphanSet.size;
     const nDisp   = todos.filter(v=> v.ativo && !saiuMap.has(v.placa) && !retornMap.has(v.placa)).length;
-    const nIndisp = todos.filter(v=> !v.ativo && !retornMap.has(v.placa)).length;
+    const nIndisp = todos.filter(v=> !v.ativo && !retornMap.has(v.placa) && !orphanSet.has(v.placa)).length;
     const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
     set('frota-kpi-rota',   nRota);
     set('frota-kpi-disp',   nDisp);
@@ -14829,17 +14841,18 @@ async function renderFrota(){
 
     const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : '—';
 
-    // Ordenar: retornou primeiro, depois em rota, depois disponível, depois indisponível
-    const ordemFn = v => retornMap.has(v.placa) ? 0 : saiuMap.has(v.placa) ? 1 : v.ativo ? 2 : 3;
+    // Ordenar: retornou/órfão primeiro, depois em rota, depois disponível, depois indisponível
+    const ordemFn = v => (retornMap.has(v.placa)||orphanSet.has(v.placa)) ? 0 : saiuMap.has(v.placa) ? 1 : v.ativo ? 2 : 3;
     todos.sort((a,b) => ordemFn(a) - ordemFn(b) || (a.placa||'').localeCompare(b.placa||''));
 
     grid.innerHTML = todos.map(v=>{
       const demSaiu   = saiuMap.get(v.placa);
       const demRetorn = retornMap.get(v.placa);
+      const isOrphan  = orphanSet.has(v.placa);
       const dem = demRetorn || demSaiu;
       let borderColor, headerBg, headerColor, badgeBg, badgeColor, badgeIcon, statusLabel;
 
-      if(demRetorn){
+      if(demRetorn || isOrphan){
         // Veículo retornou — aguardando decisão da frota
         borderColor='#c4b5fd'; headerBg='#ede9fe'; headerColor='#4c1d95';
         badgeBg='#ede9fe'; badgeColor='#4c1d95'; badgeIcon='🟣'; statusLabel='Retornou';
@@ -14862,13 +14875,14 @@ async function renderFrota(){
           <div><span style="color:var(--text-muted)">Saída:</span> <strong>${fmtData(dem.data_saida)}</strong></div>
         </div>` : '';
 
-      const botoesLiberar = demRetorn ? `
+      const _demId = demRetorn?.id || null;
+      const botoesLiberar = (demRetorn || isOrphan) ? `
         <div style="margin-top:10px;display:flex;gap:7px">
-          <button onclick="liberarVeiculoFrota('${v.placa}','${demRetorn.id}')"
+          <button onclick="liberarVeiculoFrota('${v.placa}','${_demId}')"
             style="flex:1;background:#059669;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
             ✅ Liberar
           </button>
-          <button onclick="enviarManutencaoFrota('${v.placa}','${demRetorn.id}')"
+          <button onclick="enviarManutencaoFrota('${v.placa}','${_demId}')"
             style="flex:1;background:#dc2626;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
             🔧 Manutenção
           </button>
@@ -16459,12 +16473,13 @@ async function gfAutoLiberarVeiculo(placa){
 // Libera veículo após retorno de rota (sem manutenção)
 async function liberarVeiculoFrota(placa, demId){
   if(!confirm(`Confirmar liberação do veículo ${placa}?\nSem manutenção — veículo voltará a ficar disponível.`)) return;
+  const _demId = demId && demId !== 'null' ? demId : null;
   try{
     await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placa)}`,{
       method:'PATCH', body:JSON.stringify({ ativo:true })
     });
-    if(demId){
-      await supaFetch(`demandas_rota?id=eq.${demId}`,{
+    if(_demId){
+      await supaFetch(`demandas_rota?id=eq.${_demId}`,{
         method:'PATCH', body:JSON.stringify({ status:'concluido' })
       }).catch(()=>{});
     }
@@ -16480,6 +16495,7 @@ async function enviarManutencaoFrota(placa, demId){
   if(!tipo) return;
   const descr = prompt('Descrição / Observação (opcional):') || '';
   const u = USUARIO_LOGADO || {};
+  const _demId = demId && demId !== 'null' ? demId : null;
   try{
     await supaFetch('manutencoes_frota',{
       method:'POST',
@@ -16493,8 +16509,8 @@ async function enviarManutencaoFrota(placa, demId){
         usuario_nome: u.nome || null
       })
     });
-    if(demId){
-      await supaFetch(`demandas_rota?id=eq.${demId}`,{
+    if(_demId){
+      await supaFetch(`demandas_rota?id=eq.${_demId}`,{
         method:'PATCH', body:JSON.stringify({ status:'concluido' })
       }).catch(()=>{});
     }
@@ -25707,21 +25723,15 @@ async function baixaPedidoCaixa(carga, pedido){
 async function concluirCaixa(demandaId, carga){
   if(!confirm('Confirmar prestação de contas do caixa'+(carga&&carga!=='null'?' para carga '+carga:'')+'\? A carga irá para o histórico.')) return;
   try{
-    const dem = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=status,veiculo`) || [];
+    const dem = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=status`) || [];
     const stAtual = dem[0]?.status||'';
 
     if(stAtual === 'fim_viagem'){
-      // Etapa 2: retorno — fechar carga, vai para histórico
+      // Etapa 2: retorno — fechar carga, vai para histórico.
+      // Veículo permanece ativo=false até a frota validar (Liberar ou Manutenção).
       const r = await _patchStatusDemanda(demandaId, 'concluido', 'caixa');
       if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
-      // Restaurar veículo como disponível (não estava sendo feito — bug)
-      const placaVeic = dem[0]?.veiculo;
-      if(placaVeic){
-        await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placaVeic)}`,{
-          method:'PATCH', body:JSON.stringify({ ativo:true })
-        }).catch(()=>{});
-      }
-      showToast('✅ Carga fechada! Indo para o Histórico.','success');
+      showToast('✅ Carga fechada! Veículo aguarda validação da Frota.','success');
     } else if(stAtual === 'aguardando_manifesto'){
       // Etapa 1: antes da saída — se manifesto emitido, libera para viagem
       const r = await _patchStatusDemanda(demandaId, 'pronto_viagem', 'caixa');
