@@ -30249,19 +30249,57 @@ function abrirDetalhePagamento(nome, mesAno){
 }
 
 function exportarFinanceiro(){
-  const dados = _pagamentosCache;
-  if(!dados.length){ showToast('Gere os pagamentos primeiro','warning'); return; }
-  const fv = v => Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
-  const linhas = [
-    ['Nome','Tipo','Entregas','Ocorrências','Valor/Entrega','Total','Competência','Status','Data Pgto'],
-    ...dados.map(d=>[d.nome,d.tipo,d.entregas,d.ocorrencias,fv(d.val_entrega),fv(d.total),formatarMesAno(d.mes_ano),d.status,d.data_pgto||''])
-  ];
-  const csv = linhas.map(l=>l.join(';')).join('\n');
+  if(!_pagamentosCache.length){ showToast('Carregue o ranking primeiro','warning'); return; }
+
+  const mesSel  = document.getElementById('fin-filtro-mes')?.value || '';
+  const undSel  = document.getElementById('fin-filtro-und')?.value || '';
+  const tipoSel = document.getElementById('fin-filtro-tipo')?.value || '';
+
+  let dados = [..._pagamentosCache];
+  if(mesSel)  dados = dados.filter(d=>d.mes_ano===mesSel);
+  if(undSel)  dados = dados.filter(d=>d.und===undSel);
+  if(tipoSel) dados = dados.filter(d=>d.tipo===tipoSel);
+
+  if(!mesSel){
+    const mapa = {};
+    dados.forEach(d=>{
+      const k = d.nome+'__'+d.tipo+'__'+(d.und||'');
+      if(!mapa[k]) mapa[k] = {...d, entregas:d.entregas||0, ent_sem:d.ent_sem||0, ent_com:d.ent_com||0};
+      else { mapa[k].entregas+=d.entregas||0; mapa[k].ent_sem+=d.ent_sem||0; mapa[k].ent_com+=d.ent_com||0; }
+    });
+    dados = Object.values(mapa);
+  }
+
+  dados.sort((a,b)=>b.entregas-a.entregas);
+  if(!dados.length){ showToast('Nenhum dado para exportar','warning'); return; }
+
+  const sep  = ';';
+  const comp = mesSel ? formatarMesAno(mesSel) : 'Acumulado';
+  const linhas = [['Unidade','Tipo','Nome','Total Entregas','Sozinho','Com Ajudante','Compet\u00eancia'].join(sep)];
+
+  const unidades = [...new Set(dados.map(d=>d.und||'').filter(Boolean))].sort();
+  unidades.forEach(und=>{
+    const du   = dados.filter(d=>(d.und||'')===und);
+    const mots = du.filter(d=>d.tipo==='motorista');
+    const ajs  = du.filter(d=>d.tipo==='ajudante');
+    if(mots.length){
+      linhas.push(['','MOTORISTAS \u2014 '+und,'','','','',''].join(sep));
+      mots.forEach(d=>linhas.push([und,'Motorista',d.nome,d.entregas,d.ent_sem||0,d.ent_com||0,comp].join(sep)));
+    }
+    if(ajs.length){
+      linhas.push(['','AJUDANTES \u2014 '+und,'','','','',''].join(sep));
+      ajs.forEach(d=>linhas.push([und,'Ajudante',d.nome,d.entregas,d.ent_sem||0,d.ent_com||0,comp].join(sep)));
+    }
+    linhas.push('');
+  });
+
+  const csv  = linhas.join('\n');
   const blob = new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement('a'),{href:url,download:'financeiro_destak.csv'});
+  const suf  = [undSel?undSel.replace(/\s+/g,'_'):'', mesSel||''].filter(Boolean).join('_') || 'todos';
+  const a    = Object.assign(document.createElement('a'),{href:url,download:`produtividade_${suf}.csv`});
   a.click(); URL.revokeObjectURL(url);
-  showToast('✅ Exportado!','success');
+  showToast('\u2705 Exportado!','success');
 }
 
 // Portal do Motorista — financeiro individual
