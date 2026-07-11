@@ -6773,7 +6773,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
               <!-- Stats laterais -->
               <div style="flex:1;display:flex;flex-direction:column;gap:7px">
                 <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:6px">
-                  <span style="font-size:.62rem;color:rgba(255,255,255,.38)">✅ No Prazo</span>
+                  <span style="font-size:.62rem;color:rgba(255,255,255,.38)">✅ OTIF</span>
                   <span id="tv-otif-ok-num" style="font-size:.95rem;font-weight:900;color:#34d399;font-variant-numeric:tabular-nums">—</span>
                 </div>
                 <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:6px">
@@ -8960,7 +8960,7 @@ async function carregarPlanilha(file) {
             cod_forn, cliente, bairro, volume, nota_origem,
             mes_ano: mesAno(dt),
             semana_mes: semDoMes(dt),
-            data_pedido: _importTs,
+            data_pedido: (dt instanceof Date && !isNaN(dt)) ? dt.toISOString().slice(0,10) : null,
             _source: 'planilha'
           });
         });
@@ -9117,7 +9117,7 @@ async function carregarCSV(file) {
             cod_forn, cliente, bairro, volume, nota_origem,
             mes_ano: mesAno(dtRaw),
             semana_mes: semDoMes(dtRaw),
-            data_pedido: _importTs,
+            data_pedido: (dtRaw instanceof Date && !isNaN(dtRaw)) ? dtRaw.toISOString().slice(0,10) : null,
             _source:'planilha'
           });
         }
@@ -17272,7 +17272,8 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
                 carga:r.carga, pedido:r.pedido, valor:r.valor,
                 und:r.und, rota:r.rota, placa:r.placa||'', condutor:r.condutor,
                 ajudante:r.ajudante, ocorrencia:r.ocorrencia,
-                mes_ano:r.mes_ano, semana_mes:r.semana_mes, rire:r.rire
+                mes_ano:r.mes_ano, semana_mes:r.semana_mes, rire:r.rire,
+                data_pedido: r.data_pedido || null
               })))
             });
           }
@@ -21024,6 +21025,8 @@ async function limparDatasEntrega(origem){
   try{
     await supaFetch(`entrega_datas?mes_ano=eq.${mesFiltro}`,{method:'DELETE',prefer:'return=minimal'});
     showToast('Datas de entrega removidas','success');
+    [...(_otifCacheMap?.keys()||[])].filter(k=>k===mesFiltro||k.startsWith(mesFiltro+'__'))
+      .forEach(k=>{ _otifCacheMap.delete(k); _otifPromiseMap.delete(k); });
     renderDashInterna();
   }catch(e){ showToast('Erro ao remover: '+e.message,'warning'); }
 }
@@ -21423,7 +21426,7 @@ async function renderDashInterna(){
 
     // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
     // Usa o mesmo filtro de unidade do restante do dashboard (undFiltro da UI ou unidade do usuário)
-    const _userUndDash = undFiltro || (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+    const _userUndDash = undFiltro !== undefined && undFiltro !== '' ? undFiltro : '';
     const _dashCacheKey = _userUndDash ? `${mesFiltro}__${_userUndDash}` : mesFiltro;
     if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_dashCacheKey);
     const _dadosOtif = await _carregarOtifMes(mesFiltro, _userUndDash||undefined);
@@ -21527,7 +21530,7 @@ async function renderDashInterna(){
       {label:'🚛 Partiram',     val:cargasPartidas.length.toLocaleString('pt-BR'), cor:'#E8000D'},
       {label:'🎯 OTIF',          val:pctOtif!==null?pctOtif+'%':'—',               cor:corOtif(pctOtif),         sub:otifTot?`${otifOk}/${otifTot} ped`:'sem dados'},
       {label:'⏱ No Prazo (OTD)', val:pctOtdInt!==null?pctOtdInt+'%':'—',          cor:corOtif(pctOtdInt),       sub:onTimeTot?`${onTimeOk}/${onTimeTot} ped · meta ≥95%`:'sem dados'},
-      {label:'📦 In Full',        val:pctIfInt!==null?pctIfInt+'%':'—',             cor:pctIfInt>=98?'#059669':pctIfInt>=90?'#f59e0b':'#ef4444', sub:inFullTot?`${inFullOk}/${inFullTot} ped · meta ≥98%`:'sem dados'},
+      {label:'📦 In Full',        val:pctIfInt!==null?pctIfInt+'%':'—',             cor:pctIfInt===null?'#6b7280':pctIfInt>=98?'#059669':pctIfInt>=90?'#f59e0b':'#ef4444', sub:inFullTot?`${inFullOk}/${inFullTot} ped · meta ≥98%`:'sem dados'},
       {label:'⚠️ Avaria',         val:otifTot>0?pctAvariaInt+'%':'—',              cor:corAv(pctAvariaInt),      sub:otifTot?`${avariaQtdInt} ped c/ ocorr · meta ≤2%`:'sem dados'},
     ];
     container.innerHTML = kpis.map(k=>`
@@ -21600,7 +21603,7 @@ async function renderDashInterna(){
             </tr></thead>
             <tbody>${emAtraso.sort((a,b)=>a.data_saida>b.data_saida?1:-1).map(d=>{
               const dias = diasAtraso(d);
-              const stMap={pendente:'⏳ Pendente',separacao:'📦 Separação',carregamento:'🔄 Carregamento',aguardando_nf:'📋 Aguard. NF'};
+              const stMap={pendente:'⏳ Pendente',separacao:'📦 Separação',carregamento:'🔄 Carregamento',aguardando_nf:'📋 Aguard. NF',aguardando_manifesto:'🛡️ Aguard. Manifesto',pronto_viagem:'✅ Pronto Viagem'};
               return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
                 <td style="padding:9px 14px;font-weight:700;color:var(--text-primary)">${d.carga||'—'}</td>
                 <td style="padding:9px 14px;color:var(--text-secondary)">${d.rota||'—'}</td>
@@ -21620,7 +21623,7 @@ async function renderDashInterna(){
     // 12. Cards: Pedidos + Valor por Semana
     const semCardsEl = document.getElementById('dash-sem-cards');
     if(semCardsEl){
-      const _semDoMes = d => { if(!d) return 0; return Math.min(Math.ceil(new Date(d+'T00:00:00').getDate()/7),5); };
+      const _semDoMes = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); return Math.min(Math.ceil(_dt.getDate()/7),5); };
       const semLabels = ['1ª Semana','2ª Semana','3ª Semana','4ª Semana','5ª Semana'];
       const semData = [{ped:0,val:0},{ped:0,val:0},{ped:0,val:0},{ped:0,val:0},{ped:0,val:0}];
       const vistoPed = new Set();
@@ -21716,7 +21719,7 @@ async function renderDashInterna(){
               ds.data.forEach((arc,i)=>{
                 const pct = Math.round((data.datasets[0].data[i]/totalPed)*100);
                 if(pct < 5) return; // não cabe % em fatias muito pequenas
-                const {x,y} = arc.tooltipPosition();
+                const {x,y} = arc.getCenterPoint();
                 ctx.save();
                 ctx.font = 'bold 12px Arial';
                 ctx.fillStyle = '#ffffff';
@@ -21823,7 +21826,7 @@ async function renderDashInterna(){
       (ocorrRowsOtif||[]).forEach(o=>{ if(o.pedido) ocorrSetOtif.add(String(o.pedido)); });
 
       // _semDoMes: mesmo helper usado em Pedidos por Semana
-      const _semDoMesOtif = d => { if(!d) return 0; return Math.min(Math.ceil(new Date(d+'T00:00:00').getDate()/7),5); };
+      const _semDoMesOtif = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); return Math.min(Math.ceil(_dt.getDate()/7),5); };
 
       const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
       // Usa a mesma fonte e filtro RI/RE de "Pedidos por Semana" (bd) para garantir
@@ -21841,7 +21844,7 @@ async function renderDashInterna(){
 
         // Semana por data_pedido — idêntico ao bloco Pedidos por Semana
         const semIdx = _semDoMesOtif(p.data_pedido) - 1;
-        if(semIdx < 0 || semIdx > 4) return;
+        if(!(semIdx >= 0 && semIdx <= 4)) return;
 
         const ped   = String(p.pedido);
         const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
@@ -22105,7 +22108,7 @@ async function _carregarOtifMes(mes, und){
   // base_data filtrada apenas pelas cargas (unidade já garantida via lancamentos acima)
   // limit=20000 evita truncamento silencioso do PostgREST (padrão = 1000 linhas)
   let bdRows = cargasMes.size
-    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || []
+    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido,ocorrencia&limit=20000`,{_quiet:true}).catch(()=>[]) || []
     : [];
   // Fallback 1: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
   if(!bdRows.length && cargasMes.size && BASE_DATA.length){
@@ -22113,7 +22116,7 @@ async function _carregarOtifMes(mes, und){
   }
   // Fallback 2: cargas WMS (13xxx) ≠ cargas internas — busca por mes_ano quando join por carga retorna vazio
   if(!bdRows.length && cargasMes.size){
-    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
+    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido,ocorrencia&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
   }
   // Normalizar rire em todos os registros (RI → R.I., RE → R.E.) para consistência em todos os callers
   bdRows.forEach(b=>{ if(b.rire) b.rire = normRire(b.rire) || getRireFromRota((b.rota||'').toUpperCase()) || b.rire; });
@@ -33517,8 +33520,11 @@ async function carregarTV(){
 
     // ── OTIF do Mês — fonte única compartilhada com Painel e Dashboard Interno ──
     const _tvUnd = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim()||undefined;
+    const _tvOtifKey = _tvUnd ? `${mesStr}__${_tvUnd}` : mesStr;
+    _otifCacheMap.delete(_tvOtifKey);
+    _otifPromiseMap.delete(_tvOtifKey);
     const _tvDadosOtif = await _carregarOtifMes(mesStr, _tvUnd);
-    const otifStats = _tvDadosOtif ? (_tvDadosOtif.statsAll || _tvDadosOtif.stats) : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, [], undefined, undefined);
+    const otifStats = _tvDadosOtif ? (_tvDadosOtif.stats || _tvDadosOtif.statsAll) : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, [], undefined, undefined);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
 
@@ -33534,7 +33540,7 @@ async function carregarTV(){
         if(tipoFiltro==='RI' && getRireFromRota(d.rota)!=='R.I.') return false;
         if(tipoFiltro==='RE' && getRireFromRota(d.rota)!=='R.E.') return false;
         return Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)>=70;
-      }).map(d=>{ const prazoH=(prazoMap[(d.rota||'').toUpperCase()]||1)*24; return {carga:d.carga,rota:d.rota,prazoPct:Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)}; });
+      }).map(d=>{ const prazoH=(prazoMap[(d.rota||'').toUpperCase()]||24); return {carga:d.carga,rota:d.rota,prazoPct:Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)}; });
       return {
         total, noPrazo,
         pct:      total>0 ? Math.round(noPrazo/total*100) : null,
@@ -33552,7 +33558,7 @@ async function carregarTV(){
 
     // ── Frota ──
     const totalVeic = (veiculos||[]).length;
-    const emRotaVeic = new Set((demRota||[]).filter(d=>d.status==='saiu'||d.status==='fim_viagem').map(d=>d.veiculo).filter(Boolean));
+    const emRotaVeic = new Set((demRota||[]).filter(d=>d.status==='saiu').map(d=>d.veiculo).filter(Boolean));
     const emManut    = new Set((manuts||[]).map(m=>m.veiculo).filter(Boolean));
     const dispVeic   = totalVeic - emRotaVeic.size - emManut.size;
     const _s = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=Math.max(0,v); };
