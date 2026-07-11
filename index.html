@@ -21303,7 +21303,7 @@ async function renderDashInterna(){
 
     // Buscar base_data pelas cargas que saíram no mês (não por mes_ano do pedido)
     // Motivo: pedido criado no mês anterior mas entregue neste mês deve contar aqui
-    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,valor,ocorrencia';
+    const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,mes_ano,semana_mes,valor,ocorrencia';
     let baseDataSupa;
     if(!cargasUndLanc.size){
       baseDataSupa = [];
@@ -21633,11 +21633,12 @@ async function renderDashInterna(){
         const key = String(p.carga)+'_'+String(p.pedido);
         if(vistoPed.has(key)) return;
         vistoPed.add(key);
-        if(!p.data_pedido || !p.data_pedido.startsWith(mesFiltro)) return;
+        const _pedMes = (p.mes_ano || p.data_pedido || '').slice(0,7);
+        if(!_pedMes || _pedMes !== mesFiltro) return;
         const rotaPed = (p.rota||'').toUpperCase();
         if(rotaPed === 'RETIRA') return;
         if(Object.prototype.hasOwnProperty.call(_prazoMapSem, rotaPed) && _prazoMapSem[rotaPed] === null) return;
-        const s = _semDoMes(p.data_pedido);
+        const s = p.semana_mes || _semDoMes(p.data_pedido);
         if(s>=1&&s<=5){ semData[s-1].ped++; semData[s-1].val+=Number(p.valor)||0; }
       });
       const maxVal = Math.max(...semData.map(s=>s.val),1);
@@ -21837,13 +21838,12 @@ async function renderDashInterna(){
         const key = String(p.carga)+'_'+String(p.pedido);
         if(vistoSemOtif.has(key)) return;
         vistoSemOtif.add(key);
-        if(!p.data_pedido) return;
-        // Ignorar pedidos de outros meses que estejam em cargas de junho
-        // (getDate() de dia 29/30/31 de maio vira semana 5 de junho incorretamente)
-        if(!p.data_pedido.startsWith(mesFiltro)) return;
+        // Ignorar pedidos de outros meses que estejam em cargas do mês filtrado
+        const _pedMesOtif = (p.mes_ano || p.data_pedido || '').slice(0,7);
+        if(!_pedMesOtif || _pedMesOtif !== mesFiltro) return;
 
-        // Semana por data_pedido — idêntico ao bloco Pedidos por Semana
-        const semIdx = _semDoMesOtif(p.data_pedido) - 1;
+        // Semana: preferir semana_mes pré-calculado (imune a data_pedido errado)
+        const semIdx = (p.semana_mes || _semDoMesOtif(p.data_pedido)) - 1;
         if(!(semIdx >= 0 && semIdx <= 4)) return;
 
         const ped   = String(p.pedido);
@@ -21860,7 +21860,7 @@ async function renderDashInterna(){
         // Início do prazo: R.I. = data_pedido (local); R.E. = ts_saiu (sem saída = pendente)
         let _inicioPrazoOtif;
         if(rireNorm.includes('I')){
-          _inicioPrazoOtif = new Date(p.data_pedido+'T00:00:00');
+          _inicioPrazoOtif = new Date((p.data_pedido||'').slice(0,10)+'T00:00:00');
         } else {
           const tsRe = (carga && saidaTsMapOtif[carga]) || (carga && lancTsMapOtif[carga]);
           if(!tsRe) return; // R.E. sem saída real = pendente, não conta no OTIF
@@ -22108,7 +22108,7 @@ async function _carregarOtifMes(mes, und){
   // base_data filtrada apenas pelas cargas (unidade já garantida via lancamentos acima)
   // limit=20000 evita truncamento silencioso do PostgREST (padrão = 1000 linhas)
   let bdRows = cargasMes.size
-    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido,ocorrencia&limit=20000`,{_quiet:true}).catch(()=>[]) || []
+    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido,mes_ano,semana_mes,ocorrencia&limit=20000`,{_quiet:true}).catch(()=>[]) || []
     : [];
   // Fallback 1: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
   if(!bdRows.length && cargasMes.size && BASE_DATA.length){
@@ -22116,7 +22116,7 @@ async function _carregarOtifMes(mes, und){
   }
   // Fallback 2: cargas WMS (13xxx) ≠ cargas internas — busca por mes_ano quando join por carga retorna vazio
   if(!bdRows.length && cargasMes.size){
-    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido,ocorrencia&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
+    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido,mes_ano,semana_mes,ocorrencia&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
   }
   // Normalizar rire em todos os registros (RI → R.I., RE → R.E.) para consistência em todos os callers
   bdRows.forEach(b=>{ if(b.rire) b.rire = normRire(b.rire) || getRireFromRota((b.rota||'').toUpperCase()) || b.rire; });
