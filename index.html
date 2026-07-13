@@ -15104,6 +15104,8 @@ var _GF_COLETAS         = [];
 var _GF_FORNECEDORES_ROTA = []; // fornecedores com rota vinculada
 var _GF_LANCS_HOJE      = []; // lançamentos do dia corrente (para marcar veículos utilizados)
 var _GF_LANCS_MES       = []; // lançamentos do mês corrente (para calcular dias rodados por veículo)
+var _GF_ABAST_HOJE      = []; // abastecimento de loja hoje (também conta como utilização)
+var _GF_ABAST_MES       = []; // abastecimento de loja do mês
 
 async function carregarGestaoFrota(){
   const hoje = new Date().toISOString().slice(0,10);
@@ -15112,7 +15114,7 @@ async function carregarGestaoFrota(){
     const amanha = new Date(hoje); amanha.setDate(amanha.getDate()+1);
     const amanhaStr = amanha.toISOString().slice(0,10);
     const iniMes = hoje.slice(0,7) + '-01';
-    const [manut, custos, diarias, demandasAtivas, coletas, fornRota, lancsHoje, lancsMes] = await Promise.all([
+    const [manut, custos, diarias, demandasAtivas, coletas, fornRota, lancsHoje, lancsMes, abastHoje, abastMes] = await Promise.all([
       supaFetch('manutencoes_frota?select=*&order=data_inicio.desc').catch(()=>[]),
       supaFetch('custos_frota?select=*&order=data.desc').catch(()=>[]),
       supaFetch('diarias_frota?select=*&order=criado_em.desc').catch(()=>[]),
@@ -15123,7 +15125,11 @@ async function carregarGestaoFrota(){
       // Lançamentos de hoje — para identificar veículos utilizados no dia
       supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00&ts=lt.${amanhaStr}T00:00:00&select=veiculo,carga,rota,motorista`).catch(()=>[]),
       // Lançamentos do mês — para calcular dias rodados por veículo
-      supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00&ts=lt.${amanhaStr}T00:00:00&veiculo=not.is.null&select=veiculo,ts`).catch(()=>[])
+      supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00&ts=lt.${amanhaStr}T00:00:00&veiculo=not.is.null&select=veiculo,ts`).catch(()=>[]),
+      // Abastecimento de loja hoje — também conta como utilização do veículo
+      supaFetch(`abastecimento_loja?data_saida=eq.${hoje}&veiculo=not.is.null&select=veiculo,carga,motorista,unidade`).catch(()=>[]),
+      // Abastecimento de loja do mês — para calcular dias rodados
+      supaFetch(`abastecimento_loja?data_saida=gte.${iniMes}&data_saida=lt.${amanhaStr}&veiculo=not.is.null&select=veiculo,data_saida`).catch(()=>[])
     ]);
     _GF_MANUT           = manut          || [];
     _GF_CUSTOS          = custos         || [];
@@ -15133,6 +15139,8 @@ async function carregarGestaoFrota(){
     _GF_FORNECEDORES_ROTA = fornRota     || [];
     _GF_LANCS_HOJE      = lancsHoje      || [];
     _GF_LANCS_MES       = lancsMes       || [];
+    _GF_ABAST_HOJE      = abastHoje      || [];
+    _GF_ABAST_MES       = abastMes       || [];
     // Badge coletas pendentes
     const coletasPend = (_GF_COLETAS||[]).filter(c=>c.status==='pendente'||c.status==='em_andamento').length;
     const badgeColetas = document.getElementById('gf-coletas-badge');
@@ -15335,13 +15343,20 @@ function renderGfVeiculosHoje(){
     else emManutSet.add(m.veiculo);
   });
 
-  // Veículos usados hoje — mapa: placa → lista de { carga, rota, motorista }
+  // Veículos usados hoje — mapa: placa → lista de { carga, rota, motorista, _origem }
   const utilizadosMap = {};
   (_GF_LANCS_HOJE||[]).forEach(l=>{
     const p = (l.veiculo||'').trim().toUpperCase();
     if(!p||p==='A DEFINIR VEÍCULO') return;
     if(!utilizadosMap[p]) utilizadosMap[p] = [];
-    utilizadosMap[p].push(l);
+    utilizadosMap[p].push({...l, _origem:'lanc'});
+  });
+  // Abastecimento de loja também conta como utilização
+  (_GF_ABAST_HOJE||[]).forEach(a=>{
+    const p = (a.veiculo||'').trim().toUpperCase();
+    if(!p) return;
+    if(!utilizadosMap[p]) utilizadosMap[p] = [];
+    utilizadosMap[p].push({...a, _origem:'abast'});
   });
 
   // Dias rodados no mês — mapa: placa → Set de datas únicas
@@ -15350,6 +15365,15 @@ function renderGfVeiculosHoje(){
     const p = (l.veiculo||'').trim().toUpperCase();
     if(!p||p==='A DEFINIR VEÍCULO') return;
     const data = (l.ts||'').slice(0,10);
+    if(!data) return;
+    if(!diasRodadosMap[p]) diasRodadosMap[p] = new Set();
+    diasRodadosMap[p].add(data);
+  });
+  // Abastecimento de loja também conta nos dias rodados
+  (_GF_ABAST_MES||[]).forEach(a=>{
+    const p = (a.veiculo||'').trim().toUpperCase();
+    if(!p) return;
+    const data = (a.data_saida||'').slice(0,10);
     if(!data) return;
     if(!diasRodadosMap[p]) diasRodadosMap[p] = new Set();
     diasRodadosMap[p].add(data);
@@ -15387,11 +15411,20 @@ function renderGfVeiculosHoje(){
     if(emManut){
       badge    = '<span style="font-size:.68rem;font-weight:800;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:2px 9px">🔧 Manutenção</span>';
       bordaCor = '#ef4444';
+      // Mesmo em manutenção, mostra lançamentos/abastecimento do dia como uso
+      if(utilizado){
+        const rotas = [...new Set(utilizado.filter(l=>l._origem==='lanc').map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
+        const unids  = [...new Set(utilizado.filter(l=>l._origem==='abast').map(l=>(l.unidade||'').toUpperCase()).filter(Boolean))];
+        const partes = [...rotas.map(r=>'🛣️ '+r), ...unids.map(u=>'🏪 '+u)];
+        if(partes.length) detalhes = `<div style="font-size:.68rem;color:#b91c1c;margin-top:4px;font-weight:600">Rodou hoje: ${partes.join(' · ')}</div>`;
+      }
     } else if(utilizado){
       badge    = '<span style="font-size:.68rem;font-weight:800;background:#dcfce7;color:#065f46;border:1px solid #6ee7b7;border-radius:8px;padding:2px 9px">✅ Utilizado Hoje</span>';
       bordaCor = '#059669';
-      const rotas = [...new Set(utilizado.map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
-      if(rotas.length) detalhes = `<div style="font-size:.68rem;color:#059669;margin-top:4px;font-weight:600">${rotas.map(r=>'🛣️ '+r).join(' · ')}</div>`;
+      const rotas = [...new Set(utilizado.filter(l=>l._origem==='lanc').map(l=>(l.rota||'').toUpperCase()).filter(Boolean))];
+      const unids  = [...new Set(utilizado.filter(l=>l._origem==='abast').map(l=>(l.unidade||'').toUpperCase()).filter(Boolean))];
+      const partes = [...rotas.map(r=>'🛣️ '+r), ...unids.map(u=>'🏪 '+u)];
+      if(partes.length) detalhes = `<div style="font-size:.68rem;color:#059669;margin-top:4px;font-weight:600">${partes.join(' · ')}</div>`;
     } else {
       badge    = '<span style="font-size:.68rem;font-weight:600;background:var(--bg-card2);color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:2px 9px">⏸️ Livre</span>';
       bordaCor = 'var(--border)';
@@ -16633,6 +16666,26 @@ async function atualizarStatusDemanda(id, status){
   if(!chk.ok){
     showToast('⛔ '+chk.msg,'warning');
     return;
+  }
+
+  // Ao avançar para carregamento → bloquear se veículo estiver em manutenção
+  if(status === 'carregamento'){
+    const veicDem = (dem?.veiculo||'').trim().toUpperCase();
+    if(veicDem && veicDem !== 'A DEFINIR VEÍCULO'){
+      const hojeChk = new Date().toISOString().slice(0,10);
+      const emManutChk = (_GF_MANUT||[]).some(m=>{
+        if((m.veiculo||'').toUpperCase()!==veicDem) return false;
+        if(m.status==='concluida'||m.status==='cancelada') return false;
+        const ini = m.data_inicio||'';
+        if(!ini||ini>hojeChk) return false;
+        if(m.tipo==='preventiva'){ const fim=m.data_fim||''; return fim&&hojeChk>fim; }
+        return true;
+      });
+      if(emManutChk){
+        showToast(`⛔ Veículo ${veicDem} está em manutenção e não pode avançar para carregamento. Troque o veículo ou conclua a manutenção.`,'warning');
+        return;
+      }
+    }
   }
 
   // Se saindo em rota → verificar se motorista/veículo está definido
