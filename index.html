@@ -748,7 +748,7 @@ body{
   min-width:0;
   word-break:break-word;
 }
-.exp-card:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.15);border-color:var(--border-med)}
+.exp-card:hover{box-shadow:0 6px 20px rgba(0,0,0,.22);border-color:var(--border-med)}
 .exp-card-top{padding:10px 12px;display:flex;justify-content:space-between;align-items:flex-start;gap:6px}
 .exp-card-info{flex:1;min-width:0}
 .exp-card-rota{font-size:.85rem;font-weight:800;color:var(--text-primary);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -17613,39 +17613,10 @@ async function carregarPortalMotorista(){
       }
     }catch(e){ console.error('Carga ativa erro:', e); }
 
-    // ── Cenário B: mostrar card de carga pendente auto-registrada pelo motorista ──
-    let _daFromLanc = null;
-    if(!da){
-      try{
-        const _nomeDBB = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
-        const _lbRes = await supaFetch(
-          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDBB)}&fonte=eq.motorista_b&rota=eq.&select=id,carga,veiculo,ts&order=ts.desc&limit=1`
-        ).catch(()=>[]) || [];
-        if(_lbRes.length && elCargaAtual){
-          const _lb = _lbRes[0];
-          const _dtBR = _lb.ts ? new Date(_lb.ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
-          elCargaAtual.innerHTML = `
-            <div style="background:linear-gradient(135deg,#1c1404,#2d1f00);border:1px solid rgba(245,158,11,.35);border-left:4px solid #f59e0b;border-radius:14px;padding:16px 20px">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-                <div style="font-size:.78rem;font-weight:800;color:#fcd34d;text-transform:uppercase;letter-spacing:.5px">⏳ Carga Registrada — Aguardando Expedição</div>
-                <span style="background:rgba(245,158,11,.2);color:#fbbf24;padding:3px 12px;border-radius:20px;font-size:.72rem;font-weight:700">Pendente</span>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
-                <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">Nº CARGA</div><div style="font-size:1.1rem;font-weight:800;color:#fcd34d">#${_lb.carga||'—'}</div></div>
-                <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">VEÍCULO</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${_lb.veiculo||'—'}</div></div>
-                <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">REGISTRADO EM</div><div style="font-size:.92rem;font-weight:700;color:#94a3b8">${_dtBR}</div></div>
-              </div>
-              <div style="margin-top:12px;padding:9px 12px;background:rgba(245,158,11,.08);border-radius:8px;font-size:.76rem;color:#fbbf24">
-                ℹ️ A expedição está processando as informações de rota e pedidos desta carga.
-              </div>
-            </div>`;
-          _daFromLanc = _lb;
-        }
-      }catch(_){}
-    }
     // Exibir/ocultar formulário de registro manual (Cenário B)
+    // Com demandas_rota criada no registro, `da` já estará preenchido — formulário some automaticamente
     const _elAutoLanc = document.getElementById('mot-auto-lancamento');
-    if(_elAutoLanc) _elAutoLanc.style.display = (da || _daFromLanc) ? 'none' : 'block';
+    if(_elAutoLanc) _elAutoLanc.style.display = da ? 'none' : 'block';
 
     // ── DADOS DO MOTORISTA ─────────────────────────────
     const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
@@ -18322,6 +18293,7 @@ async function motRegistrarCargaManual(){
       `lancamentos?carga=eq.${Number(cargaVal)}&motorista=eq.${encodeURIComponent(_nomeB)}&select=id&limit=1`
     ).catch(()=>[]);
     if(_exist&&_exist.length){ _showMsg('⚠️ Já existe um lançamento para esta carga.', false); return; }
+    // 1. Criar lancamento (registro contábil)
     await supaFetch('lancamentos',{
       method:'POST',
       body:JSON.stringify({
@@ -18339,10 +18311,26 @@ async function motRegistrarCargaManual(){
         fonte: 'motorista_b'
       })
     });
-    _showMsg('✅ Saída registrada! A expedição vai completar rota e pedidos em breve.', true);
+    // 2. Criar demanda_rota (aciona o portal completo: entregas, KM, chegada)
+    await supaFetch('demandas_rota',{
+      method:'POST',
+      body:JSON.stringify({
+        carga: Number(cargaVal),
+        motorista: _nomeB,
+        veiculo: veicVal,
+        rota: '',
+        status: 'saiu',
+        ts_saiu: _tsB,
+        data_saida: _tsB.slice(0,10),
+        unidade: _undB||null,
+        criado_em: _tsB,
+        usuario_id: USUARIO_LOGADO?.id||null
+      })
+    }).catch(()=>{});
+    _showMsg('✅ Saída registrada! Portal atualizado com sua carga.', true);
     if(document.getElementById('mot-manual-carga')) document.getElementById('mot-manual-carga').value='';
     if(document.getElementById('mot-manual-veiculo')) document.getElementById('mot-manual-veiculo').value='';
-    setTimeout(()=>carregarPortalMotorista().catch(()=>{}), 1600);
+    setTimeout(()=>carregarPortalMotorista().catch(()=>{}), 1200);
   }catch(e){ _showMsg('⛔ Erro ao registrar: '+e.message, false); }
 }
 
