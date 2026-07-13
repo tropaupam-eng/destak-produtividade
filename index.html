@@ -4798,6 +4798,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <!-- ── ALERTA: CARGAS AUTO-REGISTRADAS POR MOTORISTAS (Cenário B) ── -->
+  <div id="exp-mot-pendentes" style="display:none;margin-bottom:16px"></div>
+
   <!-- ── PAINEL DEMANDAS ── -->
   <div id="exp-pane-demandas">
 
@@ -5626,6 +5629,31 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
     <!-- Carga Atual em destaque -->
     <div id="mot-carga-atual" style="margin-bottom:20px"></div>
+
+    <!-- Cenário B: motorista sem pré-carga registra saída manualmente -->
+    <div id="mot-auto-lancamento" style="display:none;margin-bottom:20px">
+      <div style="background:linear-gradient(135deg,#1c1404,#2d1f00);border:1px solid rgba(245,158,11,.35);border-left:4px solid #f59e0b;border-radius:14px;padding:16px 20px">
+        <div style="font-size:.78rem;font-weight:800;color:#fcd34d;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">⚠️ Nenhuma Carga Ativa no Sistema</div>
+        <p style="font-size:.8rem;color:#94a3b8;margin:0 0 14px">Sua carga está travada? Registre a saída com o número da carga e veículo. A expedição completa rota e pedidos depois.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+          <div>
+            <label style="font-size:.67rem;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:5px">Nº da Carga *</label>
+            <input id="mot-manual-carga" type="number" placeholder="Ex: 13500"
+              style="width:100%;background:#0f172a;border:1.5px solid rgba(245,158,11,.4);color:#f0f0f8;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box;-moz-appearance:textfield"/>
+          </div>
+          <div>
+            <label style="font-size:.67rem;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:5px">Veículo *</label>
+            <input id="mot-manual-veiculo" type="text" placeholder="Placa ou nome"
+              style="width:100%;background:#0f172a;border:1.5px solid rgba(245,158,11,.4);color:#f0f0f8;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+          </div>
+        </div>
+        <button onclick="motRegistrarCargaManual()"
+          style="width:100%;background:linear-gradient(135deg,#b45309,#d97706);color:#fff;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.3px">
+          🚛 Registrar Saída em Campo
+        </button>
+        <div id="mot-manual-msg" style="margin-top:10px;display:none"></div>
+      </div>
+    </div>
 
     <!-- ══ PORTAL DE ENTREGAS ══ -->
     <div id="mot-entregas-painel" style="display:none;margin-bottom:20px">
@@ -13395,6 +13423,7 @@ async function carregarDemandas(){
     renderPipelineBar();
     renderFrotaStatus();
     renderPainelDia();
+    renderExpMotPendentes().catch(()=>{});
     // Cargas abaixo do valor mínimo na expedição
     const _mesExpAtual = (()=>{ const h=new Date(); return h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0'); })();
     renderCargasAbaixoValor(_mesExpAtual, 'exp-baixo-valor');
@@ -16762,6 +16791,35 @@ async function confirmarSaidaRota(){
     }
     // Registrar no absenteísmo
     await registrarRotaComCarga(savedId, data).catch(()=>{});
+    // ── Cenário A: auto-criar lancamento se motorista ainda não tiver lançado ──
+    try{
+      if(dem?.carga && dem?.motorista){
+        const _motNorm = dem.motorista.toUpperCase().trim();
+        const _lancExist = await supaFetch(
+          `lancamentos?carga=eq.${dem.carga}&motorista=eq.${encodeURIComponent(_motNorm)}&select=id&limit=1`
+        ).catch(()=>[]);
+        if(!(_lancExist&&_lancExist.length)){
+          const _tsLancA = new Date().toISOString();
+          await supaFetch('lancamentos',{
+            method:'POST',
+            body:JSON.stringify({
+              carga: dem.carga,
+              motorista: _motNorm,
+              ajudante: '',
+              rota: dem.rota||'',
+              und: dem.unidade||dem.und||'',
+              rire: '',
+              vinculado: false,
+              pendente: true,
+              ts: _tsLancA,
+              mes_ano: _tsLancA.slice(0,7),
+              veiculo: dem.veiculo||null,
+              fonte: 'motorista_a'
+            })
+          }).catch(()=>{});
+        }
+      }
+    }catch(_){}
     // ── Marcar agendamento: realizado (no prazo) ou atrasado (saiu depois) ───
     try{
       const rotaNorm  = (dem?.rota||'').trim().toUpperCase();
@@ -17555,6 +17613,40 @@ async function carregarPortalMotorista(){
       }
     }catch(e){ console.error('Carga ativa erro:', e); }
 
+    // ── Cenário B: mostrar card de carga pendente auto-registrada pelo motorista ──
+    let _daFromLanc = null;
+    if(!da){
+      try{
+        const _nomeDBB = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
+        const _lbRes = await supaFetch(
+          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDBB)}&fonte=eq.motorista_b&rota=eq.&select=id,carga,veiculo,ts&order=ts.desc&limit=1`
+        ).catch(()=>[]) || [];
+        if(_lbRes.length && elCargaAtual){
+          const _lb = _lbRes[0];
+          const _dtBR = _lb.ts ? new Date(_lb.ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+          elCargaAtual.innerHTML = `
+            <div style="background:linear-gradient(135deg,#1c1404,#2d1f00);border:1px solid rgba(245,158,11,.35);border-left:4px solid #f59e0b;border-radius:14px;padding:16px 20px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+                <div style="font-size:.78rem;font-weight:800;color:#fcd34d;text-transform:uppercase;letter-spacing:.5px">⏳ Carga Registrada — Aguardando Expedição</div>
+                <span style="background:rgba(245,158,11,.2);color:#fbbf24;padding:3px 12px;border-radius:20px;font-size:.72rem;font-weight:700">Pendente</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
+                <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">Nº CARGA</div><div style="font-size:1.1rem;font-weight:800;color:#fcd34d">#${_lb.carga||'—'}</div></div>
+                <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">VEÍCULO</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${_lb.veiculo||'—'}</div></div>
+                <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">REGISTRADO EM</div><div style="font-size:.92rem;font-weight:700;color:#94a3b8">${_dtBR}</div></div>
+              </div>
+              <div style="margin-top:12px;padding:9px 12px;background:rgba(245,158,11,.08);border-radius:8px;font-size:.76rem;color:#fbbf24">
+                ℹ️ A expedição está processando as informações de rota e pedidos desta carga.
+              </div>
+            </div>`;
+          _daFromLanc = _lb;
+        }
+      }catch(_){}
+    }
+    // Exibir/ocultar formulário de registro manual (Cenário B)
+    const _elAutoLanc = document.getElementById('mot-auto-lancamento');
+    if(_elAutoLanc) _elAutoLanc.style.display = (da || _daFromLanc) ? 'none' : 'block';
+
     // ── DADOS DO MOTORISTA ─────────────────────────────
     const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
     const nomeRaw= USUARIO_LOGADO.nome || '';
@@ -18209,6 +18301,82 @@ async function motoristaChegarViagem(demId){
     showToast('🏁 Chegada registrada!','success');
     await carregarPortalMotorista();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+async function motRegistrarCargaManual(){
+  const cargaVal = (document.getElementById('mot-manual-carga')?.value||'').trim();
+  const veicVal  = (document.getElementById('mot-manual-veiculo')?.value||'').trim().toUpperCase();
+  const msgEl    = document.getElementById('mot-manual-msg');
+  const _showMsg = (txt, ok) => {
+    if(!msgEl) return;
+    msgEl.style.display = 'block';
+    msgEl.innerHTML = `<div style="background:${ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};border:1px solid ${ok?'rgba(16,185,129,.4)':'rgba(239,68,68,.4)'};border-radius:8px;padding:9px 14px;font-size:.82rem;color:${ok?'#34d399':'#fca5a5'}">${txt}</div>`;
+  };
+  if(!cargaVal || isNaN(Number(cargaVal))){ _showMsg('⚠️ Informe um número de carga válido.', false); return; }
+  if(!veicVal){ _showMsg('⚠️ Informe o veículo.', false); return; }
+  try{
+    const _nomeB = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
+    const _undB  = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+    const _tsB   = new Date().toISOString();
+    const _exist = await supaFetch(
+      `lancamentos?carga=eq.${Number(cargaVal)}&motorista=eq.${encodeURIComponent(_nomeB)}&select=id&limit=1`
+    ).catch(()=>[]);
+    if(_exist&&_exist.length){ _showMsg('⚠️ Já existe um lançamento para esta carga.', false); return; }
+    await supaFetch('lancamentos',{
+      method:'POST',
+      body:JSON.stringify({
+        carga: Number(cargaVal),
+        motorista: _nomeB,
+        ajudante: '',
+        rota: '',
+        und: _undB,
+        rire: '',
+        vinculado: false,
+        pendente: true,
+        ts: _tsB,
+        mes_ano: _tsB.slice(0,7),
+        veiculo: veicVal,
+        fonte: 'motorista_b'
+      })
+    });
+    _showMsg('✅ Saída registrada! A expedição vai completar rota e pedidos em breve.', true);
+    if(document.getElementById('mot-manual-carga')) document.getElementById('mot-manual-carga').value='';
+    if(document.getElementById('mot-manual-veiculo')) document.getElementById('mot-manual-veiculo').value='';
+    setTimeout(()=>carregarPortalMotorista().catch(()=>{}), 1600);
+  }catch(e){ _showMsg('⛔ Erro ao registrar: '+e.message, false); }
+}
+
+async function renderExpMotPendentes(){
+  const el = document.getElementById('exp-mot-pendentes');
+  if(!el) return;
+  try{
+    const rows = await supaFetch(
+      `lancamentos?fonte=eq.motorista_b&rota=eq.&select=id,carga,motorista,veiculo,ts,und&order=ts.desc&limit=50`
+    ).catch(()=>[]) || [];
+    if(!rows.length){ el.innerHTML=''; el.style.display='none'; return; }
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div style="background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(180,83,9,.05));border:1px solid rgba(245,158,11,.3);border-left:4px solid #f59e0b;border-radius:12px;padding:14px 18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+          <div style="font-size:.82rem;font-weight:800;color:var(--text-primary)">⚠️ Cargas Auto-Registradas por Motoristas
+            <span style="background:rgba(245,158,11,.25);color:#fbbf24;border-radius:20px;padding:2px 10px;font-size:.72rem;margin-left:6px">${rows.length}</span>
+          </div>
+          <span style="font-size:.73rem;color:var(--text-muted)">Complete a rota no painel de Lançamento</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${rows.map(r=>{
+            const _dtBR2 = r.ts ? new Date(r.ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+            return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <span style="font-size:.88rem;font-weight:800;color:var(--text-primary)">Carga #${r.carga}</span>
+              <span style="font-size:.78rem;color:#60a5fa">🚛 ${r.motorista||'—'}</span>
+              <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${r.veiculo||'—'}</span>
+              <span style="font-size:.73rem;color:var(--text-muted)">🕑 ${_dtBR2}</span>
+              <button onclick="preencherCarga(${r.carga},'')" style="margin-left:auto;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.4);color:#fbbf24;border-radius:6px;padding:4px 12px;font-size:.76rem;font-weight:700;cursor:pointer">Completar →</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }catch(_){ el.innerHTML=''; el.style.display='none'; }
 }
 
 async function forcePushAll(){
@@ -34598,6 +34766,9 @@ async function _alhoRenderDashboard() {
             <option value="outro">📝 Outro</option>
           </select>
         </div>
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:9px 14px;margin-bottom:14px">
+        <p style="font-size:.76rem;color:#1d4ed8;margin:0">✅ O lançamento desta carga será registrado automaticamente ao confirmar a saída.</p>
       </div>
       <div style="display:flex;gap:10px">
         <button onclick="fecharModalSaida()" style="flex:1;background:#f3f4f6;color:#374151;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:600;cursor:pointer">Cancelar</button>
