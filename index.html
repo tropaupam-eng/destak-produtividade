@@ -17539,15 +17539,16 @@ async function carregarPortalMotorista(){
     await syncConfig().catch(()=>{});
 
     // ── CARGA ATUAL (se motorista estiver em rota) ──
+    let da = null;
     try{
       const nomeDBTmp = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
       const demAtiva = await supaFetch(
-        `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.(saiu,pronto_viagem,carregamento,aguardando_nf,aguardando_manifesto)&select=*&order=data_saida.desc&limit=5`
+        `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.(saiu,pronto_viagem,carregamento,aguardando_nf,aguardando_manifesto,pendente,separacao)&select=*&order=data_saida.desc&limit=5`
       ).catch(()=>[]) || [];
       // Prioritize carga in 'saiu' status so motorista can register arrival even if a newer pre-departure carga exists
-      const da = demAtiva.find(d => d.status === 'saiu') || demAtiva[0];
+      da = demAtiva.find(d => d.status === 'saiu') || demAtiva[0];
       if(da && elCargaAtual){
-        const statusLabel = {saiu:'🚛 Em Rota',pronto_viagem:'✅ Pronto p/ Viagem',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Ag. NF',aguardando_manifesto:'🛡️ Ag. Manifesto'}[da.status]||da.status;
+        const statusLabel = {saiu:'🚛 Em Rota',pronto_viagem:'✅ Pronto p/ Viagem',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Ag. NF',aguardando_manifesto:'🛡️ Ag. Manifesto',pendente:'⏳ Em Preparação',separacao:'📦 Em Separação'}[da.status]||da.status;
         const fmtHora = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
         // Buscar KM da carga ativa
         let kmAtiva = null;
@@ -17613,10 +17614,40 @@ async function carregarPortalMotorista(){
       }
     }catch(e){ console.error('Carga ativa erro:', e); }
 
+    // Se não há demanda ativa, verificar lancamentos de hoje (lançado pela aba lançamento)
+    let _lancHoje = null;
+    if(!da){
+      try{
+        const _hojeStr = new Date().toISOString().slice(0,10);
+        const _nomeDbLanc = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
+        const _lhRes = await supaFetch(
+          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&ts=gte.${_hojeStr}T00:00:00Z&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
+        ).catch(()=>[]) || [];
+        if(_lhRes.length && elCargaAtual){
+          const _lh = _lhRes[0];
+          const _dtLH = _lh.ts ? new Date(_lh.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
+          elCargaAtual.innerHTML = `<div style="background:linear-gradient(135deg,#1e3a5f,#0f2d5a);border:1px solid rgba(37,99,235,.35);border-left:4px solid #2563eb;border-radius:14px;padding:16px 20px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <div style="font-size:.78rem;font-weight:800;color:#93c5fd;text-transform:uppercase;letter-spacing:.5px">📋 Carga Lançada Hoje</div>
+              <span style="background:rgba(37,99,235,.25);color:#93c5fd;padding:3px 12px;border-radius:20px;font-size:.72rem;font-weight:700">Lançada</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
+              <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">ROTA</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${_lh.rota||'—'}</div></div>
+              <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">Nº CARGA</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">#${_lh.carga||'—'}</div></div>
+              ${_lh.veiculo?`<div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">VEÍCULO</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${_lh.veiculo}</div></div>`:''}
+              <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">LANÇADO ÀS</div><div style="font-size:1.1rem;font-weight:800;color:#94a3b8">${_dtLH}</div></div>
+            </div>
+            <div style="margin-top:12px;padding:9px 12px;background:rgba(37,99,235,.08);border-radius:8px;font-size:.76rem;color:#93c5fd">
+              ✅ Sua carga foi registrada. Aguardando confirmação da expedição para iniciar.
+            </div>
+          </div>`;
+          _lancHoje = _lh;
+        }
+      }catch(_){}
+    }
     // Exibir/ocultar formulário de registro manual (Cenário B)
-    // Com demandas_rota criada no registro, `da` já estará preenchido — formulário some automaticamente
     const _elAutoLanc = document.getElementById('mot-auto-lancamento');
-    if(_elAutoLanc) _elAutoLanc.style.display = da ? 'none' : 'block';
+    if(_elAutoLanc) _elAutoLanc.style.display = (da || _lancHoje) ? 'none' : 'block';
 
     // ── DADOS DO MOTORISTA ─────────────────────────────
     const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
