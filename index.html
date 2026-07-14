@@ -4326,6 +4326,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 #page-checklist-alho .ck-sug{background:var(--ck-grey-sf);border-radius:10px;padding:12px 14px;font-size:12px;color:var(--ck-mut);margin-bottom:16px}
 #page-checklist-alho .ck-sug b{color:var(--ck-txt)}
 #page-checklist-alho .ck-empty{text-align:center;padding:40px;color:var(--ck-mut);font-size:13px}
+#page-checklist-alho .ck-ci.req-erro{border-color:var(--ck-red-c);background:var(--ck-red-sf);animation:ck-shake .3s}
+#page-checklist-alho .ck-field input.req-erro,#page-checklist-alho .ck-field select.req-erro{border-color:var(--ck-red-c);background:#fff5f5}
+#page-checklist-alho .ck-field label.req-lbl::after{content:' *';color:var(--ck-red-c)}
+#page-checklist-alho .ck-dec-err{outline:2px solid var(--ck-red-c);border-radius:12px;padding:4px;animation:ck-shake .3s}
+@keyframes ck-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
 </style>
 <div class="ck-w">
   <div class="ck-topbar">
@@ -4355,13 +4360,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <h2>📋 Dados do Recebimento</h2>
       <div class="ck-desc">Identificação da carga recebida</div>
       <div class="ck-grid ck-g3">
-        <div class="ck-field"><label>Data</label><input type="date" id="ck-r-data"></div>
+        <div class="ck-field"><label class="req-lbl">Data</label><input type="date" id="ck-r-data"></div>
         <div class="ck-field"><label>Hora</label><input type="time" id="ck-r-hora"></div>
-        <div class="ck-field"><label>Fornecedor</label><input type="text" id="ck-r-fornecedor" placeholder="Nome do fornecedor"></div>
-        <div class="ck-field"><label>Nota Fiscal</label><input type="text" id="ck-r-nf" placeholder="Nº da NF"></div>
-        <div class="ck-field"><label>Lote</label><input type="text" id="ck-r-lote" placeholder="Nº do lote"></div>
-        <div class="ck-field"><label>Unidade / CD</label><input type="text" id="ck-r-unidade" placeholder="Ex: CD Juazeiro"></div>
-        <div class="ck-field"><label>Responsável</label><input type="text" id="ck-r-responsavel" placeholder="Quem está fazendo a conferência"></div>
+        <div class="ck-field"><label class="req-lbl">Fornecedor</label><input type="text" id="ck-r-fornecedor" placeholder="Nome do fornecedor"></div>
+        <div class="ck-field"><label class="req-lbl">Nota Fiscal</label><input type="text" id="ck-r-nf" placeholder="Nº da NF"></div>
+        <div class="ck-field"><label class="req-lbl">Lote</label><input type="text" id="ck-r-lote" placeholder="Nº do lote"></div>
+        <div class="ck-field"><label class="req-lbl">Unidade / CD</label><input type="text" id="ck-r-unidade" placeholder="Ex: CD Juazeiro"></div>
+        <div class="ck-field"><label class="req-lbl">Responsável</label><input type="text" id="ck-r-responsavel" placeholder="Quem está fazendo a conferência"></div>
         <div class="ck-field"><label>Qtde. de caixas</label><input type="number" id="ck-r-caixas" placeholder="0"></div>
         <div class="ck-field"><label>Peso total (kg)</label><input type="number" id="ck-r-peso" placeholder="0"></div>
       </div>
@@ -22092,9 +22097,16 @@ async function renderDashInterna(){
     if(_cdSec < 0) _cdSec = 0;
     if(cdVal) cdVal.textContent = _fmtCd(_cdSec);
   }, 1000);
-  _dashIntRefreshTimer = setInterval(()=>{
+  _dashIntRefreshTimer = setInterval(async ()=>{
     const pg = document.getElementById('page-dash-interna');
-    if(pg && pg.classList.contains('active')) renderDashInterna();
+    if(!pg?.classList.contains('active')){
+      clearInterval(_dashIntRefreshTimer); _dashIntRefreshTimer = null;
+      clearInterval(_dashIntCountdownTimer); _dashIntCountdownTimer = null;
+      return;
+    }
+    _supaLoadingQuiet = true;
+    try{ await renderDashInterna(); }catch(e){}
+    finally{ _supaLoadingQuiet = false; }
   }, 300000); // 5 minutos
 
   container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted)"><div style="display:inline-block;width:28px;height:28px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:8px"></div>Carregando dados...</div>';
@@ -28491,23 +28503,24 @@ async function pegarCargaConferente(demandaId, carga){
 async function conferirPedidoPortal(carga, pedido, status){
   const obs = document.getElementById(`obs-${carga}-${pedido}`)?.value.trim()||'';
   try{
-    // Garantir que a demanda esteja em separacao (caso vincularConferente não tenha atualizado)
-    try{
-      const demDB = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
-      const dem = demDB && demDB[0];
-      if(dem && dem.status==='pendente'){
-        await _patchStatusDemanda(dem.id, 'separacao', 'conferir_pedido_auto');
-      }
-    }catch(eSep){ console.warn('sep-check:',eSep.message); }
-
-    // Salvar conferência do pedido
     const confId = USUARIO_LOGADO?.id || null;
     const queryEx = confId
       ? `conferencia_pedidos?carga=eq.${carga}&pedido=eq.${pedido}&conferente_id=eq.${confId}&select=id`
       : `conferencia_pedidos?carga=eq.${carga}&pedido=eq.${pedido}&select=id`;
-    const ex = await supaFetch(queryEx) || [];
-    if(ex.length){
-      await supaFetch(`conferencia_pedidos?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,conferido_em:new Date().toISOString()})});
+
+    // Busca paralela: demanda + existência do pedido + total base_data + conferidos atuais
+    const [demRows, exRows, pedidosBase, confExist] = await Promise.all([
+      supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status,arm_status&limit=1`).catch(()=>[]),
+      supaFetch(queryEx).catch(()=>[]),
+      supaFetch(`base_data?carga=eq.${carga}&select=pedido`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido`).catch(()=>[]),
+    ]);
+    const demanda = demRows && demRows[0];
+    const isNew = !(exRows && exRows.length);
+
+    // Salvar conferência
+    if(!isNew){
+      await supaFetch(`conferencia_pedidos?id=eq.${exRows[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,conferido_em:new Date().toISOString()})});
     } else {
       await supaFetch('conferencia_pedidos',{method:'POST',body:JSON.stringify({
         carga:parseInt(carga), pedido:parseInt(pedido),
@@ -28517,32 +28530,29 @@ async function conferirPedidoPortal(carga, pedido, status){
       })});
     }
 
-    // Atualizar arm_status automaticamente conforme progresso
-    try{
-      const totalPed   = BASE_DATA.filter(r=>Math.round(Number(r.carga))===Number(carga)&&r.pedido);
-      const totalUnicos = [...new Set(totalPed.map(r=>r.pedido))].length;
-      const conferidos  = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,status`) || [];
-      const confUnicos  = [...new Set(conferidos.map(r=>r.pedido))].length;
+    // Atualizar arm_status sem re-fetches — usa dados já buscados acima
+    if(demanda){
+      const prevConf   = [...new Set((confExist||[]).map(r=>r.pedido))];
+      // Verifica se ESTE pedido já estava nos conferidos (independente do conferente)
+      const confUnicos = prevConf.includes(parseInt(pedido)) ? prevConf.length : prevConf.length + 1;
+      const totalUnicos = [...new Set((pedidosBase||[]).map(r=>r.pedido).filter(Boolean))].length;
+      const stAtual     = demanda.arm_status || 'pendente';
 
-      const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
-      if(demanda && confUnicos > 0){
-        const stAtual = demanda.arm_status || 'pendente';
-        // Primeiro pedido conferido → entra em carregamento automaticamente
-        if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
-          await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
-          demanda.arm_status = 'carregamento';
-          // Sincronizar demandas_rota.status
-          if(['pendente','separacao'].includes(demanda.status)){
-            await _patchStatusDemanda(demanda.id, 'carregamento', 'conferir_pedido_auto').catch(()=>{});
-          }
-          showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
+      if(confUnicos > 0 && stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
+        // Patch único com arm_status + status + timestamp
+        const patchData = { arm_status: 'carregamento' };
+        if(['pendente','separacao'].includes(demanda.status)){
+          patchData.status = 'carregamento';
+          patchData.ts_carregamento = new Date().toISOString();
         }
-        // Toast quando todos conferidos
-        if(totalUnicos > 0 && confUnicos >= totalUnicos){
-          showToast(`✅ Todos os ${totalUnicos} pedidos conferidos! Aguardando confirmação de carregamento.`,'success');
-        }
+        await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify(patchData)});
+        registrarHistoricoStatus(demanda.id, demanda.status, 'carregamento', 'conferir_pedido_auto');
+        showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
       }
-    }catch(e){ console.warn('auto-status:', e.message); }
+      if(totalUnicos > 0 && confUnicos >= totalUnicos){
+        showToast(`✅ Todos os ${totalUnicos} pedidos conferidos! Aguardando confirmação de carregamento.`,'success');
+      }
+    }
 
     showToast(status==='ok'?'✅ Pedido '+pedido+' conferido':'❌ Pedido '+pedido+' marcado como Não OK', status==='ok'?'success':'warning');
     await carregarPortalConferente();
@@ -28552,16 +28562,15 @@ async function conferirPedidoPortal(carga, pedido, status){
 
 async function concluirCarregamentoConferente(carga){
   try{
-    const dem = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
-    if(!dem){ showToast('Demanda não encontrada','warning'); return; }
-
-    // Verificar se todos os pedidos foram conferidos (busca fresca do Supabase)
-    const [demRow, confRegs] = await Promise.all([
-      supaFetch(`demandas_rota?id=eq.${dem.id}&select=quantidade_pedidos,status`).catch(()=>[]),
+    // Busca demanda e conferidos em paralelo direto do Supabase (não depende de _demandasCache)
+    const [demRows, confRegs] = await Promise.all([
+      supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status,quantidade_pedidos&limit=1`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.(ok,nok)&select=id`).catch(()=>[])
     ]);
-    const totalPedidos = demRow?.[0]?.quantidade_pedidos || 0;
-    const statusReal   = demRow?.[0]?.status;
+    const dem = demRows && demRows[0];
+    if(!dem){ showToast('Demanda não encontrada','warning'); return; }
+
+    const totalPedidos = dem.quantidade_pedidos || 0;
     const conferidos   = (confRegs||[]).length;
 
     if(totalPedidos === 0){
@@ -29983,6 +29992,19 @@ async function renderArmazem(){
     }
   }
 
+  // Auto-refresh silencioso a cada 30s — só inicia se não tiver um rodando
+  if(!window._armAutoRefresh){
+    window._armAutoRefresh = setInterval(async ()=>{
+      const pg = document.getElementById('page-armazem');
+      if(!pg?.classList.contains('active')){
+        clearInterval(window._armAutoRefresh); window._armAutoRefresh = null; return;
+      }
+      _supaLoadingQuiet = true;
+      try{ await renderArmazem(); }catch(e){}
+      finally{ _supaLoadingQuiet = false; }
+    }, 30000);
+  }
+
 }
 
 // Transfere conferente de uma carga (sem avançar status)
@@ -31371,6 +31393,8 @@ let _loadingShowTimer = null;
 let _loadingHideTimer = null;
 let _loadingVisible = false;
 let _loadingWatchdog = null;
+// Suprime o relógio para refreshes automáticos de background (não iniciados pelo usuário)
+let _supaLoadingQuiet = false;
 function _loadingForceHide(){
   _loadingCount = 0;
   clearTimeout(_loadingShowTimer);  _loadingShowTimer = null;
@@ -31433,7 +31457,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
   const {_quiet=false, prefer, headers:extraHeaders, ...restOpts} = opts;
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), TIMEOUT_MS);
-  if(!_quiet) _loadingShow();
+  if(!_quiet && !_supaLoadingQuiet) _loadingShow();
   try{
     const res = await fetch(SUPA_URL+'/rest/v1/'+path, {
       signal: controller.signal,
@@ -31457,7 +31481,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
       if(_tentativa < 2){
         console.warn('[supaFetch] Timeout na tentativa 1 — retentando:', path.slice(0,80));
         clearTimeout(tid);
-        if(!_quiet) _loadingHide();
+        // finally já chama _loadingHide() — não chamar aqui para evitar duplo decremento
         return supaFetch(path, opts, 2);
       }
       throw new Error('Timeout na query: '+path.slice(0,120));
@@ -31465,7 +31489,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
     throw e;
   }finally{
     clearTimeout(tid);
-    if(!_quiet) _loadingHide();
+    if(!_quiet && !_supaLoadingQuiet) _loadingHide();
   }
 }
 // ────────────────────────────────────────────────────────
@@ -31671,11 +31695,16 @@ async function iniciarApp(){
     document.getElementById('portal-conferente-wrapper').style.display='block';
     document.getElementById('conf-nome').textContent = USUARIO_LOGADO.nome;
     await carregarPortalConferente();
-    // Auto-refresh a cada 45 segundos para pegar novas atribuições
+    // Auto-refresh a cada 45 segundos para pegar novas atribuições (silencioso — não mostra relógio)
     if(window._confAutoRefresh) clearInterval(window._confAutoRefresh);
-    window._confAutoRefresh = setInterval(()=>{
-      if(USUARIO_LOGADO?.perfil==='conferente') carregarPortalConferente().catch(()=>{});
-      else clearInterval(window._confAutoRefresh);
+    window._confAutoRefresh = setInterval(async ()=>{
+      if(USUARIO_LOGADO?.perfil==='conferente'){
+        _supaLoadingQuiet = true;
+        try{ await carregarPortalConferente(); }catch(e){}
+        finally{ _supaLoadingQuiet = false; }
+      } else {
+        clearInterval(window._confAutoRefresh);
+      }
     }, 45000);
     return;
   }
@@ -34846,6 +34875,14 @@ function renderChecklistAlho() {
   _ck_renderChecklist();
   _ck_renderAlteracoes();
   _ck_switchTab('recebimento');
+  // Remove erro visual ao preencher campos obrigatórios
+  ['ck-r-data','ck-r-fornecedor','ck-r-nf','ck-r-lote','ck-r-unidade','ck-r-responsavel'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('input', () => el.classList.remove('req-erro'), {once:false});
+  });
+  document.querySelectorAll('#ck-decisaoGrid .ck-dec-card').forEach(card => {
+    card.addEventListener('click', () => document.getElementById('ck-decisaoGrid')?.classList.remove('ck-dec-err'));
+  });
 }
 
 function _ck_switchTab(tab) {
@@ -34921,6 +34958,8 @@ function _ck_marcar(id, v) {
   });
   const obsEl = document.getElementById(`ck-ci-obs-${id}`);
   if(obsEl) obsEl.style.display = v === 'nc' ? 'block' : 'none';
+  // Remove erro visual ao responder
+  document.getElementById(`ck-ci-${id}`)?.classList.remove('req-erro');
   _ck_updateProgresso();
 }
 
@@ -35055,11 +35094,58 @@ function _ck_copiarLaudo() {
 }
 
 async function _ck_salvar() {
-  if(Object.keys(_ck_ciState).length < 14) {
-    showToast('⚠ Preencha todos os 14 itens do checklist de inspeção.','warning'); return;
+  // --- Validação de campos obrigatórios ---
+  const camposObrig = [
+    {id:'ck-r-data',       tab:'recebimento', msg:'Data'},
+    {id:'ck-r-fornecedor', tab:'recebimento', msg:'Fornecedor'},
+    {id:'ck-r-nf',         tab:'recebimento', msg:'Nota Fiscal'},
+    {id:'ck-r-lote',       tab:'recebimento', msg:'Lote'},
+    {id:'ck-r-unidade',    tab:'recebimento', msg:'Unidade / CD'},
+    {id:'ck-r-responsavel',tab:'recebimento', msg:'Responsável'},
+  ];
+  // Limpa erros anteriores
+  camposObrig.forEach(c => document.getElementById(c.id)?.classList.remove('req-erro'));
+  document.querySelectorAll('#ck-checklistItems .ck-ci').forEach(el => el.classList.remove('req-erro'));
+  document.getElementById('ck-decisaoGrid')?.classList.remove('ck-dec-err');
+
+  let erros = [];
+  let primeiraTab = null;
+
+  // Valida campos de recebimento
+  camposObrig.forEach(c => {
+    const el = document.getElementById(c.id);
+    if(!el || !el.value.trim()) {
+      el?.classList.add('req-erro');
+      erros.push(c.msg);
+      if(!primeiraTab) primeiraTab = c.tab;
+    }
+  });
+
+  // Valida itens do checklist
+  const itensPendentes = _CK_ITEMS.filter(it => !_ck_ciState[it.id]);
+  if(itensPendentes.length > 0) {
+    itensPendentes.forEach(it => {
+      document.getElementById(`ck-ci-${it.id}`)?.classList.add('req-erro');
+    });
+    erros.push(`${itensPendentes.length} iten(s) do checklist sem resposta`);
+    if(!primeiraTab) primeiraTab = 'inspecao';
   }
+
+  // Valida decisão do lote
   if(!_ck_decisaoSel) {
-    showToast('⚠ Selecione a decisão do lote na aba "Decisão do Lote".','warning'); return;
+    document.getElementById('ck-decisaoGrid')?.classList.add('ck-dec-err');
+    erros.push('Decisão do lote não selecionada');
+    if(!primeiraTab) primeiraTab = 'decisao';
+  }
+
+  if(erros.length > 0) {
+    _ck_switchTab(primeiraTab);
+    showToast('⚠ Preencha os campos obrigatórios: ' + erros.slice(0,2).join(', ') + (erros.length > 2 ? ` e mais ${erros.length-2}` : '') + '.', 'warning');
+    setTimeout(() => {
+      const primeiro = document.querySelector('#page-checklist-alho .req-erro');
+      if(primeiro) primeiro.scrollIntoView({behavior:'smooth', block:'center'});
+    }, 300);
+    return;
   }
   const decisaoMap = {aprovado:'aprovado',ressalva:'aprovado_ressalva',segregado:'segregado',reprovado:'rejeitado'};
   const vals = Object.values(_ck_ciState);
