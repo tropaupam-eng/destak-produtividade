@@ -22097,9 +22097,13 @@ async function renderDashInterna(){
     if(_cdSec < 0) _cdSec = 0;
     if(cdVal) cdVal.textContent = _fmtCd(_cdSec);
   }, 1000);
-  _dashIntRefreshTimer = setInterval(()=>{
+  _dashIntRefreshTimer = setInterval(async ()=>{
     const pg = document.getElementById('page-dash-interna');
-    if(pg && pg.classList.contains('active')) renderDashInterna();
+    if(pg && pg.classList.contains('active')){
+      _supaLoadingQuiet = true;
+      try{ await renderDashInterna(); }catch(e){}
+      finally{ _supaLoadingQuiet = false; }
+    }
   }, 300000); // 5 minutos
 
   container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted)"><div style="display:inline-block;width:28px;height:28px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:8px"></div>Carregando dados...</div>';
@@ -28496,23 +28500,24 @@ async function pegarCargaConferente(demandaId, carga){
 async function conferirPedidoPortal(carga, pedido, status){
   const obs = document.getElementById(`obs-${carga}-${pedido}`)?.value.trim()||'';
   try{
-    // Garantir que a demanda esteja em separacao (caso vincularConferente não tenha atualizado)
-    try{
-      const demDB = await supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status`);
-      const dem = demDB && demDB[0];
-      if(dem && dem.status==='pendente'){
-        await _patchStatusDemanda(dem.id, 'separacao', 'conferir_pedido_auto');
-      }
-    }catch(eSep){ console.warn('sep-check:',eSep.message); }
-
-    // Salvar conferência do pedido
     const confId = USUARIO_LOGADO?.id || null;
     const queryEx = confId
       ? `conferencia_pedidos?carga=eq.${carga}&pedido=eq.${pedido}&conferente_id=eq.${confId}&select=id`
       : `conferencia_pedidos?carga=eq.${carga}&pedido=eq.${pedido}&select=id`;
-    const ex = await supaFetch(queryEx) || [];
-    if(ex.length){
-      await supaFetch(`conferencia_pedidos?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,conferido_em:new Date().toISOString()})});
+
+    // Busca paralela: demanda + existência do pedido + total base_data + conferidos atuais
+    const [demRows, exRows, pedidosBase, confExist] = await Promise.all([
+      supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status,arm_status&limit=1`).catch(()=>[]),
+      supaFetch(queryEx).catch(()=>[]),
+      supaFetch(`base_data?carga=eq.${carga}&select=pedido`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido`).catch(()=>[]),
+    ]);
+    const demanda = demRows && demRows[0];
+    const isNew = !(exRows && exRows.length);
+
+    // Salvar conferência
+    if(!isNew){
+      await supaFetch(`conferencia_pedidos?id=eq.${exRows[0].id}`,{method:'PATCH',body:JSON.stringify({status,observacao:obs,conferido_em:new Date().toISOString()})});
     } else {
       await supaFetch('conferencia_pedidos',{method:'POST',body:JSON.stringify({
         carga:parseInt(carga), pedido:parseInt(pedido),
@@ -28522,35 +28527,28 @@ async function conferirPedidoPortal(carga, pedido, status){
       })});
     }
 
-    // Atualizar arm_status automaticamente conforme progresso
-    try{
-      // Busca demanda direto do Supabase (não depende de _demandasCache que pode estar vazio no portal conferente)
-      const [demRows, conferidos, pedidosBase] = await Promise.all([
-        supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status,arm_status&limit=1`).catch(()=>[]),
-        supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,status`).catch(()=>[]),
-        supaFetch(`base_data?carga=eq.${carga}&select=pedido`).catch(()=>[]),
-      ]);
-      const demanda = demRows && demRows[0];
-      const confUnicos  = [...new Set((conferidos||[]).map(r=>r.pedido))].length;
+    // Atualizar arm_status sem re-fetches — usa dados já buscados acima
+    if(demanda){
+      const prevConf   = [...new Set((confExist||[]).map(r=>r.pedido))];
+      const confUnicos  = isNew ? prevConf.length + 1 : prevConf.length;
       const totalUnicos = [...new Set((pedidosBase||[]).map(r=>r.pedido).filter(Boolean))].length;
+      const stAtual     = demanda.arm_status || 'pendente';
 
-      if(demanda && confUnicos > 0){
-        const stAtual = demanda.arm_status || 'pendente';
-        // Primeiro pedido conferido → entra em carregamento automaticamente
-        if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
-          await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
-          // Sincronizar demandas_rota.status
-          if(['pendente','separacao'].includes(demanda.status)){
-            await _patchStatusDemanda(demanda.id, 'carregamento', 'conferir_pedido_auto').catch(()=>{});
-          }
-          showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
+      if(confUnicos > 0 && stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
+        // Patch único com arm_status + status + timestamp
+        const patchData = { arm_status: 'carregamento' };
+        if(['pendente','separacao'].includes(demanda.status)){
+          patchData.status = 'carregamento';
+          patchData.ts_carregamento = new Date().toISOString();
         }
-        // Toast quando todos conferidos
-        if(totalUnicos > 0 && confUnicos >= totalUnicos){
-          showToast(`✅ Todos os ${totalUnicos} pedidos conferidos! Aguardando confirmação de carregamento.`,'success');
-        }
+        await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify(patchData)});
+        registrarHistoricoStatus(demanda.id, demanda.status, 'carregamento', 'conferir_pedido_auto');
+        showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
       }
-    }catch(e){ console.warn('auto-status:', e.message); }
+      if(totalUnicos > 0 && confUnicos >= totalUnicos){
+        showToast(`✅ Todos os ${totalUnicos} pedidos conferidos! Aguardando confirmação de carregamento.`,'success');
+      }
+    }
 
     showToast(status==='ok'?'✅ Pedido '+pedido+' conferido':'❌ Pedido '+pedido+' marcado como Não OK', status==='ok'?'success':'warning');
     await carregarPortalConferente();
@@ -29991,6 +29989,19 @@ async function renderArmazem(){
     }
   }
 
+  // Auto-refresh silencioso a cada 30s — só inicia se não tiver um rodando
+  if(!window._armAutoRefresh){
+    window._armAutoRefresh = setInterval(async ()=>{
+      const pg = document.getElementById('page-armazem');
+      if(!pg?.classList.contains('active')){
+        clearInterval(window._armAutoRefresh); window._armAutoRefresh = null; return;
+      }
+      _supaLoadingQuiet = true;
+      try{ await renderArmazem(); }catch(e){}
+      finally{ _supaLoadingQuiet = false; }
+    }, 30000);
+  }
+
 }
 
 // Transfere conferente de uma carga (sem avançar status)
@@ -31379,6 +31390,8 @@ let _loadingShowTimer = null;
 let _loadingHideTimer = null;
 let _loadingVisible = false;
 let _loadingWatchdog = null;
+// Suprime o relógio para refreshes automáticos de background (não iniciados pelo usuário)
+let _supaLoadingQuiet = false;
 function _loadingForceHide(){
   _loadingCount = 0;
   clearTimeout(_loadingShowTimer);  _loadingShowTimer = null;
@@ -31441,7 +31454,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
   const {_quiet=false, prefer, headers:extraHeaders, ...restOpts} = opts;
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), TIMEOUT_MS);
-  if(!_quiet) _loadingShow();
+  if(!_quiet && !_supaLoadingQuiet) _loadingShow();
   try{
     const res = await fetch(SUPA_URL+'/rest/v1/'+path, {
       signal: controller.signal,
@@ -31473,7 +31486,7 @@ async function supaFetch(path, opts={}, _tentativa=1){
     throw e;
   }finally{
     clearTimeout(tid);
-    if(!_quiet) _loadingHide();
+    if(!_quiet && !_supaLoadingQuiet) _loadingHide();
   }
 }
 // ────────────────────────────────────────────────────────
@@ -31679,11 +31692,16 @@ async function iniciarApp(){
     document.getElementById('portal-conferente-wrapper').style.display='block';
     document.getElementById('conf-nome').textContent = USUARIO_LOGADO.nome;
     await carregarPortalConferente();
-    // Auto-refresh a cada 45 segundos para pegar novas atribuições
+    // Auto-refresh a cada 45 segundos para pegar novas atribuições (silencioso — não mostra relógio)
     if(window._confAutoRefresh) clearInterval(window._confAutoRefresh);
-    window._confAutoRefresh = setInterval(()=>{
-      if(USUARIO_LOGADO?.perfil==='conferente') carregarPortalConferente().catch(()=>{});
-      else clearInterval(window._confAutoRefresh);
+    window._confAutoRefresh = setInterval(async ()=>{
+      if(USUARIO_LOGADO?.perfil==='conferente'){
+        _supaLoadingQuiet = true;
+        try{ await carregarPortalConferente(); }catch(e){}
+        finally{ _supaLoadingQuiet = false; }
+      } else {
+        clearInterval(window._confAutoRefresh);
+      }
     }, 45000);
     return;
   }
