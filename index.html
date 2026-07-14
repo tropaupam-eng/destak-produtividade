@@ -28524,18 +28524,21 @@ async function conferirPedidoPortal(carga, pedido, status){
 
     // Atualizar arm_status automaticamente conforme progresso
     try{
-      const totalPed   = BASE_DATA.filter(r=>Math.round(Number(r.carga))===Number(carga)&&r.pedido);
-      const totalUnicos = [...new Set(totalPed.map(r=>r.pedido))].length;
-      const conferidos  = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,status`) || [];
-      const confUnicos  = [...new Set(conferidos.map(r=>r.pedido))].length;
+      // Busca demanda direto do Supabase (não depende de _demandasCache que pode estar vazio no portal conferente)
+      const [demRows, conferidos, pedidosBase] = await Promise.all([
+        supaFetch(`demandas_rota?carga=eq.${carga}&select=id,status,arm_status&limit=1`).catch(()=>[]),
+        supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,status`).catch(()=>[]),
+        supaFetch(`base_data?carga=eq.${carga}&select=pedido`).catch(()=>[]),
+      ]);
+      const demanda = demRows && demRows[0];
+      const confUnicos  = [...new Set((conferidos||[]).map(r=>r.pedido))].length;
+      const totalUnicos = [...new Set((pedidosBase||[]).map(r=>r.pedido).filter(Boolean))].length;
 
-      const demanda = (_demandasCache||[]).find(d=>Number(d.carga)===Number(carga));
       if(demanda && confUnicos > 0){
         const stAtual = demanda.arm_status || 'pendente';
         // Primeiro pedido conferido → entra em carregamento automaticamente
         if(stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
           await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
-          demanda.arm_status = 'carregamento';
           // Sincronizar demandas_rota.status
           if(['pendente','separacao'].includes(demanda.status)){
             await _patchStatusDemanda(demanda.id, 'carregamento', 'conferir_pedido_auto').catch(()=>{});
