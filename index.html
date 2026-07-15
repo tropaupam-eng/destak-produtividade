@@ -6508,6 +6508,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
               <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Pedidos</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">💰 Bônus</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Data</th>
+              <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700"></th>
             </tr>
           </thead>
           <tbody id="aj-tbody-historico"></tbody>
@@ -12263,19 +12264,22 @@ async function carregarPortalAjudante(){
     if(!tbody) return;
 
     if(!ajCargas||!ajCargas.length){
-      tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:28px;color:#475569">Nenhuma carga vinculada neste mês</td></tr>';
+      tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:28px;color:#475569">Nenhuma carga vinculada neste mês</td></tr>';
       return;
     }
 
     tbody.innerHTML = ajCargas.map(c=>{
-      const lib  = liberadas.has(Number(c.carga));
+      const lib        = liberadas.has(Number(c.carga));
+      const numInvalido = Number(c.carga) > 30000;
       const cnt  = pedCount[String(c.carga)]||0;
       const taxa = getBonusAj(c.rota);
       const val  = cnt * taxa;
       const dt   = new Date(c.ts).toLocaleDateString('pt-BR');
       const colQtd = lib
         ? `<td style="padding:10px 14px;text-align:center;font-weight:800;color:#e2e8f0">${cnt}</td>`
-        : `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
+        : numInvalido
+          ? `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#ef4444;font-size:.72rem" title="Este número parece ser de pedido, não de carga">❌ Nº inválido</td>`
+          : `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
       const colVal = lib
         ? `<td style="padding:10px 14px">
           <div style="color:#34d399;font-weight:700">R$ ${val.toFixed(2).replace('.',',')}</div>
@@ -12289,6 +12293,7 @@ async function carregarPortalAjudante(){
         ${colQtd}
         ${colVal}
         <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${dt}</td>
+        <td style="padding:6px 8px;text-align:center"><button onclick="desvinculArCargaAjudante('${c.id}',${c.carga})" title="Remover vínculo" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:3px 8px;font-size:.72rem;cursor:pointer">✕</button></td>
       </tr>`;
     }).join('');
   }catch(e){
@@ -12302,6 +12307,11 @@ async function vincularAjudanteCarga(){
   const inp   = document.getElementById('aj-input-carga');
   const carga = (inp?.value||'').trim();
   if(!carga||isNaN(Number(carga))){ showToast('Digite um número de carga válido','warning'); return; }
+  // Cargas válidas ficam abaixo de 30.000; números maiores são de pedidos
+  if(Number(carga) > 30000){
+    showToast(`⚠️ #${carga} parece ser número de PEDIDO, não de carga. Cargas têm números menores (ex: 14471).`,'warning');
+    return;
+  }
   const btn = document.getElementById('aj-btn-vincular');
   const setBtnState = (txt,dis)=>{ if(btn){ btn.textContent=txt; btn.disabled=dis; }};
   setBtnState('Verificando...',true);
@@ -12309,14 +12319,18 @@ async function vincularAjudanteCarga(){
     const jaVinc = await supaFetch(`ajudante_cargas?carga=eq.${carga}&ajudante_id=eq.${AJUDANTE.id}&ativo=eq.true&select=id`);
     if(jaVinc&&jaVinc.length){ showToast(`Você já está vinculado à Carga #${carga}`,'warning'); return; }
 
-    // Ajudante pode lançar mesmo sem lançamento oficial ainda existir — fica pendente
-    // até a carga aparecer em lancamentos ou demandas_rota (expedição).
     const [lanc, dem] = await Promise.all([
       supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano&limit=1`).catch(()=>[]),
       supaFetch(`demandas_rota?carga=eq.${carga}&select=carga,motorista,rota&limit=1`).catch(()=>[])
     ]);
-    const origem = (lanc&&lanc.length) ? lanc[0] : ((dem&&dem.length) ? dem[0] : {});
 
+    // Carga não existe em nenhuma tabela — pedir confirmação antes de vincular
+    if((!lanc||!lanc.length) && (!dem||!dem.length)){
+      const ok = confirm(`A Carga #${carga} ainda não foi lançada no sistema.\n\nVerifique se o número está correto. Deseja vincular mesmo assim?\n(Ficará como "Aguardando" até o lançamento aparecer.)`);
+      if(!ok){ if(inp) inp.value=''; return; }
+    }
+
+    const origem = (lanc&&lanc.length) ? lanc[0] : ((dem&&dem.length) ? dem[0] : {});
     const existentes = await supaFetch(`ajudante_cargas?carga=eq.${carga}&ativo=eq.true&select=id`);
     const primeiro   = !existentes||!existentes.length;
 
@@ -12351,7 +12365,7 @@ async function vincularAjudanteCarga(){
       } else {
         const msg = (lanc&&lanc.length)||(dem&&dem.length)
           ? `✅ Carga #${carga} vinculada!`
-          : `✅ Carga #${carga} vinculada! Aguardando lançamento ou expedição para liberar quantidade e valores.`;
+          : `⏳ Carga #${carga} vinculada! Aguardando lançamento para liberar quantidade e valores.`;
         showToast(msg,'success');
       }
     } else {
@@ -12366,6 +12380,21 @@ async function vincularAjudanteCarga(){
   }
 }
 
+async function desvinculArCargaAjudante(registroId, carga){
+  if(!AJUDANTE) return;
+  if(!confirm(`Remover vínculo com a Carga #${carga}?\n\nSeus pedidos registrados nesta carga também serão removidos.`)) return;
+  try{
+    await Promise.all([
+      supaFetch(`ajudante_cargas?id=eq.${registroId}`,{method:'PATCH',body:JSON.stringify({ativo:false})}),
+      supaFetch(`ajudante_pedidos?carga=eq.${carga}&ajudante_id=eq.${AJUDANTE.id}`,{method:'DELETE'})
+    ]);
+    showToast(`Vínculo com Carga #${carga} removido.`,'success');
+    await carregarPortalAjudante();
+  }catch(e){
+    showToast('Erro ao remover: '+e.message,'warning');
+  }
+}
+
 // ─── Motorista como ajudante ─────────────────────────────────────────────────
 
 async function vincularMotoristaComoAjudante(){
@@ -12373,6 +12402,10 @@ async function vincularMotoristaComoAjudante(){
   const inp   = document.getElementById('mot-aj-input-carga');
   const carga = (inp?.value||'').trim();
   if(!carga||isNaN(Number(carga))){ showToast('Digite um número de carga válido','warning'); return; }
+  if(Number(carga) > 30000){
+    showToast(`⚠️ #${carga} parece ser número de PEDIDO, não de carga. Cargas têm números menores (ex: 14471).`,'warning');
+    return;
+  }
   const btn = document.getElementById('mot-aj-btn-vincular');
   const setBtnState = (txt,dis)=>{ if(btn){ btn.textContent=txt; btn.disabled=dis; }};
   setBtnState('Verificando...',true);
