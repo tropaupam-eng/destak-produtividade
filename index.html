@@ -2692,6 +2692,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <!-- ── CARGAS AUTO-REGISTRADAS POR MOTORISTAS ── -->
+  <div id="lanc-mot-pendentes" style="display:none;margin-bottom:16px"></div>
+
   <div id="lanc-pane-demandas">
 
   <!-- Formulário de novo lançamento -->
@@ -5240,9 +5243,6 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
-  <!-- ── ALERTA: CARGAS AUTO-REGISTRADAS POR MOTORISTAS (Cenário B) ── -->
-  <div id="exp-mot-pendentes" style="display:none;margin-bottom:16px"></div>
-
   <!-- ── PAINEL DEMANDAS ── -->
   <div id="exp-pane-demandas">
 
@@ -6508,6 +6508,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
               <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Pedidos</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">💰 Bônus</th>
               <th style="padding:10px 14px;text-align:left;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700">Data</th>
+              <th style="padding:10px 14px;text-align:center;font-size:.67rem;text-transform:uppercase;color:#64748b;font-weight:700"></th>
             </tr>
           </thead>
           <tbody id="aj-tbody-historico"></tbody>
@@ -10570,6 +10571,7 @@ function preencherCarga(carga, rota) {
 }
 
 function renderLanc(){
+  renderExpMotPendentes().catch(()=>{});
   const cargasNaBase  = new Set(BASE_DATA.map(r=>Number(r.carga)).filter(Boolean));
   // Excluir cargas da pré-carga (Expedição) — elas têm fluxo próprio
   const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
@@ -12263,19 +12265,22 @@ async function carregarPortalAjudante(){
     if(!tbody) return;
 
     if(!ajCargas||!ajCargas.length){
-      tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:28px;color:#475569">Nenhuma carga vinculada neste mês</td></tr>';
+      tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:28px;color:#475569">Nenhuma carga vinculada neste mês</td></tr>';
       return;
     }
 
     tbody.innerHTML = ajCargas.map(c=>{
-      const lib  = liberadas.has(Number(c.carga));
+      const lib        = liberadas.has(Number(c.carga));
+      const numInvalido = Number(c.carga) > 30000;
       const cnt  = pedCount[String(c.carga)]||0;
       const taxa = getBonusAj(c.rota);
       const val  = cnt * taxa;
       const dt   = new Date(c.ts).toLocaleDateString('pt-BR');
       const colQtd = lib
         ? `<td style="padding:10px 14px;text-align:center;font-weight:800;color:#e2e8f0">${cnt}</td>`
-        : `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
+        : numInvalido
+          ? `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#ef4444;font-size:.72rem" title="Este número parece ser de pedido, não de carga">❌ Nº inválido</td>`
+          : `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
       const colVal = lib
         ? `<td style="padding:10px 14px">
           <div style="color:#34d399;font-weight:700">R$ ${val.toFixed(2).replace('.',',')}</div>
@@ -12289,6 +12294,7 @@ async function carregarPortalAjudante(){
         ${colQtd}
         ${colVal}
         <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${dt}</td>
+        <td style="padding:6px 8px;text-align:center"><button onclick="desvinculArCargaAjudante('${c.id}',${c.carga})" title="Remover vínculo" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:3px 8px;font-size:.72rem;cursor:pointer">✕</button></td>
       </tr>`;
     }).join('');
   }catch(e){
@@ -12302,6 +12308,11 @@ async function vincularAjudanteCarga(){
   const inp   = document.getElementById('aj-input-carga');
   const carga = (inp?.value||'').trim();
   if(!carga||isNaN(Number(carga))){ showToast('Digite um número de carga válido','warning'); return; }
+  // Cargas válidas ficam abaixo de 30.000; números maiores são de pedidos
+  if(Number(carga) > 30000){
+    showToast(`⚠️ #${carga} parece ser número de PEDIDO, não de carga. Cargas têm números menores (ex: 14471).`,'warning');
+    return;
+  }
   const btn = document.getElementById('aj-btn-vincular');
   const setBtnState = (txt,dis)=>{ if(btn){ btn.textContent=txt; btn.disabled=dis; }};
   setBtnState('Verificando...',true);
@@ -12309,14 +12320,18 @@ async function vincularAjudanteCarga(){
     const jaVinc = await supaFetch(`ajudante_cargas?carga=eq.${carga}&ajudante_id=eq.${AJUDANTE.id}&ativo=eq.true&select=id`);
     if(jaVinc&&jaVinc.length){ showToast(`Você já está vinculado à Carga #${carga}`,'warning'); return; }
 
-    // Ajudante pode lançar mesmo sem lançamento oficial ainda existir — fica pendente
-    // até a carga aparecer em lancamentos ou demandas_rota (expedição).
     const [lanc, dem] = await Promise.all([
       supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano&limit=1`).catch(()=>[]),
       supaFetch(`demandas_rota?carga=eq.${carga}&select=carga,motorista,rota&limit=1`).catch(()=>[])
     ]);
-    const origem = (lanc&&lanc.length) ? lanc[0] : ((dem&&dem.length) ? dem[0] : {});
 
+    // Carga não existe em nenhuma tabela — pedir confirmação antes de vincular
+    if((!lanc||!lanc.length) && (!dem||!dem.length)){
+      const ok = confirm(`A Carga #${carga} ainda não foi lançada no sistema.\n\nVerifique se o número está correto. Deseja vincular mesmo assim?\n(Ficará como "Aguardando" até o lançamento aparecer.)`);
+      if(!ok){ if(inp) inp.value=''; return; }
+    }
+
+    const origem = (lanc&&lanc.length) ? lanc[0] : ((dem&&dem.length) ? dem[0] : {});
     const existentes = await supaFetch(`ajudante_cargas?carga=eq.${carga}&ativo=eq.true&select=id`);
     const primeiro   = !existentes||!existentes.length;
 
@@ -12351,7 +12366,7 @@ async function vincularAjudanteCarga(){
       } else {
         const msg = (lanc&&lanc.length)||(dem&&dem.length)
           ? `✅ Carga #${carga} vinculada!`
-          : `✅ Carga #${carga} vinculada! Aguardando lançamento ou expedição para liberar quantidade e valores.`;
+          : `⏳ Carga #${carga} vinculada! Aguardando lançamento para liberar quantidade e valores.`;
         showToast(msg,'success');
       }
     } else {
@@ -12366,6 +12381,21 @@ async function vincularAjudanteCarga(){
   }
 }
 
+async function desvinculArCargaAjudante(registroId, carga){
+  if(!AJUDANTE) return;
+  if(!confirm(`Remover vínculo com a Carga #${carga}?\n\nSeus pedidos registrados nesta carga também serão removidos.`)) return;
+  try{
+    await Promise.all([
+      supaFetch(`ajudante_cargas?id=eq.${registroId}`,{method:'PATCH',body:JSON.stringify({ativo:false})}),
+      supaFetch(`ajudante_pedidos?carga=eq.${carga}&ajudante_id=eq.${AJUDANTE.id}`,{method:'DELETE'})
+    ]);
+    showToast(`Vínculo com Carga #${carga} removido.`,'success');
+    await carregarPortalAjudante();
+  }catch(e){
+    showToast('Erro ao remover: '+e.message,'warning');
+  }
+}
+
 // ─── Motorista como ajudante ─────────────────────────────────────────────────
 
 async function vincularMotoristaComoAjudante(){
@@ -12373,6 +12403,10 @@ async function vincularMotoristaComoAjudante(){
   const inp   = document.getElementById('mot-aj-input-carga');
   const carga = (inp?.value||'').trim();
   if(!carga||isNaN(Number(carga))){ showToast('Digite um número de carga válido','warning'); return; }
+  if(Number(carga) > 30000){
+    showToast(`⚠️ #${carga} parece ser número de PEDIDO, não de carga. Cargas têm números menores (ex: 14471).`,'warning');
+    return;
+  }
   const btn = document.getElementById('mot-aj-btn-vincular');
   const setBtnState = (txt,dis)=>{ if(btn){ btn.textContent=txt; btn.disabled=dis; }};
   setBtnState('Verificando...',true);
@@ -14025,7 +14059,6 @@ async function carregarDemandas(){
     renderPipelineBar();
     renderFrotaStatus();
     renderPainelDia();
-    renderExpMotPendentes().catch(()=>{});
     // Cargas abaixo do valor mínimo na expedição
     const _mesExpAtual = (()=>{ const h=new Date(); return h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0'); })();
     renderCargasAbaixoValor(_mesExpAtual, 'exp-baixo-valor');
@@ -19007,7 +19040,7 @@ async function motRegistrarCargaManual(){
 }
 
 async function renderExpMotPendentes(){
-  const el = document.getElementById('exp-mot-pendentes');
+  const el = document.getElementById('lanc-mot-pendentes');
   if(!el) return;
   try{
     const rows = await supaFetch(
@@ -19021,7 +19054,7 @@ async function renderExpMotPendentes(){
           <div style="font-size:.82rem;font-weight:800;color:var(--text-primary)">⚠️ Cargas Auto-Registradas por Motoristas
             <span style="background:rgba(245,158,11,.25);color:#fbbf24;border-radius:20px;padding:2px 10px;font-size:.72rem;margin-left:6px">${rows.length}</span>
           </div>
-          <span style="font-size:.73rem;color:var(--text-muted)">Complete a rota no painel de Lançamento</span>
+          <span style="font-size:.73rem;color:var(--text-muted)">Complete a rota abaixo para finalizar o lançamento</span>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px">
           ${rows.map(r=>{
@@ -22940,35 +22973,25 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       });
       prazoH += _nFer * 24;
     }
-    // Data final: entrega real (fonte confiável) → fallbacks indicam apenas saída do veículo
+    // Data final: entrega real tem prioridade; fallback por proxy de lançamento/saída
     let dataFim=ent.entrega||null;
-    const hasEntregaReal=!!dataFim;
+    let hasEntregaReal=!!dataFim;
     if(!dataFim&&ent.saida) dataFim=ent.saida;
     if(!dataFim&&carga&&saidaMap[carga]) dataFim=saidaMap[carga];
     if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancDtMap[carga];
+    // Proxy consistente com OTIF por Semana: ts de saída/lançamento = prova de despacho
+    if(!hasEntregaReal&&carga){
+      const _proxyTs=saidaTsMap[carga]||lancTsMap[carga];
+      if(_proxyTs){ if(!dataFim) dataFim=_proxyTs; hasEntregaReal=true; }
+      else if(dataFim) hasEntregaReal=true;
+    }
     if(!dataFim){
-      // Sem qualquer data — conta como falha apenas se prazo já venceu
-      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-inicioPrazo)/3600000;
-      if(horasDecorridas>prazoH){
-        const isInFull=!ocorrSet.has(ped);
-        total++; entG++; if(isInFull) inFullG++;
-        if(bd.rire==='R.I.'){ riTotal++; if(isInFull) inFullRI++; } else { reTotal++; if(isInFull) inFullRE++; }
-      }
-      continue; // pendente ou falha sem data — sem mais nada a fazer
+      // Sem qualquer data e sem lançamento — pedido pendente, não conta
+      continue;
     }
     const diffHoras=(new Date(dataFim)-inicioPrazo)/3600000;
     if(diffHoras<0){
       // Data inconsistente — conta no denominador mas não como on time
-      const isInFull=!ocorrSet.has(ped);
-      total++; entG++; if(isInFull) inFullG++;
-      if(bd.rire==='R.I.'){ riTotal++; if(isInFull) inFullRI++; } else { reTotal++; if(isInFull) inFullRE++; }
-      continue;
-    }
-    // Sem entrega real confirmada: só conta se prazo já venceu (evita 100% artificial em semanas recentes)
-    if(!hasEntregaReal){
-      const horasDecorridas=(new Date(hojeStr+'T23:59:59')-inicioPrazo)/3600000;
-      if(horasDecorridas<=prazoH) continue; // pendente — não conta ainda
-      // Prazo vencido sem entrega confirmada → falha de On Time (In Full ainda conta)
       const isInFull=!ocorrSet.has(ped);
       total++; entG++; if(isInFull) inFullG++;
       if(bd.rire==='R.I.'){ riTotal++; if(isInFull) inFullRI++; } else { reTotal++; if(isInFull) inFullRE++; }
@@ -26733,13 +26756,14 @@ async function carregarPortalFiscal(){
 
     const statusConcluidos = ['aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
     const cargas = Object.keys(cargasMap).map(Number).sort((a,b)=>a-b);
-    // Carga sai da lista ativa se o status principal avançou OU se o fiscal já concluiu (status_fiscal = concluido)
+    // Carga só sai da lista ativa do fiscal quando o fiscal conclui (status_fiscal = concluido).
+    // O avanço do status geral pelo ADM (saiu, fim_viagem, etc.) NÃO remove a carga da lista ativa —
+    // o fiscal precisa completar NFs e boletos independente do estágio da rota.
     const cargasAtivasLista = cargas.filter(c=>
-      !statusConcluidos.includes(cargasMap[c]?.demanda?.status) &&
-      cargasMap[c]?.demanda?.status_fiscal !== 'concluido'
+      cargasMap[c]?.demanda?.status_fiscal !== 'concluido' &&
+      cargasMap[c]?.demanda?.status !== 'cancelado'
     );
     const cargasConcluidas  = cargas.filter(c=>
-      statusConcluidos.includes(cargasMap[c]?.demanda?.status) ||
       cargasMap[c]?.demanda?.status_fiscal === 'concluido'
     );
 
@@ -26761,8 +26785,8 @@ async function carregarPortalFiscal(){
 
     const outrasAtribs = (atribs||[]).filter(a=>a.fiscal_id!==USUARIO_LOGADO?.id && a.status==='em_andamento');
 
-    const stLabel = {separacao:'📦 Em Separação', carregamento:'🔄 Carregamento', aguardando_nf:'📋 Aguard. NF'};
-    const stCor   = {separacao:'#f59e0b', carregamento:'#3b82f6', aguardando_nf:'#059669'};
+    const stLabel = {separacao:'📦 Em Separação', carregamento:'🔄 Carregamento', aguardando_nf:'📋 Aguard. NF', aguardando_manifesto:'🚛 Em Rota', pronto_viagem:'🚛 Em Rota', saiu:'🚛 Em Rota', fim_viagem:'🏁 Fim Viagem'};
+    const stCor   = {separacao:'#f59e0b', carregamento:'#3b82f6', aguardando_nf:'#059669', aguardando_manifesto:'#7c3aed', pronto_viagem:'#7c3aed', saiu:'#7c3aed', fim_viagem:'#6b7280'};
 
     // Renderizar ativas
     const htmlAtivas = cargasAtivasLista.map(carga=>{
@@ -26870,7 +26894,7 @@ async function carregarPortalFiscal(){
         ${cargasConcluidas.map(carga=>{
           const dados = cargasMap[carga];
           const dem = dados?.demanda||{};
-          const isAdm = ['fiscal_admin','admin','adm_fiscal'].includes(USUARIO_LOGADO?.perfil||'');
+          const isFiscal = ['fiscal_op','opedor_fiscal','fiscal_admin','admin','adm_fiscal'].includes(USUARIO_LOGADO?.perfil||'');
           return `<div style="background:rgba(5,150,105,.05);border:1px solid rgba(5,150,105,.2);border-radius:10px;padding:10px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <div style="display:flex;align-items:center;gap:10px">
               <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">✅ Carga ${carga}</span>
@@ -26878,7 +26902,7 @@ async function carregarPortalFiscal(){
               <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
               <span style="font-size:.75rem;color:var(--text-muted)">${dados.nfs.length} NFs</span>
             </div>
-            ${isAdm?`<button onclick="reabrirFiscal(${carga},'${dem.id||''}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer">↩ Reabrir</button>`:''}
+            ${isFiscal?`<button onclick="reabrirFiscal(${carga},'${dem.id||''}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer">↩ Reabrir</button>`:''}
           </div>`;
         }).join('')}
       </div>` : '';
