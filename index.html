@@ -23043,25 +23043,27 @@ async function renderDashInterna(){
           _inicioPrazoOtif = new Date(tsRe);
         }
 
-        // dataFim — entrega real tem prioridade;
-        // sem data_entrega: usa ts do lançamento como proxy (pedido foi despachado)
+        // dataFim — entrega real tem prioridade; proxy de ts sempre sobrepõe data_saida
         let dataFim    = ent.entrega || null;
         let hasEntrega = !!dataFim;
         if(!dataFim && ent.saida)                     dataFim = ent.saida;
         if(!dataFim && carga && saidaMapCarga[carga]) dataFim = saidaMapCarga[carga];
-        if(!dataFim && carga) {
-          // Sem data_entrega: usa timestamp de saída/lançamento como proxy de entrega
-          // Usa saidaTs para R.E. (evita diffHoras negativo), lancTs para demais
+        if(carga) {
+          // Proxy roda sempre — timestamp preciso sobrepõe data_saida quando disponível
           const proxyTs = saidaTsMapOtif[carga] || lancTsMapOtif[carga];
           if(proxyTs) { dataFim = proxyTs; hasEntrega = true; }
-          else if(lancDtMapOtif[carga]) { dataFim = lancDtMapOtif[carga]; hasEntrega = true; }
+          else if(!dataFim && lancDtMapOtif[carga]) { dataFim = lancDtMapOtif[carga]; hasEntrega = true; }
         }
+        const _inFSem = !ocorrSetOtif.has(ped);
         if(!dataFim){
-          // Sem qualquer data — conta como falha apenas se prazo já venceu
+          // Sem qualquer data: dentro do prazo → no prazo; fora → atrasado
           const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
+          semOtif[semIdx].t++;
           if(horasDecorridas > prazoH){
-            semOtif[semIdx].t++;
-            if(!ocorrSetOtif.has(ped)) semOtif[semIdx].ifull++;
+            if(_inFSem) semOtif[semIdx].ifull++;
+          } else {
+            semOtif[semIdx].ot++;
+            if(_inFSem){ semOtif[semIdx].ifull++; semOtif[semIdx].ok++; }
           }
           return;
         }
@@ -23070,11 +23072,15 @@ async function renderDashInterna(){
         const isOnTime = hasEntrega && diffHoras <= prazoH;
         const isInFull = !ocorrSetOtif.has(ped);
         if(!hasEntrega){
-          // saida sem entrega confirmada: só conta se prazo já venceu
+          // saida sem ts confirmado: dentro do prazo → no prazo; fora → atrasado
           const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
-          if(horasDecorridas <= prazoH) return;
           semOtif[semIdx].t++;
-          if(isInFull) semOtif[semIdx].ifull++;
+          if(horasDecorridas <= prazoH){
+            semOtif[semIdx].ot++;
+            if(isInFull){ semOtif[semIdx].ifull++; semOtif[semIdx].ok++; }
+          } else {
+            if(isInFull) semOtif[semIdx].ifull++;
+          }
           return;
         }
         semOtif[semIdx].t++;
@@ -23226,37 +23232,49 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       });
       prazoH += _nFer * 24;
     }
-    // Data final: entrega real tem prioridade; fallback por proxy de lançamento/saída
+    // Data final: entrega real tem prioridade; proxy de ts sempre sobrepõe data_saida
     let dataFim=ent.entrega||null;
     let hasEntregaReal=!!dataFim;
     if(!dataFim&&ent.saida) dataFim=ent.saida;
-    // Preferir timestamp completo a string de data para evitar comparação UTC vs fuso local
     if(!dataFim&&carga&&saidaMap[carga]) dataFim=saidaTsMap[carga]||saidaMap[carga];
     if(!dataFim&&carga&&lancDtMap[carga]) dataFim=lancTsMap[carga]||lancDtMap[carga];
-    // Proxy consistente com OTIF por Semana: ts de saída/lançamento = prova de despacho
-    if(!hasEntregaReal&&carga){
+    // Proxy roda sempre — timestamp preciso sobrepõe data_saida quando disponível
+    if(carga){
       const _proxyTs=saidaTsMap[carga]||lancTsMap[carga];
-      if(_proxyTs){ if(!dataFim) dataFim=_proxyTs; hasEntregaReal=true; }
+      if(_proxyTs){ dataFim=_proxyTs; hasEntregaReal=true; }
       else if(dataFim) hasEntregaReal=true;
     }
+    const _hojeTs=(hojeStr||new Date().toISOString().slice(0,10))+'T23:59:59';
+    const _isRI=bd.rire==='R.I.';
     if(!dataFim){
-      // Sem qualquer data e sem lançamento — pedido pendente, não conta
+      // Sem qualquer data: dentro do prazo → no prazo; fora → atrasado
+      const hd=(new Date(_hojeTs)-inicioPrazo)/3600000;
+      const _inF=!ocorrSet.has(ped);
+      const _ot=hd<=prazoH;
+      total++; entG++; if(_ot)onTimeG++; if(_inF)inFullG++; if(_ot&&_inF)otifG++;
+      if(_isRI){ riTotal++; if(_ot)onTimeRI++; if(_inF)inFullRI++; if(_ot&&_inF)otifRI++; }
+      else     { reTotal++; if(_ot)onTimeRE++; if(_inF)inFullRE++; if(_ot&&_inF)otifRE++; }
       continue;
     }
     const diffHoras=Math.max(0,(new Date(dataFim)-inicioPrazo)/3600000);
     if(!hasEntregaReal){
-      // Proxy de saída: pedido em trânsito — não conta no denominador se ainda dentro do prazo
-      const horasDecorridas=(new Date((hojeStr||new Date().toISOString().slice(0,10))+'T23:59:59')-inicioPrazo)/3600000;
-      if(horasDecorridas<=prazoH) continue;
+      // saida sem ts confirmado: dentro do prazo → no prazo; fora → atrasado
+      const hd=(new Date(_hojeTs)-inicioPrazo)/3600000;
+      const _inF=!ocorrSet.has(ped);
+      const _ot=hd<=prazoH;
+      total++; entG++; if(_ot)onTimeG++; if(_inF)inFullG++; if(_ot&&_inF)otifG++;
+      if(_isRI){ riTotal++; if(_ot)onTimeRI++; if(_inF)inFullRI++; if(_ot&&_inF)otifRI++; }
+      else     { reTotal++; if(_ot)onTimeRE++; if(_inF)inFullRE++; if(_ot&&_inF)otifRE++; }
+      continue;
     }
-    // Entrega real confirmada — calcula isOnTime normalmente
+    // Entrega confirmada — calcula isOnTime por diffHoras
     const isOnTime=diffHoras<=prazoH;
-    const isInFull=!ocorrSet.has(ped); // pedido sem ocorrência na Expedição = In Full
+    const isInFull=!ocorrSet.has(ped);
     const isOTIF=isOnTime&&isInFull;
     total++;
     entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
-    if(bd.rire==='R.I.'){ riTotal++; onTimeRI+=isOnTime?1:0; inFullRI+=isInFull?1:0; if(isOTIF)otifRI++; }
-    else { reTotal++; onTimeRE+=isOnTime?1:0; inFullRE+=isInFull?1:0; if(isOTIF)otifRE++; }
+    if(_isRI){ riTotal++; onTimeRI+=isOnTime?1:0; inFullRI+=isInFull?1:0; if(isOTIF)otifRI++; }
+    else     { reTotal++; onTimeRE+=isOnTime?1:0; inFullRE+=isInFull?1:0; if(isOTIF)otifRE++; }
   }
   return { prazoMap, total, riTotal, reTotal,
            entG:total, onTimeG, inFullG, otifG,
