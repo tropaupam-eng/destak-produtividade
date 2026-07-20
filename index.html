@@ -34104,7 +34104,7 @@ function iniciarMonitorConexao(){
 // DATAS DE ENTREGA
 // ══════════════════════════════════════════════════════
 
-let _deCache = { lanc:[], base:[], ent:[], mes:'' };
+let _deCache = { lanc:[], base:[], ent:[], agend:[], mes:'' };
 
 function _preencherMesSelectDE(){
   const el = document.getElementById('de-mes');
@@ -34141,9 +34141,21 @@ async function carregarDatasEntrega(){
       const results = await Promise.all(chunks.map(ch=>
         supaFetch(`base_data?mes_ano=eq.${mes}&carga=in.(${ch.join(',')})&select=carga,pedido,rota&limit=5000`,{_quiet:true}).catch(()=>[])
       ));
-      baseRows = results.flat().filter(Boolean);
+      // RETIRA não tem entrega física — excluir
+      baseRows = results.flat().filter(Boolean).filter(b=>(b.rota||'').toUpperCase().trim()!=='RETIRA');
     }
-    _deCache = { lanc: lancRows||[], base: baseRows, ent: entRows||[], mes };
+    // Buscar agendamentos dos pedidos encontrados
+    const pedidoList = [...new Set(baseRows.map(r=>String(r.pedido)).filter(Boolean))];
+    let agendRows = [];
+    if(pedidoList.length){
+      const achunks = [];
+      for(let i=0;i<pedidoList.length;i+=400) achunks.push(pedidoList.slice(i,i+400));
+      const ares = await Promise.all(achunks.map(ch=>
+        supaFetch(`agendamentos_pedidos?pedido=in.(${ch.join(',')})&select=pedido,data_entrega`,{_quiet:true}).catch(()=>[])
+      ));
+      agendRows = ares.flat().filter(Boolean);
+    }
+    _deCache = { lanc: lancRows||[], base: baseRows, ent: entRows||[], agend: agendRows, mes };
     renderDatasEntrega();
   }catch(e){
     if(lista) lista.innerHTML = `<div style="color:var(--red,#dc2626);padding:20px">Erro ao carregar: ${e.message}</div>`;
@@ -34154,9 +34166,11 @@ function renderDatasEntrega(){
   const lista = document.getElementById('de-lista');
   const resumo = document.getElementById('de-resumo');
   if(!lista) return;
-  const {lanc, base, ent, mes} = _deCache;
+  const {lanc, base, ent, agend, mes} = _deCache;
   const entMap = {};
   (ent||[]).forEach(r=>{ entMap[String(r.pedido)] = r.data_entrega; });
+  const agendMap = {};
+  (agend||[]).forEach(r=>{ agendMap[String(r.pedido)] = r.data_entrega; });
   const pedsByCarga = {};
   (base||[]).forEach(r=>{
     const k = String(r.carga);
@@ -34165,8 +34179,9 @@ function renderDatasEntrega(){
   });
   let totalCargas=0, totalPeds=0, pedsComData=0;
   (lanc||[]).forEach(l=>{
-    totalCargas++;
     const peds = pedsByCarga[String(l.carga)]||[];
+    if(!peds.length) return; // somente RETIRA → não contar
+    totalCargas++;
     totalPeds += peds.length;
     peds.forEach(p=>{ if(entMap[String(p.pedido)]) pedsComData++; });
   });
@@ -34183,8 +34198,9 @@ function renderDatasEntrega(){
     lista.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum lançamento encontrado para este mês.</div>';
     return;
   }
-  lista.innerHTML = (lanc||[]).map(l=>{
+  const cards = (lanc||[]).map(l=>{
     const peds = pedsByCarga[String(l.carga)]||[];
+    if(!peds.length) return ''; // carga só com RETIRA → ocultar
     const comData = peds.filter(p=>entMap[String(p.pedido)]).length;
     const todos = comData === peds.length && peds.length > 0;
     const nenhum = comData === 0;
@@ -34194,18 +34210,26 @@ function renderDatasEntrega(){
     const dataFmt = dataTs ? dataTs.toLocaleDateString('pt-BR') : '—';
     const sugestao = dataTs ? new Date(dataTs.getTime()+24*3600*1000).toISOString().slice(0,10) : '';
     const rotaLabel = l.rota ? l.rota : '<span style="color:#f59e0b">sem rota</span>';
-    const pedsHtml = peds.length ? peds.map(p=>{
-      const dataAtual = entMap[String(p.pedido)] ? String(entMap[String(p.pedido)]).slice(0,10) : '';
+    const pedsHtml = peds.map(p=>{
+      const dataAtual  = entMap[String(p.pedido)]  ? String(entMap[String(p.pedido)]).slice(0,10)  : '';
+      const agendAtual = agendMap[String(p.pedido)] ? String(agendMap[String(p.pedido)]).slice(0,10) : '';
       return `<tr style="border-top:1px solid var(--border)">
         <td style="padding:6px 10px;font-size:.8rem;color:var(--text-muted)">${p.pedido}</td>
         <td style="padding:6px 10px;font-size:.8rem">${p.rota||'—'}</td>
         <td style="padding:6px 10px">
+          <input type="date" value="${agendAtual}"
+            onchange="salvarAgendPedidoDE('${p.pedido}',this.value,this)"
+            title="Data combinada com o cliente — define o prazo do OTIF"
+            style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.78rem;background:var(--bg-input);color:var(--text-primary)">
+        </td>
+        <td style="padding:6px 10px">
           <input type="date" value="${dataAtual}"
             onchange="salvarDataEntregaPedido('${p.pedido}','${mes}',this.value,this)"
+            title="Data real de entrega ao cliente"
             style="border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.78rem;background:var(--bg-input);color:var(--text-primary)">
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="3" style="padding:10px;font-size:.8rem;color:var(--text-muted);text-align:center">Sem pedidos na planilha para esta carga</td></tr>`;
+    }).join('');
     return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden">
       <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;flex-wrap:wrap"
            onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
@@ -34213,20 +34237,23 @@ function renderDatasEntrega(){
         <div style="font-size:.82rem;color:var(--text-secondary);flex:1">${rotaLabel} — ${l.motorista||'—'}</div>
         <div style="font-size:.75rem;color:var(--text-muted)">${dataFmt}</div>
         <div style="font-size:.78rem;font-weight:700;color:${statusCor};white-space:nowrap">${statusLabel}</div>
-        ${peds.length && !todos ? `<button onclick="event.stopPropagation();marcarTodosCargaEntregue(${l.carga},'${mes}',document.getElementById('de-data-bulk-${l.carga}')?.value||'${sugestao}')"
+        ${!todos ? `<button onclick="event.stopPropagation();marcarTodosCargaEntregue(${l.carga},'${mes}',document.getElementById('de-data-bulk-${l.carga}')?.value||'${sugestao}')"
           style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap">📅 Marcar todos</button>` : ''}
       </div>
       <div style="display:none">
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr style="background:var(--bg-hover)">
-            <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Pedido</th>
-            <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Rota</th>
-            <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Data de Entrega</th>
-          </tr></thead>
-          <tbody>${pedsHtml}</tbody>
-        </table>
-        ${peds.length && !todos ? `<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:.78rem;color:var(--text-muted)">Aplicar em todos:</span>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;min-width:520px">
+            <thead><tr style="background:var(--bg-hover)">
+              <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Pedido</th>
+              <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Rota</th>
+              <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:#3b82f6;text-align:left;text-transform:uppercase">📅 Data Agendada</th>
+              <th style="padding:6px 10px;font-size:.72rem;font-weight:700;color:#16a34a;text-align:left;text-transform:uppercase">✅ Data Entregue</th>
+            </tr></thead>
+            <tbody>${pedsHtml}</tbody>
+          </table>
+        </div>
+        ${!todos ? `<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:.78rem;color:var(--text-muted)">Marcar entrega em todos:</span>
           <input type="date" id="de-data-bulk-${l.carga}" value="${sugestao}"
             style="border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.8rem;background:var(--bg-input);color:var(--text-primary)">
           <button onclick="marcarTodosCargaEntregue(${l.carga},'${mes}',document.getElementById('de-data-bulk-${l.carga}').value)"
@@ -34234,7 +34261,23 @@ function renderDatasEntrega(){
         </div>` : ''}
       </div>
     </div>`;
-  }).join('');
+  }).filter(Boolean).join('');
+  lista.innerHTML = cards || '<div style="text-align:center;padding:40px;color:var(--text-muted)">Sem pedidos para registrar neste mês.</div>';
+}
+
+async function salvarAgendPedidoDE(pedido, data, inputEl){
+  if(!data){ showToast('Informe uma data válida','warning'); return; }
+  try{
+    await supaFetch('agendamentos_pedidos',{
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates'},
+      body:JSON.stringify([{pedido:String(pedido), data_entrega:data, criado_por:USUARIO_LOGADO?.nome||null}])
+    });
+    if(inputEl) inputEl.style.borderColor='#3b82f6';
+    _deCache.agend = (_deCache.agend||[]).filter(r=>String(r.pedido)!==String(pedido));
+    _deCache.agend.push({pedido:String(pedido), data_entrega:data});
+    renderDatasEntrega();
+  }catch(e){ showToast('Erro ao salvar agendamento: '+e.message,'warning'); }
 }
 
 async function salvarDataEntregaPedido(pedido, mes, data, inputEl){
