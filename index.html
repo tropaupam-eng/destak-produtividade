@@ -23032,14 +23032,15 @@ async function renderDashInterna(){
         } else {
           const tsRe = (carga && saidaTsMapOtif[carga]) || (carga && lancTsMapOtif[carga]);
           if(!tsRe){
-            // R.E. sem saída confirmada: usar data_pedido como referência para prazo
-            // Garante que o total do OTIF bate com Pedidos por Semana
-            const _dpFallback = (p.data_pedido||'').slice(0,10);
-            if(!_dpFallback) return;
-            _inicioPrazoOtif = new Date(_dpFallback+'T00:00:00');
-          } else {
-            _inicioPrazoOtif = new Date(tsRe);
+            // R.E. sem ts_saiu: carga ainda no armazém aguardando despacho
+            // Conta no denominador como no prazo (prazo de 192h não iniciou)
+            const _inF = !ocorrSetOtif.has(ped);
+            semOtif[semIdx].t++;
+            semOtif[semIdx].ot++;
+            if(_inF){ semOtif[semIdx].ifull++; semOtif[semIdx].ok++; }
+            return;
           }
+          _inicioPrazoOtif = new Date(tsRe);
         }
 
         // dataFim — entrega real tem prioridade;
@@ -23183,8 +23184,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
   let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
   for(const [ped,bd] of Object.entries(pedMap)){
-    if(!bd.dataPedido) continue; // sem data_pedido não entra no cálculo
-    if(mesFiltro && !(bd.dataPedido||'').startsWith(mesFiltro)) continue; // pedido fora do mês selecionado
+    if(mesFiltro && bd.dataPedido && !bd.dataPedido.startsWith(mesFiltro)) continue; // pedido fora do mês
     const ent=entMap[ped]||{};
     const carga=bd.carga;
     // Prazo em horas: cadastro tem prioridade; null = rota sem OTIF; undefined = usa padrão RI/RE
@@ -23192,22 +23192,24 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     if(prazoEntry===null) continue; // rota cadastrada sem prazo (prazo_otif = null no banco)
     let prazoH=prazoEntry!=null?prazoEntry:(bd.rire==='R.I.'?24:192);
     // Regra R.I.: data_pedido (hora_pedido quando disponível; corte 16h → próximo dia 08:00)
-    // Regra R.E.: ts_saiu = momento que a carga é liberada para rota; fallback lancamentos.ts
+    // Regra R.E.: ts_saiu = início do prazo; sem saída = aguardando despacho (on-time)
     let inicioPrazo;
     if(bd.rire==='R.I.'){
+      if(!bd.dataPedido) continue; // R.I. sem data_pedido não pode calcular prazo
       // data_pedido como data pura (UTC midnight) — consistente com data_entrega no banco
       // Corte 16h ativado quando hora_pedido for adicionado à base_data
       inicioPrazo=new Date(bd.dataPedido);
     } else {
-      // R.E.: prazo começa com saída real; sem ts_saiu usa data_pedido como fallback
-      // para que o total do OTIF bata com "Pedidos por Semana"
+      // R.E.: prazo começa com ts_saiu; sem saída = aguardando despacho → on-time
       const tsRe=(carga&&saidaTsMap[carga])||(carga&&lancTsMap[carga]);
       if(!tsRe){
-        if(!bd.dataPedido) continue; // sem qualquer referência de data → excluir
-        inicioPrazo=new Date(bd.dataPedido);
-      } else {
-        inicioPrazo=new Date(tsRe);
+        // Carga ainda no armazém: conta no denominador como no prazo
+        const _inF=!ocorrSet.has(ped);
+        total++; entG++; if(_inF) inFullG++; onTimeG++; if(_inF) otifG++;
+        reTotal++; entRE++; if(_inF) inFullRE++; onTimeRE++; if(_inF) otifRE++;
+        continue;
       }
+      inicioPrazo=new Date(tsRe);
     }
     // Agendamento pré-acordado: usa data combinada com cliente como prazo do OTIF
     const _agendData = (agendPedMap && typeof agendPedMap.get==='function') ? agendPedMap.get(ped) : null;
