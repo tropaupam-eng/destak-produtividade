@@ -33017,12 +33017,14 @@ async function carregarCalendarioSalvadorNovo2026(){
   if(added) await saveAgendamentos(arr);
 }
 
-function vincularExtraComoAgendamento(rota, data){
-  // Abre o modal de novo agendamento pré-preenchido com rota+data do extra
-  abrirModalAgendamento(null, rota, data);
+function vincularExtraComoAgendamento(rota, data, carga){
+  // Abre o modal de novo agendamento pré-preenchido com rota+data+carga do extra.
+  // O nº da carga vai junto para o vínculo não depender só da chave rota+data
+  // (se a pré-carga mudar de data depois, o vínculo por carga continua valendo).
+  abrirModalAgendamento(null, rota, data, carga);
 }
 
-function abrirModalAgendamento(id, _preRota, _preData){
+function abrirModalAgendamento(id, _preRota, _preData, _preCarga){
   const modal = document.getElementById('modal-agendamento');
   const titulo = document.getElementById('agend-modal-titulo');
   const mesSel = document.getElementById('agend-mes-atual')?.value || new Date().toISOString().slice(0,7);
@@ -33041,7 +33043,7 @@ function abrirModalAgendamento(id, _preRota, _preData){
     const hoje = new Date().toISOString().slice(0,10);
     document.getElementById('agend-data').value = _preData || (mesSel ? mesSel+'-01' : hoje);
     document.getElementById('agend-obs').value='';
-    document.getElementById('agend-carga').value='';
+    document.getElementById('agend-carga').value=_preCarga||'';
     _setMotivo('','');
     if(titulo) titulo.textContent = '🗓️ Novo Agendamento';
   } else {
@@ -33223,18 +33225,23 @@ async function renderAgendamentos(){
     const [_y,_m]=mesFiltro.split('-').map(Number);const _prox=_m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
     demandasMes = await supaFetch('demandas_rota?select=id,carga,rota,data_saida,status&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
   }catch(e){}
-  const agendKeys   = new Set(arr.map(a=>(a.rota||'').trim().toUpperCase()+'|'+a.data));
+  // Agendamentos salvos gravam a rota normalizada (normalizarRota) no Supabase;
+  // demandas_rota guarda a rota como veio da planilha/lançamento (ex.: "PETRO").
+  // Sem normalizar aqui também, a chave rota+data nunca bate e o item fica
+  // preso em "extra" mesmo depois de vinculado.
+  const _rotaChave = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
+  const agendKeys   = new Set(arr.map(a=>_rotaChave(a.rota)+'|'+a.data));
   const agendCargas = new Set(arr.filter(a=>a.carga).map(a=>String(a.carga)));
   const extras = demandasMes.filter(d=>
-    !agendKeys.has((d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')) &&
+    !agendKeys.has(_rotaChave(d.rota)+'|'+(d.data_saida||'')) &&
     !(d.carga && agendCargas.has(String(d.carga)))
   );
 
   // ── 3. KPIs — mesma lógica de "saiu" do calendário ────────────────────────
   // Helper: rota saiu = realizado OU lancado OU pré-carga com status saiu/fim_viagem/concluido
   var _dMapKpi={};
-  demandasMes.forEach(function(d){ _dMapKpi[(d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')]=d.status; });
-  const _saiuFn = a => { var ds=_dMapKpi[(a.rota||'').trim().toUpperCase()+'|'+a.data]; return a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(ds); };
+  demandasMes.forEach(function(d){ _dMapKpi[_rotaChave(d.rota)+'|'+(d.data_saida||'')]=d.status; });
+  const _saiuFn = a => { var ds=_dMapKpi[_rotaChave(a.rota)+'|'+a.data]; return a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(ds); };
 
   const total   = arr.length;
   const totalR  = arr.filter(_saiuFn).length;
@@ -33432,7 +33439,7 @@ async function renderAgendamentos(){
         // Extras — clique para converter em agendamento
         exts.forEach(function(d){
           var rc=(d.rota||'').length>13?(d.rota||'').slice(0,13)+'…':(d.rota||'');
-          s+='<div onclick="vincularExtraComoAgendamento(\''+d.rota+'\',\''+d.data_saida+'\')" style="margin-bottom:3px;background:rgba(245,158,11,.12);color:#d97706;border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer" title="Clique para vincular como rota agendada">⚡ '+rc+'</div>';
+          s+='<div onclick="vincularExtraComoAgendamento(\''+d.rota+'\',\''+d.data_saida+'\','+(d.carga?"'"+d.carga+"'":'null')+')" style="margin-bottom:3px;background:rgba(245,158,11,.12);color:#d97706;border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer" title="Clique para vincular como rota agendada">⚡ '+rc+(d.carga?' <span style="opacity:.75">#'+d.carga+'</span>':'')+'</div>';
         });
       } else {
         // Fechamento: chips com seta para a data de saída
