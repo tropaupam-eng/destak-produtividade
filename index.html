@@ -14128,6 +14128,13 @@ async function carregarMotoristas(){
   try{
     const data = await supaFetch('motoristas?select=*&order=nome.asc&ativo=eq.true');
     MOTORISTAS_CACHE = data||[];
+    // Deduplicate by name to avoid duplicate entries in dropdown
+    const nomesCached = {};
+    MOTORISTAS_CACHE = MOTORISTAS_CACHE.filter(m => {
+      if(nomesCached[m.nome]) return false;
+      nomesCached[m.nome] = true;
+      return true;
+    });
     // Popular select da expedição
     const sel = document.getElementById('exp-motorista');
     if(sel){
@@ -14328,9 +14335,9 @@ async function criarDemanda(){
   const showMsgExp = (txt, tipo='erro') => {
     msg.textContent = txt;
     msg.style.cssText = `display:block;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;
-      background:${tipo==='ok'?'#f0fdf4':'#fef2f2'};
-      border:1px solid ${tipo==='ok'?'#86efac':'#fecaca'};
-      color:${tipo==='ok'?'#166534':'#dc2626'}`;
+      background:${tipo==='ok'?'#f0fdf4':tipo==='warning'?'#fffbeb':'#fef2f2'};
+      border:1px solid ${tipo==='ok'?'#86efac':tipo==='warning'?'#fcd34d':'#fecaca'};
+      color:${tipo==='ok'?'#166534':tipo==='warning'?'#92400e':'#dc2626'}`;
   };
 
   if(!rota||!data){
@@ -14341,6 +14348,11 @@ async function criarDemanda(){
   if(!_connOk){
     showMsgExp('🔴 Sem conexão com o banco de dados. Verifique sua internet e tente novamente.');
     return;
+  }
+
+  // Verificar se o veículo selecionado está em manutenção
+  if(veiculo && _veiculosEmManut.has(veiculo)){
+    showMsgExp(`⚠️ Aviso: ${veiculo} está em manutenção ou com liberação pendente de frota. Você pode vincular mesmo assim, mas verifique com a frota.`, 'warning');
   }
 
   // Motorista e veículo opcionais — se não informados, marcam como "A DEFINIR"
@@ -32927,6 +32939,34 @@ async function loadAgendamentosFromDB(){
   }catch(e){
     console.warn('[Agend] Banco indisponível, usando localStorage:',e.message);
     try{_agendCache=JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]');}catch(e2){_agendCache=[];}
+  }
+  // Auto-mark past agendamentos as late
+  await marcarAgendamentosPasadosComoAtraso();
+}
+
+async function marcarAgendamentosPasadosComoAtraso(){
+  try{
+    const hoje = new Date().toISOString().slice(0,10);
+    const agends = getAgendamentos();
+    const aAtualizados = [];
+
+    agends.forEach(a=>{
+      // Se a data agendada passou E o status ainda é "agendado" (não foi realizado/atrasado)
+      if(a.data && a.data < hoje && a.status === 'agendado'){
+        a.status = 'atrasado';
+        a.motivo_atraso = 'atraso_rota';
+        a.motivo_label = '⏱️ Atraso de Rota';
+        aAtualizados.push(a);
+      }
+    });
+
+    if(aAtualizados.length > 0){
+      // Sincronizar com banco
+      await saveAgendamentos(agends);
+      console.log('[Agend] '+aAtualizados.length+' agendamentos marcados como atrasados (data passou)');
+    }
+  }catch(e){
+    console.warn('[Agend] Erro ao marcar agendamentos como atrasados:',e.message);
   }
 }
 
