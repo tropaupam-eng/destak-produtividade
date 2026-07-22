@@ -6831,8 +6831,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           </div>
           <div>
             <label style="font-size:.67rem;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:5px">Veículo *</label>
-            <input id="mot-manual-veiculo" type="text" placeholder="Placa ou nome"
-              style="width:100%;background:#0f172a;border:1.5px solid rgba(245,158,11,.4);color:#f0f0f8;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+            <select id="mot-manual-veiculo"
+              style="width:100%;background:#0f172a;border:1.5px solid rgba(245,158,11,.4);color:#f0f0f8;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box">
+              <option value="">Carregando veículos...</option>
+            </select>
           </div>
         </div>
         <button onclick="motRegistrarCargaManual()"
@@ -11020,9 +11022,12 @@ async function lancar(){
     return;
   }
   const jaCadastrado = lancamentos.find(l=>Number(l.carga)===Number(carga));
-  if(jaCadastrado){
-    showToast('⚠️ Carga '+carga+' já cadastrada! Motorista: '+jaCadastrado.motorista+' | Rota: '+(jaCadastrado.rota||'-'),'warning');
-    return;
+  let lancExistenteSupa = null;
+  if(!jaCadastrado){
+    try{
+      const res = await supaFetch(`lancamentos?carga=eq.${carga}&motorista=eq.${encodeURIComponent(mot)}&select=id,rota,fonte&limit=1`).catch(()=>[]);
+      lancExistenteSupa = (res&&res.length)?res[0]:null;
+    }catch(e){}
   }
   const veiculo = veicLanc;
   const rotaInput = normalizarRota(document.getElementById('l-rota-input')?.value||'');
@@ -11044,12 +11049,21 @@ async function lancar(){
   const _dataAdm    = (_dataWrapper?.style.display !== 'none' && _dataInput?.value) ? _dataInput.value : null;
   const tsLanc = _dataAdm ? new Date(_dataAdm).toISOString() : new Date().toISOString();
 
-  lancamentos.unshift({
-    carga, motorista:mot, ajudante:'', veiculo, rota:rotaFinal, und,
-    vinculado:temNaBase, pendente:!temNaBase,
-    ts: tsLanc
-  });
-  pushLancamento(lancamentos[0]).catch(e=>console.warn('pushLanc:',e.message));
+  let isUpdate = false;
+  if(lancExistenteSupa && lancExistenteSupa.fonte==='motorista_b'){
+    isUpdate = true;
+    await supaFetch(`lancamentos?id=eq.${lancExistenteSupa.id}`,{
+      method:'PATCH',
+      body:JSON.stringify({rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase})
+    }).catch(e=>console.warn('Update lancamento:',e.message));
+  } else {
+    lancamentos.unshift({
+      carga, motorista:mot, ajudante:'', veiculo, rota:rotaFinal, und,
+      vinculado:temNaBase, pendente:!temNaBase,
+      ts: tsLanc
+    });
+    pushLancamento(lancamentos[0]).catch(e=>console.warn('pushLanc:',e.message));
+  }
 
   // Presença automática: motorista lançado = presente no absenteísmo
   if(mot && !ehVeiculoFrete(veiculo)){
@@ -11073,12 +11087,16 @@ async function lancar(){
   }
   const prev = document.getElementById('carga-preview');
   if(prev) prev.style.display='none';
-  showToast(
-    temNaBase
-      ? '✅ Carga '+carga+' — '+qtdPedidos+' pedidos vinculados ao motorista!'
-      : '⏳ Carga '+carga+' salva! Será atualizada quando a planilha for carregada.',
-    temNaBase?'success':'warning'
-  );
+  if(isUpdate){
+    showToast('✅ Lançamento atualizado! Rota '+rotaFinal+' e dados completados.','success');
+  } else {
+    showToast(
+      temNaBase
+        ? '✅ Carga '+carga+' — '+qtdPedidos+' pedidos vinculados ao motorista!'
+        : '⏳ Carga '+carga+' salva! Será atualizada quando a planilha for carregada.',
+      temNaBase?'success':'warning'
+    );
+  }
 
   // Atualiza as telas no próximo frame (não bloqueia o clique)
   requestAnimationFrame(()=>{
@@ -18975,6 +18993,7 @@ async function carregarPortalMotorista(){
 
   try{
     await syncConfig().catch(()=>{});
+    preencherVeiculosMotorista().catch(()=>{});
 
     // ── CARGA ATUAL (se motorista estiver em rota) ──
     let da = null;
@@ -19741,6 +19760,15 @@ async function motoristaChegarViagem(demId){
     showToast('🏁 Chegada registrada!','success');
     await carregarPortalMotorista();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+async function preencherVeiculosMotorista(){
+  const sel = document.getElementById('mot-manual-veiculo');
+  if(!sel) return;
+  try{
+    const veics = (VEICULOS_CACHE||[]).filter(v=>v.ativo);
+    sel.innerHTML = '<option value="">— Selecione veículo —</option>' + veics.map(v=>`<option value="${v.placa}">${v.placa}${v.marca?' - '+v.marca:''}</option>`).join('');
+  }catch(e){ console.warn('Erro ao preencher veículos:',e.message); }
 }
 
 async function motRegistrarCargaManual(){
