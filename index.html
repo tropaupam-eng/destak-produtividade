@@ -2476,6 +2476,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div class="sidebar-item" data-page="frota-disponibilidade" onclick="showPage('frota-disponibilidade',this)">
     <span class="si-icon">📊</span><span class="si-label">Disponibilidade</span>
   </div>
+  <div class="sidebar-item" data-page="retorno-veiculos" onclick="showPage('retorno-veiculos',this)">
+    <span class="si-icon">🔙</span><span class="si-label">Retorno de Veículos</span>
+  </div>
   <div class="sidebar-divider"></div>
   <div class="sidebar-section-label">Comercial</div>
   <div class="sidebar-item" data-page="comercial-rotas" onclick="showPage('comercial-rotas',this)">
@@ -6355,6 +6358,61 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 
 </div></div><!-- /page-frota-disponibilidade -->
+
+<!-- ══ RETORNO DE VEÍCULOS ══ -->
+<div class="page" id="page-retorno-veiculos"><div class="container">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px">
+    <div>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">🔙 Retorno de Veículos</h2>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Agendar retorno de veículos em rota e acompanhar status de retorno real</p>
+    </div>
+    <button onclick="carregarRetornoVeiculos()" style="background:var(--bg-hover);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:.83rem;color:var(--text-secondary);cursor:pointer;font-weight:600">🔄 Atualizar</button>
+  </div>
+
+  <!-- Resumo KPIs -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+    <div class="kpi-card" style="border-top-color:#2563eb">
+      <div class="kpi-label">Em Rota</div>
+      <div class="kpi-value" id="ret-kpi-rota">—</div>
+    </div>
+    <div class="kpi-card" style="border-top-color:#f59e0b">
+      <div class="kpi-label">Retorno Agendado</div>
+      <div class="kpi-value" id="ret-kpi-agendado">—</div>
+    </div>
+    <div class="kpi-card" style="border-top-color:#059669">
+      <div class="kpi-label">Retornados</div>
+      <div class="kpi-value" id="ret-kpi-retornado">—</div>
+    </div>
+    <div class="kpi-card" style="border-top-color:#e11d48">
+      <div class="kpi-label">Atrasados</div>
+      <div class="kpi-value" id="ret-kpi-atrasado">—</div>
+    </div>
+  </div>
+
+  <!-- Tabela de Retorno -->
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
+      <h3 style="font-size:.9rem;font-weight:700;color:var(--text-primary);margin:0">📋 Rastreamento de Retorno</h3>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:.83rem">
+        <thead>
+          <tr style="background:var(--bg-card2)">
+            <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Veículo</th>
+            <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Rota</th>
+            <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Saída</th>
+            <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Retorno Agendado</th>
+            <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Retorno Real</th>
+            <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Status</th>
+            <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Ação</th>
+          </tr>
+        </thead>
+        <tbody id="ret-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div></div><!-- /page-retorno-veiculos -->
 
 <!-- ══ MODAL NOVA MANUTENÇÃO ══ -->
 <div id="modal-nova-manut" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:700;align-items:center;justify-content:center;padding:16px">
@@ -14128,6 +14186,13 @@ async function carregarMotoristas(){
   try{
     const data = await supaFetch('motoristas?select=*&order=nome.asc&ativo=eq.true');
     MOTORISTAS_CACHE = data||[];
+    // Deduplicate by name to avoid duplicate entries in dropdown
+    const nomesCached = {};
+    MOTORISTAS_CACHE = MOTORISTAS_CACHE.filter(m => {
+      if(nomesCached[m.nome]) return false;
+      nomesCached[m.nome] = true;
+      return true;
+    });
     // Popular select da expedição
     const sel = document.getElementById('exp-motorista');
     if(sel){
@@ -14328,9 +14393,9 @@ async function criarDemanda(){
   const showMsgExp = (txt, tipo='erro') => {
     msg.textContent = txt;
     msg.style.cssText = `display:block;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;
-      background:${tipo==='ok'?'#f0fdf4':'#fef2f2'};
-      border:1px solid ${tipo==='ok'?'#86efac':'#fecaca'};
-      color:${tipo==='ok'?'#166534':'#dc2626'}`;
+      background:${tipo==='ok'?'#f0fdf4':tipo==='warning'?'#fffbeb':'#fef2f2'};
+      border:1px solid ${tipo==='ok'?'#86efac':tipo==='warning'?'#fcd34d':'#fecaca'};
+      color:${tipo==='ok'?'#166534':tipo==='warning'?'#92400e':'#dc2626'}`;
   };
 
   if(!rota||!data){
@@ -14341,6 +14406,11 @@ async function criarDemanda(){
   if(!_connOk){
     showMsgExp('🔴 Sem conexão com o banco de dados. Verifique sua internet e tente novamente.');
     return;
+  }
+
+  // Verificar se o veículo selecionado está em manutenção
+  if(veiculo && _veiculosEmManut.has(veiculo)){
+    showMsgExp(`⚠️ Aviso: ${veiculo} está em manutenção ou com liberação pendente de frota. Você pode vincular mesmo assim, mas verifique com a frota.`, 'warning');
   }
 
   // Motorista e veículo opcionais — se não informados, marcam como "A DEFINIR"
@@ -14746,9 +14816,9 @@ async function carregarDemandas(){
     renderPipelineBar();
     renderFrotaStatus();
     renderPainelDia();
-    // Cargas abaixo do valor mínimo na expedição
-    const _mesExpAtual = (()=>{ const h=new Date(); return h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0'); })();
-    renderCargasAbaixoValor(_mesExpAtual, 'exp-baixo-valor');
+    // Cargas abaixo do valor mínimo na expedição — REMOVIDO (mostrar apenas em Comercial)
+    // const _mesExpAtual = (()=>{ const h=new Date(); return h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0'); })();
+    // renderCargasAbaixoValor(_mesExpAtual, 'exp-baixo-valor');
   }catch(e){
     container.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro ao carregar: ${e.message}</p></div>`;
   }
@@ -16137,7 +16207,14 @@ function renderDemandasKPIs(data){
   const saiu      = data.filter(d=>d.status==='saiu').length;
   const concluido = data.filter(d=>d.status==='concluido').length;
   const pedidos   = data.reduce((s,d)=>s+(d.quantidade_pedidos||0),0);
-  const valor     = data.reduce((s,d)=>s+(d.valor_total||0),0);
+  // Valor expedido APENAS neste mês: demandas que saíram (saiu, fim_viagem, concluido) com data_saida neste mês
+  const hoje = new Date();
+  const mesAtual = hoje.getFullYear()+'-'+String(hoje.getMonth()+1).padStart(2,'0');
+  const valorExpedidoMes = data
+    .filter(d=>_keyStats.has(d.status) && d.data_saida && d.data_saida.startsWith(mesAtual))
+    .reduce((s,d)=>s+(d.valor_total||0),0);
+  // Valor total (todas as demandas ativas, independente do mês - para compatibilidade visual)
+  const valorTotal = data.reduce((s,d)=>s+(d.valor_total||0),0);
   const fv = v => v>=1e6?'R$'+(v/1e6).toFixed(1)+'M':v>=1e3?'R$'+(v/1e3).toFixed(0)+'k':'R$'+v.toFixed(0);
   const set = (id,v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
   set('exp-k-total',    total);
@@ -16145,7 +16222,7 @@ function renderDemandasKPIs(data){
   set('exp-k-saiu',     saiu);
   set('exp-k-concluido',concluido);
   set('exp-k-pedidos',  pedidos.toLocaleString('pt-BR'));
-  set('exp-k-valor',    fv(valor));
+  set('exp-k-valor',    fv(valorExpedidoMes));  // Mostra apenas valores expedidos neste mês
 }
 
 
@@ -32928,6 +33005,34 @@ async function loadAgendamentosFromDB(){
     console.warn('[Agend] Banco indisponível, usando localStorage:',e.message);
     try{_agendCache=JSON.parse(localStorage.getItem('agendamentos_rotas')||'[]');}catch(e2){_agendCache=[];}
   }
+  // Auto-mark past agendamentos as late
+  await marcarAgendamentosPasadosComoAtraso();
+}
+
+async function marcarAgendamentosPasadosComoAtraso(){
+  try{
+    const hoje = new Date().toISOString().slice(0,10);
+    const agends = getAgendamentos();
+    const aAtualizados = [];
+
+    agends.forEach(a=>{
+      // Se a data agendada passou E o status ainda é "agendado" (não foi realizado/atrasado)
+      if(a.data && a.data < hoje && a.status === 'agendado'){
+        a.status = 'atrasado';
+        a.motivo_atraso = 'atraso_rota';
+        a.motivo_label = '⏱️ Atraso de Rota';
+        aAtualizados.push(a);
+      }
+    });
+
+    if(aAtualizados.length > 0){
+      // Sincronizar com banco
+      await saveAgendamentos(agends);
+      console.log('[Agend] '+aAtualizados.length+' agendamentos marcados como atrasados (data passou)');
+    }
+  }catch(e){
+    console.warn('[Agend] Erro ao marcar agendamentos como atrasados:',e.message);
+  }
 }
 
 function setAgendMes(mes){
@@ -37814,6 +37919,141 @@ function _cftvRenderTable(data){
     _prevMsg('prev_pid_status','Perda registrada ✓',true);
     ['prev_pid_setor','prev_pid_cod','prev_pid_desc','prev_pid_qtd','prev_pid_valor','prev_pid_tipo','prev_pid_acao','prev_pid_resp'].forEach(id=>{const e=_$(id);if(e){if(e.tagName==='SELECT')e.value='';else e.value='';}});
     await _prevLoad(5); _prevLoadCards();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // RETORNO DE VEÍCULOS
+  // ═══════════════════════════════════════════════════════════════
+  async function carregarRetornoVeiculos(){
+    const tbody = document.getElementById('ret-tbody');
+    if(!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando...</td></tr>';
+    try{
+      // Buscar demandas que estão em rota (saiu/fim_viagem)
+      const demandas = await supaFetch('demandas_rota?status=in.(saiu,fim_viagem)&select=id,veiculo,rota,data_saida,ts_saiu,ts_fim_viagem,status&order=ts_saiu.desc&limit=200').catch(()=>[]) || [];
+
+      // Buscar retornos agendados/reais
+      const retornos = await supaFetch('retorno_veiculos?select=id,demanda_id,data_retorno_agendado,data_retorno_real&limit=2000').catch(()=>[]) || [];
+      const retornosMap = {};
+      retornos.forEach(r => { retornosMap[r.demanda_id] = r; });
+
+      // Calcular KPIs
+      const emRota = demandas.filter(d => !retornosMap[d.id] || !retornosMap[d.id].data_retorno_real).length;
+      const agendados = Object.values(retornosMap).filter(r => r.data_retorno_agendado && !r.data_retorno_real).length;
+      const retornados = Object.values(retornosMap).filter(r => r.data_retorno_real).length;
+      const hoje = new Date().toISOString().slice(0,10);
+      const atrasados = Object.values(retornosMap)
+        .filter(r => r.data_retorno_agendado && r.data_retorno_agendado < hoje && !r.data_retorno_real).length;
+
+      ['ret-kpi-rota', 'ret-kpi-agendado', 'ret-kpi-retornado', 'ret-kpi-atrasado']
+        .forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '—'; });
+      document.getElementById('ret-kpi-rota').textContent = emRota;
+      document.getElementById('ret-kpi-agendado').textContent = agendados;
+      document.getElementById('ret-kpi-retornado').textContent = retornados;
+      document.getElementById('ret-kpi-atrasado').textContent = atrasados;
+
+      // Renderizar tabela
+      if(!demandas.length){
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum veículo em rota</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = demandas.map(d => {
+        const ret = retornosMap[d.id];
+        const dataAgend = ret?.data_retorno_agendado ? ret.data_retorno_agendado.slice(0,10) : '';
+        const dataReal = ret?.data_retorno_real ? ret.data_retorno_real.slice(0,10) : '';
+        const tsSaida = d.ts_saiu ? new Date(d.ts_saiu).toLocaleDateString('pt-BR') : (d.data_saida||'—');
+
+        let status = '🚗 Em Rota';
+        let statusCor = '#2563eb';
+        if(dataReal){
+          status = '✅ Retornado';
+          statusCor = '#059669';
+        } else if(dataAgend && dataAgend < hoje){
+          status = '⚠️ Atrasado';
+          statusCor = '#dc2626';
+        } else if(dataAgend){
+          status = '📅 Agendado';
+          statusCor = '#f59e0b';
+        }
+
+        return `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:10px 14px;font-weight:600">${d.veiculo||'—'}</td>
+          <td style="padding:10px 14px">${d.rota||'—'}</td>
+          <td style="padding:10px 14px;font-size:.8rem">${tsSaida}</td>
+          <td style="padding:10px 14px">
+            <input type="date" value="${dataAgend}"
+              onchange="agendarRetornoVeiculo('${d.id}',this.value,${ret?ret.id:'null'})"
+              style="border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.8rem;background:var(--bg-input);color:var(--text-primary);width:120px">
+          </td>
+          <td style="padding:10px 14px;font-size:.8rem">${dataReal||'—'}</td>
+          <td style="padding:10px 14px;text-align:center">
+            <span style="background:${statusCor}20;color:${statusCor};padding:3px 8px;border-radius:6px;font-size:.75rem;font-weight:600">${status}</span>
+          </td>
+          <td style="padding:10px 14px;text-align:center">
+            ${!dataReal ? `<button onclick="registrarRetornoReal('${d.id}',${ret?ret.id:'null'})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer;font-weight:600">Confirmar</button>` : '—'}
+          </td>
+        </tr>`;
+      }).join('');
+
+    }catch(e){
+      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red);padding:20px">❌ Erro: ${e.message}</td></tr>`;
+    }
+  }
+
+  async function agendarRetornoVeiculo(demandaId, dataRetorno, retornoId){
+    if(!dataRetorno){
+      showToast('Informe a data de retorno','warning');
+      return;
+    }
+    try{
+      if(retornoId && retornoId !== 'null'){
+        // Atualizar existente
+        await supaFetch(`retorno_veiculos?id=eq.${retornoId}`,{
+          method:'PATCH',
+          body: JSON.stringify({data_retorno_agendado: dataRetorno})
+        });
+      } else {
+        // Criar novo registro
+        await supaFetch('retorno_veiculos',{
+          method:'POST',
+          body: JSON.stringify({
+            demanda_id: demandaId,
+            data_retorno_agendado: dataRetorno,
+            criado_em: new Date().toISOString()
+          })
+        });
+      }
+      showToast('✅ Retorno agendado para ' + new Date(dataRetorno).toLocaleDateString('pt-BR'),'success');
+      carregarRetornoVeiculos();
+    }catch(e){
+      showToast('Erro ao agendar: '+e.message,'warning');
+    }
+  }
+
+  async function registrarRetornoReal(demandaId, retornoId){
+    const dataHoje = new Date().toISOString().slice(0,10);
+    try{
+      if(retornoId && retornoId !== 'null'){
+        await supaFetch(`retorno_veiculos?id=eq.${retornoId}`,{
+          method:'PATCH',
+          body: JSON.stringify({data_retorno_real: dataHoje})
+        });
+      } else {
+        await supaFetch('retorno_veiculos',{
+          method:'POST',
+          body: JSON.stringify({
+            demanda_id: demandaId,
+            data_retorno_real: dataHoje,
+            criado_em: new Date().toISOString()
+          })
+        });
+      }
+      showToast('✅ Retorno confirmado!','success');
+      carregarRetornoVeiculos();
+    }catch(e){
+      showToast('Erro ao confirmar retorno: '+e.message,'warning');
+    }
   }
 
 })();
