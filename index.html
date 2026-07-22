@@ -9076,56 +9076,71 @@ async function syncBaseData(mesFiltro){
     showToast(`🔄 Carregando dados do banco (${label})...`,'warning');
 
     const PAGE = 2000;
-    let allRaw = [];
-    let offset = 0;
 
-    // Paginação: busca até não haver mais resultados
-    while(true){
+    // 1️⃣ DESCOBRIR TOTAL DE PÁGINAS (primeira requisição com count)
+    const countUrl = mesFiltro
+      ? `base_data?mes_ano=eq.${mesFiltro}&select=count&limit=1`
+      : `base_data?select=count&limit=1`;
+    const countRes = await supaFetch(countUrl).catch(()=>[]);
+    const totalRegs = countRes?.[0]?.count || 0;
+    const totalPages = Math.ceil(totalRegs / PAGE);
+
+    if(totalRegs === 0) return false;
+
+    // 2️⃣ BUSCAR TODAS AS PÁGINAS EM PARALELO (ao invés de sequencial)
+    const allPagePromises = Array.from({length: totalPages}, (_, i) => {
+      const offset = i * PAGE;
       const urlBase = mesFiltro
         ? `base_data?mes_ano=eq.${mesFiltro}&select=*&order=carga.asc&limit=${PAGE}&offset=${offset}`
         : `base_data?select=*&order=mes_ano.desc,carga.asc&limit=${PAGE}&offset=${offset}`;
-      const page = await supaFetch(urlBase);
-      if(!page || page.length === 0) break;
-      allRaw = allRaw.concat(page);
-      if(page.length < PAGE) break; // última página
-      offset += PAGE;
-    }
+      return supaFetch(urlBase).catch(()=>[]);
+    });
+
+    const allPages = await Promise.all(allPagePromises);
+    const allRaw = allPages.flat();
+    console.log(`[Sync] Carregado ${allRaw.length} registros em ${totalPages} páginas (paralelo)`);
 
     if(allRaw.length > 0){
-      const mapped = allRaw.map(r=>({
-        carga:       r.carga,
-        pedido:      r.pedido,
-        valor:       r.valor||0,
-        peso_kg:     r.peso_kg||0,
-        und:         r.und||'',
-        rire:        r.rire||'',
-        rota:        r.rota||'',
-        placa:       r.placa||'',
-        condutor:    r.condutor||'',
-        ajudante:    r.ajudante||'',
-        ocorrencia:  r.ocorrencia||0,
-        mes_ano:     r.mes_ano||'',
-        semana_mes:  r.semana_mes||0,
-        data_pedido: r.data_pedido||null,
-        cod_forn:    r.cod_forn||null,
-        cliente:     r.cliente||null,
-        bairro:      r.bairro||null,
-        volume:      r.volume||null,
-        nota_origem: r.nota_origem||null,
-        _source:     'planilha'
-      }));
-
-      // Deduplicar por carga+pedido
+      // 3️⃣ TRANSFORMAR E VALIDAR (combine map + filter em uma passada)
       const _dk = new Set();
-      const deduped = mapped.filter(r=>{
-        if(!r.carga||!r.pedido) return true;
-        const k=Number(r.carga)+'_'+Number(r.pedido);
-        if(_dk.has(k)) return false;
-        _dk.add(k); return true;
-      });
+      const deduped = [];
+
+      for(const r of allRaw){
+        // Validar dados
+        if(!r.carga || !r.pedido) continue;
+        if(isNaN(Number(r.carga)) || isNaN(Number(r.pedido))) continue;
+
+        // Deduplicar
+        const k = Number(r.carga) + '_' + Number(r.pedido);
+        if(_dk.has(k)) continue;
+        _dk.add(k);
+
+        // Transformar
+        deduped.push({
+          carga:       Number(r.carga),
+          pedido:      Number(r.pedido),
+          valor:       Math.max(0, Number(r.valor)||0),
+          peso_kg:     Math.max(0, Number(r.peso_kg)||0),
+          und:         (r.und||'').trim().slice(0,50),
+          rire:        (r.rire||'').trim().slice(0,10),
+          rota:        (r.rota||'').trim().slice(0,50),
+          placa:       (r.placa||'').trim().toUpperCase().slice(0,20),
+          condutor:    (r.condutor||'').trim().toUpperCase().slice(0,100),
+          ajudante:    (r.ajudante||'').trim().slice(0,100),
+          ocorrencia:  Math.max(0, Number(r.ocorrencia)||0),
+          mes_ano:     (r.mes_ano||'').trim().slice(0,7),
+          semana_mes:  Math.max(0, Number(r.semana_mes)||0),
+          data_pedido: r.data_pedido||null,
+          cod_forn:    (r.cod_forn||'').trim().slice(0,50)||null,
+          cliente:     (r.cliente||'').trim().slice(0,200)||null,
+          bairro:      (r.bairro||'').trim().slice(0,100)||null,
+          volume:      Math.max(0, Number(r.volume)||0)||null,
+          nota_origem: (r.nota_origem||'').trim().slice(0,500)||null,
+          _source:     'planilha'
+        });
+      }
 
       if(mesFiltro){
-        // Merge: substitui só o mês recarregado, mantém outros em memória
         BASE_DATA = [
           ...BASE_DATA.filter(r=>r.mes_ano !== mesFiltro),
           ...deduped
@@ -9136,68 +9151,88 @@ async function syncBaseData(mesFiltro){
       window._cargaMapCache = null;
 
       try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
-      showToast(`✅ ${BASE_DATA.length.toLocaleString('pt-BR')} registros carregados do banco!`,'success');
+      console.log(`[Sync] ${deduped.length} registros após validação e dedup`);
+      showToast(`✅ ${BASE_DATA.length.toLocaleString('pt-BR')} registros carregados em ${totalPages} páginas (paralelo)!`,'success');
       return true;
     }
     return false;
   }catch(e){
     console.warn('syncBaseData erro:', e.message);
+    showToast('❌ Erro ao carregar dados: '+e.message,'error');
     return false;
   }
 }
 
 async function pushBaseData(records){
-  // ── Fonte oficial: Supabase. Erros propagam para o chamador. ─────────
-  // Estratégia: DELETE meses presentes no upload → INSERT full batch.
   if(!records || records.length === 0){
     showToast('⚠️ Nenhum registro para enviar.','warning');
     return;
   }
 
-  const mesesNoUpload = [...new Set(records.map(r=>r.mes_ano).filter(Boolean))];
-  showToast(`📤 Gravando ${records.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
+  // 🛡️ VALIDAÇÃO E LIMITE DE SEGURANÇA
+  if(records.length > 50000){
+    showToast('❌ Arquivo muito grande! Máximo 50.000 registros por upload.','error');
+    return;
+  }
 
-  // 1. Deletar APENAS o mês principal (o que tem mais registros).
-  // Meses secundários (pedidos cross-month criados no mês anterior) NÃO são deletados —
-  // eles serão atualizados via upsert (merge-duplicates) sem apagar dados existentes.
-  // Isso evita que uma planilha de julho apague dados de junho que ainda estão no banco.
-  const _contPorMes = records.reduce((m,r)=>{ if(r.mes_ano) m.set(r.mes_ano,(m.get(r.mes_ano)||0)+1); return m; }, new Map());
-  const mesPrincipal = [..._contPorMes.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
+  // Validar autorização
+  if(!USUARIO_LOGADO || !['admin','operador'].includes(USUARIO_LOGADO.perfil)){
+    showToast('❌ Você não tem permissão para fazer upload de planilha.','error');
+    return;
+  }
 
-  // 1. Inserir/atualizar PRIMEIRO via upsert — sem DELETE ainda
-  const LOTE = 300;
-  const PARALELO = 4; // lotes simultâneos → ~4x mais rápido
+  // Filtrar registros com dados inválidos ANTES de enviar
+  const validar = (r) => {
+    if(!r.carga || !r.pedido) return false;
+    if(isNaN(Number(r.carga)) || isNaN(Number(r.pedido))) return false;
+    if(!r.mes_ano || !r.mes_ano.match(/^\d{4}-\d{2}$/)) return false;
+    if(Number(r.valor) < 0 || Number(r.peso_kg) < 0) return false;
+    return true;
+  };
+
+  const validos = records.filter(validar);
+  if(validos.length < records.length){
+    const invalidos = records.length - validos.length;
+    console.warn(`[Push] ${invalidos} registros descartados por validação`);
+    showToast(`⚠️ ${invalidos} registros descartados (dados inválidos). Enviando ${validos.length}...`,'warning');
+  }
+
+  const mesesNoUpload = [...new Set(validos.map(r=>r.mes_ano).filter(Boolean))];
+  showToast(`📤 Gravando ${validos.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
+
+  const LOTE = 1000;    // Era 300 → 3.3x maior
+  const PARALELO = 8;   // Era 4 → 2x maior
 
   const mapear = r => ({
-    carga:       Number(r.carga)||null,
-    pedido:      Number(r.pedido)||null,
-    valor:       Number(r.valor)||0,
-    peso_kg:     Number(r.peso_kg||r.peso||0)||0,
-    und:         r.und||(USUARIO_LOGADO&&USUARIO_LOGADO.und)||'',
+    carga:       Number(r.carga),
+    pedido:      Number(r.pedido),
+    valor:       Math.max(0, Number(r.valor)||0),
+    peso_kg:     Math.max(0, Number(r.peso_kg||r.peso||0)||0),
+    und:         (r.und||(USUARIO_LOGADO&&USUARIO_LOGADO.und)||'').trim().slice(0,50),
     rire:        normRire(r.rire)||(r.rota?getRireFromRota((r.rota||'').toUpperCase().trim()):''),
-    rota:        r.rota||'',
-    placa:       r.placa||'',
-    condutor:    (r.condutor||'').toUpperCase().trim(),
-    ajudante:    r.ajudante||'',
-    ocorrencia:  Number(r.ocorrencia)||0,
-    mes_ano:     r.mes_ano||'',
-    semana_mes:  Number(r.semana_mes)||0,
+    rota:        (r.rota||'').trim().slice(0,50),
+    placa:       (r.placa||'').trim().toUpperCase().slice(0,20),
+    condutor:    (r.condutor||'').toUpperCase().trim().slice(0,100),
+    ajudante:    (r.ajudante||'').trim().slice(0,100),
+    ocorrencia:  Math.max(0, Number(r.ocorrencia)||0),
+    mes_ano:     r.mes_ano,
+    semana_mes:  Math.max(0, Number(r.semana_mes)||0),
     data_pedido: r.data_pedido||null,
-    cod_forn:    r.cod_forn||null,
-    cliente:     r.cliente||null,
-    bairro:      r.bairro||null,
-    volume:      Number(r.volume)||null,
-    nota_origem: r.nota_origem||null
+    cod_forn:    (r.cod_forn||'').trim().slice(0,50)||null,
+    cliente:     (r.cliente||'').trim().slice(0,200)||null,
+    bairro:      (r.bairro||'').trim().slice(0,100)||null,
+    volume:      Math.max(0, Number(r.volume)||0)||null,
+    nota_origem: (r.nota_origem||'').trim().slice(0,500)||null
   });
 
   const todosBatches = [];
-  for(let i=0; i<records.length; i+=LOTE){
-    const lote = records.slice(i,i+LOTE).map(mapear).filter(r=>r.carga!=null&&r.pedido!=null);
+  for(let i=0; i<validos.length; i+=LOTE){
+    const lote = validos.slice(i,i+LOTE).map(mapear);
     if(lote.length) todosBatches.push(lote);
   }
 
   const enviarLote = async lote => {
-    for(let tentativa=0; tentativa<2; tentativa++){
+    for(let tentativa=0; tentativa<3; tentativa++){
       try{
         await supaFetch('base_data?on_conflict=carga,pedido',{
           method:'POST',
@@ -9206,8 +9241,11 @@ async function pushBaseData(records){
         });
         return true;
       }catch(err){
-        if(tentativa===1) return false;
-        await new Promise(r=>setTimeout(r,2000));
+        if(tentativa===2) return false;
+        // Exponential backoff: 1s, 3s, máximo 8s
+        const espera = Math.min(1000 * Math.pow(2, tentativa), 8000);
+        console.warn(`[Push] Retry lote após ${espera}ms (tentativa ${tentativa+1}):`, err.message);
+        await new Promise(r=>setTimeout(r, espera));
       }
     }
     return false;
@@ -9216,7 +9254,7 @@ async function pushBaseData(records){
   let enviados = 0;
   const lotesFalhos = [];
 
-  // Passagem 1: todos os lotes em grupos paralelos (allSettled = nunca aborta)
+  // Todos os lotes em grupos paralelos (allSettled = nunca aborta)
   for(let g=0; g<todosBatches.length; g+=PARALELO){
     const grupo = todosBatches.slice(g, g+PARALELO);
     const resultados = await Promise.allSettled(grupo.map(lote => enviarLote(lote)));
@@ -9227,7 +9265,7 @@ async function pushBaseData(records){
       } else {
         lotesFalhos.push(lote);
       }
-      showToast(`📤 Gravando... ${enviados}/${records.length}`,'warning');
+      showToast(`📤 Gravando... ${enviados}/${validos.length}`,'warning');
     });
   }
 
