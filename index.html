@@ -15616,6 +15616,31 @@ async function renderFrotaUso(){
   }
 }
 
+// ── Buscar data da PRIMEIRA viagem de cada veículo (para não sujar métricas de veículos novos)
+async function _buscarPrimeiraViagemPorVeiculo(){
+  try{
+    const demandas = await supaFetch('demandas_rota?select=veiculo,data_saida,ts_saiu&veiculo=not.is.null&order=data_saida.asc&limit=5000').catch(()=>[]) || [];
+    const lancamentos = await supaFetch('lancamentos?select=veiculo,ts&veiculo=not.is.null&order=ts.asc&limit=10000').catch(()=>[]) || [];
+    const primeiraViagemMap = {};
+    (demandas||[]).forEach(d => {
+      const v = (d.veiculo||'').trim().toUpperCase();
+      if(v && !primeiraViagemMap[v]){
+        primeiraViagemMap[v] = (d.data_saida || d.ts_saiu || '').slice(0,10);
+      }
+    });
+    (lancamentos||[]).forEach(d => {
+      const v = (d.veiculo||'').trim().toUpperCase();
+      if(v && !primeiraViagemMap[v] && d.ts){
+        primeiraViagemMap[v] = (d.ts||'').slice(0,10);
+      }
+    });
+    return primeiraViagemMap;
+  }catch(e){
+    console.warn('Erro ao buscar primeira viagem:', e);
+    return {};
+  }
+}
+
 async function renderFrotaDisp(){
   const wrap = document.getElementById('frota-disp-wrap');
   if(!wrap) return;
@@ -15632,6 +15657,9 @@ async function renderFrotaDisp(){
     const hojeStr = hojeObj.getFullYear()+'-'+(String(hojeObj.getMonth()+1).padStart(2,'0'));
     const hojeD   = String(hojeObj.getDate()).padStart(2,'0');
     const ehMesAtual = mes === hojeStr;
+
+    // ── Buscar data da PRIMEIRA viagem (para não contar dias antes da primeira viagem)
+    const primeiraViagemMap = await _buscarPrimeiraViagemPorVeiculo();
 
     const queries = [
       supaFetch('veiculos?select=placa,tipo,unidade,ativo&order=placa.asc'),
@@ -15682,7 +15710,11 @@ async function renderFrotaDisp(){
       else dtFim = dtIni;
       const ini = dtIni < mesInicio ? mesInicio : dtIni;
       const fim = dtFim  > mesFim   ? mesFim    : dtFim;
-      const cur = new Date(ini);
+      // ── Não contar dias ANTES da primeira viagem (veículos novos)
+      const primeiraViagem = primeiraViagemMap[placa];
+      const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
+      const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
+      const cur = new Date(iniAjustado);
       while(cur <= fim){
         const dia = String(cur.getDate()).padStart(2,'0');
         dispMap[placa][dia] = 'S';
@@ -15696,16 +15728,20 @@ async function renderFrotaDisp(){
       if(!placa || !d.ts || !dispMap[placa]) return;
       const isRI = ROTAS_RI.has((d.rota||'').trim().toUpperCase());
       const dtIni = new Date(d.ts);
+      const primeiraViagem = primeiraViagemMap[placa];
+      const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
       if(isRI){
         const ini = dtIni < mesInicio ? mesInicio : dtIni;
+        const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
         const fim = (ehMesAtual ? hojeObj : mesFim) > mesFim ? mesFim : (ehMesAtual ? hojeObj : mesFim);
-        const cur = new Date(ini);
+        const cur = new Date(iniAjustado);
         while(cur <= fim){
           const dia2 = String(cur.getDate()).padStart(2,'0');
           if(!dispMap[placa][dia2]) dispMap[placa][dia2] = 'S';
           cur.setDate(cur.getDate()+1);
         }
       } else {
+        if(dtPrimeiraViagem && dtIni < dtPrimeiraViagem) return;
         const dia = String(dtIni.getDate()).padStart(2,'0');
         if(!dispMap[placa][dia]) dispMap[placa][dia] = 'S';
       }
@@ -15749,9 +15785,15 @@ async function renderFrotaDisp(){
 
     // ── Dados por veículo ──
     const veiculosData = todos.map(v => {
+      const primeiraViagem = primeiraViagemMap[v.placa];
+      const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
+      // Contar dias passados a partir da primeira viagem
+      const diasPassadosVeiculo = dtPrimeiraViagem
+        ? colPassadas.filter(({dt}) => dt >= dtPrimeiraViagem).length
+        : nPassados;
       const diasS = colPassadas.filter(({dia}) => dispMap[v.placa]?.[dia]==='S').length;
       const diasC = colPassadas.filter(({dia}) => dispMap[v.placa]?.[dia]==='C').length;
-      const pct   = nPassados>0 ? Math.round(diasS/nPassados*100) : 0;
+      const pct   = diasPassadosVeiculo>0 ? Math.round(diasS/diasPassadosVeiculo*100) : 0;
       return { v, diasS, diasC, pct };
     });
     veiculosData.sort((a,b) => b.pct - a.pct);
