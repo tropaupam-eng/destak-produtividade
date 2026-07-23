@@ -2474,7 +2474,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <span class="si-icon">🔧</span><span class="si-label">Manutenção</span>
   </div>
   <div class="sidebar-item" data-page="frota-disponibilidade" onclick="showPage('frota-disponibilidade',this)">
-    <span class="si-icon">📊</span><span class="si-label">Disponibilidade</span>
+    <span class="si-icon">⚙️</span><span class="si-label">Usabilidade</span>
   </div>
   <div class="sidebar-item" data-page="retorno-veiculos" onclick="showPage('retorno-veiculos',this)">
     <span class="si-icon">🔙</span><span class="si-label">Retorno de Veículos</span>
@@ -6326,8 +6326,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:12px">
     <div>
-      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">📊 Disponibilidade da Frota</h2>
-      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Uso diário por veículo — <strong style="color:#059669">S</strong> Em serviço · <strong style="color:#d97706">C</strong> Carregando · <strong style="color:var(--text-muted)">N</strong> Não utilizado</p>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">⚙️ Usabilidade da Frota</h2>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Taxa de uso por veículo — dias em viagem vs dias disponível. Alerta: veículos com lançamento mas sem saídas (dormência)</p>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label style="font-size:.82rem;font-weight:600;color:var(--text-secondary)">Unidade:</label>
@@ -14867,6 +14867,8 @@ async function carregarDemandas(){
     }
     // Carregar comercial_rotas do Supabase para badge na expedição
     supaFetch('comercial_rotas?status=neq.resolvido&select=rota,data,motivo,status').then(cr=>{ window._comRotasCache = cr||[]; }).catch(()=>{});
+    // Carregar retornos de veículos agendados
+    await carregarRetornosVeiculos();
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderPipelineBar();
@@ -15830,7 +15832,21 @@ async function renderFrotaDisp(){
       ${colunas.map(()=>`<td style="border-right:1px solid var(--border)"></td>`).join('')}
     </tr>`;
 
+    // Alerta: veículos dormindo (com lançamento mas sem viagens)
+    const lancamentosMap = {};
+    (lancamentosDisp||[]).forEach(l=>{ lancamentosMap[(l.veiculo||'').trim().toUpperCase()] = true; });
+    const veiculosDormindo = veiculosData.filter(x => lancamentosMap[x.v.placa] && x.diasS === 0);
+    const alertaDormicao = veiculosDormindo.length > 0
+      ? `<div style="margin:14px 20px 14px;padding:12px 14px;background:rgba(239,68,68,.1);border:1.5px solid #fecaca;border-left:4px solid #dc2626;border-radius:10px;font-size:.82rem">
+          <div style="color:#991b1b;font-weight:700;margin-bottom:6px">⚠️ Dormência Detectada</div>
+          <div style="color:#7f1d1d;font-size:.78rem;line-height:1.4">
+            ${veiculosDormindo.map(x=>`${x.v.placa}`).join(', ')} — lançados mas sem saídas em ${mes}
+          </div>
+        </div>`
+      : '';
+
     wrap.innerHTML = `
+      ${alertaDormicao}
       <!-- KPIs -->
       <div style="padding:16px 20px 14px;background:linear-gradient(135deg,#f8fafc,var(--bg-card));border-bottom:2px solid var(--border)">
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
@@ -16048,8 +16064,9 @@ async function renderFrotaRotas(){
       return;
     }
 
-    // Montar mapa placa → rota → pedidos
+    // Montar mapa placa → rota → cargas/pedidos + detalhes
     const mapa = {}; // {placa: {rota: qtdPedidos}}
+    const cargasMap = {}; // {placa: [{carga, rota}, ...]}
     const cargaMap = getCargaMap();
 
     lancsFilt.forEach(l => {
@@ -16061,6 +16078,10 @@ async function renderFrotaRotas(){
 
       if(!mapa[placa]) mapa[placa] = {};
       mapa[placa][rota] = (mapa[placa][rota]||0) + qtd;
+
+      // Rastrear cargas por veículo
+      if(!cargasMap[placa]) cargasMap[placa] = [];
+      cargasMap[placa].push({carga: c, rota: rota});
     });
 
     // Ordenar veículos por total de pedidos (maior primeiro)
@@ -16091,15 +16112,53 @@ async function renderFrotaRotas(){
     // Totais por placa para exibir no label
     const totaisPorPlaca = placas.map(p => Object.values(mapa[p]).reduce((s,v)=>s+v,0));
 
+    // Tabela de detalhes por veículo
+    const tabelaLinhas = placas.map(placa => {
+      const cargasVeiculo = cargasMap[placa] || [];
+      const rotasUnicas = [...new Set(cargasVeiculo.map(c => c.rota))].sort();
+      const totalCargas = cargasVeiculo.length;
+      const detalhes = rotasUnicas.map(r => {
+        const cargasRota = cargasVeiculo.filter(c => c.rota === r).map(c => c.carga).join(', ');
+        return `${r} (${cargasRota})`;
+      }).join(' | ');
+
+      return `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:10px 14px;font-weight:600;font-family:monospace">${placa}</td>
+        <td style="padding:10px 14px;text-align:center;font-weight:700">${totalCargas}</td>
+        <td style="padding:10px 14px;text-align:center">${rotasUnicas.length}</td>
+        <td style="padding:10px 14px;font-size:.8rem;color:var(--text-secondary)">${detalhes}</td>
+      </tr>`;
+    }).join('');
+
     // Canvas
     wrap.innerHTML = `
       <div style="position:relative;width:100%;overflow-x:auto">
         <canvas id="frota-rotas-chart" style="min-height:${Math.max(300, placas.length * 44)}px"></canvas>
       </div>
-      <div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;padding:0 4px">
+      <div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;padding:0 4px;margin-bottom:20px">
         ${todasRotas.map(r=>`<span style="display:flex;align-items:center;gap:5px;font-size:.75rem;font-weight:600;color:var(--text-secondary)">
           <span style="width:10px;height:10px;border-radius:2px;background:${rotaCor[r]};display:inline-block"></span>${r}
         </span>`).join('')}
+      </div>
+
+      <!-- Tabela de detalhes -->
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg-card2)">
+          <h3 style="margin:0;font-size:.9rem;font-weight:700;color:var(--text-primary)">📊 Detalhes por Veículo</h3>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+            <thead>
+              <tr style="background:var(--bg-card2)">
+                <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Veículo</th>
+                <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Total Cargas</th>
+                <th style="padding:10px 14px;text-align:center;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Rotas</th>
+                <th style="padding:10px 14px;text-align:left;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Detalhes</th>
+              </tr>
+            </thead>
+            <tbody>${tabelaLinhas}</tbody>
+          </table>
+        </div>
       </div>`;
 
     if(_frotaRotasChart){ _frotaRotasChart.destroy(); _frotaRotasChart = null; }
@@ -16864,9 +16923,38 @@ function renderGfVeiculosHoje(){
   const total = veiculos.length;
 
   // Disponibilidade real do mês: média de dias rodados / dias úteis por veículo próprio
+  // Considerando manutenção: preventiva (≤2 dias) não reduz; corretiva (>2 dias) reduz
+  const [ano, numMes] = (document.getElementById('frota-disp-mes')?.value || new Date().toISOString().slice(0,7)).split('-').map(Number);
+  const diasNoMes = new Date(ano, numMes, 0).getDate();
+  const mesIniDisp = new Date(ano, numMes-1, 1);
+  const mesFimDisp = new Date(ano, numMes-1, diasNoMes);
+
+  const diasIndisponiveisMap = {};
+  (_GF_MANUT||[]).forEach(m=>{
+    if(m.status==='concluida'||m.status==='cancelada') return;
+    const placa = (m.veiculo||'').trim().toUpperCase();
+    if(!placa) return;
+    const dataIni = m.data_inicio ? new Date(m.data_inicio+'T00:00:00') : null;
+    const dataFim = m.data_fim ? new Date(m.data_fim+'T23:59:59') : null;
+    if(!dataIni) return;
+    if(!diasIndisponiveisMap[placa]) diasIndisponiveisMap[placa] = 0;
+
+    // Se é manutenção corretiva (ou preventiva com >2 dias), contar dias indisponíveis
+    const duracao = dataFim && dataIni ? Math.ceil((dataFim - dataIni) / 86400000) : 0;
+    const ehCorretiva = m.tipo !== 'preventiva' || duracao > 2;
+    if(ehCorretiva){
+      const ini = dataIni < mesIniDisp ? mesIniDisp : dataIni;
+      const fim = dataFim && dataFim > mesFimDisp ? mesFimDisp : dataFim || mesFimDisp;
+      const dias = Math.ceil((fim - ini) / 86400000) + 1;
+      diasIndisponiveisMap[placa] += dias;
+    }
+  });
+
   const totalDiasRodados = veiculos.reduce((s,v)=>{
     const dr = (diasRodadosMap[v.placa]||new Set()).size;
-    return s + Math.min(dr, diasUteis);
+    const dIndis = diasIndisponiveisMap[v.placa] || 0;
+    const diasDisponiveis = Math.max(0, diasUteis - dIndis);
+    return s + Math.min(dr, diasDisponiveis);
   }, 0);
   const maxPossivel = total * diasUteis;
   const pctDispoMes = maxPossivel > 0 ? Math.round(totalDiasRodados/maxPossivel*100) : 0;
@@ -17682,6 +17770,14 @@ function badgePesoVeiculo(placa, carga, temCarga){
     + label + ' (' + Math.round(pesoTotal).toLocaleString('pt-BR') + '/' + Math.round(pesoMax).toLocaleString('pt-BR') + 'kg)</span>';
 }
 
+let _retornoVeiculosCache = []; // Cache global de retornos de veículos
+
+async function carregarRetornosVeiculos(){
+  try{
+    _retornoVeiculosCache = await supaFetch('retorno_veiculos?select=id,demanda_id,data_retorno_agendado&limit=2000').catch(()=>[]) || [];
+  }catch(e){ console.error('Erro ao carregar retornos:', e); }
+}
+
 function renderDemandasCards(){
   const container = document.getElementById('exp-cards-container');
   if(!container) return;
@@ -17689,6 +17785,9 @@ function renderDemandasCards(){
   const filtroVeic   = (document.getElementById('exp-filtro-veiculo')?.value||'').toLowerCase();
   const filtroMot    = (document.getElementById('exp-filtro-motorista')?.value||'').toLowerCase();
   const filtroRota   = (document.getElementById('exp-filtro-rota')?.value||'').toLowerCase();
+
+  // Carregar retornos se vazio
+  if(_retornoVeiculosCache.length === 0) carregarRetornosVeiculos();
 
   let data = [..._demandasCache];
   if(_filtroStatus){ data = data.filter(d=>d.status===_filtroStatus); }
@@ -17790,6 +17889,12 @@ function renderDemandasCards(){
       ? `<span style="font-size:.62rem;font-weight:700;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #93c5fd">📋 Agendado</span>`
       : `<span style="font-size:.62rem;font-weight:700;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #fcd34d">⚡ Extra</span>`;
 
+    // Badge de retorno agendado do veículo
+    const retornoVeic = _retornoVeiculosCache.find(r=>_demandasCache.find(dem=>dem.id===r.demanda_id && dem.veiculo===d.veiculo));
+    const badgeRetorno = retornoVeic && retornoVeic.data_retorno_agendado
+      ? `<span style="font-size:.62rem;font-weight:700;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #c7d2fe">🔙 Retorno ${new Date(retornoVeic.data_retorno_agendado+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}</span>`
+      : '';
+
     // Badge de alerta: mesmo veículo e/ou motorista em outra carga ativa
     const _alerta = _alertas[d.carga];
     const badgeDup = _alerta
@@ -17841,7 +17946,7 @@ function renderDemandasCards(){
         <div class="exp-card-info">
           <div class="exp-card-rota" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">🛣️ ${d.rota||'—'} ${badgeAgend} ${badgeComercial} ${badgeDup} ${badgeOcorr}</div>
           <div class="exp-card-motorista" style="${d.motorista==='A DEFINIR MOTORISTA'?'color:#f59e0b;font-weight:800':''}">🚗 ${d.motorista||'—'}</div>
-          <div class="exp-card-veiculo" style="${d.veiculo==='A DEFINIR VEÍCULO'?'color:#f59e0b;font-weight:800':''}">🚛 ${d.veiculo||'—'} ${badgePesoVeiculo(d.veiculo, d.carga, temCarga)}</div>
+          <div class="exp-card-veiculo" style="${d.veiculo==='A DEFINIR VEÍCULO'?'color:#f59e0b;font-weight:800':''}">🚛 ${d.veiculo||'—'} ${badgePesoVeiculo(d.veiculo, d.carga, temCarga)} ${badgeRetorno}</div>
           <div class="exp-card-ajudante" style="font-size:.78rem;color:${d.ajudante?'var(--text-secondary)':'var(--text-muted)'};margin-top:3px">🤝 ${d.ajudante||'<span style="opacity:.5">Sem ajudante</span>'}</div>
         </div>
         <span class="exp-status-badge" style="background:${s.bg};color:${s.color}">${s.label}</span>
