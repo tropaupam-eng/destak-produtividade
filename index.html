@@ -8679,6 +8679,12 @@ const FLUXO_STATUS = {
 
 const STATUS_CANCELAVEIS = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
 
+// Status por fase do workflow (para evitar confusão entre armazém, fiscal, viagem)
+const STATUS_ARMAZEM = ['pendente','separacao','carregamento'];
+const STATUS_FISCAL = ['aguardando_nf','aguardando_manifesto'];
+const STATUS_VIAGEM = ['pronto_viagem','saiu','fim_viagem'];
+const STATUS_FINALIZADOS = ['concluido','cancelado'];
+
 /**
  * Valida se uma transição de status é permitida pelas regras do fluxo.
  * Retorna {ok:true} ou {ok:false, msg:'...'}
@@ -8765,8 +8771,20 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
   }
 }
 
-// Atualiza status_fiscal OU status_armazem sem tocar no status principal da carga
+/**
+ * Atualiza APENAS status_fiscal OU status_armazem, independente do status principal.
+ * Não valida transição de fluxo (use para reabertura ou ajustes admin).
+ *
+ * @param {number} demandaId - ID da demanda
+ * @param {'status_fiscal'|'status_armazem'|'arm_status'} campo - Campo a atualizar
+ * @param {string} valor - Novo valor do status
+ */
 async function _patchStatusIndependente(demandaId, campo, valor){
+  // Validar que só atualiza campos de status independentes
+  if(!['status_fiscal','status_armazem','arm_status'].includes(campo)){
+    console.error('_patchStatusIndependente: campo inválido:', campo);
+    return;
+  }
   try{
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
       method:'PATCH', body:JSON.stringify({[campo]:valor})
@@ -11641,8 +11659,8 @@ async function gerarRelatorioSemanal(){
       const cargas = data.cargas||[];
       const saiuSt = ['saiu','fim_viagem','concluido','aguardando_manifesto','pronto_viagem'];
       const saiuTotal = cargas.filter(c=>saiuSt.includes(c.status)).length;
-      const emRota = cargas.filter(c=>c.status==='em_rota'||c.status==='em_viagem').length;
-      const pendente = cargas.filter(c=>!saiuSt.includes(c.status)&&c.status!=='em_rota'&&c.status!=='em_viagem').length;
+      const emRota = cargas.filter(c=>c.status==='saiu').length;
+      const pendente = cargas.filter(c=>!saiuSt.includes(c.status)).length;
       const motTotal = abs.filter(a=>a.funcao==='motorista'||a.funcao==='ajudante');
       const presentes = motTotal.filter(a=>a.status==='presente'||a.status==='rota'||a.status==='rota_auto').length;
       const faltas = motTotal.filter(a=>a.status==='falta'||a.status==='falta_just').length;
@@ -16551,7 +16569,7 @@ async function salvarEditarDemanda(){
     // 'carregamento' para que o Armazém possa ver os novos itens em aberto.
     // Pedidos já conferidos permanecem como conferidos em conferencia_pedidos;
     // apenas os novos aparecerão como pendentes.
-    const _statusPosArmazem = ['aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem'];
+    const _statusPosArmazem = ['pronto_viagem','saiu','fim_viagem','concluido'];
     const _cargaMudou = patch.carga !== undefined && String(patch.carga) !== String(_cargaAntes);
     const _rotaMudou  = patch.rota  !== undefined && patch.rota !== _rotaAntes;
     if((_cargaMudou || _rotaMudou) && _statusPosArmazem.includes(_statusAntes)){
@@ -16564,7 +16582,7 @@ async function salvarEditarDemanda(){
         try{
           const _demCur = await supaFetch(`demandas_rota?id=eq.${id}&select=arm_status`).catch(()=>[]) || [];
           if(_demCur.length && _demCur[0].arm_status === 'carregado_ok'){
-            await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
+            await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({arm_status:'pendente'})});
           }
         }catch(_){}
 
@@ -29613,16 +29631,12 @@ async function conferirPedidoPortal(carga, pedido, status){
       const totalUnicos = [...new Set((pedidosBase||[]).map(r=>r.pedido).filter(Boolean))].length;
       const stAtual     = demanda.arm_status || 'pendente';
 
-      if(confUnicos > 0 && stAtual !== 'carregamento' && stAtual !== 'carregado_ok'){
-        // Patch único com arm_status + status + timestamp
-        const patchData = { arm_status: 'carregamento' };
-        if(['pendente','separacao'].includes(demanda.status)){
-          patchData.status = 'carregamento';
-          patchData.ts_carregamento = new Date().toISOString();
-        }
-        await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify(patchData)});
-        registrarHistoricoStatus(demanda.id, demanda.status, 'carregamento', 'conferir_pedido_auto');
+      if(confUnicos > 0 && stAtual === 'separacao'){
+        // Avançar de separacao para carregamento quando conferência começar
+        await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregamento'})});
         showToast('🚛 Conferência iniciada — status: Em Carregamento','success');
+      } else if(confUnicos > 0){
+        showToast('📋 Pedido conferido','success');
       }
       if(totalUnicos > 0 && confUnicos >= totalUnicos){
         showToast(`✅ Todos os ${totalUnicos} pedidos conferidos! Aguardando confirmação de carregamento.`,'success');
@@ -30799,8 +30813,10 @@ async function renderArmazem(){
 
   const contStatus={pendente:0,separacao:0,carregamento:0,carregado_ok:0};
   demandas.forEach(d=>{
-    const st = statusPosArmazem.includes(d.status)?'carregado_ok':(d.arm_status||'pendente');
-    contStatus[st]=(contStatus[st]||0)+1;
+    const st = d.arm_status || 'pendente';
+    if(['pendente','separacao','carregamento','carregado_ok'].includes(st)){
+      contStatus[st]=(contStatus[st]||0)+1;
+    }
   });
   set('arm-kpi-cargas',demandasAtivas.length);
   set('arm-kpi-sep',contStatus.separacao);
