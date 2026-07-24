@@ -23990,10 +23990,10 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       if(!bd.dataPedido) continue; // R.I. sem data_pedido não pode calcular prazo
       // data_pedido como data pura (UTC midnight) — consistente com data_entrega no banco
       // Corte 16h ativado quando hora_pedido for adicionado à base_data
-      inicioPrazo=new Date(bd.dataPedido);
+      inicioPrazo=new Date(bd.dataPedido+'T00:00:00');
     } else {
-      // R.E.: prazo começa com ts_saiu; sem saída = aguardando despacho → on-time
-      const tsRe=(carga&&saidaTsMap[carga])||(carga&&lancTsMap[carga]);
+      // R.E.: prazo começa no lançamento da pré-carga (lancamentos.ts); fallback: ts_saiu
+      const tsRe=(carga&&lancTsMap[carga])||(carga&&saidaTsMap[carga]);
       if(!tsRe){
         // Carga ainda no armazém: conta no denominador como no prazo
         const _inF=!ocorrSet.has(ped);
@@ -27740,36 +27740,171 @@ async function _buscarNFsFiscalCore(inputId, tipoId, resId){
   }
   res.innerHTML = '<p style="color:var(--text-muted);font-size:.82rem">Buscando...</p>';
   try{
-    const query = tipo === 'pedido'
-      ? `notas_fiscais?pedido=eq.${numero}&select=*&order=criado_em.desc`
-      : `notas_fiscais?carga=eq.${numero}&select=*&order=pedido.asc,criado_em.desc`;
-    const docs = await supaFetch(query).catch(()=>[]) || [];
-    if(!docs.length){
-      res.innerHTML = `<p style="color:var(--text-muted);font-size:.82rem;padding:8px 0">Nenhum documento encontrado para ${tipo === 'pedido' ? 'pedido' : 'carga'} <strong style="color:var(--text-primary)">#${numero}</strong>.</p>`;
+    const fmtDt = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+
+    // ── Busca por CARGA: painel completo de gestão de NF/boleto ─────────────
+    if(tipo === 'carga'){
+      const [dem, docs, pedidosRaw] = await Promise.all([
+        supaFetch(`demandas_rota?carga=eq.${numero}&select=id,carga,rota,motorista,veiculo,status,status_fiscal&limit=1`).catch(()=>[]),
+        supaFetch(`notas_fiscais?carga=eq.${numero}&select=*&order=pedido.asc,criado_em.desc`).catch(()=>[]),
+        supaFetch(`base_data?carga=eq.${numero}&select=pedido,valor&order=pedido.asc`).catch(()=>[]),
+      ]);
+      const demanda = (dem||[])[0] || null;
+      const nfs     = docs  || [];
+      const pedMap  = {};
+      (pedidosRaw||[]).forEach(r=>{ if(!pedMap[r.pedido]) pedMap[r.pedido]=r; });
+      const pedidos = Object.keys(pedMap).map(Number).sort((a,b)=>a-b);
+
+      if(!demanda && !nfs.length && !pedidos.length){
+        res.innerHTML = `<p style="color:var(--text-muted);font-size:.82rem;padding:8px 0">Carga <strong>#${numero}</strong> não encontrada no sistema.</p>`;
+        return;
+      }
+
+      const stFiscal  = demanda?.status_fiscal || '';
+      const stGeral   = demanda?.status        || '';
+      const concluido = stFiscal === 'concluido';
+      const demandaId = demanda?.id || '';
+
+      const badgeFiscal = concluido
+        ? `<span style="background:#d1fae5;color:#065f46;font-size:.68rem;font-weight:800;padding:2px 8px;border-radius:20px">✅ Fiscal Concluído</span>`
+        : stFiscal === 'em_andamento'
+          ? `<span style="background:rgba(245,158,11,.15);color:#b45309;font-size:.68rem;font-weight:800;padding:2px 8px;border-radius:20px">📝 Em Andamento</span>`
+          : `<span style="background:var(--bg-card2);color:var(--text-muted);font-size:.68rem;font-weight:800;padding:2px 8px;border-radius:20px">—</span>`;
+
+      const nfPorPedido = {};
+      nfs.forEach(n=>{ if(!nfPorPedido[n.pedido]) nfPorPedido[n.pedido]=[]; nfPorPedido[n.pedido].push(n); });
+
+      const todosOsPedidos = [...new Set([...pedidos, ...nfs.map(n=>n.pedido)])].sort((a,b)=>a-b);
+
+      const pedidosHTML = todosOsPedidos.map(ped=>{
+        const nfsPed = nfPorPedido[ped] || [];
+        const nfsHTML = nfsPed.map(n=>{
+          const corTipo = n.tipo==='boleto'?'#f59e0b':'#3b82f6';
+          const bgTipo  = n.tipo==='boleto'?'rgba(245,158,11,.15)':'rgba(59,130,246,.15)';
+          const label   = n.tipo==='boleto'?'🟡 BOLETO':'🔵 NF';
+          return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+            <span style="background:${bgTipo};color:${corTipo};font-size:.65rem;font-weight:800;padding:1px 7px;border-radius:20px;white-space:nowrap">${label}</span>
+            ${n.url?`<a href="${n.url}" target="_blank" style="color:#2dd4bf;font-size:.73rem;font-weight:700;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${n.nome_arquivo||''}">${n.nome_arquivo||'Abrir'}</a>`:`<span style="font-size:.73rem;color:var(--text-muted);flex:1">${n.nome_arquivo||'—'}</span>`}
+            <span style="font-size:.66rem;color:var(--text-muted);white-space:nowrap">${fmtDt(n.criado_em)}</span>
+            <button onclick="_removerNFBusca('${n.id}','${(n.nome_arquivo||'').replace(/'/g,"\\'")}',${numero},'${resId}')" title="Remover" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:5px;padding:1px 7px;font-size:.7rem;cursor:pointer;white-space:nowrap">🗑</button>
+          </div>`;
+        }).join('');
+        const inputId2 = `_nfb_${numero}_${ped}`;
+        return `<div style="background:var(--bg-base);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:7px">
+          <div style="font-size:.73rem;font-weight:800;color:var(--text-secondary);margin-bottom:6px">Pedido #${ped}</div>
+          ${nfsHTML || `<p style="font-size:.71rem;color:var(--text-muted);margin:0 0 6px">Sem documentos</p>`}
+          <div style="display:flex;gap:7px;margin-top:6px;align-items:center;flex-wrap:wrap">
+            <input id="${inputId2}" type="file" accept=".pdf,.xml,.png,.jpg" multiple style="font-size:.71rem;color:var(--text-muted);flex:1;min-width:140px"/>
+            <button onclick="_uploadNFBusca(${numero},${ped},'${inputId2}','${resId}')" style="background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:7px;padding:4px 12px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap">📤 Enviar</button>
+          </div>
+        </div>`;
+      }).join('') || `<p style="font-size:.8rem;color:var(--text-muted)">Nenhum pedido vinculado a esta carga.</p>`;
+
+      const reabrirBtn = concluido
+        ? `<button onclick="_reabrirFiscalBusca(${numero},'${demandaId}','${resId}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:6px 16px;font-size:.78rem;font-weight:700;cursor:pointer">↩ Reabrir Carga</button>`
+        : '';
+
+      res.innerHTML = `
+        <div style="border:1.5px solid var(--border);border-radius:12px;overflow:hidden">
+          <div style="background:var(--bg-card2);padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:.9rem;font-weight:900;color:var(--text-primary)">Carga #${numero}</span>
+            ${demanda?`<span style="font-size:.78rem;color:var(--text-secondary)">${demanda.rota||'—'} · ${demanda.motorista||'—'}</span>`:''}
+            ${badgeFiscal}
+            <span style="font-size:.68rem;color:var(--text-muted);background:var(--bg-base);padding:2px 8px;border-radius:10px">${stGeral||'sem demanda'}</span>
+            <span style="flex:1"></span>
+            ${reabrirBtn}
+          </div>
+          <div style="padding:14px 16px">${pedidosHTML}</div>
+        </div>`;
       return;
     }
-    const fmtDt = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+
+    // ── Busca por PEDIDO: lista de documentos com botão remover ─────────────
+    const docs = await supaFetch(`notas_fiscais?pedido=eq.${numero}&select=*&order=criado_em.desc`).catch(()=>[]) || [];
+    if(!docs.length){
+      res.innerHTML = `<p style="color:var(--text-muted);font-size:.82rem;padding:8px 0">Nenhum documento para pedido <strong>#${numero}</strong>.</p>`;
+      return;
+    }
     const rows = docs.map(d => {
-      const corTipo = d.tipo === 'boleto' ? '#f59e0b' : '#3b82f6';
-      const bgTipo  = d.tipo === 'boleto' ? 'rgba(245,158,11,.15)' : 'rgba(59,130,246,.15)';
-      const label   = d.tipo === 'boleto' ? '🟡 BOLETO' : '🔵 NF';
+      const corTipo = d.tipo==='boleto'?'#f59e0b':'#3b82f6';
+      const bgTipo  = d.tipo==='boleto'?'rgba(245,158,11,.15)':'rgba(59,130,246,.15)';
+      const label   = d.tipo==='boleto'?'🟡 BOLETO':'🔵 NF';
       const urlBtn  = d.url
         ? `<a href="${d.url}" target="_blank" style="color:#2dd4bf;font-size:.78rem;font-weight:700;text-decoration:none">🔗 Abrir</a>`
         : `<span style="color:var(--text-muted);font-size:.78rem">${d.nome_arquivo||'—'}</span>`;
       return `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-base);border:1px solid var(--border);border-radius:10px;margin-bottom:6px;flex-wrap:wrap">
         <span style="background:${bgTipo};color:${corTipo};padding:2px 10px;border-radius:20px;font-size:.7rem;font-weight:800;white-space:nowrap">${label}</span>
         <span style="font-size:.78rem;color:var(--text-muted);white-space:nowrap">Carga <strong style="color:var(--text-primary)">#${d.carga}</strong></span>
-        <span style="font-size:.78rem;color:var(--text-muted);white-space:nowrap">Pedido <strong style="color:var(--text-primary)">#${d.pedido}</strong></span>
         <span style="flex:1;min-width:120px">${urlBtn}</span>
         ${d.valor ? `<span style="font-size:.78rem;color:#34d399;font-weight:700;white-space:nowrap">R$ ${Number(d.valor).toFixed(2).replace('.',',')}</span>` : ''}
         <span style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">${fmtDt(d.criado_em)}</span>
         <span style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">${d.fiscal_nome||''}</span>
+        <button onclick="_removerNFBusca('${d.id}','${(d.nome_arquivo||'').replace(/'/g,"\\'")}',${d.carga},'${resId}')" title="Remover" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:5px;padding:2px 8px;font-size:.72rem;cursor:pointer">🗑</button>
       </div>`;
     }).join('');
     res.innerHTML = `<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:8px">${docs.length} documento(s) encontrado(s):</div>${rows}`;
   }catch(e){
     res.innerHTML = `<p style="color:#ef4444;font-size:.82rem">Erro na busca: ${e.message}</p>`;
   }
+}
+
+async function _uploadNFBusca(carga, pedido, inputId, resId){
+  const fileInput = document.getElementById(inputId);
+  const files = fileInput?.files;
+  if(!files||!files.length){ showToast('Selecione um arquivo','warning'); return; }
+  try{
+    showToast('📤 Enviando...','warning');
+    const _bdRowsI = (BASE_DATA||[]).filter(r=>Number(r.carga)===Number(carga)&&Number(r.pedido)===Number(pedido));
+    const _valorEmissaoI = _bdRowsI.reduce((s,r)=>s+(parseFloat(r.valor)||0),0)||null;
+    for(const file of files){
+      const tipo = /boleto/i.test(file.name)?'boleto':'nf';
+      const url  = await uploadParaStorage(file, carga, pedido);
+      await supaFetch('notas_fiscais',{method:'POST',body:JSON.stringify({
+        carga:Number(carga), pedido:Number(pedido),
+        nome_arquivo:file.name, tipo, url, valor:_valorEmissaoI,
+        fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'ADM',
+        criado_em:new Date().toISOString()
+      })});
+    }
+    showToast(`✅ ${files.length} arquivo(s) enviado(s)!`,'success');
+    // Atualiza apenas o painel de busca (sem recarregar a lista principal)
+    const input  = document.getElementById('fiscal-busca-input2') || document.getElementById('fiscal-busca-input');
+    const tipo2  = document.getElementById('fiscal-busca-tipo2')  || document.getElementById('fiscal-busca-tipo');
+    if(input) await _buscarNFsFiscalCore(input.id, tipo2?.id||'', resId);
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+async function _removerNFBusca(nfId, nome, carga, resId){
+  if(!nfId){ showToast('ID não encontrado','warning'); return; }
+  if(!confirm(`Remover "${nome}" desta carga?`)) return;
+  try{
+    await supaFetch(`notas_fiscais?id=eq.${nfId}`,{method:'DELETE'});
+    showToast('🗑 Arquivo removido','success');
+    const input  = document.getElementById('fiscal-busca-input2') || document.getElementById('fiscal-busca-input');
+    const tipo2  = document.getElementById('fiscal-busca-tipo2')  || document.getElementById('fiscal-busca-tipo');
+    if(input) await _buscarNFsFiscalCore(input.id, tipo2?.id||'', resId);
+  }catch(e){ showToast('Erro ao remover: '+e.message,'warning'); }
+}
+
+async function _reabrirFiscalBusca(carga, demandaId, resId){
+  if(!confirm('Reabrir carga '+carga+' para edição de NF/Boleto?\n\nO status principal da carga não será alterado.')) return;
+  try{
+    const id = demandaId || (await supaFetch(`demandas_rota?carga=eq.${carga}&select=id`))?.[0]?.id;
+    if(id){
+      await _patchStatusIndependente(id,'status_fiscal','em_andamento');
+      await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({status:'em_andamento'})}).catch(()=>{});
+      supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
+        usuario_nome:USUARIO_LOGADO?.nome||'-', pagina:'fiscal', tipo:'reabertura_fiscal',
+        mensagem:'Reabertura fiscal via busca: carga '+carga,
+        contexto:{carga, demandaId:id, usuario_nome:USUARIO_LOGADO?.nome, perfil:USUARIO_LOGADO?.perfil, ts:new Date().toISOString()}
+      })}).catch(()=>{});
+    }
+    showToast('✅ Carga '+carga+' reaberta — agora pode enviar ou remover documentos','success');
+    const input = document.getElementById('fiscal-busca-input2') || document.getElementById('fiscal-busca-input');
+    const tipo2 = document.getElementById('fiscal-busca-tipo2')  || document.getElementById('fiscal-busca-tipo');
+    if(input) await _buscarNFsFiscalCore(input.id, tipo2?.id||'', resId);
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 async function carregarPortalFiscal(){
@@ -30306,7 +30441,7 @@ async function carregarPaginaFiscal(){
       if(concluidasRaw && concluidasRaw.length){
         const histEl = document.createElement('div');
         histEl.style.cssText = 'margin-top:28px';
-        const podeReabrir = ['fiscal_admin','adm_fiscal','admin'].includes(perfilUsuario);
+        const podeReabrir = podeUpload;
         histEl.innerHTML = `
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer;user-select:none" onclick="const g=this.nextElementSibling;g.style.display=g.style.display==='none'?'grid':'none';this.querySelector('.hist-arrow').textContent=g.style.display==='none'?'▸':'▾'">
             <span style="font-size:.82rem;font-weight:700;color:var(--text-secondary)">📂 Histórico — Concluídos pelo Fiscal (${concluidasRaw.length})</span>
