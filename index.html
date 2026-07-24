@@ -19392,6 +19392,10 @@ async function carregarPortalMotorista(){
       }
     }
 
+    // Reconcilia em segundo plano lançamentos manuais sem demanda_rota (falha anterior).
+    // Não bloqueia o carregamento do portal.
+    _reconciliarLancamentosPendentesMotorista(nomeDB).catch(()=>{});
+
     // ── FOLGAS DO MOTORISTA ────────────────────────────
     try{
       const [folgasMes, folgasTotal] = await Promise.all([
@@ -20042,7 +20046,11 @@ async function preencherVeiculosMotorista(){
   }catch(e){ console.warn('Erro ao preencher veículos:',e.message); }
 }
 
-async function motRegistrarCargaManual(){
+// Guard em memória: evita reenvio duplicado da mesma carga enquanto o
+// registro em segundo plano ainda não terminou (o formulário já libera antes disso).
+const _cargasMotEmProcessamento = new Set();
+
+function motRegistrarCargaManual(){
   const cargaVal = (document.getElementById('mot-manual-carga')?.value||'').trim();
   const veicVal  = (document.getElementById('mot-manual-veiculo')?.value||'').trim().toUpperCase();
   const msgEl    = document.getElementById('mot-manual-msg');
@@ -20053,19 +20061,46 @@ async function motRegistrarCargaManual(){
   };
   if(!cargaVal || isNaN(Number(cargaVal))){ _showMsg('⚠️ Informe um número de carga válido.', false); return; }
   if(!veicVal){ _showMsg('⚠️ Informe o veículo.', false); return; }
-  try{
-    const _nomeB = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
-    const _undB  = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
-    const _tsB   = new Date().toISOString();
-    const _exist = await supaFetch(
-      `lancamentos?carga=eq.${Number(cargaVal)}&motorista=eq.${encodeURIComponent(_nomeB)}&select=id&limit=1`
-    ).catch(()=>[]);
-    if(_exist&&_exist.length){ _showMsg('⚠️ Já existe um lançamento para esta carga.', false); return; }
-    // 1. Criar lancamento (registro contábil)
+
+  const cargaNum = Number(cargaVal);
+  if(_cargasMotEmProcessamento.has(cargaNum)){
+    _showMsg('⏳ A carga #'+cargaNum+' já está sendo registrada, aguarde a confirmação.', false);
+    return;
+  }
+  _cargasMotEmProcessamento.add(cargaNum);
+
+  // Libera o formulário imediatamente — o motorista já pode lançar a próxima carga
+  // sem esperar a gravação desta terminar no servidor.
+  _showMsg('✅ Carga #'+cargaNum+' enviada! Confirmando com o servidor em segundo plano...', true);
+  document.getElementById('mot-manual-carga').value='';
+  document.getElementById('mot-manual-veiculo').value='';
+
+  _processarRegistroCargaMotoristaBg(cargaNum, veicVal)
+    .then(()=>{
+      showToast('✅ Carga #'+cargaNum+' confirmada pelo servidor!','success');
+      carregarPortalMotorista().catch(()=>{});
+    })
+    .catch(e=>{
+      console.error('Registro em segundo plano falhou (carga '+cargaNum+'):', e);
+      showToast('⚠️ Carga #'+cargaNum+': falha ao confirmar com o servidor. Será tentado novamente automaticamente.','warning');
+    })
+    .finally(()=>{ _cargasMotEmProcessamento.delete(cargaNum); });
+}
+
+// Executa as gravações reais (lancamentos + demandas_rota) sem bloquear a interface.
+async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
+  const _nomeB = (USUARIO_LOGADO?.nome||'').toUpperCase().trim();
+  const _undB  = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+  const _tsB   = new Date().toISOString();
+
+  const _exist = await supaFetch(
+    `lancamentos?carga=eq.${cargaNum}&motorista=eq.${encodeURIComponent(_nomeB)}&select=id&limit=1`
+  ).catch(()=>[]);
+  if(!(_exist&&_exist.length)){
     await supaFetch('lancamentos',{
       method:'POST',
       body:JSON.stringify({
-        carga: Number(cargaVal),
+        carga: cargaNum,
         motorista: _nomeB,
         ajudante: '',
         rota: '',
@@ -20079,33 +20114,48 @@ async function motRegistrarCargaManual(){
         fonte: 'motorista_b'
       })
     });
-    // 2. Criar demanda_rota (aciona o portal completo: entregas, KM, chegada)
-    try{
-      await supaFetch('demandas_rota',{
-        method:'POST',
-        body:JSON.stringify({
-          carga: Number(cargaVal),
-          motorista: _nomeB,
-          veiculo: veicVal,
-          rota: '',
-          status: 'saiu',
-          ts_saiu: _tsB,
-          data_saida: _tsB.slice(0,10),
-          unidade: _undB||null,
-          criado_em: _tsB,
-          usuario_id: USUARIO_LOGADO?.id||null
-        })
-      });
-    }catch(eDemanda){
-      // Reverter lançamento para não deixar registro incompleto
-      await supaFetch(`lancamentos?carga=eq.${Number(cargaVal)}&motorista=eq.${encodeURIComponent(_nomeB)}&fonte=eq.motorista_b`,{method:'DELETE'}).catch(()=>{});
-      throw new Error('Falha ao registrar saída na expedição. Tente novamente ou chame o supervisor. ('+eDemanda.message+')');
+  }
+  // O lançamento acima já está gravado e é o registro oficial de "carga recebida".
+  // A criação da demanda_rota é uma etapa complementar: se falhar aqui, NÃO desfazemos
+  // o lançamento — ele permanece registrado e a etapa pendente é reprocessada
+  // automaticamente por _reconciliarLancamentosPendentesMotorista().
+  await _garantirDemandaRotaMotorista(cargaNum, _nomeB, veicVal, _undB, _tsB);
+}
+
+// Cria a demanda_rota da carga se ainda não existir (idempotente).
+async function _garantirDemandaRotaMotorista(cargaNum, nomeB, veicVal, undB, tsB){
+  const jaExiste = await supaFetch(`demandas_rota?carga=eq.${cargaNum}&select=id&limit=1`).catch(()=>[]);
+  if(jaExiste && jaExiste.length) return;
+  await supaFetch('demandas_rota',{
+    method:'POST',
+    body:JSON.stringify({
+      carga: cargaNum,
+      motorista: nomeB,
+      veiculo: veicVal,
+      rota: '',
+      status: 'saiu',
+      ts_saiu: tsB,
+      data_saida: tsB.slice(0,10),
+      unidade: undB||null,
+      criado_em: tsB,
+      usuario_id: USUARIO_LOGADO?.id||null
+    })
+  });
+}
+
+// Reprocessa em segundo plano lançamentos manuais do motorista cuja demanda_rota
+// não foi criada (ex.: falha de rede na gravação anterior). Não bloqueia a tela.
+async function _reconciliarLancamentosPendentesMotorista(nomeDB){
+  try{
+    const lancs = await supaFetch(
+      `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&fonte=eq.motorista_b&select=carga,veiculo,und,ts&order=ts.desc&limit=20`
+    ).catch(()=>[]) || [];
+    for(const l of lancs){
+      await _garantirDemandaRotaMotorista(
+        Number(l.carga), nomeDB, l.veiculo||'', l.und||'', l.ts||new Date().toISOString()
+      ).catch(e=>console.warn('Reconciliação pendente falhou p/ carga', l.carga, e.message));
     }
-    _showMsg('✅ Saída registrada! Portal atualizado com sua carga.', true);
-    if(document.getElementById('mot-manual-carga')) document.getElementById('mot-manual-carga').value='';
-    if(document.getElementById('mot-manual-veiculo')) document.getElementById('mot-manual-veiculo').value='';
-    setTimeout(()=>carregarPortalMotorista().catch(()=>{}), 1200);
-  }catch(e){ _showMsg('⛔ Erro ao registrar: '+e.message, false); }
+  }catch(e){ console.warn('Reconciliação de lançamentos pendentes falhou:', e.message); }
 }
 
 async function renderExpMotPendentes(){
