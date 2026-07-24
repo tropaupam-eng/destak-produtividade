@@ -3320,6 +3320,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('disponibilidade')" style="padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="disponibilidade">
       ⚙️ Disponibilidade Veículos
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('conferencia-prazo')" style="padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="conferencia-prazo">
+      ✅ Conferência no Prazo
+    </button>
   </div>
 
   <!-- ABA 1: Absenteísmo Armazém -->
@@ -3340,6 +3343,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div id="aba-disponibilidade" class="painel-ind-aba" style="display:none">
     <div id="painel-ind-disponibilidade-container">
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando indicadores de disponibilidade...</p>
+    </div>
+  </div>
+
+  <!-- ABA 4: Cargas Conferidas no Prazo -->
+  <div id="aba-conferencia-prazo" class="painel-ind-aba" style="display:none">
+    <div id="painel-ind-conferencia-prazo-container">
+      <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando indicador de conferência no prazo...</p>
     </div>
   </div>
 
@@ -24701,6 +24711,7 @@ function mudarAbaIndicadores(aba){
   if(aba === 'abs-armazem') carregarPainelAbsArmazem();
   else if(aba === 'abs-distribuicao') carregarPainelAbsDistribuicao();
   else if(aba === 'disponibilidade') carregarPainelDisponibilidade();
+  else if(aba === 'conferencia-prazo') carregarPainelConferenciaPrazo();
 }
 
 function carregarPainelIndicadores(){
@@ -24979,6 +24990,127 @@ async function carregarPainelDisponibilidade(){
     `;
   } catch(e){
     console.error('Erro ao carregar disponibilidade:', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
+  }
+}
+
+async function carregarPainelConferenciaPrazo(){
+  const container = document.getElementById('painel-ind-conferencia-prazo-container');
+  if(!container) return;
+
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+
+  try {
+    const mesAtual = new Date().toISOString().slice(0,7);
+
+    // Buscar demandas do mês com data_saida
+    const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mesAtual}-01&data_saida=lt.${mesAtual}-31&select=carga,data_saida&limit=5000`) || [];
+
+    // Buscar todas as conferências do mês
+    const conferencias = await supaFetch(`conferencia_pedidos?conferido_em=gte.${mesAtual}-01T00:00:00&conferido_em=lt.${mesAtual}-32T23:59:59&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=5000`) || [];
+
+    if (!demandas.length || !conferencias.length) {
+      container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum dado disponível para este mês</p>';
+      return;
+    }
+
+    // Agrupar conferências por carga e encontrar a última (maior conferido_em)
+    const ultimaConfPorCarga = {};
+    conferencias.forEach(conf => {
+      const carga = conf.carga;
+      if (!ultimaConfPorCarga[carga] || new Date(conf.conferido_em) > new Date(ultimaConfPorCarga[carga].conferido_em)) {
+        ultimaConfPorCarga[carga] = conf;
+      }
+    });
+
+    // Calcular cargas dentro/fora do prazo
+    const cargasConferidas = Object.keys(ultimaConfPorCarga);
+    let cargasNoPrazo = 0;
+    const atrasos = [];
+
+    cargasConferidas.forEach(cargaNum => {
+      const demanda = demandas.find(d => d.carga == cargaNum);
+      if (!demanda) return;
+
+      const dataContrato = demanda.data_saida; // Data de saída da carga
+      const horaLimite = `${dataContrato}T12:00:00`; // 12:00 da data de saída
+      const ultimaConf = ultimaConfPorCarga[cargaNum].conferido_em;
+
+      if (new Date(ultimaConf) < new Date(horaLimite)) {
+        cargasNoPrazo++;
+      } else {
+        const ms = new Date(ultimaConf) - new Date(horaLimite);
+        const minutos = Math.floor(ms / 60000);
+        const horas = Math.floor(minutos / 60);
+        atrasos.push({
+          carga: cargaNum,
+          horaConf: ultimaConf.split('T')[1].substring(0, 5),
+          atrasoMin: minutos,
+          atrasoHoras: horas
+        });
+      }
+    });
+
+    atrasos.sort((a, b) => b.atrasoMin - a.atrasoMin);
+    const percentualPrazo = cargasConferidas.length > 0 ? ((cargasNoPrazo / cargasConferidas.length) * 100).toFixed(2) : 0;
+
+    container.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+        <div class="kpi-card" style="border-top-color:#3b82f6">
+          <div class="kpi-label">Total Conferidas</div>
+          <div class="kpi-value">${cargasConferidas.length}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#059669">
+          <div class="kpi-label">No Prazo</div>
+          <div class="kpi-value">${cargasNoPrazo}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#ef4444">
+          <div class="kpi-label">Fora do Prazo</div>
+          <div class="kpi-value">${cargasConferidas.length - cargasNoPrazo}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#f59e0b">
+          <div class="kpi-label">% No Prazo</div>
+          <div class="kpi-value" style="font-size:1.8rem;color:#f59e0b">${percentualPrazo}%</div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;margin-bottom:20px">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">📋 Regra de Negócio</h4>
+        <div style="font-size:.85rem;color:var(--text-secondary);line-height:1.8">
+          <p>✅ <strong>No Prazo:</strong> Última conferência antes das 12:00 da data de saída</p>
+          <p>⚠️ <strong>Fora do Prazo:</strong> Última conferência às 12:00 ou depois</p>
+          <p>📍 <strong>Data de Corte:</strong> 12:00 (meio-dia) da data de saída da carga</p>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">⚠️ Top Cargas Atrasadas</h4>
+        ${atrasos.length > 0 ? `
+          <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Carga</th>
+                <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Hora Conferência</th>
+                <th style="padding:8px;text-align:right;color:var(--text-muted);font-weight:600">Atraso</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${atrasos.slice(0, 10).map(a => `
+                <tr style="border-bottom:1px solid var(--border)">
+                  <td style="padding:8px;font-weight:600">${a.carga}</td>
+                  <td style="padding:8px;text-align:center">${a.horaConf}</td>
+                  <td style="padding:8px;text-align:right">${a.atrasoHoras > 0 ? a.atrasoHoras + 'h' : a.atrasoMin + 'min'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : `
+          <p style="color:var(--text-muted);text-align:center;padding:20px">Nenhuma carga fora do prazo neste mês! 🎉</p>
+        `}
+      </div>
+    `;
+  } catch(e){
+    console.error('Erro ao carregar conferência no prazo:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
   }
 }
