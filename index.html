@@ -23384,22 +23384,40 @@ async function renderDashInterna(){
     // Cargas RI do período/unidade
     const cargasUnd = new Set(bd.map(r=>r.carga).filter(v=>v!=null&&v!==''&&!isNaN(Number(v))).map(v=>String(Math.round(Number(v)))));
 
-    // Buscar demandas RI do mês
+    // Buscar demandas do mês.
+    // Com filtro de unidade: restringe pelas cargas da unidade (via base_data/lancamentos) — não há campo de unidade em demandas_rota.
+    // Sem filtro de unidade (padrão/admin): busca TODAS as cargas do mês em demandas_rota — fonte autoritativa da expedição —
+    // e classifica RI/RE pela própria rota da demanda, sem depender do base_data (evita contagem inflada por pedidos órfãos).
     let demQuery;
-    if(cargasUnd.size > 0){
+    if(undFiltro && cargasUnd.size > 0){
       demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&carga=in.(${[...cargasUnd].join(',')})&select=*&order=data_saida.asc`;
-    } else if(!undFiltro && rotaParam){
+    } else if(undFiltro && rotaParam){
       demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&rota=in.(${rotaParam})&select=*&order=data_saida.asc`;
+    } else if(!undFiltro){
+      demQuery = `demandas_rota?data_saida=gte.${iniMes}&data_saida=lte.${fimMes}&select=*&order=data_saida.asc&limit=5000`;
     } else {
       demQuery = null; // unidade sem dados
     }
     const demandas = demQuery ? (await supaFetch(demQuery)) : [];
-    const dem = demandas||[];
+
+    // Deduplicar por carga (cada linha já representa o ciclo completo; duplicatas são raras/erros de lançamento)
+    const demPorCarga = new Map();
+    (demandas||[]).forEach(d => { if(!demPorCarga.has(d.carga)) demPorCarga.set(d.carga, d); });
+    let dem = Array.from(demPorCarga.values());
+
+    // Sem filtro de unidade: aplicar RI/RE diretamente pela rota da própria demanda (fonte autoritativa)
+    if(!undFiltro && rireFiltro){
+      if(rireFiltro === 'RI'){
+        dem = dem.filter(d => ROTAS_RI.has((d.rota||'').trim().toUpperCase()));
+      } else if(rireFiltro === 'RE'){
+        dem = dem.filter(d => !ROTAS_RI.has((d.rota||'').trim().toUpperCase()));
+      }
+    }
 
     // 3. KPIs básicos
-    // totalCargas e totalPedidos vêm do base_data filtrado (fonte confiável com filtros de unidade/rire)
-    const cargasUnicas   = new Set(bd.map(r=>String(r.carga)).filter(Boolean));
-    const totalCargas    = cargasUnicas.size;
+    // totalCargas vem de demandas_rota (fonte autoritativa da expedição, sem depender de pedidos importados no base_data)
+    // totalPedidos e valorTotal continuam vindo do base_data (dados no nível de pedido)
+    const totalCargas    = dem.length;
     const totalPedidos   = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size;
     const valorTotal     = bd.reduce((s,r)=>s+(Number(r.valor)||0), 0);
     const cargasAtivas   = dem.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
