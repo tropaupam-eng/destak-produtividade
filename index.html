@@ -38274,13 +38274,15 @@ function _cftvRenderTable(data){
 })();
 
 // ═══════════════════════════════════════════════════════════════
-// RETORNO DE VEÍCULOS (GLOBAL)
+// RETORNO DE VEÍCULOS (GLOBAL) - Foco em ATRASADOS HOJE
 // ═══════════════════════════════════════════════════════════════
 async function carregarRetornoVeiculos(){
   const tbody = document.getElementById('ret-tbody');
   if(!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando...</td></tr>';
   try{
+    const hoje = new Date().toISOString().slice(0,10);
+
     // Buscar demandas que saíram (status=saiu = veículo em rota)
     const demandas = await supaFetch('demandas_rota?status=eq.saiu&select=id,veiculo,motorista,rota,data_saida,ts_saiu,ts_fim_viagem,status&order=ts_saiu.desc&limit=200').catch(()=>[]) || [];
 
@@ -38289,47 +38291,41 @@ async function carregarRetornoVeiculos(){
     const retornosMap = {};
     retornos.forEach(r => { retornosMap[r.demanda_id] = r; });
 
-    // Calcular KPIs
-    const emRota = demandas.filter(d => !retornosMap[d.id] || !retornosMap[d.id].data_retorno_real).length;
-    const agendados = Object.values(retornosMap).filter(r => r.data_retorno_agendado && !r.data_retorno_real).length;
-    const retornados = Object.values(retornosMap).filter(r => r.data_retorno_real).length;
-    const hoje = new Date().toISOString().slice(0,10);
-    const atrasados = Object.values(retornosMap)
-      .filter(r => r.data_retorno_agendado && r.data_retorno_agendado < hoje && !r.data_retorno_real).length;
+    // FILTRAR: Apenas veículos com retorno agendado para HOJE que ainda não retornaram
+    const atrasadosHoje = demandas.filter(d => {
+      const ret = retornosMap[d.id];
+      const dataAgend = ret?.data_retorno_agendado ? ret.data_retorno_agendado.slice(0,10) : '';
+      return dataAgend === hoje && !ret?.data_retorno_real;
+    });
+
+    // Calcular KPIs (foco no dia)
+    const retornadosHoje = Object.values(retornosMap)
+      .filter(r => r.data_retorno_real && r.data_retorno_real.slice(0,10) === hoje).length;
 
     ['ret-kpi-rota', 'ret-kpi-agendado', 'ret-kpi-retornado', 'ret-kpi-atrasado']
       .forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '—'; });
-    document.getElementById('ret-kpi-rota').textContent = emRota;
-    document.getElementById('ret-kpi-agendado').textContent = agendados;
-    document.getElementById('ret-kpi-retornado').textContent = retornados;
-    document.getElementById('ret-kpi-atrasado').textContent = atrasados;
+    document.getElementById('ret-kpi-rota').textContent = retornadosHoje;
+    document.getElementById('ret-kpi-agendado').textContent = atrasadosHoje.length;
+    document.getElementById('ret-kpi-retornado').textContent = retornadosHoje;
+    document.getElementById('ret-kpi-atrasado').textContent = atrasadosHoje.length;
 
     // Renderizar tabela
-    if(!demandas.length){
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum veículo em rota</td></tr>';
+    if(!atrasadosHoje.length){
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:60px 20px;">
+        <div style="font-size:2rem;margin-bottom:12px">✅</div>
+        <div style="font-size:1.1rem;font-weight:600;color:var(--text-primary);margin-bottom:4px">Nenhum Atraso Hoje</div>
+        <div style="font-size:0.9rem;color:var(--text-secondary)">Todos os veículos retornaram conforme agendado.</div>
+      </td></tr>`;
       return;
     }
 
-    tbody.innerHTML = demandas.map(d => {
+    tbody.innerHTML = atrasadosHoje.map(d => {
       const ret = retornosMap[d.id];
       const dataAgend = ret?.data_retorno_agendado ? ret.data_retorno_agendado.slice(0,10) : '';
       const dataReal = ret?.data_retorno_real ? ret.data_retorno_real.slice(0,10) : '';
       const tsSaida = d.ts_saiu ? new Date(d.ts_saiu).toLocaleDateString('pt-BR') : (d.data_saida||'—');
 
-      let status = '🚗 Em Rota';
-      let statusCor = '#2563eb';
-      if(dataReal){
-        status = '✅ Retornado';
-        statusCor = '#059669';
-      } else if(dataAgend && dataAgend < hoje){
-        status = '⚠️ Atrasado';
-        statusCor = '#dc2626';
-      } else if(dataAgend){
-        status = '📅 Agendado';
-        statusCor = '#f59e0b';
-      }
-
-      return `<tr style="border-top:1px solid var(--border)">
+      return `<tr style="border-top:1px solid var(--border);background:#fee2e2">
         <td style="padding:10px 14px;font-weight:600">${d.veiculo||'—'}</td>
         <td style="padding:10px 14px;font-size:.85rem">${d.motorista||'—'}</td>
         <td style="padding:10px 14px">${d.rota||'—'}</td>
@@ -38341,10 +38337,10 @@ async function carregarRetornoVeiculos(){
         </td>
         <td style="padding:10px 14px;font-size:.8rem">${dataReal||'—'}</td>
         <td style="padding:10px 14px;text-align:center">
-          <span style="background:${statusCor}20;color:${statusCor};padding:3px 8px;border-radius:6px;font-size:.75rem;font-weight:600">${status}</span>
+          <span style="background:#ef444420;color:#dc2626;padding:3px 8px;border-radius:6px;font-size:.75rem;font-weight:600">⚠️ ATRASADO</span>
         </td>
         <td style="padding:10px 14px;text-align:center">
-          ${!dataReal ? `<button onclick="registrarRetornoReal('${d.id}',${ret?ret.id:'null'})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer;font-weight:600">Confirmar</button>` : '—'}
+          <button onclick="registrarRetornoReal('${d.id}',${ret?ret.id:'null'})" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer;font-weight:600">✓ Retornou</button>
         </td>
       </tr>`;
     }).join('');
