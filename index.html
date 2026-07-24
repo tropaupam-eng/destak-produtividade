@@ -32611,6 +32611,116 @@ async function supaFetch(path, opts={}, _tentativa=1){
 }
 // ────────────────────────────────────────────────────────
 
+// ── Helpers para Busca de Carga — Unified Carga Lookup ──────────────────────
+// These functions provide efficient lookups across the unified carga data
+// Using the schema improvements: carga standardization, proper indexes, and FKs
+
+async function buscarCargaPorNumero(numeroCarga){
+  // Query all information about a single cargo from all linked tables
+  // Uses the unified view created in the schema migration
+  try{
+    const carga = Number(numeroCarga);
+
+    // Fetch from demandas_rota (main carrier info)
+    const demandas = await supaFetch(`demandas_rota?carga=eq.${carga}&select=*`);
+    const demanda = demandas && demandas[0];
+
+    // Fetch from base_data (shipment details)
+    const baseData = await supaFetch(`base_data?carga=eq.${carga}&select=*`);
+    const base = baseData && baseData[0];
+
+    // Fetch from lancamentos (launch records)
+    const lancamentos = await supaFetch(`lancamentos?carga=eq.${carga}&select=*`);
+
+    // Fetch return info if demanda exists
+    let retorno = null;
+    if(demanda && demanda.id){
+      const ret = await supaFetch(`retorno_veiculos?demanda_id=eq.${demanda.id}&select=*`);
+      retorno = ret && ret[0];
+    }
+
+    return {
+      carga,
+      base_data: base,
+      demanda_rota: demanda,
+      lancamentos: lancamentos || [],
+      retorno_veiculos: retorno,
+      // Convenience fields
+      motorista: demanda?.motorista || lancamentos?.[0]?.motorista,
+      veiculo: demanda?.veiculo || lancamentos?.[0]?.veiculo,
+      status: demanda?.status,
+      arm_status: demanda?.arm_status,
+      status_fiscal: demanda?.status_fiscal,
+      data_retorno_agendado: retorno?.data_retorno_agendado,
+      data_retorno_real: retorno?.data_retorno_real
+    };
+  }catch(e){
+    console.error(`[buscarCargaPorNumero] Erro ao buscar carga ${numeroCarga}:`, e);
+    return null;
+  }
+}
+
+async function buscarCargasComStatus(statusFiltro, tabela='demandas_rota'){
+  // Find all cargas with a specific status
+  // Useful for filtering by status, arm_status, or status_fiscal
+  try{
+    const query = `${tabela}?status=eq.${encodeURIComponent(statusFiltro)}&select=carga&limit=1000`;
+    const resultado = await supaFetch(query);
+    return resultado ? resultado.map(r => r.carga) : [];
+  }catch(e){
+    console.error(`[buscarCargasComStatus] Erro ao buscar cargas com status '${statusFiltro}':`, e);
+    return [];
+  }
+}
+
+async function buscarCargasPorMotorista(motorista){
+  // Find all active cargas for a specific driver
+  try{
+    const lancamentos = await supaFetch(`lancamentos?motorista=ilike.${encodeURIComponent(motorista)}&select=carga&limit=1000`);
+    return lancamentos ? lancamentos.map(l => l.carga) : [];
+  }catch(e){
+    console.error(`[buscarCargasPorMotorista] Erro ao buscar cargas do motorista '${motorista}':`, e);
+    return [];
+  }
+}
+
+async function buscarCargasPorVeiculo(veiculo){
+  // Find all cargas assigned to a specific vehicle
+  try{
+    const demandas = await supaFetch(`demandas_rota?veiculo=ilike.${encodeURIComponent(veiculo)}&select=carga&limit=1000`);
+    return demandas ? demandas.map(d => d.carga) : [];
+  }catch(e){
+    console.error(`[buscarCargasPorVeiculo] Erro ao buscar cargas do veículo '${veiculo}':`, e);
+    return [];
+  }
+}
+
+function sincronizarLocalStorageComSupa(chave, tabela, campoId='id'){
+  // Ensure localStorage cache is in sync with Supabase
+  // This is the write-through pattern: local cache + remote source
+  return async function(){
+    try{
+      const cached = localStorage.getItem(chave);
+      if(!cached) return null;
+
+      const dados = JSON.parse(cached);
+      if(!Array.isArray(dados)) return dados;
+
+      // For array data: refetch from Supabase to ensure freshness
+      const fresh = await supaFetch(`${tabela}?select=*&limit=10000`);
+      if(fresh){
+        localStorage.setItem(chave, JSON.stringify(fresh));
+        return fresh;
+      }
+      return dados; // fallback to cached
+    }catch(e){
+      console.warn(`[sincronizarLocalStorageComSupa] Erro ao sincronizar ${chave}:`, e);
+      return null;
+    }
+  };
+}
+
+// ────────────────────────────────────────────────────────
 
 // ── Monitor de Erros — captura automática ──────────────────────────────────
 (function(){
