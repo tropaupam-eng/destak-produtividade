@@ -24642,6 +24642,44 @@ async function renderOtifDiario(){
 }
 
 // ── Painel de Indicadores ──
+function calcularEstatisticasAbs(dados){
+  const stats = {
+    total: 0,
+    presencas: 0,
+    faltas: 0,
+    atestados: 0,
+    folgas: 0,
+    percentual: '0%',
+    percentualNum: 0
+  };
+
+  if(!dados || !dados.length) return stats;
+
+  const statusMap = {};
+  dados.forEach(d => {
+    const nome = (d.nome||'').trim().toUpperCase();
+    if(!statusMap[nome]) statusMap[nome] = d.status || 'presente';
+  });
+
+  const nomes = Object.keys(statusMap);
+  stats.total = nomes.length;
+
+  nomes.forEach(nome => {
+    const status = statusMap[nome];
+    if(status === 'presente') stats.presencas++;
+    else if(status === 'falta') stats.faltas++;
+    else if(status === 'atestado') stats.atestados++;
+    else if(status === 'folga') stats.folgas++;
+  });
+
+  if(stats.total > 0){
+    stats.percentualNum = (stats.faltas / stats.total) * 100;
+    stats.percentual = stats.percentualNum.toFixed(2) + '%';
+  }
+
+  return stats;
+}
+
 function mudarAbaIndicadores(aba){
   document.querySelectorAll('.painel-ind-aba').forEach(el => el.style.display = 'none');
   document.querySelectorAll('.painel-ind-tab').forEach(el => {
@@ -24676,16 +24714,79 @@ async function carregarPainelAbsArmazem(){
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
 
   try {
-    const res = await supaFetch('absenteismo?select=*&funcao=in.("conferente","operador_armazem","fiscal_armazem")', {});
-    const dados = res.data || [];
+    const mesAtual = new Date().toISOString().slice(0,7);
+    const dados = await supaFetch(`absenteismo?mes_ano=eq.${mesAtual}&select=*&order=nome.asc`) || [];
+
+    // Filtrar apenas armazém (conferentes)
+    const conferentes = await supaFetch('conferentes?select=nome&ativo=eq.true') || [];
+    const confNomes = new Set(conferentes.map(c=>c.nome.trim().toUpperCase()));
+
+    const dadosArmazem = dados.filter(d => confNomes.has((d.nome||'').trim().toUpperCase()));
+
+    // Calcular estatísticas
+    const stats = calcularEstatisticasAbs(dadosArmazem);
 
     container.innerHTML = `
-      <div style="background:var(--bg-card);border-radius:12px;padding:24px">
-        <h3 style="font-size:1.1rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">Absenteísmo — Armazém</h3>
-        <p style="color:var(--text-secondary);margin-bottom:20px">Total de registros carregados: ${dados.length}</p>
-        <div style="padding:20px;background:var(--bg-card2);border-radius:8px;color:var(--text-muted);text-align:center;font-size:.85rem">
-          📊 Dashboard detalhado do armazém será exibido aqui
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:24px">
+        <div class="kpi-card" style="border-top-color:#3b82f6">
+          <div class="kpi-label">Funcionários</div>
+          <div class="kpi-value">${stats.total}</div>
         </div>
+        <div class="kpi-card" style="border-top-color:#059669">
+          <div class="kpi-label">Presenças</div>
+          <div class="kpi-value">${stats.presencas}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#ef4444">
+          <div class="kpi-label">Faltas</div>
+          <div class="kpi-value">${stats.faltas}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#f59e0b">
+          <div class="kpi-label">Atestados</div>
+          <div class="kpi-value">${stats.atestados}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#6b7280">
+          <div class="kpi-label">Folgas</div>
+          <div class="kpi-value">${stats.folgas}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#E8000D">
+          <div class="kpi-label">% Absenteísmo</div>
+          <div class="kpi-value" style="font-size:1.1rem">${stats.percentual}</div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;margin-bottom:20px">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">Meta Mensal</h4>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <span style="font-size:2rem;font-weight:700;color:var(--text-primary)">${stats.percentual}</span>
+          <span style="color:var(--text-secondary)">Meta: 2%</span>
+        </div>
+        <div style="height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(stats.percentualNum * 50, 100)}%;background:${stats.percentualNum <= 2 ? '#059669' : '#ef4444'};border-radius:4px;transition:width .3s"></div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">Por Funcionário</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border)">
+              <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Funcionário</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dadosArmazem.slice(0,10).map(d=>`
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:8px">${d.nome||'—'}</td>
+                <td style="padding:8px;text-align:center">
+                  <span style="background:${d.status==='presente'?'#d1fae5':'#fee2e2'};color:${d.status==='presente'?'#065f46':'#991b1b'};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">
+                    ${d.status==='presente'?'✅ Presente':d.status==='falta'?'❌ Falta':d.status==='atestado'?'🩺 Atestado':'😴 Folga'}
+                  </span>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     `;
   } catch(e){
@@ -24701,16 +24802,80 @@ async function carregarPainelAbsDistribuicao(){
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
 
   try {
-    const res = await supaFetch('absenteismo?select=*&funcao=in.("motorista","ajudante","carreteiro")', {});
-    const dados = res.data || [];
+    const mesAtual = new Date().toISOString().slice(0,7);
+    const dados = await supaFetch(`absenteismo?mes_ano=eq.${mesAtual}&select=*&order=nome.asc`) || [];
+
+    // Filtrar apenas distribuição (motoristas + ajudantes)
+    const motoristas = await supaFetch('motoristas?select=nome&ativo=eq.true') || [];
+    const ajudantes = await supaFetch('ajudantes?select=nome&ativo=eq.true') || [];
+    const distribNomes = new Set([...motoristas, ...ajudantes].map(p=>p.nome.trim().toUpperCase()));
+
+    const dadosDistrib = dados.filter(d => distribNomes.has((d.nome||'').trim().toUpperCase()));
+
+    // Calcular estatísticas
+    const stats = calcularEstatisticasAbs(dadosDistrib);
 
     container.innerHTML = `
-      <div style="background:var(--bg-card);border-radius:12px;padding:24px">
-        <h3 style="font-size:1.1rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">Absenteísmo — Distribuição</h3>
-        <p style="color:var(--text-secondary);margin-bottom:20px">Total de registros carregados: ${dados.length}</p>
-        <div style="padding:20px;background:var(--bg-card2);border-radius:8px;color:var(--text-muted);text-align:center;font-size:.85rem">
-          📊 Dashboard detalhado da distribuição será exibido aqui
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:24px">
+        <div class="kpi-card" style="border-top-color:#3b82f6">
+          <div class="kpi-label">Funcionários</div>
+          <div class="kpi-value">${stats.total}</div>
         </div>
+        <div class="kpi-card" style="border-top-color:#059669">
+          <div class="kpi-label">Presenças</div>
+          <div class="kpi-value">${stats.presencas}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#ef4444">
+          <div class="kpi-label">Faltas</div>
+          <div class="kpi-value">${stats.faltas}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#f59e0b">
+          <div class="kpi-label">Atestados</div>
+          <div class="kpi-value">${stats.atestados}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#6b7280">
+          <div class="kpi-label">Folgas</div>
+          <div class="kpi-value">${stats.folgas}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#E8000D">
+          <div class="kpi-label">% Absenteísmo</div>
+          <div class="kpi-value" style="font-size:1.1rem">${stats.percentual}</div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;margin-bottom:20px">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">Meta Mensal</h4>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <span style="font-size:2rem;font-weight:700;color:var(--text-primary)">${stats.percentual}</span>
+          <span style="color:var(--text-secondary)">Meta: 2%</span>
+        </div>
+        <div style="height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(stats.percentualNum * 50, 100)}%;background:${stats.percentualNum <= 2 ? '#059669' : '#ef4444'};border-radius:4px;transition:width .3s"></div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">Por Funcionário</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border)">
+              <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Funcionário</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dadosDistrib.slice(0,10).map(d=>`
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:8px">${d.nome||'—'}</td>
+                <td style="padding:8px;text-align:center">
+                  <span style="background:${d.status==='presente'?'#d1fae5':'#fee2e2'};color:${d.status==='presente'?'#065f46':'#991b1b'};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">
+                    ${d.status==='presente'?'✅ Presente':d.status==='falta'?'❌ Falta':d.status==='atestado'?'🩺 Atestado':'😴 Folga'}
+                  </span>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     `;
   } catch(e){
@@ -24726,18 +24891,95 @@ async function carregarPainelDisponibilidade(){
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
 
   try {
+    const hoje = new Date().toISOString().split('T')[0];
+
+    // Buscar dados de veículos
+    const veiculos = await supaFetch('veiculos?select=*&ativo=eq.true&order=placa.asc') || [];
+
+    // Buscar demandas em rota
+    const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
+    const emRotaSet = new Set(emRota.map(d=>d.veiculo));
+
+    // Contar por status
+    const disponivel = veiculos.filter(v => !emRotaSet.has(v.placa)).length;
+    const emUso = emRota.length;
+    const total = veiculos.length;
+    const taxaUtilizacao = total > 0 ? ((emUso / total) * 100).toFixed(1) : 0;
+
     container.innerHTML = `
-      <div style="background:var(--bg-card);border-radius:12px;padding:24px">
-        <h3 style="font-size:1.1rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">Disponibilidade de Veículos</h3>
-        <p style="color:var(--text-secondary);margin-bottom:20px">Informações de disponibilidade e utilização da frota</p>
-        <div style="padding:20px;background:var(--bg-card2);border-radius:8px;color:var(--text-muted);text-align:center;font-size:.85rem">
-          📊 Dashboard de disponibilidade será exibido aqui
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+        <div class="kpi-card" style="border-top-color:#3b82f6">
+          <div class="kpi-label">Total de Veículos</div>
+          <div class="kpi-value">${total}</div>
         </div>
+        <div class="kpi-card" style="border-top-color:#059669">
+          <div class="kpi-label">Disponíveis</div>
+          <div class="kpi-value">${disponivel}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#f59e0b">
+          <div class="kpi-label">Em Uso</div>
+          <div class="kpi-value">${emUso}</div>
+        </div>
+        <div class="kpi-card" style="border-top-color:#8b5cf6">
+          <div class="kpi-label">Taxa Utilização</div>
+          <div class="kpi-value" style="font-size:1.1rem">${taxaUtilizacao}%</div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;margin-bottom:20px">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">Status da Frota</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <div style="width:12px;height:12px;background:#059669;border-radius:2px"></div>
+              <span style="color:var(--text-secondary);font-size:.85rem">Disponível</span>
+            </div>
+            <div style="font-size:1.8rem;font-weight:700;color:#059669">${disponivel}</div>
+            <div style="font-size:.75rem;color:var(--text-muted)">pronto para rota</div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <div style="width:12px;height:12px;background:#f59e0b;border-radius:2px"></div>
+              <span style="color:var(--text-secondary);font-size:.85rem">Em Uso</span>
+            </div>
+            <div style="font-size:1.8rem;font-weight:700;color:#f59e0b">${emUso}</div>
+            <div style="font-size:.75rem;color:var(--text-muted)">em operação</div>
+          </div>
+        </div>
+        <div style="margin-top:16px;height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${(disponivel/total)*100}%;background:#059669;border-radius:4px;transition:width .3s"></div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">Frotas Ativas</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border)">
+              <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Placa</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Status</th>
+              <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Modelo</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${veiculos.slice(0,15).map(v=>`
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:8px;font-weight:600">${v.placa||'—'}</td>
+                <td style="padding:8px;text-align:center">
+                  <span style="background:${emRotaSet.has(v.placa)?'#fcd34d':'#d1fae5'};color:${emRotaSet.has(v.placa)?'#92400e':'#065f46'};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">
+                    ${emRotaSet.has(v.placa)?'🚗 Em Uso':'✅ Disponível'}
+                  </span>
+                </td>
+                <td style="padding:8px;color:var(--text-secondary)">${v.modelo||'—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     `;
   } catch(e){
     console.error('Erro ao carregar disponibilidade:', e);
-    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados</p>';
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
   }
 }
 
