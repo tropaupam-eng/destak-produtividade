@@ -19238,6 +19238,12 @@ function switchRankTab(tipo){
 }
 
 // ── PORTAL MOTORISTA ─────────────────────────────────
+// Normaliza nome de motorista para comparação tolerante a acento/caixa/espaço
+// (cadastros duplicados com grafias ligeiramente diferentes fazem o match exato falhar).
+function _normNomeMot(s){
+  return (s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+}
+
 async function carregarPortalMotorista(){
   const mes    = new Date();
   const mesStr = mes.getFullYear()+'-'+String(mes.getMonth()+1).padStart(2,'0');
@@ -19270,9 +19276,18 @@ async function carregarPortalMotorista(){
     let da = null;
     try{
       const nomeDBTmp = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
-      const demAtiva = await supaFetch(
-        `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.("saiu","pronto_viagem","carregamento","aguardando_nf","aguardando_manifesto","pendente","separacao")&select=*&order=data_saida.desc&limit=5`
+      const _statusAtivosMot = `"saiu","pronto_viagem","carregamento","aguardando_nf","aguardando_manifesto","pendente","separacao"`;
+      let demAtiva = await supaFetch(
+        `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.(${_statusAtivosMot})&select=*&order=data_saida.desc&limit=5`
       ).catch(()=>[]) || [];
+      // Fallback: cadastro duplicado/grafia diferente (acento, espaço) faz o match exato falhar.
+      // Busca mais ampla por status (sem filtrar por nome no servidor) e compara localmente normalizado.
+      if(!demAtiva.length){
+        const demAtivasTodas = await supaFetch(
+          `demandas_rota?status=in.(${_statusAtivosMot})&select=*&order=data_saida.desc&limit=300`
+        ).catch(()=>[]) || [];
+        demAtiva = demAtivasTodas.filter(d => _normNomeMot(d.motorista) === _normNomeMot(nomeDBTmp));
+      }
       // Prioritize carga in 'saiu' status so motorista can register arrival even if a newer pre-departure carga exists
       da = demAtiva.find(d => d.status === 'saiu') || demAtiva[0];
       if(da && elCargaAtual){
@@ -19412,14 +19427,26 @@ async function carregarPortalMotorista(){
 
     // ── LANÇAMENTOS DO MÊS ────────────────────────────
     // Fonte 1: lançamentos criados no mês
-    const lancsDoMes = await supaFetch(
+    let lancsDoMes = await supaFetch(
       `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
     ).catch(()=>[]) || [];
 
     // Fonte 2: demandas que saíram neste mês (ts_saiu) — captura cargas lançadas em mês anterior
-    const demsComSaida = await supaFetch(
+    let demsComSaida = await supaFetch(
       `demandas_rota?motorista=eq.${encodeURIComponent(nomeDB)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
     ).catch(()=>[]) || [];
+
+    // Fallback: cadastro duplicado/grafia diferente faz as duas buscas por nome exato virem vazias.
+    // Só dispara quando ambas as fontes não retornam nada, para não pesar o caso normal.
+    if(!lancsDoMes.length && !demsComSaida.length){
+      const _nomeNormMot = _normNomeMot(nomeDB);
+      const [_lancsMesTodos, _demsMesTodos] = await Promise.all([
+        supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts,motorista&order=ts.desc&limit=3000`).catch(()=>[]),
+        supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,motorista&limit=1000`).catch(()=>[])
+      ]);
+      lancsDoMes    = (_lancsMesTodos||[]).filter(l => _normNomeMot(l.motorista) === _nomeNormMot);
+      demsComSaida  = (_demsMesTodos||[]).filter(d => _normNomeMot(d.motorista) === _nomeNormMot);
+    }
 
     const cargasJaNos = new Set(lancsDoMes.map(l=>Math.round(Number(l.carga))));
     const cargasExtras = [...new Set(demsComSaida.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))))].filter(c=>!cargasJaNos.has(c));
