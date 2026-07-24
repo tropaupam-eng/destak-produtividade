@@ -25134,31 +25134,42 @@ async function carregarTotalCargasJunho(){
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
 
   try {
-    // Buscar todas as cargas lançadas em junho (data_saida)
-    const todasJunho = await supaFetch(`demandas_rota?data_saida=gte.2026-06-01&data_saida=lte.2026-06-30&select=carga,data_saida,status,rota&limit=5000`) || [];
+    // Buscar APENAS cargas únicas por mês (usar agregação correta)
+    // Busca com distinct on carga para evitar duplicatas
+    const cargasJunho = await supaFetch(`demandas_rota?data_saida=gte.2026-06-01&data_saida=lte.2026-06-30&select=carga,data_saida,status,rota&order=carga.asc&limit=5000`) || [];
 
-    if (!todasJunho.length) {
+    if (!cargasJunho.length) {
       container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga em junho</p>';
       return;
     }
 
-    // Contar cargas únicas
-    const cargasUnicas = [...new Set(todasJunho.map(d => d.carga))];
+    // Mapa para conter apenas 1 registro por carga (primeira ocorrência)
+    const cargaMap = new Map();
+    const cargaPorStatusMap = new Map();
 
-    // Agrupar por status
-    const porStatus = {};
-    const cargaPorStatus = {};
+    cargasJunho.forEach(d => {
+      const carga = d.carga;
 
-    todasJunho.forEach(d => {
-      if (!porStatus[d.status]) porStatus[d.status] = 0;
-      if (!cargaPorStatus[d.status]) cargaPorStatus[d.status] = new Set();
+      // Adicionar ao mapa apenas se for a primeira vez vendo esta carga
+      if (!cargaMap.has(carga)) {
+        cargaMap.set(carga, d);
+      }
 
-      porStatus[d.status]++;
-      cargaPorStatus[d.status].add(d.carga);
+      // Para status, agregar todas as ocorrências mas contar carga única
+      if (!cargaPorStatusMap.has(d.status)) {
+        cargaPorStatusMap.set(d.status, new Set());
+      }
+      cargaPorStatusMap.get(d.status).add(carga);
     });
 
-    // Converter sets para contagem
-    const statusDetalhado = {};
+    const cargasUnicas = Array.from(cargaMap.keys());
+    const porStatus = {};
+
+    // Converter map para contagem
+    cargaPorStatusMap.forEach((cargasSet, status) => {
+      porStatus[status] = cargasSet.size;
+    });
+
     const statusPorCor = {
       'separacao': '#3b82f6',
       'carregamento': '#f59e0b',
@@ -25168,10 +25179,6 @@ async function carregarTotalCargasJunho(){
       'concluido': '#059669',
       'cancelado': '#ef4444'
     };
-
-    Object.keys(cargaPorStatus).forEach(status => {
-      statusDetalhado[status] = cargaPorStatus[status].size;
-    });
 
     container.innerHTML = `
       <div style="display:flex;justify-content:center;align-items:center;gap:40px;margin-bottom:40px;flex-wrap:wrap">
@@ -25185,11 +25192,11 @@ async function carregarTotalCargasJunho(){
       <div style="background:var(--bg-card);border-radius:12px;padding:20px;margin-bottom:20px">
         <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:16px">📊 Distribuição por Status da Expedição</h4>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px">
-          ${Object.keys(statusDetalhado).sort().map(status => `
+          ${Object.keys(porStatus).sort().map(status => `
             <div style="background:var(--bg-card2);border-radius:8px;padding:12px;border-left:4px solid ${statusPorCor[status] || '#64748b'}">
               <div style="font-size:.7rem;text-transform:uppercase;color:var(--text-muted);font-weight:700;margin-bottom:8px">${status.replace(/_/g, ' ')}</div>
-              <div style="font-size:1.8rem;font-weight:700;color:${statusPorCor[status] || '#64748b'}">${statusDetalhado[status]}</div>
-              <div style="font-size:.75rem;color:var(--text-muted);margin-top:4px">cargas</div>
+              <div style="font-size:1.8rem;font-weight:700;color:${statusPorCor[status] || '#64748b'}">${porStatus[status]}</div>
+              <div style="font-size:.75rem;color:var(--text-muted);margin-top:4px">cargas únicas</div>
             </div>
           `).join('')}
         </div>
@@ -25199,7 +25206,7 @@ async function carregarTotalCargasJunho(){
         <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">📋 Resumo</h4>
         <div style="font-size:.9rem;color:var(--text-secondary);line-height:1.8">
           <p>✓ <strong>Total de cargas únicas lançadas em junho:</strong> ${cargasUnicas.length}</p>
-          <p>✓ <strong>Total de registros na expedição:</strong> ${todasJunho.length}</p>
+          <p>✓ <strong>Total de registros na expedição:</strong> ${cargasJunho.length}</p>
           <p>✓ <strong>Período:</strong> 01/06/2026 a 30/06/2026</p>
           <p>✓ <strong>Fonte:</strong> Tabela demandas_rota (expedição)</p>
         </div>
