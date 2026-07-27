@@ -6894,7 +6894,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
               style="width:100%;background:#0f172a;border:1.5px solid rgba(245,158,11,.4);color:#f0f0f8;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box;-moz-appearance:textfield"/>
           </div>
           <div>
-            <label style="font-size:.67rem;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:5px">Veículo *</label>
+            <label style="font-size:.67rem;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:5px">Veículo (opcional)</label>
             <select id="mot-manual-veiculo"
               style="width:100%;background:#0f172a;border:1.5px solid rgba(245,158,11,.4);color:#f0f0f8;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box">
               <option value="">Carregando veículos...</option>
@@ -9265,6 +9265,7 @@ async function pushBaseData(records){
   }
 
   const mesesNoUpload = [...new Set(validos.map(r=>r.mes_ano).filter(Boolean))];
+  const mesPrincipal = mesesNoUpload[0] || null;
   showToast(`📤 Gravando ${validos.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
 
   const LOTE = 1000;    // Era 300 → 3.3x maior
@@ -11130,7 +11131,10 @@ async function lancar(){
   let lancExistenteSupa = null;
   if(!jaCadastrado){
     try{
-      const res = await supaFetch(`lancamentos?carga=eq.${carga}&motorista=eq.${encodeURIComponent(mot)}&select=id,rota,fonte&limit=1`).catch(()=>[]);
+      // lancamentos tem UNIQUE(carga) — a checagem precisa ser só por carga,
+      // senão um lançamento já existente sob outro motorista (grafia diferente,
+      // correção, carga reaproveitada) não é encontrado e o INSERT abaixo falha com 409.
+      const res = await supaFetch(`lancamentos?carga=eq.${carga}&select=id,rota,fonte&limit=1`).catch(()=>[]);
       lancExistenteSupa = (res&&res.length)?res[0]:null;
     }catch(e){}
   }
@@ -11155,11 +11159,13 @@ async function lancar(){
   const tsLanc = _dataAdm ? new Date(_dataAdm).toISOString() : new Date().toISOString();
 
   let isUpdate = false;
-  if(lancExistenteSupa && lancExistenteSupa.fonte==='motorista_b'){
+  if(lancExistenteSupa){
+    // Já existe lançamento para esta carga (UNIQUE(carga)) — atualiza em vez de
+    // tentar inserir de novo, o que sempre resultaria em 409 Conflict.
     isUpdate = true;
     await supaFetch(`lancamentos?id=eq.${lancExistenteSupa.id}`,{
       method:'PATCH',
-      body:JSON.stringify({rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase})
+      body:JSON.stringify({motorista:mot, rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase})
     }).catch(e=>console.warn('Update lancamento:',e.message));
   } else {
     lancamentos.unshift({
@@ -18520,8 +18526,10 @@ async function confirmarSaidaRota(){
     try{
       if(dem?.carga && dem?.motorista){
         const _motNorm = dem.motorista.toUpperCase().trim();
+        // lancamentos tem UNIQUE(carga) — checar só por carga, senão um lançamento
+        // já existente sob outro motorista não é encontrado e o INSERT falha com 409.
         const _lancExist = await supaFetch(
-          `lancamentos?carga=eq.${dem.carga}&motorista=eq.${encodeURIComponent(_motNorm)}&select=id&limit=1`
+          `lancamentos?carga=eq.${dem.carga}&select=id,motorista&limit=1`
         ).catch(()=>[]);
         if(!(_lancExist&&_lancExist.length)){
           const _tsLancA = new Date().toISOString();
@@ -19238,6 +19246,12 @@ function switchRankTab(tipo){
 }
 
 // ── PORTAL MOTORISTA ─────────────────────────────────
+// Normaliza nome de motorista para comparação tolerante a acento/caixa/espaço
+// (cadastros duplicados com grafias ligeiramente diferentes fazem o match exato falhar).
+function _normNomeMot(s){
+  return (s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+}
+
 async function carregarPortalMotorista(){
   const mes    = new Date();
   const mesStr = mes.getFullYear()+'-'+String(mes.getMonth()+1).padStart(2,'0');
@@ -19270,9 +19284,18 @@ async function carregarPortalMotorista(){
     let da = null;
     try{
       const nomeDBTmp = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
-      const demAtiva = await supaFetch(
-        `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.("saiu","pronto_viagem","carregamento","aguardando_nf","aguardando_manifesto","pendente","separacao")&select=*&order=data_saida.desc&limit=5`
+      const _statusAtivosMot = `"saiu","pronto_viagem","carregamento","aguardando_nf","aguardando_manifesto","pendente","separacao"`;
+      let demAtiva = await supaFetch(
+        `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.(${_statusAtivosMot})&select=*&order=data_saida.desc&limit=5`
       ).catch(()=>[]) || [];
+      // Fallback: cadastro duplicado/grafia diferente (acento, espaço) faz o match exato falhar.
+      // Busca mais ampla por status (sem filtrar por nome no servidor) e compara localmente normalizado.
+      if(!demAtiva.length){
+        const demAtivasTodas = await supaFetch(
+          `demandas_rota?status=in.(${_statusAtivosMot})&select=*&order=data_saida.desc&limit=300`
+        ).catch(()=>[]) || [];
+        demAtiva = demAtivasTodas.filter(d => _normNomeMot(d.motorista) === _normNomeMot(nomeDBTmp));
+      }
       // Prioritize carga in 'saiu' status so motorista can register arrival even if a newer pre-departure carga exists
       da = demAtiva.find(d => d.status === 'saiu') || demAtiva[0];
       if(da && elCargaAtual){
@@ -19412,14 +19435,26 @@ async function carregarPortalMotorista(){
 
     // ── LANÇAMENTOS DO MÊS ────────────────────────────
     // Fonte 1: lançamentos criados no mês
-    const lancsDoMes = await supaFetch(
+    let lancsDoMes = await supaFetch(
       `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
     ).catch(()=>[]) || [];
 
     // Fonte 2: demandas que saíram neste mês (ts_saiu) — captura cargas lançadas em mês anterior
-    const demsComSaida = await supaFetch(
+    let demsComSaida = await supaFetch(
       `demandas_rota?motorista=eq.${encodeURIComponent(nomeDB)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
     ).catch(()=>[]) || [];
+
+    // Fallback: cadastro duplicado/grafia diferente faz as duas buscas por nome exato virem vazias.
+    // Só dispara quando ambas as fontes não retornam nada, para não pesar o caso normal.
+    if(!lancsDoMes.length && !demsComSaida.length){
+      const _nomeNormMot = _normNomeMot(nomeDB);
+      const [_lancsMesTodos, _demsMesTodos] = await Promise.all([
+        supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts,motorista&order=ts.desc&limit=3000`).catch(()=>[]),
+        supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,motorista&limit=1000`).catch(()=>[])
+      ]);
+      lancsDoMes    = (_lancsMesTodos||[]).filter(l => _normNomeMot(l.motorista) === _nomeNormMot);
+      demsComSaida  = (_demsMesTodos||[]).filter(d => _normNomeMot(d.motorista) === _nomeNormMot);
+    }
 
     const cargasJaNos = new Set(lancsDoMes.map(l=>Math.round(Number(l.carga))));
     const cargasExtras = [...new Set(demsComSaida.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))))].filter(c=>!cargasJaNos.has(c));
@@ -20060,7 +20095,6 @@ function motRegistrarCargaManual(){
     msgEl.innerHTML = `<div style="background:${ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};border:1px solid ${ok?'rgba(16,185,129,.4)':'rgba(239,68,68,.4)'};border-radius:8px;padding:9px 14px;font-size:.82rem;color:${ok?'#34d399':'#fca5a5'}">${txt}</div>`;
   };
   if(!cargaVal || isNaN(Number(cargaVal))){ _showMsg('⚠️ Informe um número de carga válido.', false); return; }
-  if(!veicVal){ _showMsg('⚠️ Informe o veículo.', false); return; }
 
   const cargaNum = Number(cargaVal);
   if(_cargasMotEmProcessamento.has(cargaNum)){
@@ -20082,7 +20116,7 @@ function motRegistrarCargaManual(){
     })
     .catch(e=>{
       console.error('Registro em segundo plano falhou (carga '+cargaNum+'):', e);
-      showToast('⚠️ Carga #'+cargaNum+': falha ao confirmar com o servidor. Será tentado novamente automaticamente.','warning');
+      showToast(e?._semRetry ? '⛔ '+e.message : '⚠️ Carga #'+cargaNum+': falha ao confirmar com o servidor. Será tentado novamente automaticamente.','warning');
     })
     .finally(()=>{ _cargasMotEmProcessamento.delete(cargaNum); });
 }
@@ -20093,9 +20127,17 @@ async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
   const _undB  = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
   const _tsB   = new Date().toISOString();
 
+  // lancamentos tem UNIQUE(carga) — a checagem precisa ser só por carga,
+  // senão um lançamento já existente sob outro motorista não é encontrado
+  // e o INSERT abaixo falha com 409 Conflict.
   const _exist = await supaFetch(
-    `lancamentos?carga=eq.${cargaNum}&motorista=eq.${encodeURIComponent(_nomeB)}&select=id&limit=1`
+    `lancamentos?carga=eq.${cargaNum}&select=id,motorista&limit=1`
   ).catch(()=>[]);
+  if(_exist && _exist.length && _normNomeMot(_exist[0].motorista) !== _normNomeMot(_nomeB)){
+    const _eConflito = new Error('Carga #'+cargaNum+' já está lançada para outro motorista ('+(_exist[0].motorista||'—')+'). Confira o número da carga.');
+    _eConflito._semRetry = true;
+    throw _eConflito;
+  }
   if(!(_exist&&_exist.length)){
     await supaFetch('lancamentos',{
       method:'POST',
@@ -36729,7 +36771,7 @@ async function carregarTV(){
       supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status`).catch(()=>[]),
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
-      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&status=in.("saiu","fim_viagem")&select=carga,rota,ts_saiu,prazo_otif`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&status=in.("saiu","fim_viagem")&select=carga,rota,ts_saiu`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00&ts=lt.${_prox}-01T00:00:00&select=carga,ts`).catch(()=>[]),
