@@ -9037,7 +9037,9 @@ window._divAceitasCache = new Set();
 async function carregarDivergenciasAceitas(){
   try{
     if(!USUARIO_LOGADO?.id) return;
-    const rows = await supaFetch(`divergencias_aceitas?usuario_id=eq.${USUARIO_LOGADO.id}&select=carga`).catch(()=>[]);
+    // Sem filtro por usuario_id: divergência aceita é dado de negócio compartilhado —
+    // uma vez resolvida por qualquer usuário, some para todo mundo (nunca só pra quem clicou)
+    const rows = await supaFetch(`divergencias_aceitas?select=carga`).catch(()=>[]);
     // MERGE com cache em memória (não substituir) — preserva aceites recentes ainda não salvos no banco
     const doDb = (rows||[]).map(r=>Number(r.carga));
     window._divAceitasCache = new Set([...doDb, ...window._divAceitasCache]);
@@ -11222,6 +11224,8 @@ async function lancar(){
 
 async function remover(carga){lancamentos=lancamentos.filter(l=>l.carga!==carga);salvarLanc();renderLanc();renderMot();renderVeic();}
 async function escolherMotoristaLanc(carga, motorista){
+  // Resolve duplicata: mais de um lançamento do SISTEMA para a mesma carga
+  // com motoristas diferentes. Aqui as duas opções vêm de lancamentos (nenhuma é a planilha).
   carga = Number(carga);
   const normEsc = motorista.trim().toUpperCase();
 
@@ -11230,7 +11234,6 @@ async function escolherMotoristaLanc(carga, motorista){
   const semEsc  = lancamentos.filter(l=> Number(l.carga)===carga && (l.motorista||'').trim().toUpperCase()!==normEsc);
 
   if(comEsc.length === 0){
-    // Motorista escolhido só existe na planilha (divergência) → atualizar o lançamento existente
     const lancAtual = lancamentos.find(l=> Number(l.carga)===carga);
     if(lancAtual){
       lancAtual.motorista = motorista;
@@ -11244,17 +11247,36 @@ async function escolherMotoristaLanc(carga, motorista){
   });
   lancamentos = lancamentos.filter(l=> Number(l.carga)!==carga || (l.motorista||'').trim().toUpperCase()===normEsc);
 
-  // Marcar esta carga como divergência aceita — aguardar salvar no banco antes de re-renderizar
-  if(!window._divAceitasCache.has(carga)){
-    window._divAceitasCache.add(carga);
-    await supaFetch('divergencias_aceitas',{method:'POST',body:JSON.stringify({
-      carga: Number(carga),
-      usuario_id: USUARIO_LOGADO?.id||null,
-      aceita_em: new Date().toISOString()
-    })}).catch(()=>{});
-  }
+  // Planilha (base_data) também precisa refletir o motorista vencedor — é lida
+  // como fonte primária em Pagamentos/Produtividade, senão a divergência "volta"
+  BASE_DATA.forEach(r=>{ if(Number(r.carga)===carga) r.condutor = motorista; });
+  supaFetch(`base_data?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({condutor:motorista})}).catch(()=>{});
+
+  await _marcarDivergenciaAceita(carga);
 
   salvarLanc(); renderLanc(); renderMot(); renderVeic(); detectarConflitos();
+}
+
+// Resolve divergência Lançamento vs Planilha: o motorista do SISTEMA (lançamento)
+// sempre prevalece — a planilha é corrigida para acompanhar, nunca o contrário.
+async function confirmarMotoristaSistema(carga, motoristaSistema){
+  carga = Number(carga);
+  BASE_DATA.forEach(r=>{ if(Number(r.carga)===carga) r.condutor = motoristaSistema; });
+  supaFetch(`base_data?carga=eq.${carga}`,{method:'PATCH',body:JSON.stringify({condutor:motoristaSistema})}).catch(()=>{});
+
+  await _marcarDivergenciaAceita(carga);
+
+  renderLanc(); renderMot(); renderVeic(); detectarConflitos();
+}
+
+async function _marcarDivergenciaAceita(carga){
+  if(window._divAceitasCache.has(carga)) return;
+  window._divAceitasCache.add(carga);
+  await supaFetch('divergencias_aceitas',{method:'POST',body:JSON.stringify({
+    carga: Number(carga),
+    usuario_id: USUARIO_LOGADO?.id||null,
+    aceita_em: new Date().toISOString()
+  })}).catch(()=>{ window._divAceitasCache.delete(carga); });
 }
 function limparGrupo(tipo){if(tipo==='vinc')lancamentos=lancamentos.filter(l=>!l.vinculado);else lancamentos=lancamentos.filter(l=>l.vinculado);salvarLanc();renderLanc();renderMot();renderVeic();}
 function limparTudo(){if(!confirm('Limpar todos os lançamentos?'))return;lancamentos=[];salvarLanc();renderLanc();renderMot();renderVeic();}
@@ -11339,15 +11361,24 @@ function detectarConflitos() {
             ${c.fonte ? `<span style="font-size:.75rem;color:#9ca3af;margin-left:6px">(${c.fonte.join(' vs ')})</span>` : ''}
           </td>
           <td style="padding:9px 12px">
-            ${c.motoristas.map((m,i)=>`<span style="display:inline-block;background:${i===0?'#dbeafe':'#fef3c7'};color:${i===0?'#1d4ed8':'#92400e'};padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600;margin:2px">${m}</span>`).join('')}
+            ${c.motoristas.map((m,i)=>`<span style="display:inline-block;background:${i===0?'#dbeafe':'#fef3c7'};color:${i===0?'#1d4ed8':'#92400e'};padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600;margin:2px">${m}${c.tipo==='divergencia'?(i===0?' (sistema)':' (planilha)'):''}</span>`).join('')}
           </td>
           <td style="padding:9px 12px;min-width:180px">
-            <div style="font-size:.7rem;color:#9ca3af;margin-bottom:4px;font-weight:600">Manter qual motorista?</div>
-            ${c.motoristas.map((m,i)=>`
-              <button onclick="escolherMotoristaLanc(${c.carga},'${m.replace(/'/g,"\\'")}')"
-                style="display:block;width:100%;margin:3px 0;background:${i===0?'#dbeafe':'#fef3c7'};color:${i===0?'#1d4ed8':'#92400e'};border:1.5px solid ${i===0?'#93c5fd':'#fde68a'};border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer;text-align:left">
-                ✓ ${m}
-              </button>`).join('')}
+            ${c.tipo==='divergencia' ? `
+              <div style="font-size:.7rem;color:#9ca3af;margin-bottom:4px;font-weight:600">Motorista do sistema prevalece</div>
+              <button onclick="confirmarMotoristaSistema(${c.carga},'${c.motoristas[0].replace(/'/g,"\\'")}')"
+                style="display:block;width:100%;margin:3px 0;background:#dbeafe;color:#1d4ed8;border:1.5px solid #93c5fd;border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer;text-align:left">
+                ✓ Confirmar ${c.motoristas[0]}
+              </button>
+              <div style="font-size:.66rem;color:#9ca3af;margin:2px 0 4px">A planilha será corrigida automaticamente</div>
+            ` : `
+              <div style="font-size:.7rem;color:#9ca3af;margin-bottom:4px;font-weight:600">Manter qual motorista?</div>
+              ${c.motoristas.map((m,i)=>`
+                <button onclick="escolherMotoristaLanc(${c.carga},'${m.replace(/'/g,"\\'")}')"
+                  style="display:block;width:100%;margin:3px 0;background:${i===0?'#dbeafe':'#fef3c7'};color:${i===0?'#1d4ed8':'#92400e'};border:1.5px solid ${i===0?'#93c5fd':'#fde68a'};border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer;text-align:left">
+                  ✓ ${m}
+                </button>`).join('')}
+            `}
             <button onclick="remover(${c.carga})" style="display:block;width:100%;margin:3px 0;background:none;color:#9ca3af;border:1px solid #e5e7eb;border-radius:6px;padding:4px 12px;font-size:.75rem;cursor:pointer;text-align:left">
               🗑 Remover tudo
             </button>
