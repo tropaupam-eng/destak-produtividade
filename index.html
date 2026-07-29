@@ -7618,6 +7618,16 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <div id="erp-teste-resultado" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:.8rem;color:var(--text-secondary);min-height:48px">
       Aguardando envio...
     </div>
+
+    <!-- ── Pré-visualização: essas cargas do JSON já existem na Pré-Carga (Expedição)? ── -->
+    <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border)">
+      <div style="font-weight:800;font-size:.88rem;color:var(--text-primary);margin-bottom:4px">🔗 Testar vínculo com Pré-Carga (Expedição)</div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:12px">Só consulta — não grava nada. Mostra, pra cada carga do JSON acima, se ela já existe na Pré-Carga real da Expedição e com quais dados.</div>
+      <button onclick="erpTestePreverPreCarga()" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:.84rem;font-weight:700;cursor:pointer">🔎 Testar Vínculo</button>
+      <div id="erp-teste-precarga-resultado" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:.8rem;color:var(--text-secondary);min-height:48px;margin-top:12px">
+        Aguardando teste...
+      </div>
+    </div>
   </div>
 
 </div></div>
@@ -8861,6 +8871,65 @@ async function erpTesteLimpar(){
     showToast('Tabela de teste limpa.','success');
   }catch(e){
     showToast('Erro ao limpar: '+e.message,'error');
+  }
+}
+
+// ── Preview (só leitura) — pra cada carga do JSON colado, mostra se ela já
+// existe na Pré-Carga real (demandas_rota). NÃO grava nada em lugar nenhum —
+// serve só pra validar se o vínculo por número de carga funcionaria antes de
+// construir o caminho de escrita de verdade.
+async function erpTestePreverPreCarga(){
+  const el = document.getElementById('erp-teste-precarga-resultado');
+  const raw = (document.getElementById('erp-json-input')?.value||'').trim();
+  if(!raw){ el.innerHTML = '<span style="color:#f59e0b">⚠️ Cole ou selecione um JSON primeiro.</span>'; return; }
+
+  let pedidos;
+  try{ pedidos = JSON.parse(raw); }
+  catch(e){ el.innerHTML = '<span style="color:#ef4444">❌ JSON inválido: '+e.message+'</span>'; return; }
+  if(!Array.isArray(pedidos) || !pedidos.length){ el.innerHTML = '<span style="color:#ef4444">❌ JSON precisa ser uma lista de pedidos.</span>'; return; }
+
+  // carga_erp pode vir como "11024.0" — normaliza pro número inteiro real da carga
+  const pedidosPorCarga = {};
+  pedidos.forEach(p=>{
+    if(p.carga_erp == null) return;
+    const carga = Math.round(Number(p.carga_erp));
+    if(!Number.isFinite(carga)) return;
+    if(!pedidosPorCarga[carga]) pedidosPorCarga[carga] = 0;
+    pedidosPorCarga[carga]++;
+  });
+  const cargas = Object.keys(pedidosPorCarga).map(Number);
+  if(!cargas.length){ el.innerHTML = '<span style="color:#ef4444">❌ Nenhum carga_erp válido encontrado no JSON.</span>'; return; }
+
+  el.innerHTML = '⏳ Consultando Pré-Carga (Expedição)...';
+  try{
+    const preCargas = await supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&select=carga,rota,veiculo,motorista,status,data_saida`) || [];
+    const preCargaPorCarga = {};
+    preCargas.forEach(d=>{ preCargaPorCarga[d.carga] = d; });
+
+    const existentes = cargas.filter(c=>preCargaPorCarga[c]).length;
+
+    let html = `<div style="margin-bottom:10px"><b>${existentes}</b> de <b>${cargas.length}</b> carga(s) do JSON já existem na Pré-Carga.</div>`;
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.78rem">';
+    html += '<tr style="border-bottom:1px solid var(--border)"><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Carga</th><th style="padding:6px 8px;text-align:center;color:var(--text-muted)">Pedidos no JSON</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Na Pré-Carga?</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Rota</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Veículo</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Motorista</th><th style="padding:6px 8px;text-align:left;color:var(--text-muted)">Status</th></tr>';
+    cargas.sort((a,b)=>a-b).forEach(c=>{
+      const d = preCargaPorCarga[c];
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 8px;font-weight:700;color:var(--text-primary)">${c}</td>
+        <td style="padding:6px 8px;text-align:center">${pedidosPorCarga[c]}</td>
+        <td style="padding:6px 8px">${d?'<span style="color:#059669;font-weight:700">✅ Sim</span>':'<span style="color:#ef4444;font-weight:700">❌ Não</span>'}</td>
+        <td style="padding:6px 8px">${d?.rota||'—'}</td>
+        <td style="padding:6px 8px">${d?.veiculo||'—'}</td>
+        <td style="padding:6px 8px">${d?.motorista||'—'}</td>
+        <td style="padding:6px 8px">${d?.status||'—'}</td>
+      </tr>`;
+    });
+    html += '</table></div>';
+    if(existentes < cargas.length){
+      html += `<div style="margin-top:10px;font-size:.76rem;color:#d97706">⚠️ ${cargas.length-existentes} carga(s) do JSON ainda não têm Pré-Carga na Expedição — precisariam ser criadas lá antes (ou o JSON precisaria trazer os dados suficientes pra criar a Pré-Carga também).</div>`;
+    }
+    el.innerHTML = html;
+  }catch(e){
+    el.innerHTML = '<span style="color:#ef4444">❌ Erro ao consultar Pré-Carga: '+e.message+'</span>';
   }
 }
 
