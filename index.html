@@ -9138,6 +9138,62 @@ async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
   }catch(e){ console.warn('preencherAjudantesPendentes:', e); }
 }
 
+// ── Ressincroniza pedidos dos ajudantes após import de planilha ──────────
+// ajudante_pedidos é uma cópia tirada no momento em que o ajudante se vincula
+// à carga (vincularAjudanteCarga). Se a planilha ainda não tinha os pedidos
+// naquele momento (ou trouxe pedidos novos depois), a cópia fica desatualizada
+// pra sempre — o ajudante nunca vê os pedidos que faltaram. Chamado após cada
+// upload da planilha operacional, só para as cargas que receberam dado novo.
+async function ressincronizarAjudantePedidos(cargas){
+  const lista = [...new Set((cargas||[]).map(c=>Math.round(Number(c))).filter(Boolean))];
+  if(!lista.length) return;
+  try{
+    const [ajCargas, bdRows] = await Promise.all([
+      supaFetch(`ajudante_cargas?carga=in.(${lista.join(',')})&ativo=eq.true&select=id,carga,ajudante_id,ajudante_nome,mes_ano`).catch(()=>[]),
+      supaFetch(`base_data?carga=in.(${lista.join(',')})&select=carga,pedido,ocorrencia`).catch(()=>[])
+    ]);
+    if(!ajCargas || !ajCargas.length) return;
+
+    // base_data.pedido é integer, ajudante_pedidos.pedido é text — normaliza
+    // pra string dos dois lados, senão a comparação nunca bate e duplica a cada upload
+    const pedsPorCarga = {};
+    (bdRows||[]).forEach(r=>{
+      if(Number(r.ocorrencia)===1 || !r.pedido) return;
+      const c = Math.round(Number(r.carga));
+      if(!pedsPorCarga[c]) pedsPorCarga[c] = new Set();
+      pedsPorCarga[c].add(String(r.pedido));
+    });
+
+    const agora = new Date().toISOString();
+    let totalInseridos = 0;
+    for(const aj of ajCargas){
+      const c = Math.round(Number(aj.carga));
+      const pedsPlanilha = pedsPorCarga[c];
+      if(!pedsPlanilha || !pedsPlanilha.size) continue;
+
+      const jaTem = await supaFetch(
+        `ajudante_pedidos?carga=eq.${c}&ajudante_id=eq.${aj.ajudante_id}&select=pedido`
+      ).catch(()=>[]) || [];
+      const jaTemSet = new Set(jaTem.map(p=>String(p.pedido)));
+      const faltando = [...pedsPlanilha].filter(p=>!jaTemSet.has(p));
+      if(!faltando.length) continue;
+
+      for(let i=0;i<faltando.length;i+=50){
+        await supaFetch('ajudante_pedidos',{method:'POST',body:JSON.stringify(
+          faltando.slice(i,i+50).map((ped,j)=>({
+            id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
+            carga: c, pedido: ped,
+            ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
+            mes_ano: aj.mes_ano || agora.slice(0,7), ts: agora
+          }))
+        )}).catch(()=>{});
+      }
+      totalInseridos += faltando.length;
+    }
+    if(totalInseridos) console.log(`ressincronizarAjudantePedidos: ${totalInseridos} pedido(s) atrasado(s) preenchido(s) em ${lista.length} carga(s)`);
+  }catch(e){ console.warn('ressincronizarAjudantePedidos:', e.message); }
+}
+
 // ── SYNC BASE_DATA ────────────────────────────────────
 // Carrega todos os registros do Supabase com paginação (sem limite fixo)
 async function syncBaseData(mesFiltro){
@@ -10406,6 +10462,11 @@ async function onFileSelected(event) {
       }
     });
     if(resolvidos > 0) salvarLanc();
+
+    // Ajudantes já vinculados a essas cargas podem ter uma cópia de pedidos
+    // desatualizada (tirada antes desta planilha existir) — atualiza em background
+    const _cargasAfetadas = [...new Set(recordsNovos.map(r=>r.carga).filter(Boolean))];
+    if(_cargasAfetadas.length) ressincronizarAjudantePedidos(_cargasAfetadas).catch(()=>{});
 
     populateSelects();
     renderMot(); renderVeic(); renderLanc(); renderPendentes(); detectarConflitos(); renderGeral();
@@ -13127,10 +13188,13 @@ async function carregarPortalAjudante(){
   const mesStr = new Date().toISOString().slice(0,7);
 
   try{
-    const [ajCargas, ajPedidos] = await Promise.all([
-      supaFetch(`ajudante_cargas?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&ativo=eq.true&select=*&order=ts.desc`),
-      supaFetch(`ajudante_pedidos?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&select=carga,pedido`)
-    ]);
+    const ajCargas = await supaFetch(`ajudante_cargas?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&ativo=eq.true&select=*&order=ts.desc`);
+
+    // Corrige pedidos que ficaram "presos" numa cópia antiga (tirada antes da
+    // planilha trazer todos os pedidos da carga) antes de contar o que mostrar
+    await ressincronizarAjudantePedidos((ajCargas||[]).map(c=>c.carga)).catch(()=>{});
+
+    const ajPedidos = await supaFetch(`ajudante_pedidos?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&select=carga,pedido`);
 
     const pedCount = {};
     (ajPedidos||[]).forEach(p=>{ const c=String(p.carga); pedCount[c]=(pedCount[c]||0)+1; });
@@ -23079,15 +23143,18 @@ function uploadDatasEntrega(event){
       if(!deCol)    { showToast('Coluna de data de entrega não encontrada','warning'); return; }
 
       // Agrupa pedido → {data_entrega, mes_ano} — usa a data mais recente se duplicado
+      // Conta o que foi descartado na leitura para poder avisar o usuário (linha sem
+      // pedido/data válidos nunca chega a ser enviada, e antes isso ficava invisível)
       const mapa = {};
+      let semPedido = 0, semData = 0;
       rows.forEach(r=>{
         let ped = String(r[pedidoCol]||'').trim().replace(/\.0$/,'');
-        if(!ped || ped==='0') return;
+        if(!ped || ped==='0'){ semPedido++; return; }
         // Formato C: Filial 1 usa prefixo "1000" (100056691 → 56691)
         if(formatoNome === 'Relatório OTIF' && ped.startsWith('1000') && ped.length >= 9)
           ped = ped.slice(4);
         const de = normData(r[deCol]);
-        if(!de) return;
+        if(!de){ semData++; return; }
         if(!mapa[ped] || de > mapa[ped].data_entrega)
           mapa[ped] = { data_entrega: de, mes_ano: de.slice(0,7) };
       });
@@ -23103,16 +23170,23 @@ function uploadDatasEntrega(event){
 
       if(!registros.length){ showToast('Nenhuma data de entrega válida encontrada','warning'); return; }
 
-      // Enviar em lotes de 200
+      // Enviar em lotes de 200 — conta como sucesso só o lote que realmente salvou
+      // (antes, um lote que falhasse era só logado no console e contado como OK do mesmo jeito)
       (async ()=>{
-        let ok = 0;
+        let ok = 0, falharam = 0;
         for(let i=0; i<registros.length; i+=200){
-          await supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
-            method:'POST',
-            prefer:'resolution=merge-duplicates,return=minimal',
-            body: JSON.stringify(registros.slice(i,i+200))
-          }).catch(e=>console.warn('entrega_datas lote:',e.message));
-          ok += Math.min(200, registros.length-i);
+          const lote = registros.slice(i,i+200);
+          try{
+            await supaFetch('entrega_datas?on_conflict=mes_ano,pedido',{
+              method:'POST',
+              prefer:'resolution=merge-duplicates,return=minimal',
+              body: JSON.stringify(lote)
+            });
+            ok += lote.length;
+          }catch(e){
+            falharam += lote.length;
+            console.warn('entrega_datas lote falhou:',e.message);
+          }
         }
         // Limpar cache OTIF apenas dos meses do arquivo (meses passados ficam estáticos)
         const mesesAfetados = [...new Set(registros.map(r=>r.mes_ano))];
@@ -23124,8 +23198,13 @@ function uploadDatasEntrega(event){
           const rows = await supaFetch(`entrega_datas?mes_ano=eq.${m}&data_entrega=not.is.null&select=pedido&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
           totalBD += rows.length;
         }
-        const _msg = `✅ ${ok} no arquivo | ${totalBD} total no banco (${mesesAfetados.join(', ')})`;
-        showToast(_msg, 'success');
+        const _avisos = [];
+        if(semPedido) _avisos.push(`${semPedido} sem nº de pedido`);
+        if(semData)   _avisos.push(`${semData} com data ilegível`);
+        if(falharam)  _avisos.push(`${falharam} falharam ao salvar`);
+        const _msg = `✅ ${ok} salvos | ${totalBD} total no banco (${mesesAfetados.join(', ')})`
+          + (_avisos.length ? ` | ⚠️ ${_avisos.join(', ')}` : '');
+        showToast(_msg, falharam || semPedido || semData ? 'warning' : 'success');
         const _integBadge = document.getElementById('integ-entrega-badge');
         if(_integBadge) _integBadge.textContent = _msg;
         // Atualizar a página ativa com os novos dados
