@@ -7628,6 +7628,18 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         Aguardando teste...
       </div>
     </div>
+
+    <!-- ── Promoção pra produção: grava de verdade em base_data ── -->
+    <div style="margin-top:18px;padding-top:18px;border-top:2px solid var(--border-red)">
+      <div style="font-weight:800;font-size:.88rem;color:var(--red);margin-bottom:4px">🚀 Promover para Produção</div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:12px">
+        Isso grava de verdade na <code>base_data</code> de produção — a mesma tabela que a planilha alimenta. Pega tudo que está em <code>base_data_erp_teste</code> com carga já preenchida, usa a mesma função de gravação da planilha (upsert por carga+pedido — atualiza se já existir, nunca duplica) e herda rota/veículo/motorista do lançamento já feito pra cada carga.
+      </div>
+      <button onclick="erpPromoverParaProducao()" style="background:linear-gradient(135deg,var(--red),#b8000a);color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:.84rem;font-weight:700;cursor:pointer">🚀 Promover para base_data (produção)</button>
+      <div id="erp-producao-resultado" style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:.8rem;color:var(--text-secondary);min-height:48px;margin-top:12px">
+        Aguardando...
+      </div>
+    </div>
   </div>
 
 </div></div>
@@ -8935,6 +8947,86 @@ async function erpTestePreverPreCarga(){
     el.innerHTML = html;
   }catch(e){
     el.innerHTML = '<span style="color:#ef4444">❌ Erro ao consultar Pré-Carga: '+e.message+'</span>';
+  }
+}
+
+// ── Promove os pedidos já validados em base_data_erp_teste pra base_data real
+// (produção) — mesma tabela e mesma função (pushBaseData) que a planilha usa,
+// então upsert por carga+pedido, validação e permissão admin/operador já
+// vêm de graça. Rota/veículo/motorista são herdados do lançamento existente
+// pra cada carga (igual o fluxo da planilha faz) — o JSON do ERP não traz
+// esses campos, e sobrescrever com vazio apagaria o que já foi lançado.
+async function erpPromoverParaProducao(){
+  const el = document.getElementById('erp-producao-resultado');
+  if(!confirm('Isso vai gravar de verdade na base_data de PRODUÇÃO. Confirma?')) return;
+
+  el.innerHTML = '⏳ Buscando pedidos validados em base_data_erp_teste...';
+  try{
+    // Paginado — a tabela de teste pode ter mais linhas do que o limite padrão de uma consulta
+    let erpRows = [];
+    let offset = 0;
+    const PAGINA = 1000;
+    while(true){
+      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      erpRows = erpRows.concat(pagina);
+      if(pagina.length < PAGINA) break;
+      offset += PAGINA;
+    }
+
+    if(!erpRows.length){
+      el.innerHTML = '<span style="color:#f59e0b">⚠️ Nenhum pedido com carga preenchida em base_data_erp_teste pra promover.</span>';
+      return;
+    }
+
+    // Força sincronizar lançamentos antes de mapear — sem isso, a enriquecimento
+    // de rota/veículo/motorista abaixo dependeria de quão fresco o cache em
+    // memória da sessão já estava (syncLancamentos() já tem throttle interno,
+    // então chamar aqui não tem custo se já sincronizou há pouco).
+    await syncLancamentos();
+
+    // Mapa carga → lançamento (rota/veículo/motorista/und), igual ao que
+    // onFileSelected() já faz pra planilha
+    const lancMapPorCarga = {};
+    lancamentos.forEach(l => { const c = Math.round(Number(l.carga)); if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l; });
+
+    const registros = erpRows.map(r => {
+      const carga = Math.round(Number(r.carga_erp));
+      const lanc = lancMapPorCarga[carga];
+      const dt = r.data_pedido ? new Date(r.data_pedido+'T00:00:00') : null;
+      const mes_ano = (dt && !isNaN(dt)) ? dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0') : '';
+      let semana_mes = 0;
+      if(dt && !isNaN(dt)){
+        const primeiro = new Date(dt.getFullYear(), dt.getMonth(), 1);
+        semana_mes = Math.floor((dt.getDate()+primeiro.getDay()-1)/7)+1;
+      }
+      return {
+        carga, pedido: Number(r.numero_pedido_erp),
+        valor: Number(r.valor_liquido)||0,
+        peso_kg: Number(r.peso_bruto)||0,
+        und: lanc?.und || '',
+        rota: lanc?.rota || '',
+        placa: lanc?.veiculo || '',
+        condutor: lanc?.motorista || '',
+        ajudante: lanc?.ajudante || '',
+        ocorrencia: 0,
+        mes_ano,
+        semana_mes,
+        data_pedido: r.data_pedido || null,
+        cod_forn: null,
+        cliente: r.nome_destinatario || null,
+        bairro: r.bairro || null,
+        volume: Number(r.volumes)||null,
+        nota_origem: null
+      };
+    });
+
+    const semMesAno = registros.filter(r=>!r.mes_ano).length;
+    el.innerHTML = `⏳ Gravando ${registros.length} pedido(s) em <code>base_data</code> (produção)...`;
+    await pushBaseData(registros);
+    el.innerHTML = `<span style="color:#059669;font-weight:700">✅ Envio concluído — acompanhe o resultado exato nos avisos no topo da tela.</span>` +
+      (semMesAno ? `<br><span style="color:#f59e0b">⚠️ ${semMesAno} pedido(s) sem data_pedido válida foram descartados pela validação (mes_ano obrigatório).</span>` : '');
+  }catch(e){
+    el.innerHTML = '<span style="color:#ef4444">❌ Erro ao promover: '+e.message+'</span>';
   }
 }
 
