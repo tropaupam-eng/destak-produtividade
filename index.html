@@ -24207,6 +24207,7 @@ function mudarMesPainelIndicadores(mes){
   const abaAtiva = document.querySelector('.painel-ind-tab.active')?.dataset.aba || 'abs-armazem';
   if(abaAtiva === 'abs-armazem') carregarPainelAbsArmazem();
   else if(abaAtiva === 'abs-distribuicao') carregarPainelAbsDistribuicao();
+  else if(abaAtiva === 'disponibilidade') carregarPainelDisponibilidade();
 }
 
 async function carregarPainelAbsArmazem(){
@@ -24395,11 +24396,17 @@ async function carregarPainelDisponibilidade(){
 
   try {
     const hoje = new Date().toISOString().split('T')[0];
+    const mesRef = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const [anoRef, numMesRef] = mesRef.split('-').map(Number);
+    const proxMesRef = numMesRef===12 ? (anoRef+1)+'-01' : anoRef+'-'+String(numMesRef+1).padStart(2,'0');
+    const diasNoMesRef = new Date(anoRef, numMesRef, 0).getDate();
+    const ehMesAtualRef = mesRef === hoje.slice(0,7);
+    const diasDecorridosRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
 
     // Buscar dados de veículos
     const veiculos = await supaFetch('veiculos?select=*&ativo=eq.true&order=placa.asc') || [];
 
-    // Buscar demandas em rota
+    // Buscar demandas em rota (snapshot ao vivo, pra "Disponível agora" / "Em uso agora")
     const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
     const emRotaSet = new Set(emRota.map(d=>d.veiculo));
 
@@ -24408,6 +24415,25 @@ async function carregarPainelDisponibilidade(){
     const emUso = emRota.length;
     const total = veiculos.length;
     const taxaUtilizacao = total > 0 ? ((emUso / total) * 100).toFixed(1) : 0;
+
+    // ── Aproveitamento do mês selecionado: por cargas rodadas e por dias ativos ──
+    // Mesmo filtro de status "viagem real" usado em renderFrotaDisp (Usabilidade),
+    // pra manter os dois painéis consistentes entre si.
+    const viagensMes = await supaFetch(
+      `demandas_rota?select=veiculo,carga,data_saida&veiculo=not.is.null&data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
+    ).catch(()=>[]) || [];
+
+    const cargasPorVeic = {};   // placa -> Set de cargas distintas
+    const diasPorVeic   = {};   // placa -> Set de dias (data_saida) distintos
+    viagensMes.forEach(v=>{
+      const placa = (v.veiculo||'').trim().toUpperCase();
+      if(!placa) return;
+      if(!cargasPorVeic[placa]) cargasPorVeic[placa] = new Set();
+      if(!diasPorVeic[placa])   diasPorVeic[placa]   = new Set();
+      if(v.carga) cargasPorVeic[placa].add(v.carga);
+      if(v.data_saida) diasPorVeic[placa].add(v.data_saida);
+    });
+    const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
 
     container.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px">
@@ -24455,17 +24481,27 @@ async function carregarPainelDisponibilidade(){
       </div>
 
       <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto">
-        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:12px">Frotas Ativas</h4>
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:4px">Frotas Ativas</h4>
+        <p style="font-size:.74rem;color:var(--text-muted);margin-bottom:12px">Aproveitamento de ${mesRef.split('-').reverse().join('/')} — por cargas (fatia do total de cargas do mês) e por dias (dias em que saiu ÷ dias ${ehMesAtualRef?'decorridos':'do mês'})</p>
         <table style="width:100%;border-collapse:collapse;font-size:.8rem">
           <thead>
             <tr style="border-bottom:1px solid var(--border)">
               <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Placa</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Status</th>
-              <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Modelo</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Cargas no Mês</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Aprov. por Carga</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Dias Ativo</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Aprov. por Dia</th>
             </tr>
           </thead>
           <tbody>
-            ${veiculos.slice(0,15).map(v=>`
+            ${veiculos.map(v=>{
+              const placa = (v.placa||'').trim().toUpperCase();
+              const nCargas = cargasPorVeic[placa]?.size || 0;
+              const nDias   = diasPorVeic[placa]?.size || 0;
+              const pctCargas = totalCargasMes>0 ? (nCargas/totalCargasMes*100) : 0;
+              const pctDias   = diasDecorridosRef>0 ? (nDias/diasDecorridosRef*100) : 0;
+              return `
               <tr style="border-bottom:1px solid var(--border)">
                 <td style="padding:8px;font-weight:600">${v.placa||'—'}</td>
                 <td style="padding:8px;text-align:center">
@@ -24473,9 +24509,12 @@ async function carregarPainelDisponibilidade(){
                     ${emRotaSet.has(v.placa)?'🚗 Em Uso':'✅ Disponível'}
                   </span>
                 </td>
-                <td style="padding:8px;color:var(--text-secondary)">${v.modelo||'—'}</td>
+                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nCargas}</td>
+                <td style="padding:8px;text-align:center;font-weight:700;color:${pctCargas>=15?'#059669':pctCargas>0?'#d97706':'var(--text-muted)'}">${pctCargas.toFixed(1)}%</td>
+                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nDias}/${diasDecorridosRef}</td>
+                <td style="padding:8px;text-align:center;font-weight:700;color:${pctDias>=70?'#059669':pctDias>=40?'#d97706':'#dc2626'}">${pctDias.toFixed(1)}%</td>
               </tr>
-            `).join('')}
+            `;}).join('')}
           </tbody>
         </table>
       </div>
