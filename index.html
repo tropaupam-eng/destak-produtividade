@@ -9138,6 +9138,62 @@ async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
   }catch(e){ console.warn('preencherAjudantesPendentes:', e); }
 }
 
+// ── Ressincroniza pedidos dos ajudantes após import de planilha ──────────
+// ajudante_pedidos é uma cópia tirada no momento em que o ajudante se vincula
+// à carga (vincularAjudanteCarga). Se a planilha ainda não tinha os pedidos
+// naquele momento (ou trouxe pedidos novos depois), a cópia fica desatualizada
+// pra sempre — o ajudante nunca vê os pedidos que faltaram. Chamado após cada
+// upload da planilha operacional, só para as cargas que receberam dado novo.
+async function ressincronizarAjudantePedidos(cargas){
+  const lista = [...new Set((cargas||[]).map(c=>Math.round(Number(c))).filter(Boolean))];
+  if(!lista.length) return;
+  try{
+    const [ajCargas, bdRows] = await Promise.all([
+      supaFetch(`ajudante_cargas?carga=in.(${lista.join(',')})&ativo=eq.true&select=id,carga,ajudante_id,ajudante_nome,mes_ano`).catch(()=>[]),
+      supaFetch(`base_data?carga=in.(${lista.join(',')})&select=carga,pedido,ocorrencia`).catch(()=>[])
+    ]);
+    if(!ajCargas || !ajCargas.length) return;
+
+    // base_data.pedido é integer, ajudante_pedidos.pedido é text — normaliza
+    // pra string dos dois lados, senão a comparação nunca bate e duplica a cada upload
+    const pedsPorCarga = {};
+    (bdRows||[]).forEach(r=>{
+      if(Number(r.ocorrencia)===1 || !r.pedido) return;
+      const c = Math.round(Number(r.carga));
+      if(!pedsPorCarga[c]) pedsPorCarga[c] = new Set();
+      pedsPorCarga[c].add(String(r.pedido));
+    });
+
+    const agora = new Date().toISOString();
+    let totalInseridos = 0;
+    for(const aj of ajCargas){
+      const c = Math.round(Number(aj.carga));
+      const pedsPlanilha = pedsPorCarga[c];
+      if(!pedsPlanilha || !pedsPlanilha.size) continue;
+
+      const jaTem = await supaFetch(
+        `ajudante_pedidos?carga=eq.${c}&ajudante_id=eq.${aj.ajudante_id}&select=pedido`
+      ).catch(()=>[]) || [];
+      const jaTemSet = new Set(jaTem.map(p=>String(p.pedido)));
+      const faltando = [...pedsPlanilha].filter(p=>!jaTemSet.has(p));
+      if(!faltando.length) continue;
+
+      for(let i=0;i<faltando.length;i+=50){
+        await supaFetch('ajudante_pedidos',{method:'POST',body:JSON.stringify(
+          faltando.slice(i,i+50).map((ped,j)=>({
+            id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
+            carga: c, pedido: ped,
+            ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
+            mes_ano: aj.mes_ano || agora.slice(0,7), ts: agora
+          }))
+        )}).catch(()=>{});
+      }
+      totalInseridos += faltando.length;
+    }
+    if(totalInseridos) console.log(`ressincronizarAjudantePedidos: ${totalInseridos} pedido(s) atrasado(s) preenchido(s) em ${lista.length} carga(s)`);
+  }catch(e){ console.warn('ressincronizarAjudantePedidos:', e.message); }
+}
+
 // ── SYNC BASE_DATA ────────────────────────────────────
 // Carrega todos os registros do Supabase com paginação (sem limite fixo)
 async function syncBaseData(mesFiltro){
@@ -10406,6 +10462,11 @@ async function onFileSelected(event) {
       }
     });
     if(resolvidos > 0) salvarLanc();
+
+    // Ajudantes já vinculados a essas cargas podem ter uma cópia de pedidos
+    // desatualizada (tirada antes desta planilha existir) — atualiza em background
+    const _cargasAfetadas = [...new Set(recordsNovos.map(r=>r.carga).filter(Boolean))];
+    if(_cargasAfetadas.length) ressincronizarAjudantePedidos(_cargasAfetadas).catch(()=>{});
 
     populateSelects();
     renderMot(); renderVeic(); renderLanc(); renderPendentes(); detectarConflitos(); renderGeral();
@@ -13127,10 +13188,13 @@ async function carregarPortalAjudante(){
   const mesStr = new Date().toISOString().slice(0,7);
 
   try{
-    const [ajCargas, ajPedidos] = await Promise.all([
-      supaFetch(`ajudante_cargas?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&ativo=eq.true&select=*&order=ts.desc`),
-      supaFetch(`ajudante_pedidos?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&select=carga,pedido`)
-    ]);
+    const ajCargas = await supaFetch(`ajudante_cargas?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&ativo=eq.true&select=*&order=ts.desc`);
+
+    // Corrige pedidos que ficaram "presos" numa cópia antiga (tirada antes da
+    // planilha trazer todos os pedidos da carga) antes de contar o que mostrar
+    await ressincronizarAjudantePedidos((ajCargas||[]).map(c=>c.carga)).catch(()=>{});
+
+    const ajPedidos = await supaFetch(`ajudante_pedidos?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&select=carga,pedido`);
 
     const pedCount = {};
     (ajPedidos||[]).forEach(p=>{ const c=String(p.carga); pedCount[c]=(pedCount[c]||0)+1; });
