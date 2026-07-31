@@ -8115,41 +8115,54 @@ let USUARIO_LOGADO = null;
 
 async function login(email, senha){
   try{
-    const e2 = encodeURIComponent(email), s2 = encodeURIComponent(senha);
-    // Buscar em todas as tabelas em paralelo (1 round-trip ao invés de 4-5)
+    const e2 = encodeURIComponent(email);
+    // Buscar usuarios por email (SEM passar senha na URL) — validar localmente
     const [users, mots, ajs, confs] = await Promise.all([
-      supaFetch(`usuarios?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
-      supaFetch(`motoristas?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
-      supaFetch(`ajudantes?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
-      supaFetch(`conferentes?email=eq.${e2}&senha=eq.${s2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`usuarios?email=eq.${e2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`motoristas?email=eq.${e2}&ativo=eq.true&select=*`).catch(()=>[]),
+      supaFetch(`ajudantes?email=eq.${e2}&select=*`).catch(()=>[]), // ajudantes podem estar inativos
+      supaFetch(`conferentes?email=eq.${e2}&ativo=eq.true&select=*`).catch(()=>[]),
     ]);
 
+    // Validar senha localmente (não passa em URL)
     if(users?.length){
-      USUARIO_LOGADO = users[0];
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
+      const u = users[0];
+      if(u.senha === senha){
+        USUARIO_LOGADO = u;
+        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+        return USUARIO_LOGADO;
+      }
     }
     if(mots?.length){
-      USUARIO_LOGADO = {...mots[0], perfil:'motorista'};
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
+      const m = mots[0];
+      if(m.senha === senha){
+        USUARIO_LOGADO = {...m, perfil:'motorista'};
+        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+        return USUARIO_LOGADO;
+      }
     }
     if(ajs?.length){
       if(ajs.length > 1) console.warn('ATENÇÃO: múltiplos ajudantes com o mesmo email:', email);
-      USUARIO_LOGADO = {...ajs[0], perfil:'ajudante'};
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
+      const a = ajs.find(aj => aj.senha === senha && aj.ativo !== false);
+      if(a){
+        USUARIO_LOGADO = {...a, perfil:'ajudante'};
+        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+        return USUARIO_LOGADO;
+      }
     }
     if(confs?.length){
-      USUARIO_LOGADO = {...confs[0], perfil: confs[0].perfil||'conferente'};
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
+      const c = confs[0];
+      if(c.senha === senha){
+        USUARIO_LOGADO = {...c, perfil: c.perfil||'conferente'};
+        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+        return USUARIO_LOGADO;
+      }
     }
     // Fallback: ajudante aprovado mas ativo=false (bug de cadastro)
-    const ajAprv = await supaFetch(`ajudantes?email=eq.${e2}&senha=eq.${s2}&status=eq.aprovado&select=*`);
-    if(ajAprv?.length){
-      await supaFetch(`ajudantes?id=eq.${ajAprv[0].id}`,{method:'PATCH',body:JSON.stringify({ativo:true})}).catch(()=>{});
-      USUARIO_LOGADO = {...ajAprv[0], ativo:true, perfil:'ajudante'};
+    const ajAprv = ajs?.find(aj => aj.status === 'aprovado' && aj.senha === senha);
+    if(ajAprv){
+      await supaFetch(`ajudantes?id=eq.${ajAprv.id}`,{method:'PATCH',body:JSON.stringify({ativo:true})}).catch(()=>{});
+      USUARIO_LOGADO = {...ajAprv, ativo:true, perfil:'ajudante'};
       localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       return USUARIO_LOGADO;
     }
@@ -11895,7 +11908,7 @@ function renderConfigPage(){
 // ── AJUDANTES ─────────────────────────────────────────
 async function syncAjudantes(){
   try{
-    const data = await supaFetch('ajudantes?select=*&order=criado_em.desc');
+    const data = await supaFetch('ajudantes?select=*&order=criado_em.desc&limit=1000');
     if(!data || data.length===0){
       document.getElementById('badge-pendente').textContent = '0';
       document.getElementById('badge-aprovado').textContent = '0';
@@ -12139,7 +12152,7 @@ function copiarLinkCadastro(){
 // ── USUÁRIOS ──────────────────────────────────────────
 async function carregarUsuarios(){
   try{
-    const data = await supaFetch('usuarios?select=*&order=criado_em.asc');
+    const data = await supaFetch('usuarios?select=*&order=criado_em.asc&limit=1000');
     const tbody = document.getElementById('tbody-usuarios');
     if(!tbody) return;
     if(!data||data.length===0){
@@ -13945,7 +13958,7 @@ function _sbRenderList(sel, list, termo, cfg, valElRef){
 
 async function carregarMotoristas(){
   try{
-    const data = await supaFetch('motoristas?select=*&order=nome.asc&ativo=eq.true');
+    const data = await supaFetch('motoristas?select=*&order=nome.asc&ativo=eq.true&limit=1000');
     MOTORISTAS_CACHE = data||[];
     // Deduplicate by name to avoid duplicate entries in dropdown
     const nomesCached = {};
@@ -13974,7 +13987,7 @@ let ROTAS_CACHE = [];
 
 async function carregarRotasExp(){
   try{
-    const data = await supaFetch('rotas?select=*&order=nome.asc&ativo=eq.true');
+    const data = await supaFetch('rotas?select=*&order=nome.asc&ativo=eq.true&limit=1000');
     ROTAS_CACHE = data||[];
     // Popular select da expedição
     const sel = document.getElementById('exp-rota');
@@ -14034,7 +14047,7 @@ async function salvarNovaRota(){
 async function carregarVeiculos(){
   try{
     await atualizarVeiculosOcupados();
-    const data = await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true');
+    const data = await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true&limit=1000');
     VEICULOS_CACHE = data||[];
     // Ordenar: disponíveis primeiro, depois ocupados
     VEICULOS_CACHE.sort((a,b)=>{
@@ -17008,7 +17021,7 @@ async function abrirModalNovaColeta(){
   // Preencher select de fornecedores
   const selF = document.getElementById('coleta-fornecedor');
   if(selF){
-    const forns = await supaFetch('fornecedores?ativo=eq.true&order=nome.asc').catch(()=>[]) || [];
+    const forns = await supaFetch('fornecedores?ativo=eq.true&order=nome.asc&limit=1000').catch(()=>[]) || [];
     selF.innerHTML='<option value="">Selecione o fornecedor...</option>'+
       forns.map(f=>`<option value="${f.id}" data-rota="${f.rota||''}">${f.nome}${f.rota?' ('+f.rota+')':''}</option>`).join('');
   }
@@ -17116,7 +17129,7 @@ function gfRecalcDiaria(){
 async function abrirModalNovaManut(editId){
   // Garantir que selects estão populados
   const veicOpts = ['<option value="">— Selecione —</option>',
-    ...(VEICULOS_CACHE.length ? VEICULOS_CACHE : await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true').catch(()=>[])||[]).map(v=>`<option value="${v.placa}">${v.placa}${v.modelo?' — '+v.modelo:''}</option>`)
+    ...(VEICULOS_CACHE.length ? VEICULOS_CACHE : await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true&limit=1000').catch(()=>[])||[]).map(v=>`<option value="${v.placa}">${v.placa}${v.modelo?' — '+v.modelo:''}</option>`)
   ].join('');
   document.getElementById('manut-veiculo').innerHTML = veicOpts;
   document.getElementById('manut-edit-id').value = '';
@@ -17202,7 +17215,7 @@ async function gfConcluirAntecipadoManut(id){
 
 async function abrirModalNovoCusto(editId){
   const veicOpts = ['<option value="">— Selecione —</option>',
-    ...(VEICULOS_CACHE.length ? VEICULOS_CACHE : await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true').catch(()=>[])||[]).map(v=>`<option value="${v.placa}">${v.placa}${v.modelo?' — '+v.modelo:''}</option>`)
+    ...(VEICULOS_CACHE.length ? VEICULOS_CACHE : await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true&limit=1000').catch(()=>[])||[]).map(v=>`<option value="${v.placa}">${v.placa}${v.modelo?' — '+v.modelo:''}</option>`)
   ].join('');
   document.getElementById('custo-veiculo').innerHTML = veicOpts;
   document.getElementById('custo-edit-id').value   = '';
@@ -21725,7 +21738,7 @@ async function salvarCorrecaoVeiculos(){
 async function cadCarregarRotas(){
 
   try{
-    const data = await supaFetch('rotas?select=*&order=nome.asc&ativo=eq.true');
+    const data = await supaFetch('rotas?select=*&order=nome.asc&ativo=eq.true&limit=1000');
     ROTAS_CAD_CACHE = data||[];
     ROTAS_CACHE = ROTAS_CAD_CACHE;
     const dl = document.getElementById('list-rotas');
@@ -35802,7 +35815,7 @@ async function renderReceitasArmazem(){
     const [receitas, tipos, fornecedores] = await Promise.all([
       supaFetch('receitas_armazem?select=*&order=data_referencia.desc,criado_em.desc') || [],
       supaFetch('tipos_receita?ativo=eq.true&order=nome.asc') || [],
-      supaFetch('fornecedores?ativo=eq.true&order=nome.asc') || []
+      supaFetch('fornecedores?ativo=eq.true&order=nome.asc&limit=1000') || []
     ]);
     _receitasCache = receitas || [];
 
