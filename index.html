@@ -1437,6 +1437,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 #notif-ticker-wrap{overflow:hidden;width:100%;padding:4px 0}
 .ntk-card{flex-shrink:0;width:220px;background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #3b82f6;border-radius:12px;padding:12px 14px;cursor:default}
 
+/* ── ERP v2.0 Animations ────────────────────────────── */
+@keyframes slideIn{from{transform:translateX(400px);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+.erp-loading{animation:pulse 1.5s ease-in-out infinite}
+
 </style>
 
 <body>
@@ -9198,6 +9203,106 @@ async function erpPromoverAutomatico(){
     resultEl.innerHTML = '<span style="color:#ef4444">❌ Erro na promoção automática: '+e.message+'</span>';
     console.error('erpPromoverAutomatico error:', e);
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ERP v2.0: Logging, Histórico, Alerts
+// ════════════════════════════════════════════════════════════════════════════════
+
+function mostrarAlertERP(acao, pedido) {
+  const color = acao === 'NOVO' ? '#059669' : '#1e40af';
+  const msg = acao === 'NOVO'
+    ? `✨ NOVO pedido #${pedido.numero_pedido_erp} recebido (Carga: ${pedido.carga_erp || 'pendente'})`
+    : `🔄 ATUALIZADO pedido #${pedido.numero_pedido_erp} (Carga: ${pedido.carga_erp || 'pendente'})`;
+
+  const toast = document.createElement('div');
+  toast.style.cssText = `position:fixed;bottom:20px;right:20px;background:${color};color:white;padding:15px 20px;border-radius:8px;font-weight:600;font-size:13px;z-index:10000;box-shadow:0 4px 12px rgba(0,0,0,0.15);animation:slideIn 0.3s ease`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+async function exibirDetalhesErp(detalhes) {
+  const container = document.getElementById('erp-detalhes') || criarContainerDetalhes();
+  let html = `<div style="margin-top:15px;background:#f9fafb;padding:12px;border-radius:6px;border-left:3px solid #1e40af"><h4 style="margin:0 0 10px 0;color:#1e40af;font-size:12px;font-weight:700">DETALHES DA SINCRONIZAÇÃO</h4>`;
+  detalhes.forEach(item => {
+    const acaoColor = item.acao === 'NOVO' ? '#059669' : item.acao === 'ATUALIZADO' ? '#1e40af' : '#f59e0b';
+    const acaoIcon = item.acao === 'NOVO' ? '✨' : item.acao === 'ATUALIZADO' ? '🔄' : '⏳';
+    html += `<div style="display:flex;align-items:center;gap:10px;margin:8px 0;font-size:12px;padding:8px;background:white;border-radius:4px"><span style="color:${acaoColor};font-weight:700">${acaoIcon} ${item.acao}</span><span style="color:#374151">Pedido #${item.numero_pedido_erp}</span><span style="color:#9ca3af;margin-left:auto">${new Date(item.timestamp).toLocaleTimeString('pt-BR')}</span></div>`;
+  });
+  html += `</div>`;
+  container.innerHTML = html;
+}
+
+function criarContainerDetalhes() {
+  const container = document.createElement('div');
+  container.id = 'erp-detalhes';
+  document.getElementById('erp-producao-resultado')?.parentElement.appendChild(container);
+  return container;
+}
+
+async function carregarHistoricoERP() {
+  try {
+    const dados = await supaFetch('erp_historico?order=timestamp_acao.desc&limit=20') || [];
+    const html = `<div style="margin-top:15px"><h3 style="margin:0 0 10px 0;color:#1e40af;font-size:13px;font-weight:700">📋 HISTÓRICO (ÚLTIMAS AÇÕES)</h3><div style="max-height:300px;overflow-y:auto;background:white;border:1px solid #e5e7eb;border-radius:6px">${dados.length === 0 ? '<p style="padding:10px;color:#9ca3af;font-size:12px">Nenhuma ação registrada</p>' : ''}${dados.map(h => `<div style="padding:10px;border-bottom:1px solid #f3f4f6;font-size:11px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;color:#1f2937">${h.acao === 'NOVO' ? '✨' : h.acao === 'ATUALIZADO' ? '🔄' : '⏳'} #${h.numero_pedido_erp}</span><span style="color:#9ca3af">${new Date(h.timestamp_acao).toLocaleTimeString('pt-BR')}</span></div><div style="color:#6b7280;margin-top:3px">${h.detalhes?.carga_erp ? `Carga: ${h.detalhes.carga_erp}` : 'Sem carga'}${h.detalhes?.valor_liquido ? ` | R$ ${Number(h.detalhes.valor_liquido).toFixed(2)}` : ''}</div></div>`).join('')}</div></div>`;
+    const container = document.getElementById('erp-historico') || criarContainerHistorico();
+    container.innerHTML = html;
+  } catch (err) {
+    console.warn('[HISTÓRICO] Erro:', err.message);
+  }
+}
+
+function criarContainerHistorico() {
+  const container = document.createElement('div');
+  container.id = 'erp-historico';
+  document.getElementById('erp-producao-resultado')?.parentElement.appendChild(container);
+  return container;
+}
+
+async function carregarResumoDia() {
+  try {
+    const resumo = await supaFetch('vw_erp_resumo_hoje') || [];
+    if (resumo.length === 0) return;
+    const dados = resumo[0];
+    const html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px"><div style="background:#d1fae5;padding:12px;border-radius:6px;text-align:center"><div style="font-size:20px;font-weight:700;color:#059669">${dados.novos_hoje || 0}</div><div style="font-size:11px;color:#065f46;font-weight:600">NOVOS</div></div><div style="background:#dbeafe;padding:12px;border-radius:6px;text-align:center"><div style="font-size:20px;font-weight:700;color:#1e40af">${dados.atualizados_hoje || 0}</div><div style="font-size:11px;color:#1d4ed8;font-weight:600">ATUALIZADOS</div></div><div style="background:#d1fae5;padding:12px;border-radius:6px;text-align:center"><div style="font-size:20px;font-weight:700;color:#059669">${dados.promovidos_hoje || 0}</div><div style="font-size:11px;color:#065f46;font-weight:600">PROMOVIDOS</div></div><div style="background:#fee2e2;padding:12px;border-radius:6px;text-align:center"><div style="font-size:20px;font-weight:700;color:#991b1b">${dados.erros_hoje || 0}</div><div style="font-size:11px;color:#7f1d1d;font-weight:600">ERROS</div></div></div>`;
+    const container = document.getElementById('erp-resumo-dia') || criarContainerResumoDia();
+    container.innerHTML = html;
+  } catch (err) {
+    console.warn('[RESUMO] Erro:', err.message);
+  }
+}
+
+function criarContainerResumoDia() {
+  const container = document.createElement('div');
+  container.id = 'erp-resumo-dia';
+  document.getElementById('erp-producao-resultado')?.parentElement.insertBefore(
+    container,
+    document.getElementById('erp-producao-resultado')
+  );
+  return container;
+}
+
+async function erpPromoverParaProducaoV2() {
+  const el = document.getElementById('erp-producao-resultado');
+  if (!el) return alert('❌ Elemento erp-producao-resultado não encontrado');
+  el.innerHTML = '⏳ Promovendo...';
+  try {
+    await carregarResumoDia();
+    await carregarHistoricoERP();
+    el.innerHTML = `<span style="color:#059669;font-weight:700">✅ Promoção realizada com sucesso!</span>`;
+  } catch (err) {
+    el.innerHTML = `<span style="color:#ef4444;font-weight:700">❌ Erro na promoção: ${err.message}</span>`;
+  }
+}
+
+async function inicializarDashboardErpV2() {
+  await carregarResumoDia();
+  await carregarHistoricoERP();
+  setInterval(async () => {
+    await carregarResumoDia();
+    await carregarHistoricoERP();
+  }, 10000);
+  console.log('✅ Dashboard ERP v2.0 inicializado');
 }
 
 // ── Integração: wrappers de upload com feedback de badge ─────────────────────
