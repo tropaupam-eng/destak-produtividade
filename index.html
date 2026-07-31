@@ -7616,7 +7616,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.3.0';
+const APP_VERSION = '4.3.1';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 (function(){
   try{
@@ -38792,17 +38792,30 @@ async function carregarRetornoVeiculos(){
     // - pronto_viagem: cargas prontas para sair (pode incluir as que sairam hoje)
     // - saiu: cargas que saíram e estão em rota
     // - fim_viagem: cargas que chegaram ao destino
-    let demandas = await supaFetch('demandas_rota?status=in.("pronto_viagem","saiu","fim_viagem")&select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc,data_saida.desc&limit=200').catch((err)=>{
+    let demandas = await supaFetch('demandas_rota?status=in.("saiu","fim_viagem")&select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc,data_saida.desc&limit=200').catch((err)=>{
       console.error('[Monitoramento] ERRO ao buscar demandas:', err);
       return [];
     }) || [];
 
-    console.log('[Monitoramento] Demandas encontradas:', demandas.length, '(status: pronto_viagem, saiu, fim_viagem)');
+    console.log('[Monitoramento] Demandas encontradas:', demandas.length, '(status: saiu, fim_viagem)');
     if(demandas.length > 0) {
       const statusCount = {};
       demandas.forEach(d => statusCount[d.status] = (statusCount[d.status] || 0) + 1);
       console.log('[Monitoramento] Distribuição:', statusCount);
     }
+
+    // Buscar retornos agendados/reais
+    const retornos = await supaFetch('retorno_veiculos?select=id,demanda_id,data_retorno_agendado,data_retorno_real&limit=2000').catch(()=>[]) || [];
+    console.log('[Monitoramento] Retornos encontrados:', retornos.length);
+    const retornosMap = {};
+    retornos.forEach(r => { retornosMap[r.demanda_id] = r; });
+
+    // Veículos em rota: que já saíram (saiu, fim_viagem) e ainda não retornaram
+    let emRota = demandas.filter(d =>
+      (d.status === 'saiu' || d.status === 'fim_viagem') &&
+      !retornosMap[d.id]?.data_retorno_real
+    );
+    console.log('[Monitoramento] Veículos realmente em rota (saiu/fim_viagem):', emRota.length);
 
     // Se não encontrou nenhum em rota, verifica o que há
     if(emRota.length === 0) {
@@ -38839,19 +38852,6 @@ async function carregarRetornoVeiculos(){
       }
     }
 
-    // Buscar retornos agendados/reais
-    const retornos = await supaFetch('retorno_veiculos?select=id,demanda_id,data_retorno_agendado,data_retorno_real&limit=2000').catch(()=>[]) || [];
-    console.log('[Monitoramento] Retornos encontrados:', retornos.length);
-    const retornosMap = {};
-    retornos.forEach(r => { retornosMap[r.demanda_id] = r; });
-
-    // Veículos em rota: que já saíram (saiu, fim_viagem) e ainda não retornaram
-    // Filtra apenas os que estão "saiu" ou "fim_viagem" (exclui "pronto_viagem")
-    let emRota = demandas.filter(d =>
-      (d.status === 'saiu' || d.status === 'fim_viagem') &&
-      !retornosMap[d.id]?.data_retorno_real
-    );
-    console.log('[Monitoramento] Veículos realmente em rota (saiu/fim_viagem):', emRota.length);
 
     // Calcular KPIs
     const agendados = emRota.filter(d => retornosMap[d.id]?.data_retorno_agendado).length;
