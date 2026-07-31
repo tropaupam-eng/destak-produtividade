@@ -8897,11 +8897,88 @@ async function erpTesteConsultar(){
   }
 }
 
+async function erpPromoverAutomaticamente(){
+  try{
+    const rows = await supaFetch('base_data_erp_teste?select=carga_erp&carga_erp=not.is.null&limit=1') || [];
+    if(!rows.length) return; // Sem dados com carga para promover
+
+    console.log('[ERP AUTO] Detectados registros com carga — promovendo automaticamente para produção...');
+
+    // Chamar diretamente sem pedir confirmação (é automático)
+    const el = document.getElementById('erp-producao-resultado');
+    if(el) el.innerHTML = '⏳ Promovendo automaticamente para produção...';
+
+    // Buscar pedidos validados (com carga)
+    let erpRows = [];
+    let offset = 0;
+    const PAGINA = 1000;
+    while(true){
+      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      erpRows = erpRows.concat(pagina);
+      if(pagina.length < PAGINA) break;
+      offset += PAGINA;
+    }
+
+    if(!erpRows.length) return;
+
+    await syncLancamentos();
+
+    const lancMapPorCarga = {};
+    (lancamentos||[]).forEach(l=>{
+      if(!l.carga) return;
+      const c = Number(l.carga);
+      if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l;
+    });
+
+    const mes_ano = new Date().toISOString().slice(0,7);
+    const semana_mes = Math.ceil(new Date().getDate() / 7);
+    const registros = erpRows.map(r=>{
+      const l = lancMapPorCarga[Number(r.carga_erp)];
+      return {
+        pedido: r.numero_pedido_erp,
+        carga: Number(r.carga_erp),
+        valor: Number(r.valor_liquido)||0,
+        peso: Number(r.peso_bruto)||null,
+        volumes: Number(r.volumes)||null,
+        motorista: l?.motorista||'',
+        ajudante: l?.ajudante||'',
+        rota: l?.rota||'',
+        und: l?.und||'',
+        rire: l?.rire||'',
+        mes_ano,
+        semana_mes,
+        data_pedido: r.data_pedido || null,
+        cod_forn: null,
+        cliente: r.nome_destinatario || null,
+        bairro: r.bairro || null,
+        volume: Number(r.volumes)||null,
+        nota_origem: null
+      };
+    });
+
+    const numerosErpUnicos = [...new Set(registros.map(r => r.pedido))];
+    if(numerosErpUnicos.length > 0){
+      await supaFetch(`base_data?pedido=in.(${numerosErpUnicos.join(',')})`, {
+        method: 'DELETE'
+      });
+    }
+
+    await pushBaseData(registros);
+
+    if(el) el.innerHTML = `✅ <b>${registros.length} pedidos promovidos automaticamente</b> para produção às ${new Date().toLocaleTimeString('pt-BR')}`;
+    console.log(`[ERP AUTO] ✅ Sucesso: ${registros.length} pedidos promovidos`);
+  }catch(e){
+    console.warn('[ERP AUTO] ❌ Erro ao promover automaticamente:', e.message);
+  }
+}
+
 function iniciarMonitorIntegracaoERP(){
   if(_erpMonitorActive) return; // Já está monitorando
   _erpMonitorActive = true;
   _erpPollingTimer = setInterval(() => {
     erpTesteConsultar().catch(e => console.warn('[ERP] Erro ao atualizar:', e.message));
+    // Tentar promover automaticamente quando detectar dados
+    erpPromoverAutomaticamente().catch(e => console.warn('[ERP AUTO] Erro:', e.message));
   }, 5000); // Verificar a cada 5 segundos
   erpTesteConsultar(); // Primeira verificação imediata
 }
