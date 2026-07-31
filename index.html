@@ -38782,51 +38782,54 @@ async function carregarRetornoVeiculos(){
   try{
     const hoje = new Date().toISOString().slice(0,10);
 
-    // Buscar demandas em rota (status pode ser: saiu, fim_viagem, pronto_viagem, etc)
-    // Veículos "em rota" são aqueles que saíram ou estão em viagem, mas ainda não retornaram
-    let demandas = await supaFetch('demandas_rota?status=in.("saiu","fim_viagem")&select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc&limit=200').catch((err)=>{
+    // Buscar demandas em rota (status: pronto_viagem, saiu, fim_viagem)
+    // - pronto_viagem: cargas prontas para sair (pode incluir as que sairam hoje)
+    // - saiu: cargas que saíram e estão em rota
+    // - fim_viagem: cargas que chegaram ao destino
+    let demandas = await supaFetch('demandas_rota?status=in.("pronto_viagem","saiu","fim_viagem")&select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc,data_saida.desc&limit=200').catch((err)=>{
       console.error('[Monitoramento] ERRO ao buscar demandas:', err);
       return [];
     }) || [];
 
-    console.log('[Monitoramento] Demandas com status=saiu ou fim_viagem:', demandas.length);
-    if(demandas.length > 0) console.log('[Monitoramento] Primeira demanda:', demandas[0]);
+    console.log('[Monitoramento] Demandas encontradas:', demandas.length, '(status: pronto_viagem, saiu, fim_viagem)');
+    if(demandas.length > 0) {
+      const statusCount = {};
+      demandas.forEach(d => statusCount[d.status] = (statusCount[d.status] || 0) + 1);
+      console.log('[Monitoramento] Distribuição:', statusCount);
+    }
 
-    // Se não encontrou nenhum, busca TODOS para debug detalhado
-    if(demandas.length === 0) {
-      console.log('[Monitoramento] ⚠️ NENHUMA demanda com status=saiu/fim_viagem encontrada!');
-      console.log('[Monitoramento] Fazendo debug detalhado...\n');
+    // Se não encontrou nenhum em rota, verifica o que há
+    if(emRota.length === 0) {
+      console.log('[Monitoramento] ⚠️ Nenhum veículo em rota (saiu/fim_viagem)');
 
-      const todasDemandas = await supaFetch('demandas_rota?select=id,veiculo,motorista,rota,carga,data_saida,ts_saiu,status&order=ts_saiu.desc,data_saida.desc&limit=100').catch(()=>[]) || [];
-      console.log('📊 [Monitoramento DEBUG] TOTAL DE REGISTROS:', todasDemandas.length);
+      // Buscar TODOS para análise
+      const todasDemandas = await supaFetch('demandas_rota?select=id,veiculo,motorista,rota,carga,data_saida,ts_saiu,status&order=data_saida.desc&limit=100').catch(()=>[]) || [];
 
       if(todasDemandas.length > 0) {
-        // Contar por status
         const statusCounts = {};
         todasDemandas.forEach(d => {
           statusCounts[d.status] = (statusCounts[d.status] || 0) + 1;
         });
 
-        console.log('📈 [Monitoramento DEBUG] DISTRIBUIÇÃO DE STATUS:', statusCounts);
-        console.log('🎯 [Monitoramento DEBUG] Status esperados: saiu, fim_viagem');
-        console.log('❌ [Monitoramento DEBUG] Status encontrados:', Object.keys(statusCounts).join(', '));
+        console.log('📊 [DEBUG] TOTAL NA TABELA:', todasDemandas.length);
+        console.log('📈 [DEBUG] Status:', statusCounts);
 
-        // Mostrar TODAS as cargas com seus status
-        console.log('\n📋 [Monitoramento DEBUG] LISTA COMPLETA DE CARGAS:');
-        console.table(todasDemandas.map((d, i) => ({
-          '#': i+1,
-          'Carga': d.carga || 'N/A',
-          'Veículo': d.veiculo || 'N/A',
-          'Rota': d.rota || 'N/A',
+        // Se há pronto_viagem, mostra que essas estão prontas mas não saíram
+        if(statusCounts['pronto_viagem']) {
+          console.log(`⚠️ [INSIGHT] Há ${statusCounts['pronto_viagem']} carga(s) em "pronto_viagem" (prontas para sair, mas ainda não confirmaram saída na Expedição)`);
+        }
+
+        // Mostrar cargas recentes
+        console.log('\n📋 [DEBUG] CARGAS RECENTES:');
+        console.table(todasDemandas.slice(0, 10).map((d, i) => ({
+          'Carga': d.carga || '—',
+          'Veículo': d.veiculo || '—',
+          'Rota': d.rota || '—',
           'Status': d.status || '?',
-          'Data Saída': d.data_saida || 'N/A',
-          'TS Saiu': d.ts_saiu ? d.ts_saiu.slice(0,10) : 'N/A'
+          'Data': d.data_saida || '—'
         })));
-
-        console.log('\n💡 [Monitoramento DEBUG] INSIGHT: As cargas estão em status diferente de "saiu" ou "fim_viagem"!');
-        console.log('💡 Verifique se o botão de "Confirmar Saída" foi clicado na Expedição.');
       } else {
-        console.log('⚠️ [Monitoramento DEBUG] A TABELA DEMANDAS_ROTA ESTÁ VAZIA!');
+        console.log('⚠️ [DEBUG] Tabela demandas_rota está VAZIA!');
       }
     }
 
@@ -38836,9 +38839,13 @@ async function carregarRetornoVeiculos(){
     const retornosMap = {};
     retornos.forEach(r => { retornosMap[r.demanda_id] = r; });
 
-    // Veículos em rota (ainda não retornaram)
-    const emRota = demandas.filter(d => !retornosMap[d.id]?.data_retorno_real);
-    console.log('[Monitoramento] Veículos em rota:', emRota.length);
+    // Veículos em rota: que já saíram (saiu, fim_viagem) e ainda não retornaram
+    // Filtra apenas os que estão "saiu" ou "fim_viagem" (exclui "pronto_viagem")
+    let emRota = demandas.filter(d =>
+      (d.status === 'saiu' || d.status === 'fim_viagem') &&
+      !retornosMap[d.id]?.data_retorno_real
+    );
+    console.log('[Monitoramento] Veículos realmente em rota (saiu/fim_viagem):', emRota.length);
 
     // Calcular KPIs
     const agendados = emRota.filter(d => retornosMap[d.id]?.data_retorno_agendado).length;
@@ -38852,20 +38859,9 @@ async function carregarRetornoVeiculos(){
     document.getElementById('ret-kpi-agendado').textContent = agendados;
 
     if(!emRota.length){
-      // Debug: verificar se há dados na tabela com outro status
-      const todasDemandas = await supaFetch('demandas_rota?select=id,status&limit=10').catch(()=>[]) || [];
-      console.log('[Monitoramento DEBUG] Total de demandas em demandas_rota:', todasDemandas.length);
-      if(todasDemandas.length > 0) {
-        const statusCounts = {};
-        todasDemandas.forEach(d => {
-          statusCounts[d.status] = (statusCounts[d.status] || 0) + 1;
-        });
-        console.log('[Monitoramento DEBUG] Demandas por status:', statusCounts);
-      }
-
       container.innerHTML = `<div style="text-align:center;padding:80px 20px;color:var(--text-muted)">
         <div style="font-size:1.1rem;font-weight:600;color:var(--text-primary);margin-bottom:4px">Nenhum Veículo em Rota</div>
-        <div style="font-size:0.9rem;color:var(--text-secondary)">Abra o console (F12) para ver o debug.</div>
+        <div style="font-size:0.9rem;color:var(--text-secondary)">Todos os veículos retornaram. Abra console (F12) para ver detalhes.</div>
       </div>`;
       return;
     }
