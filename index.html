@@ -8131,6 +8131,43 @@ function isEmpty(val){
   return !trimSafe(val);
 }
 
+// P1: Renderizador genérico para listas filtradas — consolida 7+ funções
+function renderFilteredList(config){
+  const {
+    containerEl,           // DOM element ou ID string
+    data,                  // array de items
+    filters,               // [{id, getValue, defaultValue}]
+    emptyMsg = 'Nenhum dado encontrado',
+    itemTemplate,          // function(item, index) => HTML string
+    noDataTemplate,        // function() => HTML string (default: emptyMsg)
+  } = config;
+
+  const container = typeof containerEl === 'string'
+    ? document.getElementById(containerEl)
+    : containerEl;
+
+  if(!container) return;
+
+  // Aplicar filtros
+  let filtered = [...data];
+  (filters || []).forEach(f => {
+    const val = f.getValue();
+    if(val && val !== f.defaultValue){
+      filtered = filtered.filter(item => item[f.field] === val || (typeof f.test === 'function' && f.test(item, val)));
+    }
+  });
+
+  // Renderizar
+  if(!filtered.length){
+    container.innerHTML = noDataTemplate
+      ? noDataTemplate()
+      : `<div class="empty-state">${emptyMsg}</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map((item, idx) => itemTemplate(item, idx)).join('');
+}
+
 // Verifica se fiscal E armazém estão ambos 'concluido' e avança o status geral da carga.
 // Quando ambos concluem, a carga vai direto para aguardando_manifesto (sem bloquear um pelo outro).
 async function _checarAmbosConcluidosEAvancar(demandaId, carga){
@@ -16853,62 +16890,27 @@ function gfAba(aba, btn){
 }
 
 function renderGfManut(){
-  const lista = document.getElementById('gf-manut-lista');
-  if(!lista) return;
-  const filtroTipo   = document.getElementById('gf-manut-filtro-tipo')?.value   || '';
-  const filtroStatus = document.getElementById('gf-manut-filtro-status')?.value || '';
-  const hoje = new Date().toISOString().slice(0,10);
+  const statusLabel={agendada:'📅 Agendada',em_andamento:'🔧 Em Andamento',concluida:'✅ Concluída',cancelada:'❌ Cancelada'};
+  const statusCor={agendada:'#2563eb',em_andamento:'#f59e0b',concluida:'#059669',cancelada:'#6b7280'};
+  const tipoCor={preventiva:'#059669',corretiva:'#ef4444'};
+  const tipoLabel={preventiva:'🛡️ Preventiva',corretiva:'🔨 Corretiva'};
+  const brl=v=>v!=null?'R$ '+Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
+  const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString('pt-BR'):'—';
 
-  let items = [..._GF_MANUT];
-  if(filtroTipo)   items = items.filter(m=>m.tipo===filtroTipo);
-  if(filtroStatus) items = items.filter(m=>m.status===filtroStatus);
-
-  if(!items.length){
-    lista.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text-muted);font-size:.85rem">Nenhuma manutenção encontrada.</div>';
-    return;
-  }
-
-  const statusLabel = {agendada:'📅 Agendada',em_andamento:'🔧 Em Andamento',concluida:'✅ Concluída',cancelada:'❌ Cancelada'};
-  const statusCor   = {agendada:'#2563eb',em_andamento:'#f59e0b',concluida:'#059669',cancelada:'#6b7280'};
-  const tipoCor     = {preventiva:'#059669',corretiva:'#ef4444'};
-  const tipoLabel   = {preventiva:'🛡️ Preventiva',corretiva:'🔨 Corretiva'};
-  const brl = v => v!=null?'R$ '+Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
-  const fmtD = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
-
-  lista.innerHTML = items.map(m=>{
-    const sc = statusCor[m.status]||'#6b7280';
-    const tc = tipoCor[m.tipo]||'#6b7280';
-    const dias = m.data_inicio && m.data_fim
-      ? Math.round((new Date(m.data_fim)-new Date(m.data_inicio))/86400000)+1
-      : null;
-    return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 18px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
-          <span style="font-weight:900;font-size:1rem;color:var(--text-primary)">${m.veiculo||'—'}</span>
-          <span style="font-size:.7rem;font-weight:700;background:${tc}18;color:${tc};border:1px solid ${tc}40;border-radius:8px;padding:2px 9px">${tipoLabel[m.tipo]||m.tipo}</span>
-          <span style="font-size:.7rem;font-weight:700;background:${sc}18;color:${sc};border:1px solid ${sc}40;border-radius:8px;padding:2px 9px">${statusLabel[m.status]||m.status}</span>
-        </div>
-        ${m.descricao?`<div style="font-size:.8rem;color:var(--text-secondary);margin-bottom:6px">${m.descricao}</div>`:''}
-        <div style="font-size:.75rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap">
-          <span>📅 ${fmtD(m.data_inicio)}${m.data_fim?' → '+fmtD(m.data_fim):''}</span>
-          ${dias?`<span>⏱ ${dias} dia(s)</span>`:''}
-          ${m.custo?`<span>💰 ${brl(m.custo)}</span>`:''}
-          <span>👤 ${m.usuario_nome||'—'}</span>
-        </div>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-items:flex-end">
-        ${(m.status==='agendada'||m.status==='em_andamento')?`
-        <button onclick="gfConcluirAntecipadoManut('${m.id}')"
-          style="background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap">
-          🏁 Já Saiu
-        </button>`:''}
-        <div style="display:flex;gap:6px">
-          <button onclick="abrirModalNovaManut('${m.id}')" title="Editar" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.75rem;cursor:pointer;color:var(--text-secondary)">✏️</button>
-          <button onclick="excluirManutencao('${m.id}')" title="Excluir" style="background:#fee2e2;border:1px solid #fecaca;border-radius:8px;padding:6px 12px;font-size:.75rem;cursor:pointer;color:#b91c1c">🗑️</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
+  renderFilteredList({
+    containerEl: 'gf-manut-lista',
+    data: _GF_MANUT,
+    filters: [
+      {field:'tipo',getValue:()=>document.getElementById('gf-manut-filtro-tipo')?.value||'',defaultValue:''},
+      {field:'status',getValue:()=>document.getElementById('gf-manut-filtro-status')?.value||'',defaultValue:''}
+    ],
+    itemTemplate: m=>{
+      const sc=statusCor[m.status]||'#6b7280';
+      const tc=tipoCor[m.tipo]||'#6b7280';
+      const dias=m.data_inicio&&m.data_fim?Math.round((new Date(m.data_fim)-new Date(m.data_inicio))/86400000)+1:null;
+      return`<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 18px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:200px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span style="font-weight:900;font-size:1rem;color:var(--text-primary)">${m.veiculo||'—'}</span><span style="font-size:.7rem;font-weight:700;background:${tc}18;color:${tc};border:1px solid ${tc}40;border-radius:8px;padding:2px 9px">${tipoLabel[m.tipo]||m.tipo}</span><span style="font-size:.7rem;font-weight:700;background:${sc}18;color:${sc};border:1px solid ${sc}40;border-radius:8px;padding:2px 9px">${statusLabel[m.status]||m.status}</span></div>${m.descricao?`<div style="font-size:.8rem;color:var(--text-secondary);margin-bottom:6px">${m.descricao}</div>`:''}<div style="font-size:.75rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap"><span>📅 ${fmtD(m.data_inicio)}${m.data_fim?' → '+fmtD(m.data_fim):''}</span>${dias?`<span>⏱ ${dias} dia(s)</span>`:''}${m.custo?`<span>💰 ${brl(m.custo)}</span>`:''}<span>👤 ${m.usuario_nome||'—'}</span></div></div><div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-items:flex-end">${(m.status==='agendada'||m.status==='em_andamento')?`<button onclick="gfConcluirAntecipadoManut('${m.id}')" style="background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap">🏁 Já Saiu</button>`:''}<div style="display:flex;gap:6px"><button onclick="abrirModalNovaManut('${m.id}')" title="Editar" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.75rem;cursor:pointer;color:var(--text-secondary)">✏️</button><button onclick="excluirManutencao('${m.id}')" title="Excluir" style="background:#fee2e2;border:1px solid #fecaca;border-radius:8px;padding:6px 12px;font-size:.75rem;cursor:pointer;color:#b91c1c">🗑️</button></div></div></div>`;
+    }
+  });
 }
 
 function renderGfCustos(){
