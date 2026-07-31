@@ -38782,28 +38782,35 @@ async function carregarRetornoVeiculos(){
   try{
     const hoje = new Date().toISOString().slice(0,10);
 
-    // Buscar demandas que saíram (status pode ser: saiu, em-rota, saido, etc)
-    // Primeiro tenta com status=saiu, se não encontrar tenta todos os registros
-    let demandas = await supaFetch('demandas_rota?status=eq.saiu&select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc&limit=200').catch((err)=>{
+    // Buscar demandas em rota (status pode ser: saiu, fim_viagem, pronto_viagem, etc)
+    // Veículos "em rota" são aqueles que saíram ou estão em viagem, mas ainda não retornaram
+    let demandas = await supaFetch('demandas_rota?status=in.("saiu","fim_viagem")&select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc&limit=200').catch((err)=>{
       console.error('[Monitoramento] ERRO ao buscar demandas:', err);
       return [];
     }) || [];
 
-    console.log('[Monitoramento] Demandas com status=saiu:', demandas.length);
+    console.log('[Monitoramento] Demandas com status=saiu ou fim_viagem:', demandas.length);
     if(demandas.length > 0) console.log('[Monitoramento] Primeira demanda:', demandas[0]);
 
-    // Se não encontrou nenhum com status=saiu, busca TODOS para debug
+    // Se não encontrou nenhum, busca TODOS para debug
     if(demandas.length === 0) {
-      console.log('[Monitoramento] Status=saiu retornou vazio, buscando todos os registros...');
-      demandas = await supaFetch('demandas_rota?select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta,coleta_descricao&order=ts_saiu.desc&limit=50').catch(()=>[]) || [];
-      console.log('[Monitoramento] Total de demandas (qualquer status):', demandas.length);
-      if(demandas.length > 0) {
+      console.log('[Monitoramento] Nenhuma demanda encontrada, fazendo debug de TODOS os status...');
+      const todasDemandas = await supaFetch('demandas_rota?select=id,veiculo,motorista,ajudante,rota,data_saida,ts_saiu,status,roteirizado,coleta&order=ts_saiu.desc&limit=100').catch(()=>[]) || [];
+      console.log('[Monitoramento DEBUG] Total de registros em demandas_rota:', todasDemandas.length);
+
+      if(todasDemandas.length > 0) {
         const statusCounts = {};
-        demandas.forEach(d => {
+        todasDemandas.forEach(d => {
           statusCounts[d.status] = (statusCounts[d.status] || 0) + 1;
         });
-        console.log('[Monitoramento] Distribuição de status:', statusCounts);
-        console.log('[Monitoramento] Amostra de registros:', demandas.slice(0, 3));
+        console.log('[Monitoramento DEBUG] Distribuição de status:', statusCounts);
+        console.log('[Monitoramento DEBUG] Amostra (primeiras 5 demandas):', todasDemandas.slice(0, 5));
+
+        // Se há registros, mas não com status=saiu/fim_viagem, mostra quais são
+        const statusAtivos = Object.keys(statusCounts).filter(s => statusCounts[s] > 0);
+        console.log('[Monitoramento DEBUG] Status encontrados:', statusAtivos.join(', '));
+      } else {
+        console.log('[Monitoramento DEBUG] A tabela demandas_rota está vazia!');
       }
     }
 
