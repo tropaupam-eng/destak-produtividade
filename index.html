@@ -8843,16 +8843,18 @@ async function erpTesteEnviar(){
 
 let _erpLastCheckTime = null;
 let _erpLastDataCount = 0;
+let _erpPollingTimer = null;
+let _erpMonitorActive = false;
 
 async function erpTesteConsultar(){
   const el = document.getElementById('erp-teste-resultado');
-  el.innerHTML = 'Consultando...';
+  if(!el.innerHTML.includes('Consultando')) el.innerHTML = 'Consultando...';
   try{
     // Sempre buscar TODOS os registros (a tabela é limpa a cada novo envio)
     const rows = await supaFetch('base_data_erp_teste?select=*&order=id.desc&limit=200') || [];
 
     if(!rows.length){
-      el.innerHTML = '<span style="color:var(--text-muted)">Nenhum dado na tabela de teste.</span>';
+      el.innerHTML = '<span style="color:var(--text-muted)">Nenhum dado na tabela de teste. Monitorando...</span>';
       return;
     }
 
@@ -8875,11 +8877,28 @@ async function erpTesteConsultar(){
       </tr>`;
     });
     html += '</table></div>';
-    html += `<div style="margin-top:10px;font-size:.75rem;color:var(--text-muted)">Última consulta: ${new Date(_erpLastCheckTime).toLocaleString('pt-BR')}</div>`;
+    html += `<div style="margin-top:10px;font-size:.75rem;color:var(--text-muted)">🔄 Monitorando automaticamente • Última atualização: ${new Date(_erpLastCheckTime).toLocaleString('pt-BR')}</div>`;
     el.innerHTML = html;
   }catch(e){
     el.innerHTML = `<span style="color:#ef4444">Erro ao consultar: ${e.message}</span>`;
   }
+}
+
+function iniciarMonitorIntegracaoERP(){
+  if(_erpMonitorActive) return; // Já está monitorando
+  _erpMonitorActive = true;
+  _erpPollingTimer = setInterval(() => {
+    erpTesteConsultar().catch(e => console.warn('[ERP] Erro ao atualizar:', e.message));
+  }, 5000); // Verificar a cada 5 segundos
+  erpTesteConsultar(); // Primeira verificação imediata
+}
+
+function pararMonitorIntegracaoERP(){
+  if(_erpPollingTimer){
+    clearInterval(_erpPollingTimer);
+    _erpPollingTimer = null;
+  }
+  _erpMonitorActive = false;
 }
 
 async function erpTesteLimpar(){
@@ -9191,6 +9210,9 @@ function _integUploadBase(event){
 
 // ── Integração: render da página ─────────────────────────────────────────────
 async function renderIntegracao(){
+  // Iniciar monitoramento automático da integração
+  iniciarMonitorIntegracaoERP();
+
   // Preencher seletor de mês
   const mesEl = document.getElementById('integ-entrega-mes');
   if(mesEl && !mesEl.childElementCount){
@@ -19974,6 +19996,9 @@ async function sincronizarTudo(){
 }
 
 function showPage(name,tab){
+  // Parar monitoramento de integrações ao sair da aba
+  if(name !== 'erp-teste') pararMonitorIntegracaoERP();
+
   if(!tab) tab = document.querySelector('.sidebar-item[data-page="'+name+'"]') || document.body;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab,.sidebar-item').forEach(t=>t.classList.remove('active'));
