@@ -104,9 +104,9 @@ async function verificarSeExiste(pedidoId: number): Promise<{ existe: boolean; v
   }
 }
 
-async function registrarHistorico(pedidoId: number, acao: string, detalhes: any): Promise<void> {
+async function registrarHistorico(pedidoId: number, numeroPedidoErp: number, acao: string, detalhes: any): Promise<{ ok: boolean; erro?: string }> {
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/erp_historico`, {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/erp_historico`, {
       method: 'POST',
       headers: {
         'apikey': SUPABASE_ANON_KEY,
@@ -116,13 +116,23 @@ async function registrarHistorico(pedidoId: number, acao: string, detalhes: any)
       },
       body: JSON.stringify({
         pedido_id: pedidoId,
+        numero_pedido_erp: numeroPedidoErp,
         acao: acao,
-        detalhes: JSON.stringify(detalhes),
+        detalhes: detalhes,
         timestamp_acao: new Date().toISOString(),
       }),
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[HISTÓRICO] Falha ao registrar pedido ${pedidoId}: ${response.status} - ${errorText}`);
+      return { ok: false, erro: `Status ${response.status}` };
+    }
+
+    return { ok: true };
   } catch (err) {
-    console.warn(`[HISTÓRICO] Erro ao registrar: ${err.message}`);
+    console.error(`[HISTÓRICO] Exceção ao registrar pedido ${pedidoId}: ${err.message}`);
+    return { ok: false, erro: err.message };
   }
 }
 
@@ -191,8 +201,7 @@ async function gravarEmSupabase(pedidos: PedidoERP[]): Promise<{
       };
 
       // Registrar no histórico
-      await registrarHistorico(pedido.id, acao, {
-        numero_pedido_erp: pedido.numero_pedido_erp,
+      const historicoResult = await registrarHistorico(pedido.id, pedido.numero_pedido_erp, acao, {
         carga_erp: pedido.carga_erp,
         valor_liquido: pedido.valor_liquido,
         mudancas: verificacao.versaoAnterior ? {
@@ -206,6 +215,10 @@ async function gravarEmSupabase(pedidos: PedidoERP[]): Promise<{
           }
         } : null,
       });
+
+      if (!historicoResult.ok) {
+        console.warn(`[HISTÓRICO] Falha no registro do histórico para pedido ${pedido.id}: ${historicoResult.erro}`);
+      }
 
       // Inserir/Atualizar no Supabase
       const response = await client(`${SUPABASE_URL}/rest/v1/base_data_erp_teste?on_conflict=id`, {
