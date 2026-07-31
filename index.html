@@ -8192,6 +8192,25 @@ function renderFilteredList(containerEl, items, itemTemplate, emptyMsg='Sem dado
   containerEl.innerHTML = items.map(itemTemplate).join('');
 }
 
+// ── Abstração para grids de cards (com suporte a status badges) ──────────────
+function renderCardGrid(containerId, items, cardTemplate, emptyMsg='Nenhum item encontrado'){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  if(!items.length){
+    container.innerHTML = `<div style="text-align:center;padding:48px;color:#9ca3af;grid-column:1/-1"><div style="font-size:2.5rem;margin-bottom:10px">📭</div><p style="font-size:.93rem">${emptyMsg}</p></div>`;
+    return;
+  }
+  container.innerHTML = items.map(cardTemplate).join('');
+}
+
+// ── Setter para múltiplos KPIs (atualiza valores no DOM) ─────────────────────
+function setKPIs(kpiMap){
+  Object.entries(kpiMap).forEach(([id, value])=>{
+    const el = document.getElementById(id);
+    if(el) el.textContent = value;
+  });
+}
+
 // ── Timers de separação e carregamento ──────────────────────────────────────
 function calcTempoDecorrido(tsInicio, tsPausa, tempoPausadoSeg){
   if(!tsInicio) return null;
@@ -11288,18 +11307,7 @@ function renderLanc(){
 function showToast(msg,tipo){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+tipo;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),4000);}
 let cGSem = null;
 
-function renderGeral(){
-  if(BASE_DATA.length===0 && lancamentos.length===0){
-    ['g-kpi-ent','g-kpi-car','g-kpi-val','g-kpi-ri-ent','g-kpi-ri-val','g-kpi-re-ent','g-kpi-re-val'].forEach(id=>{
-      document.getElementById(id).textContent='-';
-    });
-    document.getElementById('g-rota-grid').innerHTML='<p class="no-data">&#x1F4C2; Carregue um arquivo para ver os dados</p>';
-    document.getElementById('g-valor-tabela').innerHTML='';
-    if(cGSem) cGSem.destroy();
-    return;
-  }
-
-  // Construir mapa de cargas lançadas com seus pedidos, rota e valor
+function _calcularTotaisGeral(){
   const _gcm = getCargaMap();
   const cargasLanc = {};
   lancamentos.forEach(l => {
@@ -11312,37 +11320,42 @@ function renderGeral(){
     cargasLanc[c] = {rota: normalizarRota(l.rota||'')||l.rota||'', rire, qtd: qtd||1, valor, ts: l.ts};
   });
 
-  // Totais gerais
-  let totalEnt=0, totalCar=0, totalVal=0;
-  let riEnt=0, riVal=0, reEnt=0, reVal=0;
+  let totalEnt=0, totalCar=0, totalVal=0, riEnt=0, riVal=0, reEnt=0, reVal=0;
   const rotaMap={}, rotaValMap={}, rotaRireMap={};
 
-  // Somar por carga lançada
   Object.entries(cargasLanc).forEach(([c,d])=>{
-    totalEnt += d.qtd;
-    totalCar++;
-    totalVal += d.valor;
-    const rire = d.rire;
-    const rota = d.rota;
-    if(rire==='R.I.'){ riEnt+=d.qtd; riVal+=d.valor; }
-    else             { reEnt+=d.qtd; reVal+=d.valor; }
-    if(rota && rota.toUpperCase() !== 'RETIRA'){
-      rotaMap[rota]    = (rotaMap[rota]||0)+d.qtd;
-      rotaValMap[rota] = (rotaValMap[rota]||0)+d.valor;
-      rotaRireMap[rota]= rire;
+    totalEnt += d.qtd; totalCar++; totalVal += d.valor;
+    if(d.rire==='R.I.'){ riEnt+=d.qtd; riVal+=d.valor; } else { reEnt+=d.qtd; reVal+=d.valor; }
+    if(d.rota && d.rota.toUpperCase() !== 'RETIRA'){
+      rotaMap[d.rota]    = (rotaMap[d.rota]||0)+d.qtd;
+      rotaValMap[d.rota] = (rotaValMap[d.rota]||0)+d.valor;
+      rotaRireMap[d.rota]= d.rire;
     }
   });
 
-  // KPIs linha 1
-  document.getElementById('g-kpi-ent').textContent = fmtNum(totalEnt);
-  document.getElementById('g-kpi-car').textContent = fmtNum(totalCar);
-  document.getElementById('g-kpi-val').textContent = 'R$ '+Number(totalVal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return {totalEnt, totalCar, totalVal, riEnt, riVal, reEnt, reVal, rotaMap, rotaValMap, rotaRireMap};
+}
 
-  // KPIs linha 2: RI e RE
-  document.getElementById('g-kpi-ri-ent').textContent = fmtNum(riEnt);
-  document.getElementById('g-kpi-ri-val').textContent = 'R$ '+Number(riVal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-  document.getElementById('g-kpi-re-ent').textContent = fmtNum(reEnt);
-  document.getElementById('g-kpi-re-val').textContent = 'R$ '+Number(reVal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+function renderGeral(){
+  if(BASE_DATA.length===0 && lancamentos.length===0){
+    setKPIs({'g-kpi-ent':'-','g-kpi-car':'-','g-kpi-val':'-','g-kpi-ri-ent':'-','g-kpi-ri-val':'-','g-kpi-re-ent':'-','g-kpi-re-val':'-'});
+    document.getElementById('g-rota-grid').innerHTML='<p class="no-data">&#x1F4C2; Carregue um arquivo para ver os dados</p>';
+    document.getElementById('g-valor-tabela').innerHTML='';
+    if(cGSem) cGSem.destroy();
+    return;
+  }
+
+  const {totalEnt, totalCar, totalVal, riEnt, riVal, reEnt, reVal, rotaMap, rotaValMap, rotaRireMap} = _calcularTotaisGeral();
+
+  setKPIs({
+    'g-kpi-ent': fmtNum(totalEnt),
+    'g-kpi-car': fmtNum(totalCar),
+    'g-kpi-val': 'R$ '+Number(totalVal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),
+    'g-kpi-ri-ent': fmtNum(riEnt),
+    'g-kpi-ri-val': 'R$ '+Number(riVal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),
+    'g-kpi-re-ent': fmtNum(reEnt),
+    'g-kpi-re-val': 'R$ '+Number(reVal||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})
+  });
 
   // Rota grid
   const rs = Object.entries(rotaMap).sort((a,b)=>b[1]-a[1]);
@@ -17658,42 +17671,8 @@ async function carregarRetornosVeiculos(){
   }catch(e){ console.error('Erro ao carregar retornos:', e); }
 }
 
-function renderDemandasCards(){
-  const container = document.getElementById('exp-cards-container');
-  if(!container) return;
-  const busca        = (document.getElementById('exp-busca')?.value||'').toLowerCase().trim();
-  const filtroVeic   = (document.getElementById('exp-filtro-veiculo')?.value||'').toLowerCase();
-  const filtroMot    = (document.getElementById('exp-filtro-motorista')?.value||'').toLowerCase();
-  const filtroRota   = (document.getElementById('exp-filtro-rota')?.value||'').toLowerCase();
-
-  // Carregar retornos se vazio
-  if(_retornoVeiculosCache.length === 0) carregarRetornosVeiculos();
-
-  let data = [..._demandasCache];
-  if(_filtroStatus){ data = data.filter(d=>d.status===_filtroStatus); }
-  // Filtro RI / RE
-  if(_filtroTipoRota){
-    data = data.filter(d=>getTipoRota(d.rota)===_filtroTipoRota);
-  }
-  if(busca) data = data.filter(d=>
-    (d.motorista||'').toLowerCase().includes(busca) ||
-    (d.rota||'').toLowerCase().includes(busca) ||
-    String(d.carga||'').includes(busca) ||
-    (d.veiculo||'').toLowerCase().includes(busca)
-  );
-  if(filtroVeic)  data = data.filter(d=>(d.veiculo||'').toLowerCase()===filtroVeic);
-  if(filtroMot)   data = data.filter(d=>(d.motorista||'').toLowerCase()===filtroMot);
-  if(filtroRota)  data = data.filter(d=>(d.rota||'').toLowerCase()===filtroRota);
-  // Pendentes sempre primeiro
-  const ordemStatus = {pendente:0,separacao:1,carregamento:2,aguardando_nf:3,aguardando_manifesto:4,pronto_viagem:5,saiu:6,fim_viagem:7,concluido:8,cancelado:9};
-  data.sort((a,b)=>(ordemStatus[a.status]??5)-(ordemStatus[b.status]??5));
-
-  if(!data.length){
-    container.innerHTML = '<div style="text-align:center;padding:48px;color:#9ca3af;grid-column:1/-1"><div style="font-size:2.5rem;margin-bottom:10px">📭</div><p style="font-size:.93rem">Nenhuma demanda encontrada</p></div>';
-    return;
-  }
-
-  const statusCfg = {
+function _getDemandasStatusConfig(){
+  return {
     pendente:             {label:'⏳ Pendente',          bg:'#fef3c7', color:'#92400e', bar:'#f59e0b'},
     separacao:            {label:'📦 Separação',         bg:'#dbeafe', color:'#1e40af', bar:'#3b82f6'},
     carregamento:         {label:'🚛 Carregamento',      bg:'#ede9fe', color:'#5b21b6', bar:'#7c3aed'},
@@ -17705,16 +17684,10 @@ function renderDemandasCards(){
     concluido:            {label:'✅ Concluído',          bg:'#d1fae5', color:'#065f46', bar:'#059669'},
     cancelado:            {label:'❌ Cancelado',          bg:'#fee2e2', color:'#991b1b', bar:'#ef4444'},
   };
-  const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : '—';
-  const fmtVal  = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
 
-  // Vínculo automático com agendamentos
-  const agendSet = new Set(
-    getAgendamentos().map(a=>(a.rota||'').trim().toUpperCase()+'__'+(a.data||''))
-  );
-
-  // Pendências de agendamento (todos os motivos de não saída)
-  const _motivoCfg = {
+function _getDemandasMotivoConfig(){
+  return {
     comercial:   { label:'💰 Pendência Comercial', bg:'#fef3c7', color:'#b45309', border:'rgba(180,83,9,.3)',  cardBorder:'rgba(245,158,11,.5)', cardLeft:'#f59e0b' },
     veiculo:     { label:'🚛 Sem Veículo',          bg:'#ede9fe', color:'#5b21b6', border:'rgba(91,33,182,.3)', cardBorder:'rgba(124,58,237,.4)', cardLeft:'#7c3aed' },
     motorista:   { label:'🚗 Sem Motorista',         bg:'#dbeafe', color:'#1e40af', border:'rgba(30,64,175,.3)', cardBorder:'rgba(59,130,246,.4)', cardLeft:'#3b82f6' },
@@ -17722,29 +17695,45 @@ function renderDemandasCards(){
     atraso_carregamento: { label:'📦 Atraso no Carregamento',   bg:'#fff7ed', color:'#c2410c', border:'rgba(249,115,22,.3)', cardBorder:'rgba(249,115,22,.4)', cardLeft:'#f97316' },
     outro:               { label:'📦 Atraso no Carregamento',   bg:'#fff7ed', color:'#c2410c', border:'rgba(249,115,22,.3)', cardBorder:'rgba(249,115,22,.4)', cardLeft:'#f97316' },
   };
-  const agendAtrasados = getAgendamentos().filter(a=>a.status==='atrasado' && a.motivo_atraso);
-  const comRotasPend = (window._comRotasCache||[]).filter(r=>r.status!=='resolvido');
+}
 
-  // ── Detectar veículo OU motorista em mais de 1 carga ativa (individualmente) ──
+function _filterDemandasData(){
+  const busca        = (document.getElementById('exp-busca')?.value||'').toLowerCase().trim();
+  const filtroVeic   = (document.getElementById('exp-filtro-veiculo')?.value||'').toLowerCase();
+  const filtroMot    = (document.getElementById('exp-filtro-motorista')?.value||'').toLowerCase();
+  const filtroRota   = (document.getElementById('exp-filtro-rota')?.value||'').toLowerCase();
+
+  let data = [..._demandasCache];
+  if(_filtroStatus){ data = data.filter(d=>d.status===_filtroStatus); }
+  if(_filtroTipoRota){ data = data.filter(d=>getTipoRota(d.rota)===_filtroTipoRota); }
+  if(busca) data = data.filter(d=>
+    (d.motorista||'').toLowerCase().includes(busca) ||
+    (d.rota||'').toLowerCase().includes(busca) ||
+    String(d.carga||'').includes(busca) ||
+    (d.veiculo||'').toLowerCase().includes(busca)
+  );
+  if(filtroVeic)  data = data.filter(d=>(d.veiculo||'').toLowerCase()===filtroVeic);
+  if(filtroMot)   data = data.filter(d=>(d.motorista||'').toLowerCase()===filtroMot);
+  if(filtroRota)  data = data.filter(d=>(d.rota||'').toLowerCase()===filtroRota);
+
+  const ordemStatus = {pendente:0,separacao:1,carregamento:2,aguardando_nf:3,aguardando_manifesto:4,pronto_viagem:5,saiu:6,fim_viagem:7,concluido:8,cancelado:9};
+  data.sort((a,b)=>(ordemStatus[a.status]??5)-(ordemStatus[b.status]??5));
+  return data;
+}
+
+function _buildDemandasAlerts(){
   const _statusAtivos = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
-  const _mapVeic = {}; // placa → [{carga, rota, status, motorista}]
-  const _mapMot  = {}; // motorista → [{carga, rota, status, veiculo}]
+  const _mapVeic = {}, _mapMot = {}, _alertas = {};
+
   _demandasCache.forEach(x=>{
     if(!_statusAtivos.has(x.status)) return;
     const veic = (x.veiculo||'').trim().toUpperCase();
     const mot  = (x.motorista||'').trim().toUpperCase();
     const item = {carga:x.carga, rota:x.rota, status:x.status, veiculo:x.veiculo, motorista:x.motorista};
-    if(veic && veic!=='A DEFINIR VEÍCULO'){
-      if(!_mapVeic[veic]) _mapVeic[veic] = [];
-      _mapVeic[veic].push(item);
-    }
-    if(mot && mot!=='A DEFINIR MOTORISTA'){
-      if(!_mapMot[mot]) _mapMot[mot] = [];
-      _mapMot[mot].push(item);
-    }
+    if(veic && veic!=='A DEFINIR VEÍCULO'){ if(!_mapVeic[veic]) _mapVeic[veic] = []; _mapVeic[veic].push(item); }
+    if(mot && mot!=='A DEFINIR MOTORISTA'){ if(!_mapMot[mot]) _mapMot[mot] = []; _mapMot[mot].push(item); }
   });
-  // Para cada carga, montar o alerta: duplo por veículo e/ou por motorista
-  const _alertas = {}; // carga → {veic:[...], mot:[...]}
+
   Object.values(_mapVeic).forEach(lista=>{
     if(lista.length < 2) return;
     lista.forEach(item=>{ if(!_alertas[item.carga]) _alertas[item.carga]={veic:[],mot:[]}; _alertas[item.carga].veic = lista.filter(x=>x.carga!==item.carga); });
@@ -17753,67 +17742,59 @@ function renderDemandasCards(){
     if(lista.length < 2) return;
     lista.forEach(item=>{ if(!_alertas[item.carga]) _alertas[item.carga]={veic:[],mot:[]}; _alertas[item.carga].mot = lista.filter(x=>x.carga!==item.carga); });
   });
-  // ─────────────────────────────────────────────────────────────────────────
+  return _alertas;
+}
 
-  container.innerHTML = data.map(d=>{
-    const s   = statusCfg[d.status] || {label:d.status,bg:'#f3f4f6',color:'#374151',bar:'#9ca3af'};
-    const meta = d.valor_meta||0;
-    const real = d.valor_total||0;
-    const pct  = meta>0 ? Math.min(Math.round((real/meta)*100),100) : 0;
-    const pctColor = pct>=100?'#059669':pct>=80?'#f59e0b':'#3b82f6';
+function renderDemandasCards(){
+  const container = document.getElementById('exp-cards-container');
+  if(!container) return;
+
+  if(_retornoVeiculosCache.length === 0) carregarRetornosVeiculos();
+
+  const data = _filterDemandasData();
+  const statusCfg = _getDemandasStatusConfig();
+  const _motivoCfg = _getDemandasMotivoConfig();
+  const _alertas = _buildDemandasAlerts();
+  const agendSet = new Set(getAgendamentos().map(a=>(a.rota||'').trim().toUpperCase()+'__'+(a.data||'')));
+  const agendAtrasados = getAgendamentos().filter(a=>a.status==='atrasado' && a.motivo_atraso);
+  const comRotasPend = (window._comRotasCache||[]).filter(r=>r.status!=='resolvido');
+
+  const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : '—';
+  const fmtVal  = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  renderCardGrid('exp-cards-container', data, d=>{
+    const s = statusCfg[d.status] || {label:d.status,bg:'#f3f4f6',color:'#374151',bar:'#9ca3af'};
+    const meta = d.valor_meta||0, real = d.valor_total||0, pct = meta>0 ? Math.min(Math.round((real/meta)*100),100) : 0;
     const temCarga = !!d.carga;
 
     const chaveAgend = (d.rota||'').trim().toUpperCase()+'__'+(d.data_saida||'');
-    const isAgendado = agendSet.has(chaveAgend);
-    const badgeAgend = isAgendado
+    const badgeAgend = agendSet.has(chaveAgend)
       ? `<span style="font-size:.62rem;font-weight:700;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #93c5fd">📋 Agendado</span>`
       : `<span style="font-size:.62rem;font-weight:700;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #fcd34d">⚡ Extra</span>`;
 
-    // Badge de retorno agendado do veículo
     const retornoVeic = _retornoVeiculosCache.find(r=>_demandasCache.find(dem=>dem.id===r.demanda_id && dem.veiculo===d.veiculo));
     const badgeRetorno = retornoVeic && retornoVeic.data_retorno_agendado
-      ? `<span style="font-size:.62rem;font-weight:700;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #c7d2fe">🔙 Retorno ${new Date(retornoVeic.data_retorno_agendado+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}</span>`
-      : '';
+      ? `<span style="font-size:.62rem;font-weight:700;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid #c7d2fe">🔙 Retorno ${new Date(retornoVeic.data_retorno_agendado+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}</span>` : '';
 
-    // Badge de alerta: mesmo veículo e/ou motorista em outra carga ativa
     const _alerta = _alertas[d.carga];
-    const badgeDup = _alerta
-      ? (()=>{
-          const lbStatus = {pendente:'Pendente',separacao:'Separação',carregamento:'Carregamento',aguardando_nf:'Ag.NF',aguardando_manifesto:'Ag.Manifesto',pronto_viagem:'Pronto',saiu:'Em Rota',fim_viagem:'Fim Viagem'};
-          const hasVeic = _alerta.veic && _alerta.veic.length > 0;
-          const hasMot  = _alerta.mot  && _alerta.mot.length  > 0;
-          let label, tipParts = [];
-          if(hasVeic && hasMot)      label = '⚠️ Duplo';
-          else if(hasVeic)           label = '⚠️ Veículo Duplo';
-          else                       label = '⚠️ Motorista Duplo';
-          if(hasVeic) tipParts.push('Veículo: ' + _alerta.veic.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
-          if(hasMot)  tipParts.push('Motorista: ' + _alerta.mot.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
-          return `<span title="⚠️ ${tipParts.join(' | ')}" style="font-size:.62rem;font-weight:800;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;padding:1px 6px;border-radius:8px;white-space:nowrap;cursor:default">${label}</span>`;
-        })()
-      : '';
+    const badgeDup = _alerta ? (()=>{
+      const lbStatus = {pendente:'Pendente',separacao:'Separação',carregamento:'Carregamento',aguardando_nf:'Ag.NF',aguardando_manifesto:'Ag.Manifesto',pronto_viagem:'Pronto',saiu:'Em Rota',fim_viagem:'Fim Viagem'};
+      const hasVeic = _alerta.veic?.length > 0, hasMot = _alerta.mot?.length > 0;
+      const label = hasVeic && hasMot ? '⚠️ Duplo' : hasVeic ? '⚠️ Veículo Duplo' : '⚠️ Motorista Duplo';
+      const tipParts = [];
+      if(hasVeic) tipParts.push('Veículo: ' + _alerta.veic.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
+      if(hasMot) tipParts.push('Motorista: ' + _alerta.mot.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
+      return `<span title="⚠️ ${tipParts.join(' | ')}" style="font-size:.62rem;font-weight:800;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;padding:1px 6px;border-radius:8px;white-space:nowrap;cursor:default">${label}</span>`;
+    })() : '';
 
-    // Badge de ocorrências pendentes na rota
-    const _ocorrPendRota = _ocorrenciasDistribCache.filter(o=>
-      o.status==='pendente' && (o.rota||'').trim().toUpperCase()===(d.rota||'').trim().toUpperCase()
-    );
-    const badgeOcorr = '';
-
-    // Verificar pendência de agendamento (qualquer motivo) — match por rota
     const rotaUp = (d.rota||'').trim().toUpperCase();
-    const agendPend = agendAtrasados.find(a=>
-      (a.rota||'').trim().toUpperCase()===rotaUp
-    );
-    // Fallback: comercial_rotas para cargas que vieram pelo fluxo antigo
-    const pendComercialLeg = !agendPend && comRotasPend.find(r=>
-      (r.rota||'').trim().toUpperCase()===rotaUp
-    );
-    const motivoKey  = agendPend ? (agendPend.motivo_atraso||'outro') : (pendComercialLeg ? 'comercial' : null);
+    const agendPend = agendAtrasados.find(a=>(a.rota||'').trim().toUpperCase()===rotaUp);
+    const pendComercialLeg = !agendPend && comRotasPend.find(r=>(r.rota||'').trim().toUpperCase()===rotaUp);
+    const motivoKey = agendPend ? (agendPend.motivo_atraso||'outro') : (pendComercialLeg ? 'comercial' : null);
     const motivoTexto = agendPend?.motivo_label || null;
     const mcfg = motivoKey ? (_motivoCfg[motivoKey]||_motivoCfg.outro) : null;
     const labelFinal = (motivoKey==='outro' && motivoTexto) ? `📝 ${motivoTexto}` : mcfg?.label || '';
-    const badgeComercial = mcfg
-      ? `<span style="font-size:.62rem;font-weight:700;background:${mcfg.bg};color:${mcfg.color};padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid ${mcfg.border}">${labelFinal}</span>`
-      : '';
+    const badgeComercial = mcfg ? `<span style="font-size:.62rem;font-weight:700;background:${mcfg.bg};color:${mcfg.color};padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid ${mcfg.border}">${labelFinal}</span>` : '';
     const cardBorderExtra = mcfg ? `border-color:${mcfg.cardBorder};border-left:3px solid ${mcfg.cardLeft};` : '';
 
     return `<div class="exp-card" data-id="${d.id}" style="${cardBorderExtra}">
