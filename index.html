@@ -24979,20 +24979,11 @@ function mudarMesPainelIndicadores(mes){
   else if(abaAtiva === 'carregamento-prazo') carregarPainelCarregamentoPrazo();
 }
 
-// Classifica o registro de absenteísmo como Armazém quando a função não é
-// motorista/ajudante de distribuição — cobre conferente, Ajudante Armazém,
-// Aux. De estoque, Operador de Empilhadeira, Aux. Carga/Descarga, Devoluções,
-// Aux expedição e registros sem função preenchida. Antes esta aba cruzava por
-// nome com o cadastro de `conferentes`, o que deixava de fora ~3.700 registros
-// de outras funções de armazém que nunca estiveram nesse cadastro.
-function _ehFuncaoArmazem(funcao){
-  const f = (funcao||'').trim().toLowerCase();
-  if(!f) return true;
-  if(f === 'motorista' || f === 'ajudante') return false;
-  if(f.startsWith('motorista/')) return false;
-  return true;
-}
-
+// Espelho do módulo oficial "Armazém → Absenteísmo" (_calcularAbsenteismoArmazem,
+// definida perto de renderAbsArmazem). Não tem cálculo próprio: só formata o
+// que a fonte oficial já calculou. Antes esta aba cruzava absenteismo.nome com
+// o cadastro de conferentes por conta própria e tinha número divergente do
+// módulo oficial — ver commit desta correção para o histórico do problema.
 async function carregarPainelAbsArmazem(){
   const container = document.getElementById('painel-ind-abs-armazem-container');
   if(!container) return;
@@ -25001,18 +24992,24 @@ async function carregarPainelAbsArmazem(){
 
   try {
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
-    const dados = await supaFetch(`absenteismo?mes_ano=eq.${mesAtual}&select=*&order=nome.asc`) || [];
-
-    const dadosArmazem = dados.filter(d => _ehFuncaoArmazem(d.funcao));
-
-    // Calcular estatísticas
-    const stats = calcularEstatisticasAbs(dadosArmazem);
+    const r = await _calcularAbsenteismoArmazem(mesAtual, {});
+    const semanas = _calcAbsSemanaArmazem(mesAtual, r.porFunc);
 
     container.innerHTML = renderRelatorioAbsenteismo({
       titulo: 'Absenteísmo',
       indicador: 'INDICADOR 01 · ARMAZÉM',
       area: 'OPERAÇÕES / ARMAZÉM',
-      mesAtual, stats, dadosBrutos: dadosArmazem
+      mesAtual,
+      meta: _getMetaAbs('arm'),
+      stats: {
+        total: r.funcs.length,
+        faltas: r.totFalta,
+        atestados: r.totAtes,
+        folgas: r.totFolga,
+        percentual: r.pctAbs+'%',
+        percentualNum: r.absNum
+      },
+      semanasPrecalc: semanas
     });
   } catch(e){
     console.error('Erro ao carregar absenteísmo armazém:', e);
@@ -25023,37 +25020,54 @@ async function carregarPainelAbsArmazem(){
 // Relatório executivo de absenteísmo (visual em tons de cinza) — usado pelas
 // abas Armazém e Distribuição do Painel de Indicadores. Renderiza sempre em
 // claro/grafite (island própria), independente do tema escuro do resto do app.
-function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, dadosBrutos}){
+function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, dadosBrutos, semanasPrecalc, meta}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
   const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(ultimoDia)}/${fmtBR(mes)}`;
+  const metaNum = meta != null ? meta : 2; // meta mensal padrão do sistema (ou meta configurável do módulo oficial, quando informada)
 
-  // Evolução semanal (S1: dias 1-7, S2: 8-14, ... a partir da data real de cada registro)
-  const semanas = [1,2,3,4,5].map(s=>{
-    const diaIni = (s-1)*7 + 1;
-    const diaFim = Math.min(s*7, ultimoDia);
-    return { s, diaIni, diaFim, ocorrencias:0, faltas:0, registros:0 };
-  }).filter(sem => sem.diaIni <= ultimoDia);
+  // Evolução semanal: usa cálculo já pronto (semanasPrecalc — mesma fonte do
+  // módulo oficial, ex.: _calcAbsSemanaArmazem) quando informado; senão
+  // agrupa dadosBrutos por dia-do-mês (comportamento legado, aba Distribuição).
+  let semanasView;
+  if(semanasPrecalc){
+    semanasView = semanasPrecalc.map(s => ({
+      pct: s.pct||0, ocorrencias: s.faltas+s.atestados,
+      label: s.chartLabel, sub: `${_fmtDia(s.ini)}–${_fmtDia(s.fim)}/${fmtBR(mes)}`
+    }));
+  } else {
+    const semanas = [1,2,3,4,5].map(s=>{
+      const diaIni = (s-1)*7 + 1;
+      const diaFim = Math.min(s*7, ultimoDia);
+      return { s, diaIni, diaFim, ocorrencias:0, faltas:0, registros:0 };
+    }).filter(sem => sem.diaIni <= ultimoDia);
 
-  dadosBrutos.forEach(d=>{
-    if(!d.data) return;
-    const dia = Number(String(d.data).slice(8,10));
-    const sem = semanas.find(x => dia >= x.diaIni && dia <= x.diaFim);
-    if(!sem) return;
-    sem.registros++;
-    if(d.status && d.status !== 'presente') sem.ocorrencias++;
-    if(d.status === 'falta') sem.faltas++;
-  });
+    dadosBrutos.forEach(d=>{
+      if(!d.data) return;
+      const dia = Number(String(d.data).slice(8,10));
+      const sem = semanas.find(x => dia >= x.diaIni && dia <= x.diaFim);
+      if(!sem) return;
+      sem.registros++;
+      if(d.status && d.status !== 'presente') sem.ocorrencias++;
+      if(d.status === 'falta') sem.faltas++;
+    });
 
-  const totalOcorrencias = semanas.reduce((a,s)=>a+s.ocorrencias,0);
-  const metaNum = 2; // meta mensal padrão do sistema
+    semanasView = semanas.map(sem => ({
+      pct: stats.total > 0 ? (sem.ocorrencias/stats.total*100) : 0,
+      ocorrencias: sem.ocorrencias,
+      label: `S${sem.s}`, sub: `${fmtBR(sem.diaIni)}–${fmtBR(sem.diaFim)}/${fmtBR(mes)}`
+    }));
+  }
+
+  const totalOcorrencias = semanasPrecalc
+    ? semanasPrecalc.reduce((a,s)=>a+s.faltas+s.atestados,0)
+    : semanasView.reduce((a,s)=>a+s.ocorrencias,0);
   const dentroDaMeta = stats.percentualNum <= metaNum;
-  const semPct = s => stats.total > 0 ? (s.ocorrencias/stats.total*100) : 0;
-  const eixoMax = Math.max(metaNum * 1.25, ...semanas.map(s=>semPct(s))) * 1.15 || 2.5;
+  const eixoMax = Math.max(metaNum * 1.25, ...semanasView.map(s=>s.pct)) * 1.15 || 2.5;
 
-  const barras = semanas.map(sem=>{
-    const pct = semPct(sem);
+  const barras = semanasView.map(sem=>{
+    const pct = sem.pct;
     const alturaPct = Math.min(100, (pct/eixoMax)*100);
     const alturaMeta = Math.min(100, (metaNum/eixoMax)*100);
     const acimaDaMeta = pct > metaNum;
@@ -25063,8 +25077,8 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, d
         <div style="position:relative;width:100%;max-width:64px;height:120px;display:flex;align-items:flex-end">
           <div style="width:100%;height:${Math.max(alturaPct,1.5)}%;background:${acimaDaMeta ? 'linear-gradient(180deg,#1a1a1a 0%,#1a1a1a '+(alturaMeta/Math.max(alturaPct,1.5)*100)+'%,#b8b8b8 '+(alturaMeta/Math.max(alturaPct,1.5)*100)+'%)' : '#b8b8b8'};border-radius:2px 2px 0 0"></div>
         </div>
-        <div style="font-size:.74rem;font-weight:700;color:#1a1a1a;margin-top:10px">S${sem.s}</div>
-        <div style="font-size:.64rem;color:#8a8a8a;margin-top:2px">${fmtBR(sem.diaIni)}–${fmtBR(sem.diaFim)}/${fmtBR(mes)}</div>
+        <div style="font-size:.74rem;font-weight:700;color:#1a1a1a;margin-top:10px">${sem.label}</div>
+        <div style="font-size:.64rem;color:#8a8a8a;margin-top:2px">${sem.sub}</div>
         <div style="font-size:.64rem;color:#8a8a8a;margin-top:1px">${sem.ocorrencias} ocorrência${sem.ocorrencias===1?'':'s'}</div>
       </div>`;
   }).join('');
@@ -26690,6 +26704,43 @@ function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais, metaOverride)
 }
 
 // ── Absenteísmo por Semana — Armazém ──────────────────────────────────────────
+// Fonte única da quebra semanal — usada pelo módulo oficial (Armazém →
+// Absenteísmo) e pelo Painel de Indicadores. Exclui domingos e feriados
+// nacionais do denominador de dias trabalhados.
+function _calcAbsSemanaArmazem(filtMes, porFunc){
+  if(!filtMes) return [];
+  const semanas = _calcSemanas(filtMes);
+
+  const feriadosNacionais = new Set([
+    '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
+    '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
+    '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
+    '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
+    '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
+    '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
+  ]);
+
+  return semanas.map((s, idx) => {
+    let faltas=0, atestados=0, total=0;
+    const d = new Date(s.ini);
+    while(d <= s.fim){
+      const iso = _fmtISO(d);
+      if(d.getDay() !== 0 && !feriadosNacionais.has(iso)){
+        Object.values(porFunc).forEach(f => {
+          const st = f.dias[iso];
+          if(st === 'falta')    { faltas++; total++; }
+          else if(st === 'atestado') { atestados++; total++; }
+          else if(st === 'presente') { total++; }
+        });
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    const hoje = new Date(); hoje.setHours(23,59,59,0);
+    const pct = total > 0 ? ((faltas+atestados)/total*100) : (s.fim<=hoje ? 0 : null);
+    return { ini:s.ini, fim:s.fim, label:`S${idx+1} ${_fmtDia(s.ini)}-${_fmtDia(s.fim)}`, chartLabel:`S${idx+1}`, pct, faltas, atestados, total };
+  });
+}
+
 let _absSemanChartArm = null;
 function _renderAbsSemanaArm(filtMes, porFunc){
   const cardsEl  = document.getElementById('abs-arm-semana-cards');
@@ -26707,38 +26758,8 @@ function _renderAbsSemanaArm(filtMes, porFunc){
   if(btn) btn.style.display = '';
   if(section){ section.style.display = 'block'; if(btn) btn.textContent = '📅 Ocultar semanas ▲'; }
 
-  const meta    = _getMetaAbs('arm');
-  const semanas = _calcSemanas(filtMes);
-
-  const feriadosNacionais = new Set([
-    '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
-    '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
-    '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
-    '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
-    '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
-    '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
-  ]);
-
-  const semanaStats = semanas.map((s, idx) => {
-    let faltas=0, atestados=0, total=0;
-    const d = new Date(s.ini);
-    while(d <= s.fim){
-      const iso = _fmtISO(d);
-      if(d.getDay() !== 0 && !feriadosNacionais.has(iso)){
-        Object.values(porFunc).forEach(f => {
-          const st = f.dias[iso];
-          if(st === 'falta')    { faltas++; total++; }
-          else if(st === 'atestado') { atestados++; total++; }
-          else if(st === 'presente') { total++; }
-        });
-      }
-      d.setDate(d.getDate() + 1);
-    }
-    const hoje = new Date(); hoje.setHours(23,59,59,0);
-    const pct = total > 0 ? ((faltas+atestados)/total*100) : (s.fim<=hoje ? 0 : null);
-    return { label:`S${idx+1} ${_fmtDia(s.ini)}-${_fmtDia(s.fim)}`, chartLabel:`S${idx+1}`, pct, faltas, atestados, total };
-  });
-
+  const meta = _getMetaAbs('arm');
+  const semanaStats = _calcAbsSemanaArmazem(filtMes, porFunc);
   const semanasComDados = semanaStats.filter(s => s.pct !== null);
 
   // Cards — cor por meta
@@ -29369,6 +29390,115 @@ function setAbsArmMes(mes){
   renderAbsArmazem();
 }
 
+// Fonte única de Absenteísmo Armazém — usada pelo módulo oficial (Armazém →
+// Absenteísmo) e pelo Painel de Indicadores → Absenteísmo Armazém. Nenhuma
+// outra tela deve recalcular isso por conta própria — sempre chamar esta função.
+async function _calcularAbsenteismoArmazem(mes, filtros={}){
+  const { tipo = '', nome = '' } = filtros;
+
+  // 1. Unidade do usuário
+  const undUsuario = await _getUnidadeUsuario();
+
+  // 2. Buscar conferentes filtrando por unidade se disponível
+  const urlConfsBase = undUsuario
+    ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
+    : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&limit=500`;
+  const confsDB = await supaFetch(urlConfsBase) || [];
+
+  // Período de referência — calculado aqui para filtrar demissões corretamente
+  const mesRef = mes || new Date().toISOString().slice(0,7);
+  const periodoInicio  = mesRef+'-01';
+  const periodoFimExcl = _proximoMes(mesRef)+'-01';
+
+  // Filtrar desligados fora do período
+  // Inclui todos sem data_demissao (independente do flag ativo),
+  // exclui apenas quem foi desligado antes do período filtrado
+  const confsAtivos = confsDB.filter(cf => {
+    if(cf.ativo !== false) return true;          // ativo: sempre incluir
+    if(!cf.data_demissao) return true;           // sem demissão: ainda na empresa, incluir
+    return cf.data_demissao >= periodoInicio;    // demitido antes do período: excluir
+  });
+
+  // Filtro por tipo (perfil) e nome
+  const confsFiltrados = confsAtivos.filter(cf=>{
+    if(tipo && cf.perfil !== tipo) return false;
+    if(nome && cf.nome !== nome)   return false;
+    return true;
+  });
+
+  // Buscar lançamentos de absenteísmo + abastecimento + conferidos do período
+  const nomesSet = new Set(confsFiltrados.map(cf=>cf.nome.trim().toUpperCase()));
+  let url = 'absenteismo?select=nome,data,status&order=nome.asc,data.asc';
+  if(mes) url += `&mes_ano=eq.${mesRef}`;
+  const [lancamentos, abastRows, confPedRows] = await Promise.all([
+    supaFetch(url).catch(()=>[]),
+    supaFetch(`abastecimento_loja?data_saida=gte.${periodoInicio}&data_saida=lt.${periodoFimExcl}&select=conferente_nome,data_saida`).catch(()=>[]),
+    supaFetch(`conferencia_pedidos?conferido_em=gte.${periodoInicio}T00:00:00&conferido_em=lt.${periodoFimExcl}T00:00:00&status=eq.ok&select=conferente_nome,pedido`).catch(()=>[]),
+  ]);
+
+  // Agrupar lançamentos por nome (normalizado)
+  const lancMap = {};
+  (lancamentos||[]).forEach(d=>{
+    const nomeUp = (d.nome||'').trim().toUpperCase();
+    if(!nomesSet.has(nomeUp)) return;
+    if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
+    lancMap[nomeUp][d.data] = d.status;
+  });
+
+  // Mesclar abastecimento como "presente" (fonte: abastecimento) quando não há registro
+  (abastRows||[]).forEach(r=>{
+    if(!r.data_saida||!r.conferente_nome) return;
+    const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
+    if(!nomesSet.has(nomeUp)) return;
+    if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
+    if(!lancMap[nomeUp][r.data_saida]) lancMap[nomeUp][r.data_saida] = 'presente';
+  });
+
+  // Contar pedidos conferidos por pessoa no período
+  const pedConf = {};
+  (confPedRows||[]).forEach(r=>{
+    if(!r.conferente_nome) return;
+    const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
+    pedConf[nomeUp] = (pedConf[nomeUp]||0) + 1;
+  });
+
+  // Montar porFunc com TODOS os cadastrados (mesmo sem lançamento)
+  const porFunc = {};
+  confsFiltrados.forEach(cf=>{
+    const nomeUp = cf.nome.trim().toUpperCase();
+    porFunc[nomeUp] = {
+      nome: cf.nome,
+      perfil: cf.perfil,
+      ativo: cf.ativo,
+      data_demissao: cf.data_demissao||null,
+      pedidosConf: pedConf[nomeUp]||0,
+      dias: lancMap[nomeUp] || {}
+    };
+  });
+
+  // KPIs
+  const funcs = Object.keys(porFunc).sort();
+  let totPres=0,totFalta=0,totAtes=0,totFolga=0,totFerias=0;
+  funcs.forEach(n=>{
+    const dias = Object.values(porFunc[n].dias);
+    totPres  += dias.filter(s=>s==='presente').length;
+    totFalta += dias.filter(s=>s==='falta').length;
+    totAtes  += dias.filter(s=>s==='atestado').length;
+    totFolga += dias.filter(s=>s==='folga').length;
+    totFerias+= dias.filter(s=>s==='ferias').length;
+  });
+  const diasTrab = totPres+totFalta+totAtes;
+  const pctAbs = diasTrab>0?(((totFalta+totAtes)/diasTrab)*100).toFixed(2):'0.00';
+  const absNum = parseFloat(pctAbs)||0;
+
+  return {
+    mesRef, undUsuario, confsDB, confsAtivos, confsFiltrados,
+    porFunc, funcs,
+    totPres, totFalta, totAtes, totFolga, totFerias, diasTrab,
+    pctAbs, absNum
+  };
+}
+
 async function renderAbsArmazem(){
   const container = document.getElementById('abs-arm-tbody');
   if(!container){ console.warn('[AbsArm] container abs-arm-tbody não encontrado'); return; }
@@ -29398,30 +29528,10 @@ async function renderAbsArmazem(){
   const hoje        = new Date().toISOString().split('T')[0];
 
   try{
-    // 1. Unidade do usuário
-    const undUsuario = await _getUnidadeUsuario();
+    const r = await _calcularAbsenteismoArmazem(filtMes, {tipo: filtTipoArm, nome: filtNomeArm});
+    const { undUsuario, confsDB, confsAtivos, porFunc, funcs, totPres, totFalta, totAtes, totFolga, pctAbs, absNum: absNumArm } = r;
 
-    // 2. Buscar conferentes filtrando por unidade se disponível
-    const urlConfsBase = undUsuario
-      ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
-      : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade&order=nome.asc&limit=500`;
-    const confsDB = await supaFetch(urlConfsBase) || [];
-
-    // Período de referência — calculado aqui para filtrar demissões corretamente
-    const _mesRefArm = filtMes || new Date().toISOString().slice(0,7);
-    const periodoInicio  = _mesRefArm+'-01';
-    const periodoFimExcl = _proximoMes(_mesRefArm)+'-01';
-
-    // 2. Filtrar desligados fora do período
-    // Inclui todos sem data_demissao (independente do flag ativo),
-    // exclui apenas quem foi desligado antes do período filtrado
-    const confsAtivos = confsDB.filter(cf => {
-      if(cf.ativo !== false) return true;          // ativo: sempre incluir
-      if(!cf.data_demissao) return true;           // sem demissão: ainda na empresa, incluir
-      return cf.data_demissao >= periodoInicio;    // demitido antes do período: excluir
-    });
-
-    // 3. Popular select de nomes (sempre recarregar para respeitar filtro de unidade)
+    // Popular select de nomes (sempre recarregar para respeitar filtro de unidade)
     const selNomeArm = document.getElementById('abs-arm-filtro-nome');
     if(selNomeArm){
       const valAtual = selNomeArm.value;
@@ -29430,80 +29540,7 @@ async function renderAbsArmazem(){
       nomes.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n; selNomeArm.appendChild(o); });
       if(valAtual) selNomeArm.value = valAtual;
     }
-
-    // 4. Filtro por tipo (perfil) e nome
-    const confsFiltrados = confsAtivos.filter(cf=>{
-      if(filtTipoArm && cf.perfil !== filtTipoArm) return false;
-      if(filtNomeArm && cf.nome !== filtNomeArm)   return false;
-      return true;
-    });
-    console.log('[AbsArm] confsAtivos:', confsAtivos.length, '| confsFiltrados:', confsFiltrados.length, '| filtTipo:', JSON.stringify(filtTipoArm), 'filtNome:', JSON.stringify(filtNomeArm));
-
-    // 3. Buscar lançamentos de absenteísmo + abastecimento + conferidos do período
-    const nomesSet = new Set(confsFiltrados.map(cf=>cf.nome.trim().toUpperCase()));
-    let url = 'absenteismo?select=nome,data,status&order=nome.asc,data.asc';
-    if(filtMes) url += `&mes_ano=eq.${filtMes}`;
-    const [lancamentos, abastRows, confPedRows] = await Promise.all([
-      supaFetch(url).catch(()=>[]),
-      supaFetch(`abastecimento_loja?data_saida=gte.${periodoInicio}&data_saida=lt.${periodoFimExcl}&select=conferente_nome,data_saida`).catch(()=>[]),
-      supaFetch(`conferencia_pedidos?conferido_em=gte.${periodoInicio}T00:00:00&conferido_em=lt.${periodoFimExcl}T00:00:00&status=eq.ok&select=conferente_nome,pedido`).catch(()=>[]),
-    ]);
-
-    // 4. Agrupar lançamentos por nome (normalizado)
-    const lancMap = {};
-    (lancamentos||[]).forEach(d=>{
-      const nomeUp = (d.nome||'').trim().toUpperCase();
-      if(!nomesSet.has(nomeUp)) return;
-      if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
-      lancMap[nomeUp][d.data] = d.status;
-    });
-
-    // 4b. Mesclar abastecimento como "presente" (fonte: abastecimento) quando não há registro
-    (abastRows||[]).forEach(r=>{
-      if(!r.data_saida||!r.conferente_nome) return;
-      const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
-      if(!nomesSet.has(nomeUp)) return;
-      if(!lancMap[nomeUp]) lancMap[nomeUp] = {};
-      if(!lancMap[nomeUp][r.data_saida]) lancMap[nomeUp][r.data_saida] = 'presente';
-    });
-
-    // 4c. Contar pedidos conferidos por pessoa no período
-    const pedConf = {};
-    (confPedRows||[]).forEach(r=>{
-      if(!r.conferente_nome) return;
-      const nomeUp = (r.conferente_nome||'').trim().toUpperCase();
-      pedConf[nomeUp] = (pedConf[nomeUp]||0) + 1;
-    });
-
-    // 5. Montar porFunc com TODOS os cadastrados (mesmo sem lançamento)
-    const porFunc = {};
-    confsFiltrados.forEach(cf=>{
-      const nomeUp = cf.nome.trim().toUpperCase();
-      porFunc[nomeUp] = {
-        nome: cf.nome,
-        perfil: cf.perfil,
-        ativo: cf.ativo,
-        data_demissao: cf.data_demissao||null,
-        pedidosConf: pedConf[nomeUp]||0,
-        dias: lancMap[nomeUp] || {}
-      };
-    });
-
-    // 6. KPIs
-    const funcs = Object.keys(porFunc).sort();
-    let totPres=0,totFalta=0,totAtes=0,totFolga=0,totFerias=0;
-    funcs.forEach(n=>{
-      const dias = Object.values(porFunc[n].dias);
-      totPres  += dias.filter(s=>s==='presente').length;
-      totFalta += dias.filter(s=>s==='falta').length;
-      totAtes  += dias.filter(s=>s==='atestado').length;
-      totFolga += dias.filter(s=>s==='folga').length;
-      totFerias+= dias.filter(s=>s==='ferias').length;
-    });
-    const diasTrab = totPres+totFalta+totAtes;
-    const pctPres = diasTrab>0?((totPres/diasTrab)*100).toFixed(1):'—';
-    const pctAbs  = diasTrab>0?(((totFalta+totAtes)/diasTrab)*100).toFixed(2):'—';
-    const absNumArm = parseFloat(pctAbs)||0;
+    console.log('[AbsArm] confsAtivos:', confsAtivos.length, '| confsFiltrados:', funcs.length, '| filtTipo:', JSON.stringify(filtTipoArm), 'filtNome:', JSON.stringify(filtNomeArm));
 
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
     set('abs-arm-kpi-total',funcs.length);
