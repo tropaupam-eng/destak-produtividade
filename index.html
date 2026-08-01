@@ -23623,9 +23623,37 @@ async function renderDashInterna(){
     }
 
     // 3. KPIs básicos
-    // totalCargas vem de lancamentos (fonte verdadeira de cargas lançadas — mais confiável que demandas_rota)
-    // totalPedidos e valorTotal continuam vindo do base_data (dados no nível de pedido)
-    const totalCargas    = cargasUndLanc.size;
+    // totalCargas vem de lancamentos (fonte verdadeira de cargas lançadas — mais confiável que demandas_rota),
+    // mas precisa respeitar o filtro R.I./R.E. selecionado — senão o card "Cargas" mistura RI+RE
+    // enquanto "Pedidos" só conta RI, dando números inconsistentes entre os dois cards.
+    // cargasUnd (calculado acima a partir de `bd`) já cobre as cargas com base_data.
+    // Cargas lançadas que ainda não têm base_data (órfãs) são classificadas só pelo lançamento.
+    const cargasComBD = new Set(baseDataSupa.map(r=>String(Math.round(Number(r.carga)))));
+    const classificarCargaPorLancamento = (c) => {
+      if(cargaIsRI.hasOwnProperty(c) && !cargaIsRI[c]) return false;
+      const lancRota = cargaRota[c];
+      if(lancRota){
+        if(ROTAS_RI.has(lancRota)) return true;
+        const cfgLancRota = CONFIG.rotas?.[lancRota];
+        if(cfgLancRota) return cfgLancRota.ri && cfgLancRota.prazoOtif !== null;
+      }
+      if(cargaIsRI.hasOwnProperty(c) && cargaIsRI[c]) return true;
+      return null; // sem sinal suficiente para classificar
+    };
+    let cargasFiltro;
+    if(rireFiltro === ''){
+      cargasFiltro = cargasUndLanc;
+    } else {
+      const orfas = [...cargasUndLanc].filter(cStr => !cargasComBD.has(cStr));
+      const orfasFiltradas = orfas.filter(cStr => {
+        const c = Math.round(Number(cStr));
+        const ri = classificarCargaPorLancamento(c);
+        if(ri === null) return rireFiltro === 'RI'; // ambíguo: mantém no RI (comportamento anterior), exclui do RE
+        return rireFiltro === 'RI' ? ri : !ri;
+      });
+      cargasFiltro = new Set([...cargasUnd, ...orfasFiltradas]);
+    }
+    const totalCargas    = cargasFiltro.size;
     const totalPedidos   = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size;
     const valorTotal     = bd.reduce((s,r)=>s+(Number(r.valor)||0), 0);
     const cargasAtivas   = dem.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
