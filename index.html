@@ -1967,7 +1967,33 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Registro de cargas internas e externas não vinculadas à Expedição</p>
     </div>
     <div style="display:flex;gap:8px">
-      <button onclick="syncLancamentos().then(renderLanc)" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+      <button onclick="syncLancamentos().then(()=>{initLancamentosMeses();renderLancamentosFiltrados();})" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+    </div>
+  </div>
+
+  <!-- ── FILTRO DE PERÍODO ── -->
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:end;gap:16px;flex-wrap:wrap">
+    <div>
+      <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:6px">Período</label>
+      <select id="lanc-mes-select" onchange="handleLancMesChange()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.9rem;outline:none;background:var(--bg-input);color:var(--text-primary);min-width:140px;cursor:pointer;font-weight:600">
+        <option value="">Carregando...</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:200px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
+          <div style="font-size:.7rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;margin-bottom:4px">Lançadas</div>
+          <div style="font-size:1.4rem;font-weight:800;color:var(--text-primary)" id="lanc-kpi-mes">0</div>
+        </div>
+        <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
+          <div style="font-size:.7rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;margin-bottom:4px">Com Base</div>
+          <div style="font-size:1.4rem;font-weight:800;color:#059669" id="lanc-kpi-vinc">0</div>
+        </div>
+        <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
+          <div style="font-size:.7rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;margin-bottom:4px">Sem Base</div>
+          <div style="font-size:1.4rem;font-weight:800;color:#f59e0b" id="lanc-kpi-sem">0</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -10997,12 +11023,13 @@ async function lancar(){
     populateSelects();
     renderMot();
     renderVeic();
-    renderLanc();
+    initLancamentosMeses();  // Reinicializa meses (novo lançamento pode incluir novo mês)
+    renderLancamentosFiltrados();  // Renderiza com filtro
     renderGeral();
   });
 }
 
-async function remover(carga){lancamentos=lancamentos.filter(l=>l.carga!==carga);salvarLanc();renderLanc();renderMot();renderVeic();}
+async function remover(carga){lancamentos=lancamentos.filter(l=>l.carga!==carga);salvarLanc();renderLancamentosFiltrados();renderMot();renderVeic();}
 async function escolherMotoristaLanc(carga, motorista){
   // Resolve duplicata: mais de um lançamento do SISTEMA para a mesma carga
   // com motoristas diferentes. Aqui as duas opções vêm de lancamentos (nenhuma é a planilha).
@@ -11058,8 +11085,8 @@ async function _marcarDivergenciaAceita(carga){
     aceita_em: new Date().toISOString()
   })}).catch(()=>{ window._divAceitasCache.delete(carga); });
 }
-function limparGrupo(tipo){if(tipo==='vinc')lancamentos=lancamentos.filter(l=>!l.vinculado);else lancamentos=lancamentos.filter(l=>l.vinculado);salvarLanc();renderLanc();renderMot();renderVeic();}
-function limparTudo(){if(!confirm('Limpar todos os lançamentos?'))return;lancamentos=[];salvarLanc();renderLanc();renderMot();renderVeic();}
+function limparGrupo(tipo){if(tipo==='vinc')lancamentos=lancamentos.filter(l=>!l.vinculado);else lancamentos=lancamentos.filter(l=>l.vinculado);salvarLanc();renderLancamentosFiltrados();renderMot();renderVeic();}
+function limparTudo(){if(!confirm('Limpar todos os lançamentos?'))return;lancamentos=[];salvarLanc();renderLancamentosFiltrados();renderMot();renderVeic();}
 
 function detectarConflitos() {
   // Detectar cargas com motoristas diferentes em lançamentos vs planilha
@@ -11321,6 +11348,110 @@ function renderLanc(){
 
   renderPendentes();
   detectarConflitos();
+}
+
+// ── FILTRO DE PERÍODO PARA ABA LANÇAMENTO ──
+let _lancMesSelecionado = null;
+
+function initLancamentosMeses(){
+  const selMes = document.getElementById('lanc-mes-select');
+  if(!selMes) return;
+
+  // Extrair meses disponíveis do array lancamentos (mesma regra: excluir pré-carga)
+  const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
+  const lancsValidos = lancamentos.filter(l=>!cargasPreCarga.has(Number(l.carga)));
+
+  const meses = [...new Set(
+    lancsValidos
+      .map(l => l.mes_ano)
+      .filter(Boolean)
+  )].sort().reverse();  // Mais recente primeiro
+
+  // Mês atual como padrão
+  const mesAtual = new Date().toISOString().slice(0,7);
+  _lancMesSelecionado = meses.includes(mesAtual) ? mesAtual : (meses[0] || mesAtual);
+
+  // Popular select
+  selMes.innerHTML = meses.map(m => `<option value="${m}">${formatarMesAno(m)}</option>`).join('');
+  selMes.value = _lancMesSelecionado;
+}
+
+function formatarMesAno(mesAno){
+  if(!mesAno || mesAno.length < 7) return mesAno;
+  const [ano, mes] = mesAno.split('-');
+  const nomes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  return `${nomes[parseInt(mes)-1]} / ${ano}`;
+}
+
+function handleLancMesChange(){
+  const selMes = document.getElementById('lanc-mes-select');
+  _lancMesSelecionado = selMes.value;
+  renderLancamentosFiltrados();
+}
+
+function renderLancamentosFiltrados(){
+  if(!_lancMesSelecionado) return;
+
+  // Aplicar mesma regra: excluir pré-carga
+  const cargasNaBase = new Set(BASE_DATA.map(r=>Number(r.carga)).filter(Boolean));
+  const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
+
+  // Filtrar lançamentos por mês E por regra de pré-carga
+  const lancsMes = lancamentos.filter(l =>
+    !cargasPreCarga.has(Number(l.carga)) &&  // Mesma regra de exclusão
+    (l.mes_ano === _lancMesSelecionado)      // Mesmo mês
+  );
+
+  const vinc = lancsMes.filter(l => cargasNaBase.has(Number(l.carga)));
+  const sem  = lancsMes.filter(l => !cargasNaBase.has(Number(l.carga)));
+
+  // Atualizar KPIs
+  document.getElementById('lanc-kpi-mes').textContent = lancsMes.length;
+  document.getElementById('lanc-kpi-vinc').textContent = vinc.length;
+  document.getElementById('lanc-kpi-sem').textContent = sem.length;
+
+  // Renderizar tabela
+  const tbody = document.getElementById('l-tbody-todos');
+  if(!tbody) return;
+
+  if(!lancsMes.length){
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted)">📋 Nenhum lançamento registrado em ${formatarMesAno(_lancMesSelecionado)}</td></tr>`;
+  } else {
+    const fv=v=>v>=1e6?'R$ '+(v/1e6).toFixed(2)+' mi':v>=1e3?'R$ '+(v/1e3).toFixed(1)+' mil':'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+    const fRire = r=> (r==='R.I.'||r==='RI')
+      ? '<span style="background:rgba(37,99,235,.1);color:#2563eb;font-size:.7rem;font-weight:700;padding:1px 7px;border-radius:5px">R.I.</span>'
+      : '<span style="background:rgba(217,119,6,.1);color:#d97706;font-size:.7rem;font-weight:700;padding:1px 7px;border-radius:5px">R.E.</span>';
+
+    tbody.innerHTML = lancsMes.sort((a,b)=>new Date(b.ts)-new Date(a.ts)).map(l=>{
+      const info = CARGA_MAP[l.carga];
+      const temBase = cargasNaBase.has(Number(l.carga));
+      const rire = normRire(l.rire) || getRireFromRota(l.rota||'');
+      return `<tr style="border-bottom:1px solid var(--border);transition:background .15s" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
+        <td style="padding:10px 14px">
+          <span style="background:${temBase?'rgba(5,150,105,.1)':'rgba(239,68,68,.1)'};color:${temBase?'#059669':'#ef4444'};font-size:.78rem;font-weight:800;padding:2px 9px;border-radius:6px">${l.carga}</span>
+        </td>
+        <td style="padding:10px 14px;font-size:.83rem;font-weight:600;color:var(--text-primary)">${l.motorista||'—'}</td>
+        <td style="padding:10px 14px;font-size:.8rem;color:var(--text-secondary)">${l.ajudante||'—'}</td>
+        <td style="padding:10px 14px;font-size:.78rem;font-family:monospace;font-weight:700;color:var(--text-primary)">${l.veiculo||'—'}</td>
+        <td style="padding:10px 14px">
+          <span style="background:var(--bg-card2);color:var(--text-primary);font-size:.78rem;font-weight:700;padding:2px 9px;border-radius:5px">${l.rota||'—'}</span>
+          ${fRire(rire)}
+        </td>
+        <td style="padding:10px 14px;font-size:.78rem;color:var(--text-muted)">${l.und||'—'}</td>
+        <td style="padding:10px 14px;text-align:right;font-size:.8rem;font-weight:700;color:var(--text-primary)">${info?info.qtd_pedidos:'—'}</td>
+        <td style="padding:10px 14px;text-align:right;font-size:.82rem;font-weight:700;color:var(--green)">${info?fv(info.valor):'—'}</td>
+        <td style="padding:10px 14px;text-align:center">
+          ${temBase
+            ?'<span style="color:#059669;font-size:.75rem;font-weight:700">✅ Sim</span>'
+            :'<span style="color:#f59e0b;font-size:.75rem;font-weight:700">⚠️ Não</span>'}
+        </td>
+        <td style="padding:10px 14px;text-align:center;font-size:.75rem;color:var(--text-muted)">${fmtHora(l.ts)}</td>
+        <td style="padding:10px 14px;text-align:center">
+          <button onclick="remover(${l.carga})" style="background:rgba(239,68,68,.1);color:#ef4444;border:none;border-radius:5px;padding:3px 8px;font-size:.75rem;cursor:pointer">✕</button>
+        </td>
+      </tr>`;
+    }).join('');
+  }
 }
 
 function showToast(msg,tipo){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+tipo;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),4000);}
@@ -20232,7 +20363,8 @@ function showPage(name,tab){
   },'ocorrencias');
   else if(name==='lancamento') safe(async ()=>{
     await syncLancamentos();
-    renderLanc();
+    initLancamentosMeses();  // Inicializa filtro de mês
+    renderLancamentosFiltrados();  // Renderiza com filtro
     atualizarSelectsUnd();
     Promise.all([
       MOTORISTAS_CACHE.length ? Promise.resolve() : carregarMotoristas(),
