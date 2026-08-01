@@ -18595,6 +18595,8 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
           if((!gravados||gravados.length===0) && novos.length>0){
             throw new Error(`Validação pós-gravação falhou: 0 registros encontrados para carga ${cargaNum}`);
           }
+          // ✅ Verificar divergências com lançamento do motorista (em segundo plano)
+          _verificarDivergenciasExpedicao(cargaNum, rotaDaPlan, '').catch(()=>{});
           // ✅ Banco confirmou — atualizar cache local (merge-duplicates: substituir todos os
           // registros da carga no cache para refletir valores atualizados, não só inserções novas)
           const chaveExist = new Set(BASE_DATA.map(r=>Number(r.carga)+'_'+String(r.pedido)));
@@ -19233,6 +19235,32 @@ async function carregarPortalMotorista(mesCustom = null){
         }
       }catch(_){}
     }
+    // ── VERIFICAR DIVERGÊNCIAS COM LANÇAMENTO DO MOTORISTA ──
+    if(_lancHoje && _lancHoje.carga){
+      try{
+        const divs = await supaFetch(
+          `divergencias_aceitas?carga=eq.${_lancHoje.carga}&motorista=eq.${encodeURIComponent(nomeDB)}&status=eq.pendente_revisao&select=id,tipo_divergencia,observacoes&limit=5`
+        ).catch(()=>[]) || [];
+        if(divs && divs.length > 0){
+          const elCargaAtual = document.getElementById('mot-carga-atual');
+          const divHTML = divs.map(d=>{
+            const tipos = (d.tipo_divergencia||'[]');
+            try{
+              const tdivs = JSON.parse(tipos);
+              return `<div style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-left:4px solid #ef4444;border-radius:10px;padding:12px 14px;margin-bottom:10px;font-size:.8rem;color:#fca5a5">
+                <div style="font-weight:700;margin-bottom:6px">⚠️ Divergência encontrada na carga #${_lancHoje.carga}</div>
+                ${tdivs.map(t=>`<div style="margin-left:8px;margin-bottom:3px">• ${t.tipo}: Você registrou "${t.motorista}", expedição registrou "${t.expedicao}"</div>`).join('')}
+                <div style="margin-top:8px;font-size:.75rem;color:#fca5a5;opacity:.9">${d.observacoes||'Solicite ao gestor para validar'}</div>
+              </div>`;
+            }catch(_){ return ''; }
+          }).join('');
+          if(divHTML && elCargaAtual){
+            elCargaAtual.innerHTML = divHTML + (elCargaAtual.innerHTML||'');
+          }
+        }
+      }catch(e){ console.warn('Erro ao buscar divergências:', e.message); }
+    }
+
     // Exibir/ocultar formulário de registro manual (Cenário B)
     const _elAutoLanc = document.getElementById('mot-auto-lancamento');
     if(_elAutoLanc) _elAutoLanc.style.display = (da || _lancHoje) ? 'none' : 'block';
@@ -20011,6 +20039,44 @@ async function _reconciliarLancamentosPendentesMotorista(nomeDB){
       ).catch(e=>console.warn('Reconciliação pendente falhou p/ carga', l.carga, e.message));
     }
   }catch(e){ console.warn('Reconciliação de lançamentos pendentes falhou:', e.message); }
+}
+
+// Verifica e registra divergências entre lançamento do motorista e da expedição
+async function _verificarDivergenciasExpedicao(cargaNum, rotaExpedicao, nomeMotoristaEsperado){
+  try{
+    // Buscar lançamento manual do motorista para essa carga
+    const lancMot = await supaFetch(
+      `lancamentos?carga=eq.${cargaNum}&fonte=eq.motorista_b&select=id,motorista,rota,ts&limit=1`
+    ).catch(()=>[]);
+
+    if(!lancMot || !lancMot.length) return; // Sem lançamento do motorista, OK
+
+    const lanc = lancMot[0];
+    const divergencias = [];
+
+    // Verificar se rota é diferente
+    if(lanc.rota !== rotaExpedicao && (lanc.rota||'').trim() !== '' && (rotaExpedicao||'').trim() !== ''){
+      divergencias.push({tipo:'rota', motorista: lanc.rota||'(não preenchida)', expedicao: rotaExpedicao});
+    }
+
+    // Se há divergências, registrar
+    if(divergencias.length > 0){
+      await supaFetch('divergencias_aceitas',{
+        method:'POST',
+        body:JSON.stringify({
+          carga: cargaNum,
+          motorista: lanc.motorista,
+          tipo_divergencia: JSON.stringify(divergencias),
+          status: 'pendente_revisao',
+          ts_criacao: new Date().toISOString(),
+          expedicao_registrou: true,
+          observacoes: 'Detectado automaticamente ao registrar expedição'
+        })
+      }).catch(e=>console.warn('Erro ao registrar divergência carga '+cargaNum+':', e.message));
+    }
+  }catch(e){
+    console.warn('Erro ao verificar divergências carga '+cargaNum+':', e.message);
+  }
 }
 
 async function renderExpMotPendentes(){
