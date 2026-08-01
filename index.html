@@ -8318,18 +8318,18 @@ async function syncLancamentos(){
   if(agora - _syncLancTs < 30000) return; // usar cache se sincronizado há menos de 30s
   _syncLancTs = agora;
   try{
-    const data = await supaFetch('lancamentos?select=id,carga,motorista,ajudante,veiculo,rota,und,rire,vinculado,pendente,ts,mes_ano&order=ts.desc&limit=2000');
+    const data = await supaFetch('lancamentos?select=id,carga,motorista,ajudante,veiculo,rota,und,rire,vinculado,pendente,ts,mes_ano,fonte&order=ts.desc&limit=2000');
     if(data && data.length > 0){
       // Mesclar dados do servidor com preloaded (não perder nenhum)
       const serverCargas = new Set(data.map(r=>Number(r.carga)));
       const localOnly = lancamentos.filter(l=>!serverCargas.has(Number(l.carga)));
-      
+
       const fromServer = data.map(r=>({
         carga: r.carga, motorista: r.motorista,
         ajudante: r.ajudante||'', veiculo: r.veiculo||'',
         rota: normalizarRota(r.rota), und: r.und||'', rire: r.rire||'',
         vinculado: r.vinculado, pendente: r.pendente,
-        ts: r.ts, mes_ano: r.mes_ano||'', _id: r.id
+        ts: r.ts, mes_ano: r.mes_ano||'', _id: r.id, fonte: r.fonte||''
       }));
       lancamentos = [...fromServer, ...localOnly];
       // Normalize rota in localOnly too
@@ -8362,13 +8362,13 @@ async function pushLancamento(l){
     if(l._id){
       await supaFetch(`lancamentos?id=eq.${l._id}`, {
         method:'PATCH',
-        body: JSON.stringify({motorista:l.motorista,ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null)})
+        body: JSON.stringify({motorista:l.motorista,ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
       });
     } else {
       const uid = USUARIO_LOGADO?USUARIO_LOGADO.id:null;
       const res = await supaFetch('lancamentos', {
         method:'POST',
-        body: JSON.stringify({carga:l.carga,motorista:l.motorista,ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null)})
+        body: JSON.stringify({carga:l.carga,motorista:l.motorista,ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
       });
       if(res&&res[0]) l._id = res[0].id;
       // Preencher ajudantes que se vincularam antes deste lançamento existir
@@ -10968,13 +10968,13 @@ async function lancar(){
     isUpdate = true;
     await supaFetch(`lancamentos?id=eq.${lancExistenteSupa.id}`,{
       method:'PATCH',
-      body:JSON.stringify({motorista:mot, rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase})
+      body:JSON.stringify({motorista:mot, rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase, rire:'R.I.', fonte:'lancamento'})
     }).catch(e=>console.warn('Update lancamento:',e.message));
   } else {
     lancamentos.unshift({
       carga, motorista:mot, ajudante:'', veiculo, rota:rotaFinal, und,
       vinculado:temNaBase, pendente:!temNaBase,
-      ts: tsLanc
+      ts: tsLanc, rire:'R.I.', fonte:'lancamento'
     });
     // salvarLanc() grava no localStorage ANTES de tentar o Supabase — se o POST
     // falhar (rede, conflito, RLS), o lançamento não some: fica em cache local
@@ -11283,14 +11283,24 @@ function preencherCarga(carga, rota) {
   const _motWrap = _sbWrap('l-motorista'); if(_motWrap) (_motWrap.querySelector('.sb-trigger')||_motWrap).focus();
 }
 
+// Aba Lançamento = fonte oficial de R.I. — exclui cargas de origem Expedição
+// (vinculadas via salvarVincularCarga / registro em campo do motorista), mesmo
+// depois que a pré-carga conclui e some de _demandasCache. Para lançamentos
+// legados sem `fonte` gravada, mantém a classificação existente rire/rota.
+function ehOrigemLancamento(l){
+  if(l.fonte==='expedicao'||l.fonte==='motorista_a'||l.fonte==='motorista_b') return false;
+  const rire = normRire(l.rire) || getRireFromRota(l.rota||'');
+  return rire === 'R.I.';
+}
+
 function renderLanc(){
   renderExpMotPendentes().catch(()=>{});
   const cargasNaBase  = new Set(BASE_DATA.map(r=>Number(r.carga)).filter(Boolean));
   // Excluir cargas da pré-carga (Expedição) — elas têm fluxo próprio
   const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
 
-  // Lançamentos que NÃO são pré-carga
-  const lancsValidos = lancamentos.filter(l=>!cargasPreCarga.has(Number(l.carga)));
+  // Lançamentos que NÃO são pré-carga e cuja origem é a própria aba Lançamento (R.I.)
+  const lancsValidos = lancamentos.filter(l=>!cargasPreCarga.has(Number(l.carga)) && ehOrigemLancamento(l));
   const vinc = lancsValidos.filter(l=>cargasNaBase.has(Number(l.carga)));
   const sem  = lancsValidos.filter(l=>!cargasNaBase.has(Number(l.carga)));
 
@@ -11357,9 +11367,9 @@ function initLancamentosMeses(){
   const selMes = document.getElementById('lanc-mes-select');
   if(!selMes) return;
 
-  // Extrair meses disponíveis do array lancamentos (mesma regra: excluir pré-carga)
+  // Extrair meses disponíveis do array lancamentos (mesma regra: excluir pré-carga e origem Expedição)
   const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
-  const lancsValidos = lancamentos.filter(l=>!cargasPreCarga.has(Number(l.carga)));
+  const lancsValidos = lancamentos.filter(l=>!cargasPreCarga.has(Number(l.carga)) && ehOrigemLancamento(l));
 
   const meses = [...new Set(
     lancsValidos
@@ -11392,13 +11402,14 @@ function handleLancMesChange(){
 function renderLancamentosFiltrados(){
   if(!_lancMesSelecionado) return;
 
-  // Aplicar mesma regra: excluir pré-carga
+  // Aplicar mesma regra: excluir pré-carga e origem Expedição
   const cargasNaBase = new Set(BASE_DATA.map(r=>Number(r.carga)).filter(Boolean));
   const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
 
-  // Filtrar lançamentos por mês E por regra de pré-carga
+  // Filtrar lançamentos por mês E por regra de pré-carga E por origem (R.I.)
   const lancsMes = lancamentos.filter(l =>
     !cargasPreCarga.has(Number(l.carga)) &&  // Mesma regra de exclusão
+    ehOrigemLancamento(l) &&                 // Somente origem: aba Lançamento (R.I.)
     (l.mes_ano === _lancMesSelecionado)      // Mesmo mês
   );
 
@@ -18483,7 +18494,7 @@ async function confirmarSaidaRota(){
               ajudante: '',
               rota: dem.rota||'',
               und: dem.unidade||dem.und||'',
-              rire: '',
+              rire: 'R.E.',
               vinculado: false,
               pendente: true,
               ts: _tsLancA,
@@ -19089,10 +19100,9 @@ async function salvarVincularCarga(){
         }
     } // fim if(file)
 
-    // Calcular RI/RE pela rota final
-    // Rotas internas conhecidas = R.I.; tudo mais (rotas externas, cidades) = R.E.
-    const _rotaUp = (rotaFinal||'').toUpperCase().trim();
-    const rireFinal = ROTAS_RI.has(_rotaUp) ? 'R.I.' : 'R.E.';
+    // Carga vinculada pela aba Expedição — classificação é pela origem do módulo,
+    // não pelo nome da rota: toda carga vinculada aqui é R.E. por definição.
+    const rireFinal = 'R.E.';
 
     // Atualizar demanda com carga e totais reais (mes_ano = mês da planilha importada)
     const _mesAnoVinc = linhasDaCarga[0]?.mes_ano || '';
@@ -19108,7 +19118,7 @@ async function salvarVincularCarga(){
       const novoLancData = {
         carga, motorista: condutorFinal, veiculo: d.veiculo || '',
         rota: rotaFinal, und: undFinal, rire: rireFinal,
-        vinculado: true, pendente: false, ts: tsLanc
+        vinculado: true, pendente: false, ts: tsLanc, fonte: 'expedicao'
       };
       // Captura o _id retornado para que salvarLanc não crie duplicata
       const resLanc = await supaFetch('lancamentos',{
@@ -19125,9 +19135,15 @@ async function salvarVincularCarga(){
       showToast(`✅ Carga ${carga} vinculada e lançada! Motorista: ${condutorFinal} | Rota: ${rotaFinal} | ${pedidosFinal} pedidos`, 'success');
     } else {
       // Lançamento já existe — apenas atualizar rota/und/rire com dados da planilha
+      // Se o lançamento já é de origem 'lancamento' (aba Lançamento), preserva
+      // essa origem/R.I. — a vinculação pela Expedição não pode reclassificá-lo.
+      const _jaEraLancamento = lancExiste.fonte === 'lancamento';
+      const _rireVinc  = _jaEraLancamento ? lancExiste.rire : rireFinal;
+      const _fonteVinc = _jaEraLancamento ? lancExiste.fonte : 'expedicao';
       lancExiste.rota      = rotaFinal    || lancExiste.rota;
       lancExiste.und       = undFinal     || lancExiste.und;
-      lancExiste.rire      = rireFinal    || lancExiste.rire;
+      lancExiste.rire      = _rireVinc    || lancExiste.rire;
+      lancExiste.fonte     = _fonteVinc;
       lancExiste.motorista = condutorFinal|| lancExiste.motorista;
       lancExiste.vinculado = true;
       lancExiste.pendente  = false;
@@ -19135,8 +19151,8 @@ async function salvarVincularCarga(){
       await supaFetch(`lancamentos?carga=eq.${carga}`,{
         method:'PATCH',
         body: JSON.stringify({
-          rota: rotaFinal, und: undFinal, rire: rireFinal,
-          motorista: condutorFinal, vinculado: true, pendente: false
+          rota: rotaFinal, und: undFinal, rire: _rireVinc,
+          motorista: condutorFinal, vinculado: true, pendente: false, fonte: _fonteVinc
         })
       }).catch(()=>{});
       showToast(`✅ Carga ${carga} atualizada! Rota: ${rotaFinal} | ${pedidosFinal} pedidos`, 'success');
@@ -20119,7 +20135,7 @@ async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
         ajudante: '',
         rota: '',
         und: _undB,
-        rire: '',
+        rire: 'R.E.',
         vinculado: false,
         pendente: true,
         ts: _tsB,
