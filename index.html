@@ -8957,6 +8957,55 @@ async function erpTesteConsultar(){
   }
 }
 
+// ── Integração ERP: cancelamento — pedido que chega do ERP com status
+// "cancelado" (ou tem o status alterado pra cancelado num reenvio) NÃO é
+// promovido pra base_data (fica de fora da carga) e vira um registro em
+// pedidos_cancelados, aparecendo em Comercial > Cancelamentos, igual ao
+// cancelamento manual do Fiscal. Se o pedido já tinha sido promovido antes
+// como ativo, é removido de base_data também.
+// Idempotente: não duplica pedidos_cancelados já registrados — necessário
+// porque erpPromoverAutomaticamente() roda a cada 5s enquanto o pedido
+// continuar em base_data_erp_teste.
+async function erpProcessarPedidosCancelados(erpRowsCancelados, lancMapPorCarga){
+  if(!erpRowsCancelados || !erpRowsCancelados.length) return 0;
+
+  const pedidosCancel = [...new Set(erpRowsCancelados.map(r => Number(r.numero_pedido_erp)).filter(Number.isFinite))];
+  if(!pedidosCancel.length) return 0;
+
+  try{
+    await supaFetch(`base_data?pedido=in.(${pedidosCancel.join(',')})`, { method:'DELETE' });
+  }catch(_){}
+
+  let jaRegistrados = new Set();
+  try{
+    const existentes = await supaFetch(`pedidos_cancelados?pedido=in.(${pedidosCancel.join(',')})&select=carga,pedido`) || [];
+    jaRegistrados = new Set(existentes.map(e => `${e.carga}__${e.pedido}`));
+  }catch(_){}
+
+  const novos = erpRowsCancelados
+    .map(r => {
+      const carga = Math.round(Number(r.carga_erp));
+      const pedido = Number(r.numero_pedido_erp);
+      const lanc = lancMapPorCarga?.[carga];
+      return { carga, pedido, rota: lanc?.rota||null, motorista: lanc?.motorista||null };
+    })
+    .filter(r => Number.isFinite(r.carga) && Number.isFinite(r.pedido) && !jaRegistrados.has(`${r.carga}__${r.pedido}`));
+
+  if(!novos.length) return 0;
+
+  await supaFetch('pedidos_cancelados', {
+    method: 'POST',
+    body: JSON.stringify(novos.map(r => ({
+      carga: r.carga, pedido: r.pedido, rota: r.rota, motorista: r.motorista,
+      fiscal_id: null, fiscal_nome: 'Integração ERP',
+      motivo: 'Cancelado no ERP', status: 'pendente',
+      criado_em: new Date().toISOString()
+    })))
+  });
+
+  return novos.length;
+}
+
 async function erpPromoverAutomaticamente(){
   try{
     const rows = await supaFetch('base_data_erp_teste?select=carga_erp&carga_erp=not.is.null&limit=1') || [];
@@ -8973,7 +9022,7 @@ async function erpPromoverAutomaticamente(){
     let offset = 0;
     const PAGINA = 1000;
     while(true){
-      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
       erpRows = erpRows.concat(pagina);
       if(pagina.length < PAGINA) break;
       offset += PAGINA;
@@ -8990,9 +9039,16 @@ async function erpPromoverAutomaticamente(){
       if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l;
     });
 
+    const erpCancelados = erpRows.filter(r => (r.status||'').trim().toLowerCase() === 'cancelado');
+    const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
+    if(erpCancelados.length){
+      await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP AUTO] Erro ao processar cancelados:', e.message));
+    }
+    if(!erpAtivos.length) return;
+
     const mes_ano = new Date().toISOString().slice(0,7);
     const semana_mes = Math.ceil(new Date().getDate() / 7);
-    const registros = erpRows.map(r=>{
+    const registros = erpAtivos.map(r=>{
       const l = lancMapPorCarga[Number(r.carga_erp)];
       return {
         pedido: r.numero_pedido_erp,
@@ -9142,7 +9198,7 @@ async function erpPromoverParaProducao(){
     let offset = 0;
     const PAGINA = 1000;
     while(true){
-      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
       erpRows = erpRows.concat(pagina);
       if(pagina.length < PAGINA) break;
       offset += PAGINA;
@@ -9164,7 +9220,20 @@ async function erpPromoverParaProducao(){
     const lancMapPorCarga = {};
     lancamentos.forEach(l => { const c = Math.round(Number(l.carga)); if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l; });
 
-    const registros = erpRows.map(r => {
+    // Pedidos cancelados no ERP não são promovidos — saem da carga e vão para
+    // Comercial > Cancelamentos (erpProcessarPedidosCancelados)
+    const erpCancelados = erpRows.filter(r => (r.status||'').trim().toLowerCase() === 'cancelado');
+    const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
+    if(erpCancelados.length){
+      el.innerHTML = `⏳ Processando ${erpCancelados.length} pedido(s) cancelado(s)...`;
+      await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP] Erro ao processar cancelados:', e.message));
+    }
+    if(!erpAtivos.length){
+      el.innerHTML = `<span style="color:#059669;font-weight:700">✅ ${erpCancelados.length} pedido(s) cancelado(s) processado(s) — nenhum pedido ativo para promover.</span>`;
+      return;
+    }
+
+    const registros = erpAtivos.map(r => {
       const carga = Math.round(Number(r.carga_erp));
       const lanc = lancMapPorCarga[carga];
       const dt = r.data_pedido ? new Date(r.data_pedido+'T00:00:00') : null;
@@ -9272,7 +9341,7 @@ async function erpPromoverAutomatico(){
 
     // 4. Promover automaticamente
     resultEl.innerHTML = '⏳ Promovendo para produção (final)...';
-    const erpRows = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro&carga_erp=not.is.null&order=id.asc&limit=10000`) || [];
+    const erpRows = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status&carga_erp=not.is.null&order=id.asc&limit=10000`) || [];
     if(!erpRows.length){
       resultEl.innerHTML = '<span style="color:#f59e0b">⚠️ Nenhum pedido para promover (pode ter dado erro na gravação anterior).</span>';
       return;
@@ -9283,7 +9352,20 @@ async function erpPromoverAutomatico(){
     const lancMapPorCarga = {};
     lancamentos.forEach(l => { const c = Math.round(Number(l.carga)); if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l; });
 
-    const registros = erpRows.map(r => {
+    // Pedidos cancelados no ERP não são promovidos — saem da carga e vão para
+    // Comercial > Cancelamentos (erpProcessarPedidosCancelados)
+    const erpCancelados = erpRows.filter(r => (r.status||'').trim().toLowerCase() === 'cancelado');
+    const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
+    if(erpCancelados.length){
+      await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP] Erro ao processar cancelados:', e.message));
+    }
+    if(!erpAtivos.length){
+      resultEl.innerHTML = `<span style="color:#10b981;font-weight:700">✅ ${erpCancelados.length} pedido(s) cancelado(s) processado(s) — nenhum pedido ativo para promover.</span>`;
+      jsonInputEl.value = '';
+      return;
+    }
+
+    const registros = erpAtivos.map(r => {
       const carga = Math.round(Number(r.carga_erp));
       const lanc = lancMapPorCarga[carga];
       const dt = r.data_pedido ? new Date(r.data_pedido+'T00:00:00') : null;
@@ -9324,7 +9406,8 @@ async function erpPromoverAutomatico(){
     await pushBaseData(registros);
 
     // Sucesso!
-    resultEl.innerHTML = `<span style="color:#10b981;font-weight:700">✅ Promoción completada! ${erpRows.length} pedido(s) gravado(s) com sucesso.</span>` +
+    resultEl.innerHTML = `<span style="color:#10b981;font-weight:700">✅ Promoción completada! ${erpAtivos.length} pedido(s) gravado(s) com sucesso.</span>` +
+      (erpCancelados.length ? `<br><span style="color:#f59e0b;font-size:.75rem">${erpCancelados.length} pedido(s) cancelado(s) encaminhado(s) para Comercial &gt; Cancelamentos.</span>` : '') +
       `<br><span style="color:#059669;font-size:.75rem">Dados sincronizados: ${cargas.length} carga(s) validadas em ${cargas.length} rota(s) ativa(s).</span>`;
 
     // Limpar input para próximo envio
