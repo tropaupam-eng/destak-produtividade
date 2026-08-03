@@ -24883,43 +24883,6 @@ async function renderOtifDiario(){
 }
 
 // ── Painel de Indicadores ──
-function calcularEstatisticasAbs(dados){
-  const stats = {
-    total: 0,
-    presencas: 0,
-    faltas: 0,
-    atestados: 0,
-    folgas: 0,
-    ocorrencias: 0,
-    percentual: '0%',
-    percentualNum: 0
-  };
-
-  if(!dados || !dados.length) return stats;
-
-  // Contar TODOS os registros (cada dia é um registro)
-  stats.total = dados.length;
-
-  dados.forEach(d => {
-    const status = d.status || 'presente';
-    if(status === 'presente') stats.presencas++;
-    else if(status === 'falta') stats.faltas++;
-    else if(status === 'atestado') stats.atestados++;
-    else if(status === 'folga') stats.folgas++;
-
-    // Ocorrências = faltas + atestados (não presença, não folga)
-    if(status !== 'presente' && status !== 'folga') stats.ocorrencias++;
-  });
-
-  if(stats.total > 0){
-    // Percentual de ocorrências (faltas + atestados) em relação ao total
-    stats.percentualNum = (stats.ocorrencias / stats.total) * 100;
-    stats.percentual = stats.percentualNum.toFixed(2) + '%';
-  }
-
-  return stats;
-}
-
 function mudarAbaIndicadores(aba){
   document.querySelectorAll('.painel-ind-aba').forEach(el => el.style.display = 'none');
   document.querySelectorAll('.painel-ind-tab').forEach(el => {
@@ -25020,49 +24983,22 @@ async function carregarPainelAbsArmazem(){
 // Relatório executivo de absenteísmo (visual em tons de cinza) — usado pelas
 // abas Armazém e Distribuição do Painel de Indicadores. Renderiza sempre em
 // claro/grafite (island própria), independente do tema escuro do resto do app.
-function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, dadosBrutos, semanasPrecalc, meta}){
+// stats: {total (headcount), faltas, atestados, folgas, percentual, percentualNum}
+// semanasPrecalc: saída de _calcAbsSemanaArmazem/_calcAbsSemanaDistribuicao —
+// única fonte da quebra semanal, não recalculada aqui.
+function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, semanasPrecalc, meta}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
   const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(ultimoDia)}/${fmtBR(mes)}`;
   const metaNum = meta != null ? meta : 2; // meta mensal padrão do sistema (ou meta configurável do módulo oficial, quando informada)
 
-  // Evolução semanal: usa cálculo já pronto (semanasPrecalc — mesma fonte do
-  // módulo oficial, ex.: _calcAbsSemanaArmazem) quando informado; senão
-  // agrupa dadosBrutos por dia-do-mês (comportamento legado, aba Distribuição).
-  let semanasView;
-  if(semanasPrecalc){
-    semanasView = semanasPrecalc.map(s => ({
-      pct: s.pct||0, ocorrencias: s.faltas+s.atestados,
-      label: s.chartLabel, sub: `${_fmtDia(s.ini)}–${_fmtDia(s.fim)}/${fmtBR(mes)}`
-    }));
-  } else {
-    const semanas = [1,2,3,4,5].map(s=>{
-      const diaIni = (s-1)*7 + 1;
-      const diaFim = Math.min(s*7, ultimoDia);
-      return { s, diaIni, diaFim, ocorrencias:0, faltas:0, registros:0 };
-    }).filter(sem => sem.diaIni <= ultimoDia);
+  const semanasView = semanasPrecalc.map(s => ({
+    pct: s.pct||0, ocorrencias: s.faltas+s.atestados,
+    label: s.chartLabel, sub: `${_fmtDia(s.ini)}–${_fmtDia(s.fim)}/${fmtBR(mes)}`
+  }));
 
-    dadosBrutos.forEach(d=>{
-      if(!d.data) return;
-      const dia = Number(String(d.data).slice(8,10));
-      const sem = semanas.find(x => dia >= x.diaIni && dia <= x.diaFim);
-      if(!sem) return;
-      sem.registros++;
-      if(d.status && d.status !== 'presente') sem.ocorrencias++;
-      if(d.status === 'falta') sem.faltas++;
-    });
-
-    semanasView = semanas.map(sem => ({
-      pct: stats.total > 0 ? (sem.ocorrencias/stats.total*100) : 0,
-      ocorrencias: sem.ocorrencias,
-      label: `S${sem.s}`, sub: `${fmtBR(sem.diaIni)}–${fmtBR(sem.diaFim)}/${fmtBR(mes)}`
-    }));
-  }
-
-  const totalOcorrencias = semanasPrecalc
-    ? semanasPrecalc.reduce((a,s)=>a+s.faltas+s.atestados,0)
-    : semanasView.reduce((a,s)=>a+s.ocorrencias,0);
+  const totalOcorrencias = semanasPrecalc.reduce((a,s)=>a+s.faltas+s.atestados,0);
   const dentroDaMeta = stats.percentualNum <= metaNum;
   const eixoMax = Math.max(metaNum * 1.25, ...semanasView.map(s=>s.pct)) * 1.15 || 2.5;
 
@@ -25150,6 +25086,9 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, d
   `;
 }
 
+// Espelho do módulo oficial "Distribuição → Absenteísmo"
+// (_calcularAbsenteismoDistribuicao, definida perto de renderAbsenteismo).
+// Não tem cálculo próprio: só formata o que a fonte oficial já calculou.
 async function carregarPainelAbsDistribuicao(){
   const container = document.getElementById('painel-ind-abs-distribuicao-container');
   if(!container) return;
@@ -25158,23 +25097,24 @@ async function carregarPainelAbsDistribuicao(){
 
   try {
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
-    const dados = await supaFetch(`absenteismo?mes_ano=eq.${mesAtual}&select=*&order=nome.asc`) || [];
-
-    // Filtrar apenas distribuição (motoristas + ajudantes)
-    const motoristas = await supaFetch('motoristas?select=nome&ativo=eq.true') || [];
-    const ajudantes = await supaFetch('ajudantes?select=nome&ativo=eq.true') || [];
-    const distribNomes = new Set([...motoristas, ...ajudantes].map(p=>p.nome.trim().toUpperCase()));
-
-    const dadosDistrib = dados.filter(d => distribNomes.has((d.nome||'').trim().toUpperCase()));
-
-    // Calcular estatísticas
-    const stats = calcularEstatisticasAbs(dadosDistrib);
+    const r = await _calcularAbsenteismoDistribuicao(mesAtual, {});
+    const semanas = _calcAbsSemanaDistribuicao(mesAtual, r.porFunc, r.feriadosNacionais);
 
     container.innerHTML = renderRelatorioAbsenteismo({
       titulo: 'Absenteísmo',
       indicador: 'INDICADOR 01 · MOTORISTAS E AJUDANTES',
       area: 'OPERAÇÕES / DISTRIBUIÇÃO',
-      mesAtual, stats, dadosBrutos: dadosDistrib
+      mesAtual,
+      meta: _getMetaAbs('dist'),
+      stats: {
+        total: r.funcs.length,
+        faltas: r.totalFalta,
+        atestados: r.totalAtes,
+        folgas: r.totalFolga,
+        percentual: r.pctAbs+'%',
+        percentualNum: r.absNum
+      },
+      semanasPrecalc: semanas
     });
   } catch(e){
     console.error('Erro ao carregar absenteísmo distribuição:', e);
@@ -26088,6 +26028,208 @@ async function _salvarMetaAbs(tipo, val){
   if(inp) inp.value = v;
 }
 
+// Fonte única de Absenteísmo Distribuição — usada pelo módulo oficial
+// (Distribuição → Absenteísmo) e pelo Painel de Indicadores → Absenteísmo
+// Distribuição. Nenhuma outra tela deve recalcular isso por conta própria —
+// sempre chamar esta função. Não persiste nada no Supabase (a gravação do
+// rota_auto de hoje, 1x/dia, continua sendo feita só por renderAbsenteismo(),
+// usando a lista rotaAutoParaSalvarHoje devolvida aqui).
+async function _calcularAbsenteismoDistribuicao(mes, filtros={}){
+  const { tipo = '', nome = '', unidade = '' } = filtros;
+  const mesRef = mes || '';
+  const hoje = new Date().toISOString().split('T')[0];
+  const undUsuario = await _getUnidadeUsuario();
+
+  // Incluir datas futuras do mês (folgas programadas, férias, feriados)
+  let url = 'absenteismo?select=*&order=nome.asc,data.asc&limit=5000';
+  if(mesRef){
+    url += `&mes_ano=eq.${mesRef}`;
+  } else {
+    // Sem filtro de mês: incluir passado + futuro (até 3 meses à frente)
+    const dataLimite = new Date(); dataLimite.setMonth(dataLimite.getMonth()+3);
+    url += `&data=lte.${dataLimite.toISOString().split('T')[0]}`;
+  }
+  const dados = await supaFetch(url) || [];
+
+  // Buscar motoristas e ajudantes filtrando pela unidade do usuário logado
+  const urlMots = undUsuario
+    ? `motoristas?select=nome,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
+    : 'motoristas?select=nome,ativo,data_demissao,unidade&order=nome.asc';
+  const urlAjs = undUsuario
+    ? `ajudantes?select=nome,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
+    : 'ajudantes?select=nome,ativo,data_demissao,unidade&order=nome.asc';
+  const [motoristasAll, ajudantesAll, conferentesAll] = await Promise.all([
+    supaFetch(urlMots) || [],
+    supaFetch(urlAjs) || [],
+    supaFetch('conferentes?select=nome').catch(()=>[]) || [],
+  ]);
+
+  // Nomes que estão em conferentes têm prioridade — pertencem ao armazém
+  const conferenteNomes = new Set((conferentesAll||[]).map(c=>(c.nome||'').trim().toUpperCase()));
+
+  const funcionariosAtivos = new Set([
+    ...motoristasAll.filter(m => m.ativo !== false && !conferenteNomes.has((m.nome||'').trim().toUpperCase())).map(m=>m.nome.trim().toUpperCase()),
+    ...ajudantesAll.filter(a => a.ativo !== false && !conferenteNomes.has((a.nome||'').trim().toUpperCase())).map(a=>a.nome.trim().toUpperCase())
+  ]);
+
+  // Mapa de uppercase → nome natural (para normalizar registros salvos em maiúsculas)
+  const nomeNaturalMap = {};
+  [...motoristasAll, ...ajudantesAll].forEach(p=>{
+    if(p.nome) nomeNaturalMap[(p.nome||'').trim().toUpperCase()] = (p.nome||'').trim();
+  });
+
+  // Filtrar dados: só mostrar quem está no cadastro e ativo no período
+  let filtrados = dados.filter(d=>{
+    const nomeUp = (d.nome||'').trim().toUpperCase();
+    if(funcionariosAtivos.size > 0 && !funcionariosAtivos.has(nomeUp)) return false;
+    return true;
+  });
+
+  // Sets para identificar tipo por nome (fonte autoritativa)
+  const nomesMotoristas = new Set(motoristasAll.map(m=>(m.nome||'').trim().toUpperCase()));
+  const nomesAjudantes  = new Set(ajudantesAll.map(a=>(a.nome||'').trim().toUpperCase()));
+
+  // Aplicar filtros adicionais
+  if(tipo){
+    if(tipo==='ajudante')    filtrados = filtrados.filter(d=> nomesAjudantes.has((d.nome||'').trim().toUpperCase()));
+    else if(tipo==='motorista') filtrados = filtrados.filter(d=> nomesMotoristas.has((d.nome||'').trim().toUpperCase()));
+    else if(tipo==='carreteiro') filtrados = filtrados.filter(d=>(d.funcao||'').toLowerCase().includes('carret'));
+  }
+  if(nome) filtrados = filtrados.filter(d=>d.nome===nome);
+  if(unidade){
+    const motUnd = (await supaFetch(`motoristas?unidade=eq.${encodeURIComponent(unidade)}&select=nome`) || []).map(m=>m.nome.trim().toUpperCase());
+    const ajUnd  = (await supaFetch(`ajudantes?unidade=eq.${encodeURIComponent(unidade)}&select=nome`) || []).map(a=>a.nome.trim().toUpperCase());
+    const pessoasUnd = new Set([...motUnd, ...ajUnd]);
+    filtrados = filtrados.filter(d=>pessoasUnd.has((d.nome||'').trim().toUpperCase()));
+  }
+
+  // Agrupar por funcionário (normaliza nomes salvos em maiúsculas para o nome natural do cadastro)
+  const porFunc = {};
+  filtrados.forEach(d=>{
+    const nomeKey = nomeNaturalMap[(d.nome||'').trim().toUpperCase()] || (d.nome||'').trim();
+    if(!porFunc[nomeKey]) porFunc[nomeKey] = {funcao:d.funcao, dias:{}};
+    porFunc[nomeKey].dias[d.data] = d.status;
+  });
+
+  // Garantir que TODOS os motoristas/ajudantes ativos apareçam,
+  // mesmo sem nenhum registro de absenteísmo
+  motoristasAll.forEach(m=>{
+    if(!m.nome) return;
+    const nomeUp = m.nome.trim().toUpperCase();
+    if(funcionariosAtivos.size > 0 && !funcionariosAtivos.has(nomeUp)) return;
+    if(tipo === 'ajudante') return; // não mostrar motoristas no filtro ajudante
+    if(unidade && m.unidade && m.unidade.trim() !== unidade.trim()) return;
+    if(nome && m.nome !== nome) return;
+    if(!porFunc[m.nome]) porFunc[m.nome] = {funcao:'Motorista', dias:{}};
+  });
+  ajudantesAll.forEach(a=>{
+    if(!a.nome) return;
+    const nomeUp = a.nome.trim().toUpperCase();
+    if(funcionariosAtivos.size > 0 && !funcionariosAtivos.has(nomeUp)) return;
+    if(tipo === 'motorista' || tipo === 'carreteiro') return; // não mostrar ajudantes nesses filtros
+    if(unidade && a.unidade && a.unidade.trim() !== unidade.trim()) return;
+    if(nome && a.nome !== nome) return;
+    if(!porFunc[a.nome]) porFunc[a.nome] = {funcao:'Ajudante', dias:{}};
+  });
+
+  // KPIs "cabeçalho" — sobre os dias exatamente como vieram do banco (mesma
+  // ordem de cálculo do módulo oficial: antes da remoção de domingo/feriado)
+  const funcs = Object.keys(porFunc);
+  let totalPres=0, totalFalta=0, totalAtes=0, totalFolga=0, totalRota=0, totalFerias=0;
+  funcs.forEach(nomeF=>{
+    const dias = Object.values(porFunc[nomeF].dias);
+    totalPres   += dias.filter(s=>s==='presente').length;
+    totalFalta  += dias.filter(s=>s==='falta').length;
+    totalAtes   += dias.filter(s=>s==='atestado').length;
+    totalFolga  += dias.filter(s=>s==='folga').length + dias.filter(s=>s==='meia_folga').length * 0.5;
+    totalRota   += dias.filter(s=>s==='rota'||s==='rota_auto').length;
+    totalFerias += dias.filter(s=>s==='ferias').length;
+  });
+  // Presenças reais = presente explícito + dias em rota (motorista saiu = estava presente)
+  const totalPresReal = totalPres + totalRota;
+
+  const diasTrab = totalPres + totalFalta + totalAtes + totalRota;
+  const pctAbs = diasTrab > 0 ? (((totalFalta+totalAtes)/diasTrab)*100).toFixed(2) : '0.00';
+  const absNum = parseFloat(pctAbs)||0;
+
+  // Feriados nacionais fixos — usados tanto na exclusão de presença quanto em folgas devidas
+  const feriadosNacionais = new Set([
+    '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
+    '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
+    '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
+    '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
+    '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
+    '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
+  ]);
+
+  // Remover domingos e feriados nacionais do cálculo de presença
+  // IMPORTANTE: NÃO usar folgas individuais como feriados — isso apagava presença de outros funcionários
+  Object.keys(porFunc).forEach(nomeF=>{
+    const dias = porFunc[nomeF].dias;
+    Object.keys(dias).forEach(data=>{
+      const dt = new Date(data+'T00:00:00');
+      if(dt.getDay()===0) delete dias[data];
+      if(feriadosNacionais.has(data) && dias[data]!=='rota' && dias[data]!=='rota_auto'){
+        delete dias[data];
+      }
+    });
+  });
+
+  // Preencher automaticamente dias em rota a partir das demandas
+  if(mesRef){
+    // Cache da expedição não inclui "concluido" — buscar do banco separadamente para meses anteriores
+    let demandasMes = (_demandasCache||[]).filter(d=>{
+      if(!d.motorista||!d.data_saida) return false;
+      // Só marcar em rota se a carga realmente saiu (saiu ou fim_viagem)
+      if(!['saiu','fim_viagem'].includes(d.status)) return false;
+      return d.data_saida.startsWith(mesRef);
+    });
+    // Complementar com cargas concluídas do banco (para meses passados)
+    try{
+      const concluidas = await supaFetch(`demandas_rota?status=in.("concluido","fim_viagem")&data_saida=gte.${mesRef}-01&data_saida=lt.${_proximoMes(mesRef)}-01&select=motorista,data_saida,status`) || [];
+      concluidas.forEach(c=>{ if(c.motorista&&c.data_saida&&!demandasMes.find(d=>d.motorista===c.motorista&&d.data_saida===c.data_saida)) demandasMes.push(c); });
+    }catch(e){}
+    for(const dem of demandasMes){
+      const motorista = dem.motorista;
+      if(!motorista) continue;
+      const dataStr = dem.data_saida;
+      if(!porFunc[motorista]?.dias[dataStr]){
+        if(!porFunc[motorista]) porFunc[motorista] = {funcao:'Motorista', dias:{}};
+        porFunc[motorista].dias[dataStr] = 'rota_auto';
+      }
+    }
+  }
+
+  // Marcar motoristas em rota HOJE (demandas ativas com status saiu/fim_viagem)
+  // Funciona mesmo sem filtro de mês — usado para o popup e para o card de pendentes
+  const motoristasEmRotaHoje = new Set();
+  try{
+    const rotasHoje = await supaFetch(`demandas_rota?status=in.("saiu","fim_viagem")&data_saida=eq.${hoje}&select=motorista`) || [];
+    rotasHoje.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
+    // Também verificar demandas que saíram antes de hoje e ainda não voltaram (saiu mas data_saida < hoje)
+    const emViagem = await supaFetch(`demandas_rota?status=eq.saiu&data_saida=lte.${hoje}&select=motorista`) || [];
+    emViagem.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
+  }catch(e){}
+
+  // Aplicar rota_auto para hoje nos motoristas em viagem (só em memória — quem
+  // grava no Supabase é renderAbsenteismo(), usando rotaAutoParaSalvarHoje)
+  const rotaAutoParaSalvarHoje = [];
+  motoristasEmRotaHoje.forEach(nomeUp=>{
+    const match = Object.keys(porFunc).find(n=>n.trim().toUpperCase()===nomeUp);
+    if(match && !porFunc[match].dias[hoje]){
+      porFunc[match].dias[hoje] = 'rota_auto';
+      rotaAutoParaSalvarHoje.push(match);
+    }
+  });
+
+  return {
+    mesRef, hoje, undUsuario, dados, filtrados, motoristasAll, ajudantesAll, conferentesAll,
+    porFunc, funcs, feriadosNacionais,
+    totalPres, totalFalta, totalAtes, totalFolga, totalRota, totalFerias, totalPresReal,
+    diasTrab, pctAbs, absNum, rotaAutoParaSalvarHoje
+  };
+}
+
 async function renderAbsenteismo(){
   const container = document.getElementById('abs-tbody');
   if(!container) return;
@@ -26122,50 +26264,9 @@ async function renderAbsenteismo(){
   const filtNome  = document.getElementById('abs-filtro-nome')?.value||'';
 
   try{
-    // Incluir datas futuras do mês (folgas programadas, férias, feriados)
-    let url = 'absenteismo?select=*&order=nome.asc,data.asc&limit=5000';
-    if(filtMes){
-      url += `&mes_ano=eq.${filtMes}`;
-    } else {
-      // Sem filtro de mês: incluir passado + futuro (até 3 meses à frente)
-      const dataLimite = new Date(); dataLimite.setMonth(dataLimite.getMonth()+3);
-      url += `&data=lte.${dataLimite.toISOString().split('T')[0]}`;
-    }
-    const dados = await supaFetch(url) || [];
-
-    // Buscar motoristas e ajudantes filtrando pela unidade do usuário logado
-    const urlMots = undUsuario
-      ? `motoristas?select=nome,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
-      : 'motoristas?select=nome,ativo,data_demissao,unidade&order=nome.asc';
-    const urlAjs = undUsuario
-      ? `ajudantes?select=nome,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
-      : 'ajudantes?select=nome,ativo,data_demissao,unidade&order=nome.asc';
-    const [motoristasAll, ajudantesAll, conferentesAll] = await Promise.all([
-      supaFetch(urlMots) || [],
-      supaFetch(urlAjs) || [],
-      supaFetch('conferentes?select=nome').catch(()=>[]) || [],
-    ]);
-
-    // Nomes que estão em conferentes têm prioridade — pertencem ao armazém
-    const conferenteNomes = new Set((conferentesAll||[]).map(c=>(c.nome||'').trim().toUpperCase()));
-
-    const funcionariosAtivos = new Set([
-      ...motoristasAll.filter(m => m.ativo !== false && !conferenteNomes.has((m.nome||'').trim().toUpperCase())).map(m=>m.nome.trim().toUpperCase()),
-      ...ajudantesAll.filter(a => a.ativo !== false && !conferenteNomes.has((a.nome||'').trim().toUpperCase())).map(a=>a.nome.trim().toUpperCase())
-    ]);
-
-    // Mapa de uppercase → nome natural (para normalizar registros salvos em maiúsculas)
-    const nomeNaturalMap = {};
-    [...motoristasAll, ...ajudantesAll].forEach(p=>{
-      if(p.nome) nomeNaturalMap[(p.nome||'').trim().toUpperCase()] = (p.nome||'').trim();
-    });
-
-    // Filtrar dados: só mostrar quem está no cadastro e ativo no período
-    let filtrados = dados.filter(d=>{
-      const nomeUp = (d.nome||'').trim().toUpperCase();
-      if(funcionariosAtivos.size > 0 && !funcionariosAtivos.has(nomeUp)) return false;
-      return true;
-    });
+    const r = await _calcularAbsenteismoDistribuicao(filtMes, {tipo: filtTipo, nome: filtNome, unidade: filtUnd});
+    const { hoje, dados, motoristasAll, ajudantesAll, porFunc, funcs, feriadosNacionais,
+            totalFalta, totalAtes, totalFolga, totalPresReal, pctAbs, absNum, rotaAutoParaSalvarHoje } = r;
 
     // Popular selects dinamicamente
     const selUnd = document.getElementById('abs-filtro-unidade');
@@ -26179,62 +26280,6 @@ async function renderAbsenteismo(){
       unidades.forEach(u=>{ const o=document.createElement('option'); o.value=u; o.textContent=u; selUnd.appendChild(o); });
       if(undUsr) selUnd.value = undUsr;
     }
-    // Repopular select de nomes com os registros do período atual (sempre limpar e repovoar)
-    if(selNome){
-      const valAtualNome = selNome.value;
-      selNome.innerHTML = '<option value="">Todos</option>';
-      const nomes = [...new Set(filtrados.map(d=>d.nome).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
-      nomes.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n; selNome.appendChild(o); });
-      if(valAtualNome) selNome.value = valAtualNome;
-    }
-
-    // Sets para identificar tipo por nome (fonte autoritativa)
-    const nomesMotoristas = new Set(motoristasAll.map(m=>(m.nome||'').trim().toUpperCase()));
-    const nomesAjudantes  = new Set(ajudantesAll.map(a=>(a.nome||'').trim().toUpperCase()));
-
-    // Aplicar filtros adicionais
-    if(filtTipo){
-      if(filtTipo==='ajudante')    filtrados = filtrados.filter(d=> nomesAjudantes.has((d.nome||'').trim().toUpperCase()));
-      else if(filtTipo==='motorista') filtrados = filtrados.filter(d=> nomesMotoristas.has((d.nome||'').trim().toUpperCase()));
-      else if(filtTipo==='carreteiro') filtrados = filtrados.filter(d=>(d.funcao||'').toLowerCase().includes('carret'));
-    }
-    if(filtNome) filtrados = filtrados.filter(d=>d.nome===filtNome);
-    if(filtUnd){
-      const motUnd = (await supaFetch(`motoristas?unidade=eq.${encodeURIComponent(filtUnd)}&select=nome`) || []).map(m=>m.nome.trim().toUpperCase());
-      const ajUnd  = (await supaFetch(`ajudantes?unidade=eq.${encodeURIComponent(filtUnd)}&select=nome`) || []).map(a=>a.nome.trim().toUpperCase());
-      const pessoasUnd = new Set([...motUnd, ...ajUnd]);
-      filtrados = filtrados.filter(d=>pessoasUnd.has((d.nome||'').trim().toUpperCase()));
-    }
-
-    // Agrupar por funcionário (normaliza nomes salvos em maiúsculas para o nome natural do cadastro)
-    const porFunc = {};
-    filtrados.forEach(d=>{
-      const nomeKey = nomeNaturalMap[(d.nome||'').trim().toUpperCase()] || (d.nome||'').trim();
-      if(!porFunc[nomeKey]) porFunc[nomeKey] = {funcao:d.funcao, dias:{}};
-      porFunc[nomeKey].dias[d.data] = d.status;
-    });
-
-    // Garantir que TODOS os motoristas/ajudantes ativos apareçam,
-    // mesmo sem nenhum registro de absenteísmo
-    motoristasAll.forEach(m=>{
-      if(!m.nome) return;
-      const nomeUp = m.nome.trim().toUpperCase();
-      if(funcionariosAtivos.size > 0 && !funcionariosAtivos.has(nomeUp)) return;
-      if(filtTipo === 'ajudante') return; // não mostrar motoristas no filtro ajudante
-      if(filtUnd && m.unidade && m.unidade.trim() !== filtUnd.trim()) return;
-      if(filtNome && m.nome !== filtNome) return;
-      if(!porFunc[m.nome]) porFunc[m.nome] = {funcao:'Motorista', dias:{}};
-    });
-    ajudantesAll.forEach(a=>{
-      if(!a.nome) return;
-      const nomeUp = a.nome.trim().toUpperCase();
-      if(funcionariosAtivos.size > 0 && !funcionariosAtivos.has(nomeUp)) return;
-      if(filtTipo === 'motorista' || filtTipo === 'carreteiro') return; // não mostrar ajudantes nesses filtros
-      if(filtUnd && a.unidade && a.unidade.trim() !== filtUnd.trim()) return;
-      if(filtNome && a.nome !== filtNome) return;
-      if(!porFunc[a.nome]) porFunc[a.nome] = {funcao:'Ajudante', dias:{}};
-    });
-
     // Popular select de nomes com todos os funcionários ativos/demitidos do período
     // Sempre limpar e repopular para refletir o mês e filtros corretos
     if(selNome){
@@ -26249,26 +26294,6 @@ async function renderAbsenteismo(){
       });
       if(valAtualNome2) selNome.value = valAtualNome2;
     }
-
-    // Calcular KPIs globais
-    const funcs = Object.keys(porFunc);
-    let totalPres=0, totalFalta=0, totalAtes=0, totalFolga=0, totalRota=0, totalFerias=0;
-    funcs.forEach(nome=>{
-      const dias = Object.values(porFunc[nome].dias);
-      totalPres   += dias.filter(s=>s==='presente').length;
-      totalFalta  += dias.filter(s=>s==='falta').length;
-      totalAtes   += dias.filter(s=>s==='atestado').length;
-      totalFolga  += dias.filter(s=>s==='folga').length + dias.filter(s=>s==='meia_folga').length * 0.5;
-      totalRota   += dias.filter(s=>s==='rota'||s==='rota_auto').length;
-      totalFerias += dias.filter(s=>s==='ferias').length;
-    });
-    // Presenças reais = presente explícito + dias em rota (motorista saiu = estava presente)
-    const totalPresReal = totalPres + totalRota;
-
-    const diasTrab = totalPres + totalFalta + totalAtes + totalRota;
-    const pctPres  = diasTrab > 0 ? ((totalPres/diasTrab)*100).toFixed(1) : '—';
-    const pctAbs   = diasTrab > 0 ? (((totalFalta+totalAtes)/diasTrab)*100).toFixed(2) : '—';
-    const absNum   = parseFloat(pctAbs)||0;
 
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
     set('abs-kpi-total', funcs.length);
@@ -26300,86 +26325,14 @@ async function renderAbsenteismo(){
       label.style.color = absNum <= metaDist ? '#059669' : '#E8000D';
     }
 
-    // Feriados nacionais fixos — definidos aqui para uso tanto na exclusão de presença quanto em folgas devidas
-    const feriadosNacionais = new Set([
-      '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
-      '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
-      '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
-      '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
-      '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
-      '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
-    ]);
-
-    // Remover domingos e feriados nacionais do cálculo de presença
-    // IMPORTANTE: NÃO usar folgas individuais como feriados — isso apagava presença de outros funcionários
-    Object.keys(porFunc).forEach(nome=>{
-      const dias = porFunc[nome].dias;
-      Object.keys(dias).forEach(data=>{
-        const dt = new Date(data+'T00:00:00');
-        if(dt.getDay()===0) delete dias[data];
-        if(feriadosNacionais.has(data) && dias[data]!=='rota' && dias[data]!=='rota_auto'){
-          delete dias[data];
-        }
-      });
-    });
-
-    // Preencher automaticamente dias em rota a partir das demandas
-    if(filtMes){
-      // Cache da expedição não inclui "concluido" — buscar do banco separadamente para meses anteriores
-      let demandasMes = (_demandasCache||[]).filter(d=>{
-        if(!d.motorista||!d.data_saida) return false;
-        // Só marcar em rota se a carga realmente saiu (saiu ou fim_viagem)
-        if(!['saiu','fim_viagem'].includes(d.status)) return false;
-        return d.data_saida.startsWith(filtMes);
-      });
-      // Complementar com cargas concluídas do banco (para meses passados)
-      try{
-        const concluidas = await supaFetch(`demandas_rota?status=in.("concluido","fim_viagem")&data_saida=gte.${filtMes}-01&data_saida=lt.${_proximoMes(filtMes)}-01&select=motorista,data_saida,status`) || [];
-        concluidas.forEach(c=>{ if(c.motorista&&c.data_saida&&!demandasMes.find(d=>d.motorista===c.motorista&&d.data_saida===c.data_saida)) demandasMes.push(c); });
-      }catch(e){}
-      for(const dem of demandasMes){
-        const motorista = dem.motorista;
-        if(!motorista) continue;
-        const dataStr = dem.data_saida;
-        if(!porFunc[motorista]?.dias[dataStr]){
-          if(!porFunc[motorista]) porFunc[motorista] = {funcao:'Motorista', dias:{}};
-          porFunc[motorista].dias[dataStr] = 'rota_auto';
-        }
-      }
-    }
-
-    // Verificar pendentes de hoje
-    const hoje = new Date().toISOString().split('T')[0];
-
-    // Marcar motoristas em rota HOJE (demandas ativas com status saiu/fim_viagem)
-    // Funciona mesmo sem filtro de mês — usado para o popup e para o card de pendentes
-    const motoristasEmRotaHoje = new Set();
-    try{
-      const rotasHoje = await supaFetch(`demandas_rota?status=in.("saiu","fim_viagem")&data_saida=eq.${hoje}&select=motorista`) || [];
-      rotasHoje.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
-      // Também verificar demandas que saíram antes de hoje e ainda não voltaram (saiu mas data_saida < hoje)
-      const emViagem = await supaFetch(`demandas_rota?status=eq.saiu&data_saida=lte.${hoje}&select=motorista`) || [];
-      emViagem.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
-    }catch(e){}
-
-    // Aplicar rota_auto para hoje nos motoristas em viagem e auto-salvar no Supabase
-    const rotaAutoParaSalvar = [];
-    motoristasEmRotaHoje.forEach(nomeUp=>{
-      const match = Object.keys(porFunc).find(n=>n.trim().toUpperCase()===nomeUp);
-      if(match){
-        if(!porFunc[match].dias[hoje]){
-          porFunc[match].dias[hoje] = 'rota_auto';
-          rotaAutoParaSalvar.push(match);
-        }
-      }
-    });
-    // Salvar em background (1x por dia)
-    if(rotaAutoParaSalvar.length > 0){
+    // Salvar rota_auto de hoje no Supabase em background (1x por dia) — só o
+    // módulo oficial faz essa gravação; o Painel de Indicadores só lê.
+    if(rotaAutoParaSalvarHoje.length > 0){
       const flagRotaAuto = `abs_rota_auto_${hoje}`;
       if(!localStorage.getItem(flagRotaAuto)){
         localStorage.setItem(flagRotaAuto, '1');
         (async()=>{
-          for(const nmRota of rotaAutoParaSalvar){
+          for(const nmRota of rotaAutoParaSalvarHoje){
             try{
               const ex = await supaFetch(`absenteismo?nome=ilike.${encodeURIComponent(nmRota)}&data=eq.${hoje}&select=id,fonte`).catch(()=>[]) || [];
               if(ex.length){
@@ -26614,26 +26567,14 @@ function _fmtISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStar
 
 // ── Absenteísmo por Semana — Distribuição ─────────────────────────────────────
 let _absSemanChart = null;
-function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais, metaOverride){
-  const cardsEl  = document.getElementById('abs-semana-cards');
-  const canvasEl = document.getElementById('abs-semana-chart');
-  const section  = document.getElementById('abs-semana-section');
-  const btn      = document.getElementById('abs-semana-toggle');
-  if(!cardsEl || !canvasEl) return;
-
-  if(!filtMes){
-    if(section) section.style.display = 'none';
-    if(btn) btn.style.display = 'none';
-    cardsEl.innerHTML = '';
-    return;
-  }
-  if(btn) btn.style.display = '';
-  if(section){ section.style.display = 'block'; if(btn) btn.textContent = '📅 Ocultar semanas ▲'; }
-
-  const meta    = metaOverride || _getMetaAbs('dist');
+// Fonte única da quebra semanal de Distribuição — usada pelo módulo oficial
+// (Distribuição → Absenteísmo) e pelo Painel de Indicadores. Conta rota/rota_auto
+// como presença (motorista em viagem = presente); exclui domingo e feriado nacional.
+function _calcAbsSemanaDistribuicao(filtMes, porFunc, feriadosNacionais){
+  if(!filtMes) return [];
   const semanas = _calcSemanas(filtMes);
 
-  const semanaStats = semanas.map((s, idx) => {
+  return semanas.map((s, idx) => {
     let faltas=0, atestados=0, total=0;
     const d = new Date(s.ini);
     while(d <= s.fim){
@@ -26650,9 +26591,28 @@ function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais, metaOverride)
     }
     const hoje = new Date(); hoje.setHours(23,59,59,0);
     const pct = total > 0 ? ((faltas+atestados)/total*100) : (s.fim<=hoje ? 0 : null);
-    return { label:`S${idx+1} ${_fmtDia(s.ini)}-${_fmtDia(s.fim)}`, chartLabel:`S${idx+1}`, pct, faltas, atestados, total };
+    return { ini:s.ini, fim:s.fim, label:`S${idx+1} ${_fmtDia(s.ini)}-${_fmtDia(s.fim)}`, chartLabel:`S${idx+1}`, pct, faltas, atestados, total };
   });
+}
 
+function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais, metaOverride){
+  const cardsEl  = document.getElementById('abs-semana-cards');
+  const canvasEl = document.getElementById('abs-semana-chart');
+  const section  = document.getElementById('abs-semana-section');
+  const btn      = document.getElementById('abs-semana-toggle');
+  if(!cardsEl || !canvasEl) return;
+
+  if(!filtMes){
+    if(section) section.style.display = 'none';
+    if(btn) btn.style.display = 'none';
+    cardsEl.innerHTML = '';
+    return;
+  }
+  if(btn) btn.style.display = '';
+  if(section){ section.style.display = 'block'; if(btn) btn.textContent = '📅 Ocultar semanas ▲'; }
+
+  const meta = metaOverride || _getMetaAbs('dist');
+  const semanaStats = _calcAbsSemanaDistribuicao(filtMes, porFunc, feriadosNacionais);
   const semanasComDados = semanaStats.filter(s => s.pct !== null);
 
   // Cards — cor por meta
