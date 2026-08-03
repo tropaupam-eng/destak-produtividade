@@ -33,6 +33,7 @@ interface PedidoERP {
   lat?: number;
   lng?: number;
   status?: string;
+  data_entrega?: string;
   criado_em?: string;
 }
 
@@ -78,6 +79,12 @@ function validarPedido(pedido: any, indice: number): { ok: boolean; erro?: strin
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(pedido.data_pedido)) {
     return { ok: false, erro: `Data inválida no pedido ${indice}: use YYYY-MM-DD` };
+  }
+
+  // data_entrega é opcional — só vem preenchida quando o pedido já foi
+  // entregue (normalmente num reenvio do mesmo pedido, não no envio inicial)
+  if (pedido.data_entrega != null && pedido.data_entrega !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(pedido.data_entrega)) {
+    return { ok: false, erro: `data_entrega inválida no pedido ${indice}: use YYYY-MM-DD` };
   }
 
   return { ok: true };
@@ -195,6 +202,7 @@ async function gravarEmSupabase(pedidos: PedidoERP[]): Promise<{
         lat: pedido.lat || null,
         lng: pedido.lng || null,
         status: pedido.status || 'pendente',
+        data_entrega: pedido.data_entrega || null,
         criado_em: verificacao.versaoAnterior?.criado_em || timestamp_recebimento,
         atualizado_em: timestamp_recebimento,
         acao_ultima: acao,

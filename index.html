@@ -8882,6 +8882,7 @@ async function integrarPedidosERP(jsonPayload){
     lat:                p.lat                != null ? Number(p.lat) : null,
     lng:                p.lng                != null ? Number(p.lng) : null,
     status:             p.status             ?? 'pendente',
+    data_entrega:       p.data_entrega       ?? null,
     criado_em:          p.criado_em          ?? null,
   })).filter(r => r.numero_pedido_erp != null);
   // carga_erp NÃO é mais obrigatório: pedido sem carga ainda entra (pra já
@@ -9043,6 +9044,71 @@ async function erpProcessarPedidosCancelados(erpRowsCancelados, lancMapPorCarga)
   return novos.length;
 }
 
+// ── Integração ERP: data de entrega — quando o ERP reenvia um pedido já
+// promovido (mesmo numero_pedido_erp) agora com o campo `data_entrega`
+// preenchido (pedido entregue), propaga pra entrega_datas, fonte única do
+// OTIF — mesmo padrão que confirmarSaidaRota() já usa pra propagar
+// data_saida (on_conflict=mes_ano,pedido, merge-duplicates).
+// mes_ano vem de base_data (não da data de entrega em si), pra ficar no
+// mesmo mês do pedido — mesma lógica que confirmarSaidaRota() usa.
+// Validação: só grava se o cliente do pedido em base_data bater com
+// nome_destinatario que veio agora no JSON do ERP — evita sobrescrever a
+// data de um pedido errado por duplicidade/erro de numeração no ERP. Pedido
+// que ainda não foi promovido (não está em base_data) é ignorado por ora —
+// pega na próxima vez que o polling rodar, já promovido.
+// Idempotente por natureza do upsert — repetir o mesmo valor a cada
+// polling de 5s não duplica nem corrompe nada.
+async function erpProcessarDatasEntrega(erpRowsComData){
+  if(!erpRowsComData || !erpRowsComData.length) return;
+
+  const numeros = [...new Set(erpRowsComData.map(r => Number(r.numero_pedido_erp)).filter(Number.isFinite))];
+  if(!numeros.length) return;
+
+  let existentes = [];
+  try{
+    existentes = await supaFetch(`base_data?pedido=in.(${numeros.join(',')})&select=pedido,mes_ano,cliente`) || [];
+  }catch(_){ return; }
+
+  const porPedido = {};
+  existentes.forEach(r => { porPedido[Number(r.pedido)] = r; });
+
+  const norm = s => String(s||'').trim().toUpperCase();
+  const registros = [];
+  const conflitos = [];
+
+  erpRowsComData.forEach(r => {
+    const pedido = Number(r.numero_pedido_erp);
+    const existente = porPedido[pedido];
+    if(!existente || !existente.mes_ano) return; // ainda não promovido — trata num próximo ciclo
+
+    const clienteBase = norm(existente.cliente);
+    const clienteErp  = norm(r.nome_destinatario);
+    if(clienteBase && clienteErp && clienteBase !== clienteErp){
+      conflitos.push({ pedido, cliente_base_data: existente.cliente, cliente_erp: r.nome_destinatario });
+      return;
+    }
+
+    registros.push({ mes_ano: existente.mes_ano, pedido: String(pedido), data_entrega: r.data_entrega });
+  });
+
+  if(conflitos.length && typeof window._logErro === 'function'){
+    window._logErro(
+      `Integração ERP: ${conflitos.length} pedido(s) com data de entrega bloqueada(s) por conflito de cliente`,
+      null, 'erp_conflito_data_entrega',
+      { conflitos }
+    );
+  }
+
+  if(!registros.length) return;
+  for(let i=0; i<registros.length; i+=100){
+    await supaFetch('entrega_datas?on_conflict=mes_ano,pedido', {
+      method: 'POST',
+      body: JSON.stringify(registros.slice(i, i+100)),
+      prefer: 'resolution=merge-duplicates,return=minimal'
+    }).catch(()=>{});
+  }
+}
+
 async function erpPromoverAutomaticamente(){
   try{
     const rows = await supaFetch('base_data_erp_teste?select=carga_erp&carga_erp=not.is.null&limit=1') || [];
@@ -9059,7 +9125,7 @@ async function erpPromoverAutomaticamente(){
     let offset = 0;
     const PAGINA = 1000;
     while(true){
-      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status,data_entrega&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
       erpRows = erpRows.concat(pagina);
       if(pagina.length < PAGINA) break;
       offset += PAGINA;
@@ -9080,6 +9146,10 @@ async function erpPromoverAutomaticamente(){
     const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
     if(erpCancelados.length){
       await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP AUTO] Erro ao processar cancelados:', e.message));
+    }
+    const erpComDataEntrega = erpAtivos.filter(r => r.data_entrega);
+    if(erpComDataEntrega.length){
+      await erpProcessarDatasEntrega(erpComDataEntrega).catch(e=>console.warn('[ERP AUTO] Erro ao processar datas de entrega:', e.message));
     }
     if(!erpAtivos.length) return;
 
@@ -9235,7 +9305,7 @@ async function erpPromoverParaProducao(){
     let offset = 0;
     const PAGINA = 1000;
     while(true){
-      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status,data_entrega&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
       erpRows = erpRows.concat(pagina);
       if(pagina.length < PAGINA) break;
       offset += PAGINA;
@@ -9264,6 +9334,11 @@ async function erpPromoverParaProducao(){
     if(erpCancelados.length){
       el.innerHTML = `⏳ Processando ${erpCancelados.length} pedido(s) cancelado(s)...`;
       await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP] Erro ao processar cancelados:', e.message));
+    }
+    const erpComDataEntrega = erpAtivos.filter(r => r.data_entrega);
+    if(erpComDataEntrega.length){
+      el.innerHTML = `⏳ Processando ${erpComDataEntrega.length} data(s) de entrega...`;
+      await erpProcessarDatasEntrega(erpComDataEntrega).catch(e=>console.warn('[ERP] Erro ao processar datas de entrega:', e.message));
     }
     if(!erpAtivos.length){
       el.innerHTML = `<span style="color:#059669;font-weight:700">✅ ${erpCancelados.length} pedido(s) cancelado(s) processado(s) — nenhum pedido ativo para promover.</span>`;
@@ -9378,7 +9453,7 @@ async function erpPromoverAutomatico(){
 
     // 4. Promover automaticamente
     resultEl.innerHTML = '⏳ Promovendo para produção (final)...';
-    const erpRows = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status&carga_erp=not.is.null&order=id.asc&limit=10000`) || [];
+    const erpRows = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status,data_entrega&carga_erp=not.is.null&order=id.asc&limit=10000`) || [];
     if(!erpRows.length){
       resultEl.innerHTML = '<span style="color:#f59e0b">⚠️ Nenhum pedido para promover (pode ter dado erro na gravação anterior).</span>';
       return;
@@ -9395,6 +9470,10 @@ async function erpPromoverAutomatico(){
     const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
     if(erpCancelados.length){
       await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP] Erro ao processar cancelados:', e.message));
+    }
+    const erpComDataEntrega = erpAtivos.filter(r => r.data_entrega);
+    if(erpComDataEntrega.length){
+      await erpProcessarDatasEntrega(erpComDataEntrega).catch(e=>console.warn('[ERP] Erro ao processar datas de entrega:', e.message));
     }
     if(!erpAtivos.length){
       resultEl.innerHTML = `<span style="color:#10b981;font-weight:700">✅ ${erpCancelados.length} pedido(s) cancelado(s) processado(s) — nenhum pedido ativo para promover.</span>`;

@@ -1,7 +1,11 @@
 # Integração ERP — Data de Entrega (validando cliente e carga)
 
-> Documento de especificação. Ainda **não implementado** — depende de confirmação
-> do nome/semântica do campo antes de mexer em produção (ver "Perguntas em aberto").
+> **Implementado.** As perguntas da seção 5 foram respondidas — `data_entrega` é a
+> data REAL de entrega (não agendada), o campo se chama `data_entrega` mesmo, só
+> chega num reenvio do pedido (não no envio inicial), e conflito de cliente bloqueia
+> a gravação e gera um alerta visível (badge de erros do sistema, via `_logErro`).
+> Ver `erpProcessarDatasEntrega()` em `index.html` e a migration
+> `20260803_base_data_erp_teste_add_data_entrega.sql`.
 
 ## 1. Como a integração ERP funciona hoje
 
