@@ -4259,6 +4259,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button onclick="salvarReceita()" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:.87rem;font-weight:700;cursor:pointer">✅ Lançar Receita</button>
       <button onclick="exportarReceitasXLSX()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:.87rem;font-weight:600;cursor:pointer">📥 Exportar</button>
+      <button onclick="abrirRelatorioReceitas()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:.87rem;font-weight:600;cursor:pointer">📊 Gerar Relatório do Mês</button>
     </div>
   </div>
 
@@ -4282,6 +4283,29 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 
 </div></div>
+
+<!-- Modal: Relatório de Receitas do Mês -->
+<style>
+  @media print{
+    body *{visibility:hidden}
+    #modal-relatorio-receitas, #modal-relatorio-receitas *{visibility:visible}
+    #modal-relatorio-receitas{position:absolute;inset:0;background:#fff;padding:0;display:block!important}
+    #modal-relatorio-receitas .rel-rec-box{max-height:none;overflow:visible;box-shadow:none;border-radius:0;max-width:100%;margin:0}
+    #rel-rec-actions{display:none!important}
+  }
+</style>
+<div id="modal-relatorio-receitas" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9500;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)this.style.display='none'">
+  <div class="rel-rec-box" style="background:#f7f7f7;border-radius:16px;width:100%;max-width:760px;max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+    <div id="rel-rec-actions" style="display:flex;justify-content:space-between;align-items:center;padding:14px 24px;border-bottom:1px solid #e0e0e0;position:sticky;top:0;background:#f7f7f7;z-index:2">
+      <div style="font-weight:800;color:#1a1a1a;font-size:.92rem">📊 Relatório de Receitas do Mês</div>
+      <div style="display:flex;gap:8px">
+        <button onclick="window.print()" style="background:#1a1a1a;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.82rem;font-weight:700;cursor:pointer">🖨️ Imprimir</button>
+        <button onclick="document.getElementById('modal-relatorio-receitas').style.display='none'" style="background:#fff;color:#1a1a1a;border:1px solid #d5d5d5;border-radius:8px;padding:8px 14px;font-size:.82rem;font-weight:700;cursor:pointer">✕</button>
+      </div>
+    </div>
+    <div id="rel-rec-conteudo"></div>
+  </div>
+</div>
 
 <!-- CHECKLIST ALHO -->
 <div class="page" id="page-checklist-alho"><style>
@@ -36668,6 +36692,102 @@ async function excluirReceita(id){
     showToast('Lançamento excluído','success');
     await renderReceitasArmazem();
   }catch(e){ showToast('Erro: '+e.message,'error'); }
+}
+
+// Relatório executivo de receitas do mês (visual em tons de cinza, mesmo
+// padrão do relatório de absenteísmo do Painel de Indicadores). Usa o mês
+// selecionado no filtro da tela (ou o mês atual, se nenhum estiver escolhido)
+// e os dados já carregados em _receitasCache — não refaz a busca ao Supabase.
+function abrirRelatorioReceitas(){
+  const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const mesRef = document.getElementById('rec-filtro-mes')?.value || new Date().toISOString().slice(0,7);
+  const dados = _receitasCache.filter(r=>r.data_referencia && r.data_referencia.startsWith(mesRef));
+
+  const [ano,mes] = mesRef.split('-').map(Number);
+  const nomesMes = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+  const periodoTxt = `${nomesMes[mes-1]} DE ${ano}`;
+
+  const total = dados.reduce((s,r)=>s+Number(r.valor||0),0);
+  const ticketMedio = dados.length ? total/dados.length : 0;
+
+  const agrupar = campo => {
+    const mapa = {};
+    dados.forEach(r=>{
+      const chave = r[campo] || '—';
+      if(!mapa[chave]) mapa[chave] = {valor:0, qtd:0};
+      mapa[chave].valor += Number(r.valor||0);
+      mapa[chave].qtd += 1;
+    });
+    return Object.entries(mapa).sort((a,b)=>b[1].valor-a[1].valor);
+  };
+
+  const porUnidade = agrupar('unidade');
+  const porTipo     = agrupar('tipo_receita_nome');
+
+  const listaBarras = (entries, cor) => {
+    const max = entries.length ? entries[0][1].valor : 1;
+    return entries.map(([nome,d])=>`
+      <div style="padding:12px 0;border-bottom:1px solid #e5e5e5">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+          <span style="font-size:.82rem;font-weight:700;color:#1a1a1a">${_escapeHtml(nome)}</span>
+          <span style="font-size:.82rem;font-weight:800;color:#1a1a1a">${fv(d.valor)}</span>
+        </div>
+        <div style="height:6px;background:#e5e5e5;border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${max?Math.max(2,Math.round(d.valor/max*100)):0}%;background:${cor};border-radius:3px"></div>
+        </div>
+        <div style="font-size:.68rem;color:#8a8a8a;margin-top:4px">${d.qtd} lançamento${d.qtd===1?'':'s'} · ${total?(d.valor/total*100).toFixed(1):'0.0'}% do mês</div>
+      </div>`).join('');
+  };
+
+  const html = `
+    <div style="background:#f7f7f7;border-radius:0 0 16px 16px;padding:36px 32px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif">
+      <div style="font-size:.7rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">RECEITAS ARMAZÉM · ${periodoTxt}</div>
+      <h2 style="font-size:2rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Relatório de Receitas</h2>
+      <div style="width:56px;height:3px;background:#1a1a1a;margin:16px 0 24px"></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px">
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #1a1a1a">
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:8px">TOTAL DO MÊS</div>
+          <div style="font-size:1.4rem;font-weight:800;white-space:nowrap">${fv(total)}</div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #8a8a8a">
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:8px">LANÇAMENTOS</div>
+          <div style="font-size:1.4rem;font-weight:800;white-space:nowrap">${dados.length}</div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #8a8a8a">
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:8px">TICKET MÉDIO</div>
+          <div style="font-size:1.4rem;font-weight:800;white-space:nowrap">${fv(ticketMedio)}</div>
+        </div>
+      </div>
+
+      ${!dados.length ? `
+        <div style="background:#fff;border-radius:10px;padding:32px;text-align:center;color:#8a8a8a;font-size:.85rem">Nenhum lançamento de receita encontrado em ${periodoTxt.toLowerCase()}.</div>
+      ` : `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
+        <div style="background:#fff;border-radius:10px;padding:22px 24px">
+          <div style="font-size:.9rem;font-weight:700">POR UNIDADE</div>
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px;margin-bottom:6px">RECEITA ACUMULADA NO MÊS</div>
+          ${listaBarras(porUnidade,'#1a1a1a')}
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:22px 24px">
+          <div style="font-size:.9rem;font-weight:700">POR TIPO DE RECEITA</div>
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px;margin-bottom:6px">RECEITA ACUMULADA NO MÊS</div>
+          ${listaBarras(porTipo,'#8a8a8a')}
+        </div>
+      </div>
+      `}
+
+      <div style="display:flex;justify-content:space-between;margin-top:24px;padding-top:14px;border-top:1px solid #e0e0e0;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
+        <span>DESTAK PRODUTIVIDADE · RECEITAS ARMAZÉM</span>
+        <span>GERADO EM ${new Date().toLocaleDateString('pt-BR')}</span>
+      </div>
+    </div>
+  `;
+
+  const conteudo = document.getElementById('rel-rec-conteudo');
+  if(conteudo) conteudo.innerHTML = html;
+  const modal = document.getElementById('modal-relatorio-receitas');
+  if(modal) modal.style.display = 'flex';
 }
 
 function exportarReceitasXLSX(){
