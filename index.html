@@ -18190,8 +18190,8 @@ async function registrarRotaAbsenteismo(motoristaNome, ajudanteNome, dataSaida){
         }
         // Qualquer outro status → não mexe
       } else {
-        // Sem registro: verifica se tem rota ativa com esse nome nessa data
-        const rotaAtiva = await supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(nome)}&status=in.("saiu","fim_viagem")&data_saida=lte.${data}&select=id`).catch(()=>[]) || [];
+        // Sem registro: verifica se tem rota ativa (viagem já iniciada e ainda não encerrada) cobrindo essa data
+        const rotaAtiva = await supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(nome)}&status=neq.cancelado&ts_saiu=lte.${data}T23:59:59&or=(ts_fim_viagem.is.null,ts_fim_viagem.gte.${data}T00:00:00)&select=id`).catch(()=>[]) || [];
         if(rotaAtiva.length){
           // Tem rota → lança automaticamente como rota
           await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
@@ -25684,7 +25684,11 @@ async function _abrirPopupPendentes(setor){
       supaFetch(`absenteismo?data=eq.${hoje}&select=nome,status`),
       supaFetch(`absenteismo?status=in.("ferias","atestado","folga")&data=eq.${hoje}&select=nome`),
       setor==='distribuicao'
-        ? supaFetch(`demandas_rota?status=in.("saiu","fim_viagem")&data_saida=lte.${hoje}&select=motorista`).catch(()=>[])
+        // Usa ts_saiu/ts_fim_viagem (horário real da viagem) em vez do campo "status",
+        // que fica travado em "saiu" quando ninguém clica em "fim de viagem" depois que
+        // o motorista já voltou — isso dispensava o motorista da lista de pendentes
+        // indefinidamente, mesmo dias depois do retorno real.
+        ? supaFetch(`demandas_rota?status=neq.cancelado&ts_saiu=not.is.null&ts_fim_viagem=is.null&select=motorista`).catch(()=>[])
         : Promise.resolve([])
     ]);
 
@@ -26206,8 +26210,11 @@ async function _calcularAbsenteismoDistribuicao(mes, filtros={}){
   try{
     const rotasHoje = await supaFetch(`demandas_rota?status=in.("saiu","fim_viagem")&data_saida=eq.${hoje}&select=motorista`) || [];
     rotasHoje.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
-    // Também verificar demandas que saíram antes de hoje e ainda não voltaram (saiu mas data_saida < hoje)
-    const emViagem = await supaFetch(`demandas_rota?status=eq.saiu&data_saida=lte.${hoje}&select=motorista`) || [];
+    // Também verificar demandas que saíram antes de hoje e ainda não voltaram.
+    // Usa ts_saiu/ts_fim_viagem (horário real da viagem) em vez do campo "status" —
+    // "status" fica travado em "saiu" quando ninguém clica em "fim de viagem" depois
+    // que o motorista já voltou, o que marcava "rota" indefinidamente em dias seguintes.
+    const emViagem = await supaFetch(`demandas_rota?status=neq.cancelado&ts_saiu=not.is.null&ts_fim_viagem=is.null&select=motorista`) || [];
     emViagem.forEach(d=>{ if(d.motorista) motoristasEmRotaHoje.add(d.motorista.trim().toUpperCase()); });
   }catch(e){}
 
