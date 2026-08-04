@@ -41,7 +41,7 @@ localStorage.setItem('comercial_rotas', JSON.stringify(novaRota));
 
 | Tabela | Uso |
 |--------|-----|
-| `lancamentos` | Lançamentos de cargas (motorista, ajudante, rota, veículo) |
+| `lancamentos` | Lançamentos de cargas (motorista, ajudante, rota, veículo). `motorista` é texto livre (nome); `motorista_id` é FK opcional para `motoristas` — fica NULL para LOJA/A DEFINIR MOTORISTA/frete e para nomes ainda fora do cadastro (planilha/digitação antiga). Use `motoristaIdPorNome(nome)` ao gravar. |
 | `lancamentos_ajudante` | Participação de ajudantes por carga |
 | `base_data` | Dados da planilha (pedidos, valores, ocorrências) |
 | `demandas_rota` | Cargas em trânsito na expedição |

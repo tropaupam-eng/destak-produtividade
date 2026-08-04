@@ -8418,13 +8418,13 @@ async function pushLancamento(l){
     if(l._id){
       await supaFetch(`lancamentos?id=eq.${l._id}`, {
         method:'PATCH',
-        body: JSON.stringify({motorista:l.motorista,ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
+        body: JSON.stringify({motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
       });
     } else {
       const uid = USUARIO_LOGADO?USUARIO_LOGADO.id:null;
       const res = await supaFetch('lancamentos', {
         method:'POST',
-        body: JSON.stringify({carga:l.carga,motorista:l.motorista,ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
+        body: JSON.stringify({carga:l.carga,motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
       });
       if(res&&res[0]) l._id = res[0].id;
       // Preencher ajudantes que se vincularam antes deste lançamento existir
@@ -11263,11 +11263,11 @@ async function lancar(){
     isUpdate = true;
     await supaFetch(`lancamentos?id=eq.${lancExistenteSupa.id}`,{
       method:'PATCH',
-      body:JSON.stringify({motorista:mot, rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase, rire:'R.I.', fonte:'lancamento'})
+      body:JSON.stringify({motorista:mot, motorista_id:motoristaIdPorNome(mot), rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase, rire:'R.I.', fonte:'lancamento'})
     }).catch(e=>console.warn('Update lancamento:',e.message));
   } else {
     lancamentos.unshift({
-      carga, motorista:mot, ajudante:'', veiculo, rota:rotaFinal, und,
+      carga, motorista:mot, motorista_id:motoristaIdPorNome(mot), ajudante:'', veiculo, rota:rotaFinal, und,
       vinculado:temNaBase, pendente:!temNaBase,
       ts: tsLanc, rire:'R.I.', fonte:'lancamento'
     });
@@ -11339,7 +11339,8 @@ async function escolherMotoristaLanc(carga, motorista){
     const lancAtual = lancamentos.find(l=> Number(l.carga)===carga);
     if(lancAtual){
       lancAtual.motorista = motorista;
-      if(lancAtual._id) supaFetch(`lancamentos?id=eq.${lancAtual._id}`,{method:'PATCH',body:JSON.stringify({motorista})}).catch(()=>{});
+      lancAtual.motorista_id = motoristaIdPorNome(motorista);
+      if(lancAtual._id) supaFetch(`lancamentos?id=eq.${lancAtual._id}`,{method:'PATCH',body:JSON.stringify({motorista, motorista_id:lancAtual.motorista_id})}).catch(()=>{});
     }
   }
 
@@ -14607,6 +14608,18 @@ async function carregarMotoristas(){
     // Aplicar select buscável
     aplicarSelectBuscavel('exp-motorista');
   }catch(e){ MOTORISTAS_CACHE=[]; }
+}
+
+// Resolve o id do cadastro (tabela motoristas) a partir do nome gravado em lancamentos.
+// Retorna null quando o nome não bate com nenhum motorista ativo — cobre os casos
+// legítimos (LOJA, A DEFINIR MOTORISTA, frete) e também nomes fora do cadastro
+// vindos de planilha/ERP, que precisam ficar visíveis para revisão, não silenciados.
+function motoristaIdPorNome(nome){
+  if(!nome) return null;
+  const alvo = String(nome).trim().toUpperCase();
+  if(!alvo || alvo==='LOJA' || alvo==='A DEFINIR MOTORISTA' || alvo==='RETIRA') return null;
+  const m = (MOTORISTAS_CACHE||[]).find(x=>String(x.nome||'').trim().toUpperCase()===alvo);
+  return m ? m.id : null;
 }
 
 let ROTAS_CACHE = [];
@@ -18760,6 +18773,7 @@ async function confirmarSaidaRota(){
             body:JSON.stringify({
               carga: dem.carga,
               motorista: _motNorm,
+              motorista_id: motoristaIdPorNome(_motNorm),
               ajudante: '',
               rota: dem.rota||'',
               und: dem.unidade||dem.und||'',
@@ -19373,6 +19387,18 @@ async function salvarVincularCarga(){
     // não pelo nome da rota: toda carga vinculada aqui é R.E. por definição.
     const rireFinal = 'R.E.';
 
+    // Condutor da planilha é texto livre (coluna do CSV) — pode não bater com o
+    // cadastro de motoristas por typo/nome incompleto. Não bloqueia a vinculação
+    // (dado real da operação), só alerta pro badge de erros revisar depois.
+    const _condutorIdVinc = motoristaIdPorNome(condutorFinal);
+    if(condutorFinal && !_condutorIdVinc && typeof window._logErro === 'function'){
+      window._logErro(
+        `Vinculação Expedição: motorista "${condutorFinal}" (carga ${carga}) não bate com o cadastro`,
+        null, 'motorista_fora_cadastro',
+        { carga, motorista: condutorFinal }
+      );
+    }
+
     // Atualizar demanda com carga e totais reais (mes_ano = mês da planilha importada)
     const _mesAnoVinc = linhasDaCarga[0]?.mes_ano || '';
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
@@ -19385,7 +19411,7 @@ async function salvarVincularCarga(){
     if(!lancExiste){
       const tsLanc = new Date().toISOString();
       const novoLancData = {
-        carga, motorista: condutorFinal, veiculo: d.veiculo || '',
+        carga, motorista: condutorFinal, motorista_id: _condutorIdVinc, veiculo: d.veiculo || '',
         rota: rotaFinal, und: undFinal, rire: rireFinal,
         vinculado: true, pendente: false, ts: tsLanc, fonte: 'expedicao'
       };
@@ -19414,6 +19440,7 @@ async function salvarVincularCarga(){
       lancExiste.rire      = _rireVinc    || lancExiste.rire;
       lancExiste.fonte     = _fonteVinc;
       lancExiste.motorista = condutorFinal|| lancExiste.motorista;
+      lancExiste.motorista_id = condutorFinal ? _condutorIdVinc : lancExiste.motorista_id;
       lancExiste.vinculado = true;
       lancExiste.pendente  = false;
       salvarLanc();
@@ -19421,7 +19448,7 @@ async function salvarVincularCarga(){
         method:'PATCH',
         body: JSON.stringify({
           rota: rotaFinal, und: undFinal, rire: _rireVinc,
-          motorista: condutorFinal, vinculado: true, pendente: false, fonte: _fonteVinc
+          motorista: condutorFinal, motorista_id: condutorFinal ? _condutorIdVinc : undefined, vinculado: true, pendente: false, fonte: _fonteVinc
         })
       }).catch(()=>{});
       showToast(`✅ Carga ${carga} atualizada! Rota: ${rotaFinal} | ${pedidosFinal} pedidos`, 'success');
