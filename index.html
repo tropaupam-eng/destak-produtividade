@@ -8413,23 +8413,35 @@ async function carregarDivergenciasAceitas(){
   }catch(e){ console.warn('divAceitas:',e.message); }
 }
 
+// Deriva mes_ano do horário local de Brasília (-03:00), não do slice UTC do ts —
+// um lançamento feito ~21h-23h59 local perto da virada do mês grava ts em UTC já
+// no dia 1º do mês seguinte; sem isso, mes_ano ficava um mês à frente do que as
+// telas que recalculam por ts com -03:00 (ex: OTIF, Pedidos por Semana) mostram.
+function _mesAnoLocal(tsISO){
+  if(!tsISO) return null;
+  const d = new Date(tsISO);
+  if(isNaN(d)) return null;
+  const dl = new Date(d.getTime() - 3*3600000); // Brasília = UTC-3 (sem horário de verão desde 2019)
+  return dl.getUTCFullYear()+'-'+String(dl.getUTCMonth()+1).padStart(2,'0');
+}
+
 async function pushLancamento(l){
   try{
     if(l._id){
       await supaFetch(`lancamentos?id=eq.${l._id}`, {
         method:'PATCH',
-        body: JSON.stringify({motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
+        body: JSON.stringify({motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||_mesAnoLocal(l.ts),fonte:l.fonte||''})
       });
     } else {
       const uid = USUARIO_LOGADO?USUARIO_LOGADO.id:null;
       const res = await supaFetch('lancamentos', {
         method:'POST',
-        body: JSON.stringify({carga:l.carga,motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||(l.ts?l.ts.slice(0,7):null),fonte:l.fonte||''})
+        body: JSON.stringify({carga:l.carga,motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||_mesAnoLocal(l.ts),fonte:l.fonte||''})
       });
       if(res&&res[0]) l._id = res[0].id;
       // Preencher ajudantes que se vincularam antes deste lançamento existir
       if(l.carga && l.motorista){
-        preencherAjudantesPendentes(l.carga, l.motorista, l.rota||'', l.mes_ano||new Date().toISOString().slice(0,7)).catch(()=>{});
+        preencherAjudantesPendentes(l.carga, l.motorista, l.rota||'', l.mes_ano||_mesAnoLocal(l.ts)||_mesAnoLocal(new Date().toISOString())).catch(()=>{});
       }
     }
     // #3 — Atualiza condutor em base_data para todos os pedidos desta carga
@@ -10219,9 +10231,20 @@ async function carregarPlanilha(file) {
           grouped2[c].push(r);
         });
         Object.entries(grouped2).forEach(([c,rows]) => {
-          const pedidos = rows.map(r=>parseInt(r['Pedido'])).filter(Boolean);
+          // Dedupe por pedido e exclui ocorrência===1 do valor — mesmo critério de
+          // buildCargaMapCache(), evita "Valor" da carga divergir entre telas quando
+          // a planilha tem o pedido repetido ou com avaria/ocorrência registrada.
+          const _pedVistos = new Set();
+          let valor = 0;
+          rows.forEach(r=>{
+            const pk = parseInt(r['Pedido']);
+            if(!pk || _pedVistos.has(pk)) return;
+            _pedVistos.add(pk);
+            const _ocorr = r['OCORRENCIA'] !== undefined ? Number(r['OCORRENCIA']||0) : (r['Ocorrencia'] !== undefined ? Number(r['Ocorrencia']||0) : 0);
+            if(_ocorr!==1) valor += parseFloat(r['Valor'])||0;
+          });
+          const pedidos = [..._pedVistos];
           const rota  = rows.map(r=>String(r['ROTA']||'').trim()).filter(Boolean)[0]||'';
-          const valor = rows.reduce((s,r)=>s+(parseFloat(r['Valor'])||0),0);
           const und   = String(rows[0]['UND']||'').trim();
           const rire  = String(rows[0]['RI/RE']||'').trim();
           const placa = String(rows[0]['Placa']||'').trim();
@@ -10372,10 +10395,16 @@ async function carregarCSV(file) {
           csvGrouped[r.carga].push(r);
         });
         Object.entries(csvGrouped).forEach(([c, rows]) => {
-          const pedidos   = rows.map(r=>r.pedido).filter(Boolean);
+          // Dedupe por pedido (formato CSV legado não traz coluna de ocorrência)
+          const _pedVistosCsv = new Set();
+          const rowsUnicas = rows.filter(r=>{
+            if(!r.pedido || _pedVistosCsv.has(r.pedido)) return false;
+            _pedVistosCsv.add(r.pedido); return true;
+          });
+          const pedidos   = rowsUnicas.map(r=>r.pedido);
           const rota      = rows[0].rota || '';
-          const valor     = rows.reduce((s,r)=>s+(r.valor||0), 0);
-          const peso_kg   = rows.reduce((s,r)=>s+(r.peso_kg||0), 0);
+          const valor     = rowsUnicas.reduce((s,r)=>s+(r.valor||0), 0);
+          const peso_kg   = rowsUnicas.reduce((s,r)=>s+(r.peso_kg||0), 0);
           const und       = rows[0].und  || '';
           const rire      = rows[0].rire || '';
           const placa     = rows[0].placa|| '';
@@ -11768,7 +11797,8 @@ function _calcularTotaisGeral(){
   const _gcm = getCargaMap();
   const cargasLanc = {};
   lancamentos.forEach(l => {
-    if((l.motorista||'').toUpperCase()==='LOJA') return;
+    const _motGeral = (l.motorista||'').toUpperCase();
+    if(_motGeral==='LOJA'||_motGeral==='RETIRA') return;
     const c = Number(l.carga);
     const dados = _gcm[Math.round(c)];
     const qtd   = dados ? dados.pedidos.size : 0;
@@ -11962,7 +11992,9 @@ async function gerarRelatorioSemanal(){
       const pendente = cargas.filter(c=>!saiuSt.includes(c.status)&&c.status!=='em_rota'&&c.status!=='em_viagem').length;
       const motTotal = abs.filter(a=>a.funcao==='motorista'||a.funcao==='ajudante');
       const presentes = motTotal.filter(a=>a.status==='presente'||a.status==='rota'||a.status==='rota_auto').length;
-      const faltas = motTotal.filter(a=>a.status==='falta'||a.status==='falta_just').length;
+      // Atestado conta como ausência (mesmo critério de _calcularAbsenteismoDistribuicao) —
+      // 'falta_just' nunca é gravado pelo sistema, não é um status real
+      const faltas = motTotal.filter(a=>a.status==='falta'||a.status==='atestado').length;
       const totalAbs = presentes+faltas;
       const rotasUnicas = [...new Set(cargas.map(c=>c.rota).filter(Boolean))];
       html += `<div style="background:var(--bg-card2);border:1px solid var(--border);border-top:4px solid #2563eb;border-radius:12px;padding:20px">
@@ -12000,7 +12032,9 @@ async function gerarRelatorioSemanal(){
       const abast = data.abast||[];
       const armAbs = abs.filter(a=>!a.funcao||a.funcao===''||['armazem','conferente','separador'].includes((a.funcao||'').toLowerCase()));
       const presArm = armAbs.filter(a=>a.status==='presente').length;
-      const faltArm = armAbs.filter(a=>a.status==='falta'||a.status==='falta_just').length;
+      // Atestado conta como ausência (mesmo critério de _calcularAbsenteismoArmazem) —
+      // 'falta_just' nunca é gravado pelo sistema, não é um status real
+      const faltArm = armAbs.filter(a=>a.status==='falta'||a.status==='atestado').length;
       const totalArm = presArm+faltArm;
       const unidades = [...new Set(abast.map(a=>a.unidade).filter(Boolean))];
       html += `<div style="background:var(--bg-card2);border:1px solid var(--border);border-top:4px solid #d97706;border-radius:12px;padding:20px">
@@ -13783,8 +13817,8 @@ async function carregarKmMotorista(){
   try{
     // Buscar cargas: demandas_rota + lancamentos (fallback) + KM de ambas as tabelas
     const [demandas, lancsKm, kmRegs] = await Promise.all([
-      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&status=neq.cancelado&select=carga,rota,status,data_saida,ts_saiu,veiculo&order=ts_saiu.desc`).catch(()=>[]) || [],
-      supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire&order=ts.desc`).catch(()=>[]) || [],
+      supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(myNome)}&ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&status=neq.cancelado&select=carga,rota,status,data_saida,ts_saiu,veiculo&order=ts_saiu.desc`).catch(()=>[]) || [],
+      supaFetch(`lancamentos?motorista=eq.${encodeURIComponent(myNome)}&ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire&order=ts.desc`).catch(()=>[]) || [],
       supaFetch(`km_cargas?motorista_id=eq.${myId}&mes_ano=eq.${mesStr}&select=*`).catch(()=>[]) || []
     ]);
 
@@ -14024,11 +14058,15 @@ async function _carregarMinhasEntregasLegado(){
       baseData = BASE_DATA.filter(r=>cargas.includes(Number(r.carga)));
     }
 
-    // Mapa carga → {pedidos, valor}
+    // Mapa carga → {pedidos, valor} — dedupe por pedido (evita bônus a maior
+    // se o mesmo pedido aparecer 2x em base_data, ex: reimportação de planilha)
     const cargaMap = {};
     baseData.forEach(r=>{
       const c = Number(r.carga);
-      if(!cargaMap[c]) cargaMap[c]={pedidos:0,valor:0};
+      if(!cargaMap[c]) cargaMap[c]={pedidos:0,valor:0,vistos:new Set()};
+      const k = String(r.pedido||'');
+      if(!k || cargaMap[c].vistos.has(k)) return;
+      cargaMap[c].vistos.add(k);
       if(Number(r.ocorrencia)!==1){
         cargaMap[c].pedidos++;
         cargaMap[c].valor += parseFloat(r.valor)||0;
@@ -14064,7 +14102,10 @@ async function _carregarMinhasEntregasLegado(){
     const cargaMapAll = {};
     baseDataAll.forEach(r=>{
       const c = Number(r.carga);
-      if(!cargaMapAll[c]) cargaMapAll[c]={pedidos:0,valor:0};
+      if(!cargaMapAll[c]) cargaMapAll[c]={pedidos:0,valor:0,vistos:new Set()};
+      const k = String(r.pedido||'');
+      if(!k || cargaMapAll[c].vistos.has(k)) return;
+      cargaMapAll[c].vistos.add(k);
       if(Number(r.ocorrencia)!==1){
         cargaMapAll[c].pedidos++;
         cargaMapAll[c].valor += parseFloat(r.valor)||0;
@@ -16449,7 +16490,7 @@ async function renderFrotaRotas(){
   try{
     const proxMes = _proximoMes(mes);
     const lancs = await supaFetch(
-      `lancamentos?ts=gte.${mes}-01T00:00:00&ts=lt.${proxMes}-01T00:00:00` +
+      `lancamentos?ts=gte.${mes}-01T00:00:00-03:00&ts=lt.${proxMes}-01T00:00:00-03:00` +
       `&veiculo=not.is.null&select=veiculo,rota,carga&order=veiculo.asc`
     ) || [];
 
@@ -16994,9 +17035,9 @@ async function carregarGestaoFrota(){
       supaFetch('coletas_frota?select=*&order=data_coleta.desc').catch(()=>[]),
       supaFetch('fornecedores?ativo=eq.true&rota=not.is.null&select=id,nome,rota,contato').catch(()=>[]),
       // Lançamentos de hoje — para identificar veículos utilizados no dia
-      supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00&ts=lt.${amanhaStr}T00:00:00&select=veiculo,carga,rota,motorista`).catch(()=>[]),
+      supaFetch(`lancamentos?ts=gte.${hoje}T00:00:00-03:00&ts=lt.${amanhaStr}T00:00:00-03:00&select=veiculo,carga,rota,motorista`).catch(()=>[]),
       // Lançamentos do mês — para calcular dias rodados por veículo
-      supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00&ts=lt.${amanhaStr}T00:00:00&veiculo=not.is.null&select=veiculo,ts`).catch(()=>[]),
+      supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00-03:00&ts=lt.${amanhaStr}T00:00:00-03:00&veiculo=not.is.null&select=veiculo,ts`).catch(()=>[]),
       // Abastecimento de loja hoje — também conta como utilização do veículo
       supaFetch(`abastecimento_loja?data_saida=eq.${hoje}&veiculo=not.is.null&select=veiculo,carga,motorista,unidade`).catch(()=>[]),
       // Abastecimento de loja do mês — para calcular dias rodados
@@ -18781,7 +18822,7 @@ async function confirmarSaidaRota(){
               vinculado: false,
               pendente: true,
               ts: _tsLancA,
-              mes_ano: _tsLancA.slice(0,7),
+              mes_ano: _mesAnoLocal(_tsLancA),
               veiculo: dem.veiculo||null,
               fonte: 'motorista_a'
             })
@@ -19654,7 +19695,7 @@ async function carregarPortalMotorista(mesCustom = null){
         const _hojeStr = new Date().toISOString().slice(0,10);
         const _nomeDbLanc = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
         const _lhRes = await supaFetch(
-          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&ts=gte.${_hojeStr}T00:00:00Z&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
+          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&ts=gte.${_hojeStr}T00:00:00-03:00&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
         ).catch(()=>[]) || [];
         if(_lhRes.length && elCargaAtual){
           const _lh = _lhRes[0];
@@ -19744,12 +19785,12 @@ async function carregarPortalMotorista(mesCustom = null){
     // ── LANÇAMENTOS DO MÊS ────────────────────────────
     // Fonte 1: lançamentos criados no mês
     let lancsDoMes = await supaFetch(
-      `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
+      `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
     ).catch(()=>[]) || [];
 
     // Fonte 2: demandas que saíram neste mês (ts_saiu) — captura cargas lançadas em mês anterior
     let demsComSaida = await supaFetch(
-      `demandas_rota?motorista=eq.${encodeURIComponent(nomeDB)}&ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
+      `demandas_rota?motorista=eq.${encodeURIComponent(nomeDB)}&ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga&limit=500`
     ).catch(()=>[]) || [];
 
     // Fallback: cadastro duplicado/grafia diferente faz as duas buscas por nome exato virem vazias.
@@ -19757,8 +19798,8 @@ async function carregarPortalMotorista(mesCustom = null){
     if(!lancsDoMes.length && !demsComSaida.length){
       const _nomeNormMot = _normNomeMot(nomeDB);
       const [_lancsMesTodos, _demsMesTodos] = await Promise.all([
-        supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,rota,rire,ajudante,ts,motorista&order=ts.desc&limit=3000`).catch(()=>[]),
-        supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga,motorista&limit=1000`).catch(()=>[])
+        supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire,ajudante,ts,motorista&order=ts.desc&limit=3000`).catch(()=>[]),
+        supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,motorista&limit=1000`).catch(()=>[])
       ]);
       lancsDoMes    = (_lancsMesTodos||[]).filter(l => _normNomeMot(l.motorista) === _nomeNormMot);
       demsComSaida  = (_demsMesTodos||[]).filter(d => _normNomeMot(d.motorista) === _nomeNormMot);
@@ -19924,11 +19965,11 @@ async function carregarPortalMotorista(mesCustom = null){
       const undFilter = undDB ? `&und=eq.${encodeURIComponent(undDB)}` : '';
       // Busca com carga incluso — fonte de verdade de quem fez o quê
       const todosLancTs = await supaFetch(
-        `lancamentos?ts=gte.${mesStr}-01T00:00:00Z&ts=lt.${_proximoMes(mesStr)}-01T00:00:00Z${undFilter}&select=motorista,rota,rire,carga&limit=2000`
+        `lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00${undFilter}&select=motorista,rota,rire,carga&limit=2000`
       ).catch(()=>[]) || [];
       // Cargas que saíram este mês mas o lancamento foi criado no mês anterior
       const demsDoMesRank = await supaFetch(
-        `demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00Z&select=carga&limit=500`
+        `demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga&limit=500`
       ).catch(()=>[]) || [];
       const cargasJaNoLancRank = new Set(todosLancTs.filter(l=>l.carga).map(l=>Math.round(Number(l.carga))));
       const cargasExtraRank = [...new Set(demsDoMesRank.filter(d=>d.carga).map(d=>Math.round(Number(d.carga))).filter(c=>!cargasJaNoLancRank.has(c)))];
@@ -19948,7 +19989,7 @@ async function carregarPortalMotorista(mesCustom = null){
       todosLanc.forEach(l => {
         const mot = (l.motorista||'').toUpperCase().trim();
         const c   = Math.round(Number(l.carga));
-        if(!mot || !c) return;
+        if(!mot || !c || mot==='LOJA' || mot==='RETIRA') return;
         const ri  = _isRI(l);
         if(!cargasPorMot[mot]) cargasPorMot[mot] = [];
         cargasPorMot[mot].push(c);
@@ -20428,6 +20469,7 @@ async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
       body:JSON.stringify({
         carga: cargaNum,
         motorista: _nomeB,
+        motorista_id: motoristaIdPorNome(_nomeB),
         ajudante: '',
         rota: '',
         und: _undB,
@@ -20435,7 +20477,7 @@ async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
         vinculado: false,
         pendente: true,
         ts: _tsB,
-        mes_ano: _tsB.slice(0,7),
+        mes_ano: _mesAnoLocal(_tsB),
         veiculo: veicVal,
         fonte: 'motorista_b'
       })
@@ -23881,7 +23923,18 @@ async function renderDashInterna(){
     }
     const totalCargas    = cargasFiltro.size;
     const totalPedidos   = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size;
-    const valorTotal     = bd.reduce((s,r)=>s+(Number(r.valor)||0), 0);
+    // Valor Entregue: dedupe por pedido e exclui ocorrência — mesmo critério do
+    // ranking de motoristas/ajudantes logo abaixo, na mesma função (evita a
+    // tela mostrar dois números de "pedidos válidos" diferentes lado a lado).
+    const _valorVistos = new Set();
+    let valorTotal = 0;
+    bd.forEach(r=>{
+      if(Number(r.ocorrencia||0)===1 || !r.pedido) return;
+      const _vk = String(r.carga)+'_'+String(r.pedido);
+      if(_valorVistos.has(_vk)) return;
+      _valorVistos.add(_vk);
+      valorTotal += Number(r.valor)||0;
+    });
     const cargasAtivas   = dem.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
     const cargasPartidas = dem.filter(d=>['saiu','fim_viagem','concluido'].includes(d.status));
 
@@ -24495,8 +24548,10 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const k=String(b.pedido);
     if(pedMap[k]) return;
     const carga=b.carga!=null?String(b.carga):null;
-    // Rota SEMPRE do lançamento — base_data.rota não é fonte confiável
-    const rota=(carga&&lancRotaMap[carga])||'';
+    // Rota do lançamento tem prioridade — base_data.rota é fallback quando o
+    // lançamento não tem rota preenchida (evita cair em '' e cobrar prazo R.E.
+    // padrão de rota errada). Mesmo critério do bloco "OTIF por Semana".
+    const rota=(carga&&lancRotaMap[carga])||normalizarRota(b.rota||'')||(b.rota||'').toUpperCase();
     // rire derivado da rota do lançamento
     const rireNorm=getRireFromRota(rota)||normRire(carga&&lancRireMap[carga]||'')||'R.E.';
     pedMap[k]={ carga, rota, rire:rireNorm, dataPedido:b.data_pedido||null };
@@ -24682,7 +24737,7 @@ async function _carregarOtifMes(mes, und){
   // statsAll: sem filtro de mês (para TV — mostra todos os pedidos das cargas do mês)
   const stats    = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, mes, agendPedMap, feriadosSet);
   const statsAll = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, undefined, agendPedMap, feriadosSet);
-  const result = { stats, statsAll, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes };
+  const result = { stats, statsAll, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes, agendPedMap, feriadosSet };
   _otifCacheMap.set(cacheKey, result);
   _otifPromiseMap.delete(cacheKey);
   return result;
@@ -24838,7 +24893,7 @@ async function renderOtifDiario(){
 
     // Cargas do dia: demandas_rota (saída real ou planejada) + lançamentos (fallback RI sem expedição)
     const [demTs, demDs, lancsDia] = await Promise.all([
-      supaFetch(`demandas_rota?ts_saiu=gte.${dataSel}T00:00:00Z&ts_saiu=lte.${dataSel}T23:59:59Z&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${dataSel}T00:00:00-03:00&ts_saiu=lte.${dataSel}T23:59:59-03:00&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${dataSel}&ts_saiu=is.null&select=id,carga,rota,motorista,veiculo,ts_saiu,status,status_fiscal`).catch(()=>[]),
       supaFetch(`lancamentos?ts=gte.${dataSel}T00:00:00-03:00&ts=lte.${dataSel}T23:59:59-03:00&select=carga,rota,motorista,veiculo,ts,rire`,{_quiet:true}).catch(()=>[]),
     ]);
@@ -24909,6 +24964,9 @@ async function renderOtifDiario(){
       if(e.data_entrega&&(!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
     });
     const ocorrSet = new Set((ocorrRows||[]).map(o=>String(o.pedido)).filter(Boolean));
+    // Mesmos ajustes de prazo do _computeOtifStats (agendamento pré-acordado + feriados na janela)
+    const agendPedMap = dadosMes?.agendPedMap || new Map();
+    const feriadosSet  = dadosMes?.feriadosSet || new Set();
 
     const demandaMap = {};
     demandas.forEach(d=>{ if(d.carga!=null) demandaMap[String(d.carga)]=d; });
@@ -24933,11 +24991,9 @@ async function renderOtifDiario(){
     const nowMs = Date.now();
 
     function getSemaforo(pedido, rotaNorm, rire, dataPedido, lancTs, saidaTs){
-      if(entMap[String(pedido)]) return 'ok';
-      if(!dataPedido) return 'ok';
+      if(!dataPedido && rire==='R.I.') return 'ok';
       const prazoH=getPrazoH(rotaNorm,rire);
       if(prazoH===null) return 'ok';
-      const prazoMs=prazoH*3600000;
       let inicioMs;
       if(rire==='R.I.'){
         inicioMs=new Date(dataPedido).getTime();
@@ -24946,14 +25002,33 @@ async function renderOtifDiario(){
         if(!saidaTs && !lancTs) return 'ok';
         inicioMs=new Date(saidaTs||lancTs).getTime();
       }
+      let prazoMs=prazoH*3600000;
+      // Agendamento pré-acordado com o cliente substitui o prazo padrão — mesma regra do OTIF oficial
+      const _agendData = agendPedMap.get ? agendPedMap.get(String(pedido)) : null;
+      if(_agendData) prazoMs = Math.max(0, new Date(_agendData+'T23:59:59').getTime() - inicioMs);
+      // Feriados dentro da janela estendem o prazo em +24h cada — mesma regra do OTIF oficial
+      if(feriadosSet.size){
+        const _fimTs = inicioMs + prazoMs;
+        let _nFer = 0;
+        feriadosSet.forEach(dateStr=>{
+          const _fTs = new Date(dateStr+'T12:00:00').getTime();
+          if(_fTs >= inicioMs && _fTs <= _fimTs) _nFer++;
+        });
+        prazoMs += _nFer * 24 * 3600000;
+      }
       const deadline=inicioMs+prazoMs;
+      // Entregue: compara a data real de entrega com o prazo — entrega atrasada não é "ok"
+      const entregaVal = entMap[String(pedido)];
+      if(entregaVal){
+        return new Date(entregaVal).getTime()<=deadline ? 'ok' : 'atrasado';
+      }
       if(nowMs>deadline) return 'atrasado';
       if(nowMs>inicioMs+prazoMs*0.75) return 'alerta';
       return 'ok';
     }
 
     const cargaStats = {};
-    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,semOtif:0,inFull:0}; });
+    cargaList.forEach(c=>{ cargaStats[String(c)]={pedidos:[],atrasados:0,alerta:0,ok:0,entregues:0,entreguesNoPrazo:0,semOtif:0,inFull:0}; });
 
     bdAll.forEach(p=>{
       if(p.carga==null) return;
@@ -24971,7 +25046,11 @@ async function renderOtifDiario(){
       const entregue=!!entMap[String(p.pedido)];
       const isInFull=!ocorrSet.has(String(p.pedido));
       cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm,isInFull});
-      if(entregue) cargaStats[ck].entregues++;
+      if(entregue){
+        cargaStats[ck].entregues++;
+        // "No prazo" = entregue e o semáforo não marcou atraso (entrega comparada ao deadline)
+        if(sem!=='atrasado') cargaStats[ck].entreguesNoPrazo++;
+      }
       if(isInFull) cargaStats[ck].inFull++;
       if(sem==='atrasado') cargaStats[ck].atrasados++;
       else if(sem==='alerta') cargaStats[ck].alerta++;
@@ -25027,13 +25106,16 @@ async function renderOtifDiario(){
     const cargasConc   = cargaRows.filter(r=>r.pctAtend===100).length;
     const totalPeds    = cargaRows.reduce((s,r)=>s+r.total,0);
     const totalEnt     = cargaRows.reduce((s,r)=>s+r.stats.entregues,0);
+    const totalEntNoPrazo = cargaRows.reduce((s,r)=>s+r.stats.entreguesNoPrazo,0);
     const totalInFull  = cargaRows.reduce((s,r)=>s+r.stats.inFull,0);
     const totalAtras   = cargaRows.reduce((s,r)=>s+r.stats.atrasados,0);
     const cArgAtras    = cargaRows.filter(r=>r.sem==='atrasado').length;
-    // Denominador = pedidos com resultado conhecido (entregues + atrasados sem entrega)
-    // Pedidos dentro do prazo ainda em andamento não entram no cálculo — evita % artificial
-    const totalElegivel = totalEnt + totalAtras;
-    const otifPct      = totalElegivel ? Math.round(totalEnt/totalElegivel*100) : null;
+    // Denominador = pedidos com resultado conhecido: entregues NO PRAZO + atrasados (entregues
+    // fora do prazo OU ainda não entregues e já vencidos). São mutuamente exclusivos por
+    // construção (getSemaforo só marca 'atrasado' quando o prazo já foi estourado).
+    // Pedidos dentro do prazo ainda em andamento não entram no cálculo — evita % artificial.
+    const totalElegivel = totalEntNoPrazo + totalAtras;
+    const otifPct      = totalElegivel ? Math.round(totalEntNoPrazo/totalElegivel*100) : null;
     const inFullPct    = totalPeds ? Math.round(totalInFull/totalPeds*100) : 0;
 
     function kCard(icon,label,val,sub,cor){
@@ -25045,7 +25127,7 @@ async function renderOtifDiario(){
       </div>`;
     }
     const corOtif=otifPct===null?'var(--text-muted)':otifPct>=95?'#16a34a':otifPct>=80?'#f59e0b':'#dc2626';
-    const otifSub=totalElegivel?totalEnt+'/'+totalElegivel+' ped c/ resultado':'pedidos em andamento';
+    const otifSub=totalElegivel?totalEntNoPrazo+'/'+totalElegivel+' ped no prazo':'pedidos em andamento';
     kpisEl.innerHTML=
       kCard('🎯','On Time (Entregues)',otifPct!==null?otifPct+'%':'—',otifSub,corOtif)+
       kCard('📦','In Full (Sem Ocorrência)',inFullPct+'%',totalInFull+'/'+totalPeds+' pedidos',inFullPct>=95?'#16a34a':inFullPct>=80?'#f59e0b':'#dc2626')+
@@ -33017,7 +33099,10 @@ async function gerarPagamentos(btn){
       // bônus sem saber a rota real. Fica de fora do ranking até alguém completar a rota.
       if(!rota) return;
 
-      const rire  = getRireFromRota(rota);
+      // rire gravado tem prioridade sobre o nome da rota — mesmo critério do
+      // bloco "sem lançamento" abaixo e do resto do sistema (cobre override
+      // manual de RETIRA/CEASA, etc.)
+      const rire  = normRire(l.rire||dados?.rire||'') || getRireFromRota(rota);
       const bonus = getBonusRota(rota, temAjud);
       // Unidade: sempre do cadastro (motorista efetivo tem prioridade)
       const und = undMap[motEfetivo] || undMap[(ajudante||'').trim().toUpperCase()] || '';
@@ -37489,11 +37574,11 @@ async function carregarTV(){
       supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status`).catch(()=>[]),
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
-      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&status=in.("saiu","fim_viagem")&select=carga,rota,ts_saiu`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&status=in.("saiu","fim_viagem")&select=carga,rota,ts_saiu`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
-      supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00&ts=lt.${_prox}-01T00:00:00&select=carga,ts`).catch(()=>[]),
-      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00Z&ts_saiu=lt.${_prox}-01T00:00:00Z&select=carga,ts_saiu`).catch(()=>[]),
+      supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_prox}-01T00:00:00-03:00&select=carga,ts`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_prox}-01T00:00:00-03:00&select=carga,ts_saiu`).catch(()=>[]),
     ]);
 
     // 2ª fase: base_data filtrado pelas cargas que saíram no mês
@@ -37516,7 +37601,10 @@ async function carregarTV(){
     _otifCacheMap.delete(mesStr);
     _otifPromiseMap.delete(mesStr);
     const _tvDadosOtif = await _carregarOtifMes(mesStr, undefined);
-    const otifStats = _tvDadosOtif ? (_tvDadosOtif.statsAll || _tvDadosOtif.stats) : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, [], undefined, undefined);
+    // Usa .stats (mesma população filtrada por mês do Dashboard/Painel) — a TV é
+    // "sem filtro de unidade" (undefined acima), mas precisa bater com o mesmo
+    // %OTIF do mês mostrado nas outras telas, não uma população maior (.statsAll).
+    const otifStats = _tvDadosOtif ? (_tvDadosOtif.stats || _tvDadosOtif.statsAll) : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, [], undefined, mesStr);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
 
