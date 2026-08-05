@@ -13639,7 +13639,7 @@ async function vincularAjudanteCarga(){
     if(jaVinc&&jaVinc.length){ showToast(`Você já está vinculado à Carga #${carga}`,'warning'); return; }
 
     const [lanc, dem] = await Promise.all([
-      supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano&limit=1`).catch(()=>[]),
+      supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano,ajudante&limit=1`).catch(()=>[]),
       supaFetch(`demandas_rota?carga=eq.${carga}&select=carga,motorista,rota&limit=1`).catch(()=>[])
     ]);
 
@@ -13663,6 +13663,17 @@ async function vincularAjudanteCarga(){
       perfil_origem:AJUDANTE.perfil||'ajudante',
       motorista, rota, mes_ano:mesAno, ts:new Date().toISOString(), ativo:true
     })});
+
+    // Se o lançamento já existia (motorista lançou a carga antes do ajudante se
+    // vincular pelo portal) e ainda não tem ajudante, preenche agora — sem isso
+    // o vínculo fica só em ajudante_cargas e some de Produtividade/Pagamentos,
+    // que leem lancamentos.ajudante. O caso "lançamento não existe ainda" é
+    // coberto abaixo, no bloco que cria o esqueleto já com o ajudante preenchido.
+    if(lanc && lanc.length && !(lanc[0].ajudante||'').trim()){
+      await supaFetch(`lancamentos?carga=eq.${carga}`,{
+        method:'PATCH', body:JSON.stringify({ajudante:(AJUDANTE.nome||'').toUpperCase()})
+      }).catch(()=>{});
+    }
 
     if(primeiro){
       setBtnState('Atribuindo pedidos...',true);
@@ -13744,7 +13755,7 @@ async function vincularMotoristaComoAjudante(){
   const setBtnState = (txt,dis)=>{ if(btn){ btn.textContent=txt; btn.disabled=dis; }};
   setBtnState('Verificando...',true);
   try{
-    const lanc = await supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano&limit=1`);
+    const lanc = await supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,mes_ano,ajudante&limit=1`);
     if(!lanc||!lanc.length){ showToast(`Carga #${carga} não encontrada`,'warning'); return; }
 
     const myId   = USUARIO_LOGADO.id;
@@ -13764,6 +13775,15 @@ async function vincularMotoristaComoAjudante(){
       perfil_origem:'motorista', motorista, rota, mes_ano:mesAno,
       ts:new Date().toISOString(), ativo:true
     })});
+
+    // Esta função sempre parte de um lançamento já existente (checado acima) —
+    // sem preencher lancamentos.ajudante aqui, o vínculo fica só em
+    // ajudante_cargas e nunca aparece em Produtividade/Pagamentos.
+    if(!(lanc[0].ajudante||'').trim()){
+      await supaFetch(`lancamentos?carga=eq.${carga}`,{
+        method:'PATCH', body:JSON.stringify({ajudante:myNome})
+      }).catch(()=>{});
+    }
 
     if(primeiro){
       setBtnState('Atribuindo pedidos...',true);
