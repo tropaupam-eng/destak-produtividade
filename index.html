@@ -17865,6 +17865,15 @@ async function salvarManutencao(){
     } else {
       await supaFetch('manutencoes_frota',{ method:'POST', body:JSON.stringify(payload) });
     }
+    // Ativa/em andamento indisponibiliza o veículo; concluída/cancelada libera (se não
+    // houver outra manutenção ativa) — mesmo critério de enviarManutencaoFrota
+    if(status === 'agendada' || status === 'em_andamento'){
+      await supaFetch(`veiculos?placa=eq.${encodeURIComponent(veiculo)}`,{
+        method:'PATCH', body:JSON.stringify({ ativo:false })
+      }).catch(()=>{});
+    } else {
+      await gfAutoLiberarVeiculo(veiculo);
+    }
     document.getElementById('modal-nova-manut').style.display='none';
     showToast('✅ Manutenção salva!','success');
     await carregarGestaoFrota();
@@ -17873,8 +17882,10 @@ async function salvarManutencao(){
 
 async function excluirManutencao(id){
   if(!confirm('Excluir esta manutenção?')) return;
+  const m = _GF_MANUT.find(x=>x.id===id);
   try{
     await supaFetch(`manutencoes_frota?id=eq.${id}`,{ method:'DELETE' });
+    if(m?.veiculo) await gfAutoLiberarVeiculo(m.veiculo);
     showToast('Manutenção excluída','success');
     await carregarGestaoFrota();
   }catch(e){ showToast('Erro ao excluir: '+e.message,'error'); }
@@ -18215,6 +18226,11 @@ async function enviarManutencaoFrota(placa, demId){
         method:'PATCH', body:JSON.stringify({ status:'concluido' })
       }).catch(()=>{});
     }
+    // Manutenção agendada/em andamento indisponibiliza o veículo (gfAutoLiberarVeiculo
+    // reverte quando ela for concluída/cancelada e não houver outra manutenção ativa)
+    await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placa)}`,{
+      method:'PATCH', body:JSON.stringify({ ativo:false })
+    }).catch(()=>{});
     showToast(`🔧 Manutenção registrada para ${placa}. Veículo permanece indisponível.`, 'success');
     await carregarDemandas().catch(()=>{});
     renderFrota();
@@ -28599,14 +28615,6 @@ async function confirmarFimViagem(){
       }).catch(()=>{});
     }
 
-    // Marcar veículo como indisponível até a frota liberar
-    if(dem?.veiculo){
-      await supaFetch(`veiculos?placa=eq.${dem.veiculo}`,{
-        method:'PATCH',
-        body:JSON.stringify({ ativo:false })
-      }).catch(()=>{});
-    }
-
     document.getElementById('modal-fim-viagem').style.display = 'none';
     _demandaFimId = null;
 
@@ -29078,10 +29086,11 @@ async function concluirCaixa(demandaId, carga){
 
     if(stAtual === 'fim_viagem'){
       // Etapa 2: retorno — fechar carga, vai para histórico.
-      // Veículo permanece ativo=false até a frota validar (Liberar ou Manutenção).
+      // Veículo já está disponível na Expedição desde o fim de viagem — a Frota
+      // segue avaliando manutenção por conta própria, sem bloquear novo uso.
       const r = await _patchStatusDemanda(demandaId, 'concluido', 'caixa');
       if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
-      showToast('✅ Carga fechada! Veículo aguarda validação da Frota.','success');
+      showToast('✅ Carga fechada e enviada ao histórico!','success');
     } else if(stAtual === 'aguardando_manifesto'){
       // Etapa 1: antes da saída — se manifesto emitido, libera para viagem
       const r = await _patchStatusDemanda(demandaId, 'pronto_viagem', 'caixa');
