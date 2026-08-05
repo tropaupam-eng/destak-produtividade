@@ -22086,13 +22086,17 @@ async function sincronizarRHComSistema(btn){
   try{
     const [funcs, mots, ajs] = await Promise.all([
       supaFetch('dp_funcionarios?ativo=eq.true&select=nome,cpf,cargo,local_trabalho&limit=2000').catch(()=>[]),
-      supaFetch('motoristas?select=nome,cpf,unidade,senha&limit=2000').catch(()=>[]),
-      supaFetch('ajudantes?select=nome,cpf&limit=2000').catch(()=>[]),
+      supaFetch('motoristas?select=id,nome,cpf,unidade,senha&limit=2000').catch(()=>[]),
+      supaFetch('ajudantes?select=id,nome,cpf&limit=2000').catch(()=>[]),
     ]);
 
     const cpfMotSet = new Set((mots||[]).map(m=>(m.cpf||'').replace(/\D/g,'')).filter(Boolean));
     const cpfAjuSet = new Set((ajs||[]).map(a=>(a.cpf||'').replace(/\D/g,'')).filter(Boolean));
-    let criadosMot=0, criadosAju=0, ignorados=0;
+    // Mapa por nome normalizado (tolerante a acento/caixa) para achar cadastros existentes
+    // sem CPF ainda — evita criar um registro duplicado quando o RH traz o CPF depois.
+    const nomeMotMap = new Map((mots||[]).map(m=>[_normNomeMot(m.nome), m]));
+    const nomeAjuMap = new Map((ajs||[]).map(a=>[_normNomeMot(a.nome), a]));
+    let criadosMot=0, criadosAju=0, vinculadosMot=0, vinculadosAju=0, ignorados=0;
 
     for(const f of (funcs||[])){
       const cargo  = (f.cargo||'').toUpperCase();
@@ -22100,13 +22104,22 @@ async function sincronizarRHComSistema(btn){
       const nome   = (f.nome||'').toUpperCase().trim();
       if(!nome || !cpf){ ignorados++; continue; }
       const unidade = _mapRHUnidade(f.local_trabalho||'');
+      const nomeNorm = _normNomeMot(nome);
 
       if(cargo.includes('MOTORISTA') || cargo.includes('ENTREGADOR')){
         if(!cpfMotSet.has(cpf)){
-          await supaFetch('motoristas',{method:'POST',body:JSON.stringify({
-            nome, cpf, unidade, ativo:true, senha:'destak123', criado_em:new Date().toISOString()
-          })}).catch(()=>{});
-          cpfMotSet.add(cpf); criadosMot++;
+          const existente = nomeMotMap.get(nomeNorm);
+          if(existente){
+            // Já existe cadastro com esse nome (sem esse CPF) — completa o CPF em vez de duplicar
+            await supaFetch(`motoristas?id=eq.${existente.id}`,{method:'PATCH',body:JSON.stringify({cpf})}).catch(()=>{});
+            existente.cpf = cpf; vinculadosMot++;
+          } else {
+            await supaFetch('motoristas',{method:'POST',body:JSON.stringify({
+              nome, cpf, unidade, ativo:true, senha:'destak123', criado_em:new Date().toISOString()
+            })}).catch(()=>{});
+            criadosMot++;
+          }
+          cpfMotSet.add(cpf);
         }
         // Se o mesmo CPF existe em ajudantes, garante dados atualizados (vinculação silenciosa)
         const motRow = (mots||[]).find(m=>(m.cpf||'').replace(/\D/g,'')===cpf) || {unidade,senha:'destak123'};
@@ -22116,17 +22129,26 @@ async function sincronizarRHComSistema(btn){
       } else if(cargo.includes('AJUDANTE') || cargo.includes('AUXILIAR DE ENTREGA')){
         if(!cpfAjuSet.has(cpf)){
           const motVinc = (mots||[]).find(m=>(m.cpf||'').replace(/\D/g,'')===cpf);
-          await supaFetch('ajudantes',{method:'POST',body:JSON.stringify({
-            nome, cpf, unidade: motVinc?.unidade||unidade,
-            ativo:true, status:'ativo', senha: motVinc?.senha||'destak123',
-            criado_em:new Date().toISOString()
-          })}).catch(()=>{});
-          cpfAjuSet.add(cpf); criadosAju++;
+          const existente = nomeAjuMap.get(nomeNorm);
+          if(existente){
+            await supaFetch(`ajudantes?id=eq.${existente.id}`,{method:'PATCH',body:JSON.stringify({
+              cpf, unidade: motVinc?.unidade||undefined
+            })}).catch(()=>{});
+            existente.cpf = cpf; vinculadosAju++;
+          } else {
+            await supaFetch('ajudantes',{method:'POST',body:JSON.stringify({
+              nome, cpf, unidade: motVinc?.unidade||unidade,
+              ativo:true, status:'ativo', senha: motVinc?.senha||'destak123',
+              criado_em:new Date().toISOString()
+            })}).catch(()=>{});
+            criadosAju++;
+          }
+          cpfAjuSet.add(cpf);
         }
       } else { ignorados++; }
     }
 
-    showToast(`✅ RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados`,'success');
+    showToast(`✅ RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados (${vinculadosMot+vinculadosAju} CPFs vinculados a cadastros existentes)`,'success');
     renderRH();
   }catch(e){
     showToast('⛔ Erro na sincronização: '+e.message,'warning');
@@ -23048,6 +23070,9 @@ async function adicionarAjudanteManual(){
   };
   if(!nome){ showMsg('Informe o nome',false); return; }
   try{
+    const nomeNorm = _normNomeMot(nome);
+    const existentes = await supaFetch('ajudantes?select=id,nome') || [];
+    if(existentes.some(a=>_normNomeMot(a.nome)===nomeNorm)){ showMsg('Ajudante já cadastrado.',false); return; }
     await supaFetch('ajudantes',{method:'POST',body:JSON.stringify({
       nome,email:email||'',cpf:cpf||'',senha:senha||'destak123',
       status:'aprovado',ativo:true,criado_em:new Date().toISOString()
