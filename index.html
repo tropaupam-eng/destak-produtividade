@@ -24103,8 +24103,18 @@ async function renderDashInterna(){
     const _fmtValor = v => v>=1e6 ? 'R$ '+(v/1e6).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})+' mi'
                           : v>=1e3 ? 'R$ '+(v/1e3).toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1})+' mil'
                           : 'R$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+    // "Pedidos" conta por carga que saiu no mês (não pelo mes_ano do próprio pedido — ver
+    // comentário acima em baseDataSupa), enquanto "Pedidos por Semana" filtra estritamente
+    // mes_ano === mesFiltro. A diferença é proposital, mas precisa ficar visível: sem isso,
+    // a soma das 5 semanas pode ficar menor que este total sem nenhuma explicação na tela.
+    const _pedidosDoMesSet = new Set();
+    bd.forEach(r=>{
+      const pm = (r.mes_ano || r.data_pedido || '').slice(0,7);
+      if(pm === mesFiltro) _pedidosDoMesSet.add(String(r.carga)+'_'+String(r.pedido));
+    });
+    const pedidosOutroMes = totalPedidos - _pedidosDoMesSet.size;
     const kpis = [
-      {label:'📦 Pedidos',      val:totalPedidos.toLocaleString('pt-BR'),          cor:'#2563eb'},
+      {label:'📦 Pedidos',      val:totalPedidos.toLocaleString('pt-BR'),          cor:'#2563eb', sub:pedidosOutroMes>0?`${pedidosOutroMes} de outro mês (carga saiu em ${mesFiltro.split('-').reverse().join('/')})`:undefined},
       {label:'🚛 Cargas',       val:totalCargas.toLocaleString('pt-BR'),           cor:'#7c3aed'},
       {label:'✅ Ativas',       val:cargasAtivas.toLocaleString('pt-BR'),          cor:'#0891b2'},
       {label:'🚛 Partiram',     val:cargasPartidas.length.toLocaleString('pt-BR'), cor:'#E8000D'},
@@ -24368,7 +24378,8 @@ async function renderDashInterna(){
     const semOtifEl = document.getElementById('dash-sem-otif-cards');
     if(semOtifEl && _dadosOtif){
       const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif,
-              lancRows: lancRowsOtif, rotasRows: rotasRowsOtif } = _dadosOtif;
+              lancRows: lancRowsOtif, rotasRows: rotasRowsOtif,
+              agendPedMap: agendPedMapOtif, feriadosSet: feriadosSetOtif } = _dadosOtif;
 
       // prazoMap por rota
       const prazoMapOtif = {};
@@ -24433,7 +24444,7 @@ async function renderDashInterna(){
         const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
         if(prazoEntry === null) return; // rota cadastrada sem prazo (prazo_otif = null no banco)
         const rireNorm = normRire(p.rire)||getRireFromRota(rota)||'R.E.';
-        const prazoH   = prazoEntry != null ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
+        let prazoH   = prazoEntry != null ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
         const ent   = entMapOtif[ped] || {};
 
         // Início do prazo: R.I. = data_pedido (local); R.E. = ts_saiu (sem saída = pendente)
@@ -24460,6 +24471,23 @@ async function renderDashInterna(){
             return;
           }
           _inicioPrazoOtif = new Date(tsRe);
+        }
+
+        // Agendamento pré-acordado: usa data combinada com cliente como prazo do OTIF
+        // (mesmo critério de _computeOtifStats — mantém o card semanal consistente com o KPI do topo)
+        const _agendDataSem = (agendPedMapOtif && typeof agendPedMapOtif.get==='function') ? agendPedMapOtif.get(ped) : null;
+        if(_agendDataSem){
+          prazoH = Math.max(0, (new Date(_agendDataSem+'T23:59:59').getTime() - _inicioPrazoOtif.getTime()) / 3600000);
+        }
+        // Feriados dentro da janela estendem o prazo em +24h cada
+        if(feriadosSetOtif && feriadosSetOtif.size){
+          const _fimTsSem = _inicioPrazoOtif.getTime() + prazoH * 3600000;
+          let _nFerSem = 0;
+          feriadosSetOtif.forEach(dateStr=>{
+            const _fTsSem = new Date(dateStr+'T12:00:00').getTime();
+            if(_fTsSem >= _inicioPrazoOtif.getTime() && _fTsSem <= _fimTsSem) _nFerSem++;
+          });
+          prazoH += _nFerSem * 24;
         }
 
         // dataFim — entrega real tem prioridade sobre qualquer proxy
