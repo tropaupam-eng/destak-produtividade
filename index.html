@@ -17865,6 +17865,15 @@ async function salvarManutencao(){
     } else {
       await supaFetch('manutencoes_frota',{ method:'POST', body:JSON.stringify(payload) });
     }
+    // Ativa/em andamento indisponibiliza o veículo; concluída/cancelada libera (se não
+    // houver outra manutenção ativa) — mesmo critério de enviarManutencaoFrota
+    if(status === 'agendada' || status === 'em_andamento'){
+      await supaFetch(`veiculos?placa=eq.${encodeURIComponent(veiculo)}`,{
+        method:'PATCH', body:JSON.stringify({ ativo:false })
+      }).catch(()=>{});
+    } else {
+      await gfAutoLiberarVeiculo(veiculo);
+    }
     document.getElementById('modal-nova-manut').style.display='none';
     showToast('✅ Manutenção salva!','success');
     await carregarGestaoFrota();
@@ -17873,8 +17882,10 @@ async function salvarManutencao(){
 
 async function excluirManutencao(id){
   if(!confirm('Excluir esta manutenção?')) return;
+  const m = _GF_MANUT.find(x=>x.id===id);
   try{
     await supaFetch(`manutencoes_frota?id=eq.${id}`,{ method:'DELETE' });
+    if(m?.veiculo) await gfAutoLiberarVeiculo(m.veiculo);
     showToast('Manutenção excluída','success');
     await carregarGestaoFrota();
   }catch(e){ showToast('Erro ao excluir: '+e.message,'error'); }
@@ -18215,6 +18226,11 @@ async function enviarManutencaoFrota(placa, demId){
         method:'PATCH', body:JSON.stringify({ status:'concluido' })
       }).catch(()=>{});
     }
+    // Manutenção agendada/em andamento indisponibiliza o veículo (gfAutoLiberarVeiculo
+    // reverte quando ela for concluída/cancelada e não houver outra manutenção ativa)
+    await supaFetch(`veiculos?placa=eq.${encodeURIComponent(placa)}`,{
+      method:'PATCH', body:JSON.stringify({ ativo:false })
+    }).catch(()=>{});
     showToast(`🔧 Manutenção registrada para ${placa}. Veículo permanece indisponível.`, 'success');
     await carregarDemandas().catch(()=>{});
     renderFrota();
@@ -24110,8 +24126,18 @@ async function renderDashInterna(){
     const _fmtValor = v => v>=1e6 ? 'R$ '+(v/1e6).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})+' mi'
                           : v>=1e3 ? 'R$ '+(v/1e3).toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1})+' mil'
                           : 'R$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+    // "Pedidos" conta por carga que saiu no mês (não pelo mes_ano do próprio pedido — ver
+    // comentário acima em baseDataSupa), enquanto "Pedidos por Semana" filtra estritamente
+    // mes_ano === mesFiltro. A diferença é proposital, mas precisa ficar visível: sem isso,
+    // a soma das 5 semanas pode ficar menor que este total sem nenhuma explicação na tela.
+    const _pedidosDoMesSet = new Set();
+    bd.forEach(r=>{
+      const pm = (r.mes_ano || r.data_pedido || '').slice(0,7);
+      if(pm === mesFiltro) _pedidosDoMesSet.add(String(r.carga)+'_'+String(r.pedido));
+    });
+    const pedidosOutroMes = totalPedidos - _pedidosDoMesSet.size;
     const kpis = [
-      {label:'📦 Pedidos',      val:totalPedidos.toLocaleString('pt-BR'),          cor:'#2563eb'},
+      {label:'📦 Pedidos',      val:totalPedidos.toLocaleString('pt-BR'),          cor:'#2563eb', sub:pedidosOutroMes>0?`${pedidosOutroMes} de outro mês (carga saiu em ${mesFiltro.split('-').reverse().join('/')})`:undefined},
       {label:'🚛 Cargas',       val:totalCargas.toLocaleString('pt-BR'),           cor:'#7c3aed'},
       {label:'✅ Ativas',       val:cargasAtivas.toLocaleString('pt-BR'),          cor:'#0891b2'},
       {label:'🚛 Partiram',     val:cargasPartidas.length.toLocaleString('pt-BR'), cor:'#E8000D'},
@@ -24375,7 +24401,8 @@ async function renderDashInterna(){
     const semOtifEl = document.getElementById('dash-sem-otif-cards');
     if(semOtifEl && _dadosOtif){
       const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif,
-              lancRows: lancRowsOtif, rotasRows: rotasRowsOtif } = _dadosOtif;
+              lancRows: lancRowsOtif, rotasRows: rotasRowsOtif,
+              agendPedMap: agendPedMapOtif, feriadosSet: feriadosSetOtif } = _dadosOtif;
 
       // prazoMap por rota
       const prazoMapOtif = {};
@@ -24440,7 +24467,7 @@ async function renderDashInterna(){
         const prazoEntry = Object.prototype.hasOwnProperty.call(prazoMapOtif, rota) ? prazoMapOtif[rota] : undefined;
         if(prazoEntry === null) return; // rota cadastrada sem prazo (prazo_otif = null no banco)
         const rireNorm = normRire(p.rire)||getRireFromRota(rota)||'R.E.';
-        const prazoH   = prazoEntry != null ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
+        let prazoH   = prazoEntry != null ? prazoEntry : (rireNorm.includes('I') ? 24 : 192);
         const ent   = entMapOtif[ped] || {};
 
         // Início do prazo: R.I. = data_pedido (local); R.E. = ts_saiu (sem saída = pendente)
@@ -24467,6 +24494,23 @@ async function renderDashInterna(){
             return;
           }
           _inicioPrazoOtif = new Date(tsRe);
+        }
+
+        // Agendamento pré-acordado: usa data combinada com cliente como prazo do OTIF
+        // (mesmo critério de _computeOtifStats — mantém o card semanal consistente com o KPI do topo)
+        const _agendDataSem = (agendPedMapOtif && typeof agendPedMapOtif.get==='function') ? agendPedMapOtif.get(ped) : null;
+        if(_agendDataSem){
+          prazoH = Math.max(0, (new Date(_agendDataSem+'T23:59:59').getTime() - _inicioPrazoOtif.getTime()) / 3600000);
+        }
+        // Feriados dentro da janela estendem o prazo em +24h cada
+        if(feriadosSetOtif && feriadosSetOtif.size){
+          const _fimTsSem = _inicioPrazoOtif.getTime() + prazoH * 3600000;
+          let _nFerSem = 0;
+          feriadosSetOtif.forEach(dateStr=>{
+            const _fTsSem = new Date(dateStr+'T12:00:00').getTime();
+            if(_fTsSem >= _inicioPrazoOtif.getTime() && _fTsSem <= _fimTsSem) _nFerSem++;
+          });
+          prazoH += _nFerSem * 24;
         }
 
         // dataFim — entrega real tem prioridade sobre qualquer proxy
@@ -28578,14 +28622,6 @@ async function confirmarFimViagem(){
       }).catch(()=>{});
     }
 
-    // Marcar veículo como indisponível até a frota liberar
-    if(dem?.veiculo){
-      await supaFetch(`veiculos?placa=eq.${dem.veiculo}`,{
-        method:'PATCH',
-        body:JSON.stringify({ ativo:false })
-      }).catch(()=>{});
-    }
-
     document.getElementById('modal-fim-viagem').style.display = 'none';
     _demandaFimId = null;
 
@@ -29057,10 +29093,11 @@ async function concluirCaixa(demandaId, carga){
 
     if(stAtual === 'fim_viagem'){
       // Etapa 2: retorno — fechar carga, vai para histórico.
-      // Veículo permanece ativo=false até a frota validar (Liberar ou Manutenção).
+      // Veículo já está disponível na Expedição desde o fim de viagem — a Frota
+      // segue avaliando manutenção por conta própria, sem bloquear novo uso.
       const r = await _patchStatusDemanda(demandaId, 'concluido', 'caixa');
       if(!r.ok){ showToast('⛔ '+r.msg,'warning'); return; }
-      showToast('✅ Carga fechada! Veículo aguarda validação da Frota.','success');
+      showToast('✅ Carga fechada e enviada ao histórico!','success');
     } else if(stAtual === 'aguardando_manifesto'){
       // Etapa 1: antes da saída — se manifesto emitido, libera para viagem
       const r = await _patchStatusDemanda(demandaId, 'pronto_viagem', 'caixa');
@@ -34353,6 +34390,13 @@ async function iniciarApp(){
   }
   // ─────────────────────────────────────────────────────
 
+  // Inicia o monitor de conexão para TODOS os perfis, inclusive os que usam
+  // portal dedicado (motorista, ajudante, conferente, caixa, seguros,
+  // operador/separador) e retornam abaixo antes de chegar em mostrarApp() —
+  // sem isso, esses usuários (os mais expostos a conexão instável em campo)
+  // nunca tinham _connOk/_connStatus atualizado.
+  iniciarMonitorConexao();
+
   // Fiscal → app principal com sidebar (igual adm_fiscal)
   // portal-fiscal-wrapper mantido para compatibilidade mas não é mais a entrada padrão
 
@@ -36547,6 +36591,8 @@ async function checarConexaoSupabase(){
 }
 
 function iniciarMonitorConexao(){
+  if(window._connMonitorIniciado) return;
+  window._connMonitorIniciado = true;
   checarConexaoSupabase();
   window.addEventListener('online',  () => checarConexaoSupabase());
   window.addEventListener('offline', () => checarConexaoSupabase());
