@@ -8688,6 +8688,14 @@ async function preencherAjudantesPendentes(carga, motorista, rota, mesAno){
 // naquele momento (ou trouxe pedidos novos depois), a cópia fica desatualizada
 // pra sempre — o ajudante nunca vê os pedidos que faltaram. Chamado após cada
 // upload da planilha operacional, só para as cargas que receberam dado novo.
+//
+// Também remove da cópia os pedidos que a planilha não confirma mais (carga
+// cancelada e redespachada com menos pedidos, ocorrência resolvida, correção
+// manual etc.) — sem isso a cópia só cresce e nunca reflete a operação real:
+// o ajudante via pedido "fantasma" no próprio portal, e Produtividade/Pagamentos
+// (que usam a carga inteira da base_data, não essa cópia) já não tinham esse
+// problema, mas o portal do ajudante e qualquer relatório baseado em
+// ajudante_pedidos direto ficavam inflados pra sempre.
 async function ressincronizarAjudantePedidos(cargas){
   const lista = [...new Set((cargas||[]).map(c=>Math.round(Number(c))).filter(Boolean))];
   if(!lista.length) return;
@@ -8709,32 +8717,40 @@ async function ressincronizarAjudantePedidos(cargas){
     });
 
     const agora = new Date().toISOString();
-    let totalInseridos = 0;
+    let totalInseridos = 0, totalRemovidos = 0;
     for(const aj of ajCargas){
       const c = Math.round(Number(aj.carga));
-      const pedsPlanilha = pedsPorCarga[c];
-      if(!pedsPlanilha || !pedsPlanilha.size) continue;
+      const pedsPlanilha = pedsPorCarga[c] || new Set();
 
       const jaTem = await supaFetch(
-        `ajudante_pedidos?carga=eq.${c}&ajudante_id=eq.${aj.ajudante_id}&select=pedido`
+        `ajudante_pedidos?carga=eq.${c}&ajudante_id=eq.${aj.ajudante_id}&select=id,pedido`
       ).catch(()=>[]) || [];
-      const jaTemSet = new Set(jaTem.map(p=>String(p.pedido)));
-      const faltando = [...pedsPlanilha].filter(p=>!jaTemSet.has(p));
-      if(!faltando.length) continue;
+      const jaTemMap = new Map(jaTem.map(p=>[String(p.pedido), p.id]));
 
-      for(let i=0;i<faltando.length;i+=50){
-        await supaFetch('ajudante_pedidos',{method:'POST',body:JSON.stringify(
-          faltando.slice(i,i+50).map((ped,j)=>({
-            id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
-            carga: c, pedido: ped,
-            ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
-            mes_ano: aj.mes_ano || agora.slice(0,7), ts: agora
-          }))
-        )}).catch(()=>{});
+      const faltando = [...pedsPlanilha].filter(p=>!jaTemMap.has(p));
+      const sobrando = [...jaTemMap.keys()].filter(p=>!pedsPlanilha.has(p));
+
+      if(faltando.length){
+        for(let i=0;i<faltando.length;i+=50){
+          await supaFetch('ajudante_pedidos',{method:'POST',body:JSON.stringify(
+            faltando.slice(i,i+50).map((ped,j)=>({
+              id: Date.now().toString(36)+Math.random().toString(36).slice(2)+i+j,
+              carga: c, pedido: ped,
+              ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
+              mes_ano: aj.mes_ano || agora.slice(0,7), ts: agora
+            }))
+          )}).catch(()=>{});
+        }
+        totalInseridos += faltando.length;
       }
-      totalInseridos += faltando.length;
+
+      if(sobrando.length){
+        const idsRemover = sobrando.map(p=>jaTemMap.get(p));
+        await supaFetch(`ajudante_pedidos?id=in.(${idsRemover.join(',')})`,{method:'DELETE'}).catch(()=>{});
+        totalRemovidos += sobrando.length;
+      }
     }
-    if(totalInseridos) console.log(`ressincronizarAjudantePedidos: ${totalInseridos} pedido(s) atrasado(s) preenchido(s) em ${lista.length} carga(s)`);
+    if(totalInseridos||totalRemovidos) console.log(`ressincronizarAjudantePedidos: ${totalInseridos} pedido(s) atrasado(s) preenchido(s), ${totalRemovidos} pedido(s) fantasma removido(s) em ${lista.length} carga(s)`);
   }catch(e){ console.warn('ressincronizarAjudantePedidos:', e.message); }
 }
 
