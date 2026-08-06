@@ -14225,11 +14225,12 @@ async function confirmarRedistribuicao(){
   if(!cbs.length){ showToast('Selecione ao menos um pedido','warning'); return; }
   if(!confirm(`Transferir ${cbs.length} pedido(s) para ${novoNome}?`)) return;
   try{
-    for(const cb of cbs){
-      await supaFetch(`ajudante_pedidos?id=eq.${cb.dataset.id}`,{
-        method:'PATCH', body:JSON.stringify({ajudante_id:novoId, ajudante_nome:novoNome})
-      });
-    }
+    // Todo checkbox marcado recebe o MESMO destino — dá pra fazer num PATCH só
+    // (id=in.(...)) em vez de um por pedido.
+    const ids = cbs.map(cb=>cb.dataset.id);
+    await supaFetch(`ajudante_pedidos?id=in.(${ids.join(',')})`,{
+      method:'PATCH', body:JSON.stringify({ajudante_id:novoId, ajudante_nome:novoNome})
+    });
     showToast(`✅ ${cbs.length} pedido(s) transferido(s) para ${novoNome}`,'success');
     await abrirRedistribuicaoPedidos(_redistCarga);
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -33394,14 +33395,30 @@ async function gerarPagamentos(btn){
     });
 
     // Mapa de unidade por nome (fallback para lançamentos sem und preenchido)
-    const [_mots, _ajs] = await Promise.all([
+    const [_mots, _ajs, _demsStatus] = await Promise.all([
       supaFetch('motoristas?select=nome,unidade&ativo=eq.true') || [],
-      supaFetch('ajudantes?select=nome,unidade&ativo=eq.true') || []
+      supaFetch('ajudantes?select=nome,unidade&ativo=eq.true') || [],
+      supaFetch('demandas_rota?select=carga,status').catch(()=>[]) || []
     ]);
     const undMap = {};
     [...(_mots||[]), ...(_ajs||[])].forEach(p=>{ if(p.nome&&p.unidade) undMap[p.nome.trim().toUpperCase()]=p.unidade.trim(); });
     // Unidades válidas = apenas valores reais do cadastro (não nulo/vazio)
     const unidadesValidas = new Set(Object.values(undMap).filter(u=>u&&u.trim()));
+
+    // Carga que passou pela Expedição mas ainda não concluiu a viagem (ex.:
+    // "saiu", separação, aguardando manifesto) não conta em Produtividade
+    // ainda — senão uma carga que só saiu hoje já aparece como entrega feita.
+    // Se a MESMA carga tiver outro registro concluído (redespacho depois de
+    // cancelamento), ela conta normalmente.
+    const _cargasComDemanda   = new Set();
+    const _cargasConcluidas   = new Set();
+    (_demsStatus||[]).forEach(d=>{
+      const c = Math.round(Number(d.carga));
+      if(!c) return;
+      _cargasComDemanda.add(c);
+      if(d.status==='concluido') _cargasConcluidas.add(c);
+    });
+    const cargaAindaEmAndamento = c => _cargasComDemanda.has(c) && !_cargasConcluidas.has(c);
 
     const pessoaMap = {};
     const vistas = new Set();
@@ -33411,6 +33428,7 @@ async function gerarPagamentos(btn){
       const carga = Math.round(Number(l.carga));
       if(mot==='LOJA'||mot==='RETIRA'||!l.carga) return;
       if(vistas.has(carga)) return;
+      if(cargaAindaEmAndamento(carga)) return;
 
       // Filtro de mês — pelo ts (mesma fonte do ranking)
       let mesAno = '';
@@ -33487,6 +33505,7 @@ async function gerarPagamentos(btn){
     Object.entries(cargaDados).forEach(([cStr, dados])=>{
       const c = Math.round(Number(cStr));
       if(vistas.has(c)) return;
+      if(cargaAindaEmAndamento(c)) return;
       if(!dados || dados.pedidos.size===0) return;
       const condutor = (dados.condutor||'').toUpperCase().trim();
       if(!condutor || condutor==='LOJA' || condutor==='RETIRA') return;
