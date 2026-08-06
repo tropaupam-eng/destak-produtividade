@@ -33636,26 +33636,43 @@ async function gerarPagamentos(btn){
     });
 
     // ── BÔNUS KM PARA MOTORISTAS RE (DC-01) ─────────────────────────
-    // gerarPagamentos não buscava km_cargas → motoristas RE recebiam R$0
+    // Fonte é rotas_viagem (km_inicial/km_final lançados na Expedição via
+    // Iniciar/Fim de Viagem) — km_cargas (portal do motorista) quase não tem
+    // uso real, então motoristas de R.E. ficavam sempre com R$0 de KM.
     const _mesGerPag = mesSel || new Date().toISOString().slice(0,7);
     try{
-      const kmCargasMes = await supaFetch(
-        `km_cargas?mes_ano=eq.${_mesGerPag}&select=carga,km_inicial,km_final,rota,motorista_nome`
+      const [_anoKm,_mesKm] = _mesGerPag.split('-').map(Number);
+      const _inicioMesKm = `${_mesGerPag}-01`;
+      const _fimMesKm = _mesKm===12 ? `${_anoKm+1}-01-01` : `${_anoKm}-${String(_mesKm+1).padStart(2,'0')}-01`;
+      const viagensMes = await supaFetch(
+        `rotas_viagem?data_saida=gte.${_inicioMesKm}&data_saida=lt.${_fimMesKm}&select=carga,demanda_id,km_inicial,km_final`
       ).catch(()=>[]) || [];
-      kmCargasMes.forEach(km=>{
-        if(km.km_inicial==null||km.km_final==null) return;
-        const kmRodado = km.km_final - km.km_inicial;
-        if(kmRodado<=0) return;
-        const cfg = getValorRota(km.rota||'');
+      const viagensValidas = viagensMes.filter(v=>v.km_inicial!=null && v.km_final!=null && v.km_final>v.km_inicial);
+      const demIds = [...new Set(viagensValidas.map(v=>v.demanda_id).filter(Boolean))];
+      const demandasKm = demIds.length
+        ? await supaFetch(`demandas_rota?id=in.(${demIds.join(',')})&select=id,motorista,rota`).catch(()=>[]) || []
+        : [];
+      const demMapKm = {}; demandasKm.forEach(d=>{ demMapKm[d.id]=d; });
+
+      viagensValidas.forEach(v=>{
+        const dem = v.demanda_id ? demMapKm[v.demanda_id] : null;
+        const rota = (dem?.rota||'').trim();
+        const motNome = (dem?.motorista||'').trim().toUpperCase();
+        if(!motNome || !rota || motNome==='LOJA' || motNome==='RETIRA') return;
+        const cfg = getValorRota(rota);
         if(cfg.ri) return; // RI recebe por pedido, não por KM
+        const kmRodado = v.km_final - v.km_inicial;
         const bonusKm = kmRodado * (cfg.valorKm||0.20);
-        const motNome = (km.motorista_nome||'').trim().toUpperCase();
-        if(!motNome) return;
         const chave = motNome+'__'+_mesGerPag+'__MOT';
-        if(pessoaMap[chave]){
-          pessoaMap[chave].total    += bonusKm;
-          pessoaMap[chave].km_bonus  = (pessoaMap[chave].km_bonus||0)+bonusKm;
-        }
+        // Motorista que só roda R.E. nunca ganha entrada em pessoaMap pelo
+        // bloco de R.I. acima — sem criar aqui, o bônus de KM dele some
+        // silenciosamente (if(pessoaMap[chave]) nunca era true).
+        if(!pessoaMap[chave]) pessoaMap[chave] = {
+          nome:motNome, tipo:'motorista', mes_ano:_mesGerPag,
+          rota, rire:'R.E.', und:undMap[motNome]||'', entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0
+        };
+        pessoaMap[chave].total    += bonusKm;
+        pessoaMap[chave].km_bonus  = (pessoaMap[chave].km_bonus||0)+bonusKm;
       });
     }catch(_){}
 
