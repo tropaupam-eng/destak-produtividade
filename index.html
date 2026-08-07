@@ -38876,16 +38876,50 @@ function _ck_updateClassificacao(totalPct) {
 }
 
 function _ck_gerarLaudo() {
+  const val      = id => document.getElementById(id)?.value?.trim() || '';
+  const fmtDate  = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
+  const sep      = '─'.repeat(44);
+
+  // Dados do recebimento
+  const rData = val('ck-r-data'), rHora = val('ck-r-hora');
+  const linhasRecebimento = [
+    `Data/Hora  : ${fmtDate(rData)}${rHora?' às '+rHora:''}`,
+    `Fornecedor : ${val('ck-r-fornecedor')||'—'}`,
+    `Nota Fiscal: ${val('ck-r-nf')||'—'}`,
+    `Lote       : ${val('ck-r-lote')||'—'}`,
+    `Unidade/CD : ${val('ck-r-unidade')||'—'}`,
+    `Responsável: ${val('ck-r-responsavel')||'—'}`,
+    `Qtd. caixas: ${val('ck-r-caixas')||'—'}${val('ck-r-peso')?' | Peso total: '+val('ck-r-peso')+' kg':''}`,
+  ];
+
+  // Temperatura/umidade — só entram as que foram preenchidas
+  const temps = [
+    ['Temp. Baú', val('ck-t-bau'), '°C'],
+    ['Umidade Baú', val('ck-t-umidade'), '%'],
+    ['Temp. Caixas', val('ck-t-caixas'), '°C'],
+    ['Temp. Armazém', val('ck-t-armazem'), '°C'],
+    ['Temp. Galpão do Alho', val('ck-t-galpao'), '°C'],
+    ['Umidade Galpão do Alho', val('ck-t-umidgalpao'), '%'],
+  ].filter(([,v])=>v!=='');
+
+  // Checklist de inspeção
+  const STATUS_LBL = {ok:'Conforme', nc:'Não Conforme', na:'N/A'};
+  const linhasChecklist = _CK_ITEMS.map(it => {
+    const stTxt = STATUS_LBL[_ck_ciState[it.id]] || 'Não respondido';
+    const obs = val(`ck-ci-obs-txt-${it.id}`);
+    return `  [${it.crit}] ${it.txt}\n      → ${stTxt}${obs?' — '+obs:''}`;
+  });
+
+  // Amostragem / alterações
   const forn   = document.getElementById('ck-q-fornecedor')?.value || '—';
   const item   = document.getElementById('ck-q-item')?.value || 'Alho';
-  const dataV  = document.getElementById('ck-q-data')?.value || document.getElementById('ck-r-data')?.value || '';
+  const dataV  = document.getElementById('ck-q-data')?.value || rData;
   const pesoAm = parseFloat(document.getElementById('ck-q-peso')?.value) || 50;
   const obsEx  = document.getElementById('ck-q-obs-extra')?.value || '';
   const limAprov = parseFloat(document.getElementById('ck-lim-aprovado')?.value) || 5;
   const limAtenc = parseFloat(document.getElementById('ck-lim-atencao')?.value) || 10;
   const totalKg  = _ck_alteracoes.reduce((s,a)=>s+(a.kg||0),0);
   const totalPct = pesoAm > 0 ? totalKg / pesoAm * 100 : 0;
-  const fmtDate  = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
   let classif, classifTexto;
   if(totalPct <= limAprov) { classif='APROVADO'; classifTexto='dentro do padrão de qualidade'; }
   else if(totalPct <= limAtenc) { classif='ATENÇÃO — APROVADO COM RESSALVA'; classifTexto='com alterações que requerem atenção'; }
@@ -38893,7 +38927,31 @@ function _ck_gerarLaudo() {
   const linhasAlt = _ck_alteracoes.length
     ? _ck_alteracoes.map(a=>`  • ${a.tipo}: ${(a.kg||0).toFixed(1)} kg (${(a.pct||0).toFixed(1)}%)${a.obs?' — '+a.obs:''}`).join('\n')
     : '  Nenhuma alteração registrada.';
-  const laudo = `LAUDO DE RECEBIMENTO — ${item.toUpperCase()}\n${'─'.repeat(44)}\nFornecedor : ${forn}\nData       : ${fmtDate(dataV)}\nAmostra    : ${pesoAm} kg\n\nALTERAÇÕES ENCONTRADAS:\n${linhasAlt}\n${'─'.repeat(44)}\nTotal de alterações : ${totalKg.toFixed(1)} kg / ${totalPct.toFixed(1)}% da amostra\n\nCLASSIFICAÇÃO : ${classif}\nA carga apresenta-se ${classifTexto}.${obsEx?'\n\nObservação adicional:\n  '+obsEx:''}`;
+
+  // Decisão do lote
+  const DECISAO_LBL = {aprovado:'Aprovado', ressalva:'Aprovado com ressalva', segregado:'Segregado', reprovado:'Reprovado'};
+  const decisaoTxt = DECISAO_LBL[_ck_decisaoSel] || 'Não definida';
+  const justificativa = val('ck-d-justificativa');
+  const decResp = val('ck-d-responsavel'), decAssin = val('ck-d-assinatura');
+
+  const blocos = [
+    `LAUDO DE RECEBIMENTO — ${item.toUpperCase()}`,
+    sep,
+    'DADOS DO RECEBIMENTO',
+    linhasRecebimento.join('\n'),
+    temps.length ? '\nCONDIÇÕES DE TEMPERATURA/UMIDADE\n'+temps.map(([l,v,u])=>`  ${l}: ${v}${u}`).join('\n') : '',
+    sep,
+    'CHECKLIST DE INSPEÇÃO',
+    linhasChecklist.join('\n'),
+    sep,
+    `AMOSTRAGEM — ${item.toUpperCase()}\nFornecedor : ${forn}\nData       : ${fmtDate(dataV)}\nAmostra    : ${pesoAm} kg\n\nALTERAÇÕES ENCONTRADAS:\n${linhasAlt}`,
+    sep,
+    `Total de alterações : ${totalKg.toFixed(1)} kg / ${totalPct.toFixed(1)}% da amostra\n\nCLASSIFICAÇÃO : ${classif}\nA carga apresenta-se ${classifTexto}.${obsEx?'\n\nObservação adicional:\n  '+obsEx:''}`,
+    sep,
+    `DECISÃO DO LOTE : ${decisaoTxt}${justificativa?'\nJustificativa: '+justificativa:''}\nResponsável pela decisão: ${decResp||'—'}${decAssin?' | Assinatura/matrícula: '+decAssin:''}`,
+  ].filter(Boolean);
+
+  const laudo = blocos.join('\n');
   const prev = document.getElementById('ck-laudoText');
   if(prev) prev.textContent = laudo;
 }
