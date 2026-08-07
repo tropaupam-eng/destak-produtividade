@@ -3961,6 +3961,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
       📝 Lançamentos
     </button>
+    <button id="hist-tab-divergencias" onclick="histAba('divergencias')"
+      style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
+      ⚠️ Divergências ERP <span id="hist-div-badge" class="cad-badge" style="display:none;margin-left:4px">0</span>
+    </button>
   </div>
 
   <!-- ── ABA HISTÓRICO ── -->
@@ -4018,6 +4022,22 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
     <div id="hist-lanc-container">
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando lançamentos...</p>
+    </div>
+  </div>
+
+  <!-- ── ABA DIVERGÊNCIAS ERP (cruza planilha de expedição x planilha de atualizações/situação) ── -->
+  <div id="hist-pane-divergencias" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <p style="font-size:.83rem;color:var(--text-secondary);max-width:680px">Cruza a planilha de expedição (produção) com a planilha de situação/vendedor do ERP. As duas são geradas em momentos diferentes e às vezes uma sabe de algo que a outra ainda não recebeu — aqui aparece o que precisa de atenção.</p>
+      <button onclick="carregarDivergenciasErp()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 16px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px">
+      <div class="kpi-card" style="border-top-color:#dc2626"><div class="kpi-label">Ausentes da Expedição</div><div class="kpi-value" id="hist-div-kpi-ausentes">—</div></div>
+      <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Sem Carga (já sabemos qual)</div><div class="kpi-value" id="hist-div-kpi-semcarga">—</div></div>
+      <div class="kpi-card" style="border-top-color:#7c3aed"><div class="kpi-label">Carga Divergente</div><div class="kpi-value" id="hist-div-kpi-carga">—</div></div>
+    </div>
+    <div id="hist-div-container">
+      <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando divergências...</p>
     </div>
   </div>
 
@@ -28395,16 +28415,18 @@ function histAba(aba){
   const pHist = document.getElementById('hist-pane-historico');
   const pPed  = document.getElementById('hist-pane-pedidos');
   const pLanc = document.getElementById('hist-pane-lancamentos');
+  const pDiv  = document.getElementById('hist-pane-divergencias');
   const tHist = document.getElementById('hist-tab-historico');
   const tPed  = document.getElementById('hist-tab-pedidos');
   const tLanc = document.getElementById('hist-tab-lancamentos');
+  const tDiv  = document.getElementById('hist-tab-divergencias');
   if(!pHist || !pPed) return;
 
   const _on  = el => { if(el){ el.style.background='#2563eb'; el.style.color='#fff'; } };
   const _off = el => { if(el){ el.style.background='var(--bg-card2)'; el.style.color='var(--text-secondary)'; } };
 
-  pHist.style.display='none'; pPed.style.display='none'; if(pLanc) pLanc.style.display='none';
-  _off(tHist); _off(tPed); _off(tLanc);
+  pHist.style.display='none'; pPed.style.display='none'; if(pLanc) pLanc.style.display='none'; if(pDiv) pDiv.style.display='none';
+  _off(tHist); _off(tPed); _off(tLanc); _off(tDiv);
 
   if(aba === 'pedidos'){
     pPed.style.display=''; _on(tPed);
@@ -28413,9 +28435,28 @@ function histAba(aba){
     if(pLanc) pLanc.style.display='';
     _on(tLanc);
     carregarHistoricoLancamentos();
+  } else if(aba === 'divergencias'){
+    if(pDiv) pDiv.style.display='';
+    _on(tDiv);
+    carregarDivergenciasErp();
   } else {
     pHist.style.display=''; _on(tHist);
   }
+}
+
+// Busca pedido->carga_erp em pedidos_info_erp (planilha de situação/vendedor)
+// pra um conjunto de pedidos, em lotes de 200 (limite seguro de URL).
+async function _buscarCargaSugerida(numerosPedido){
+  const mapa = {};
+  const nums = [...new Set(numerosPedido)].filter(n => Number.isFinite(n));
+  for(let i = 0; i < nums.length; i += 200){
+    const lote = nums.slice(i, i + 200);
+    try{
+      const rows = await supaFetch(`pedidos_info_erp?select=pedido,carga_erp&pedido=in.(${lote.join(',')})&carga_erp=not.is.null`) || [];
+      rows.forEach(r => { mapa[r.pedido] = r.carga_erp; });
+    }catch(_){}
+  }
+  return mapa;
 }
 
 async function carregarPedidosSemCarga(){
@@ -28433,6 +28474,9 @@ async function carregarPedidosSemCarga(){
       container.innerHTML = '<p class="no-data">✅ Nenhum pedido sem carga no momento</p>';
       return;
     }
+    // Carga sugerida: se a planilha de situação/vendedor já sabe a carga
+    // desse pedido, mostra como dica — não promove nada sozinho, só avisa.
+    const cargaSugerida = await _buscarCargaSugerida(rows.map(r => r.pedido));
     container.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:.84rem">
       <thead>
         <tr style="background:var(--bg-card2)">
@@ -28442,6 +28486,7 @@ async function carregarPedidosSemCarga(){
           <th style="text-align:right;padding:8px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Valor</th>
           <th style="text-align:left;padding:8px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Unidade</th>
           <th style="text-align:left;padding:8px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Aguardando desde</th>
+          <th style="text-align:left;padding:8px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Carga sugerida</th>
         </tr>
       </thead>
       <tbody>
@@ -28453,9 +28498,93 @@ async function carregarPedidosSemCarga(){
             <td style="padding:8px 12px;text-align:right;color:var(--text-secondary)">${(r.valor||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</td>
             <td style="padding:8px 12px;color:var(--text-secondary)">${r.unidade_erp||'-'}</td>
             <td style="padding:8px 12px;color:var(--text-secondary)">${r.criado_em ? new Date(r.criado_em).toLocaleDateString('pt-BR') : '-'}</td>
+            <td style="padding:8px 12px">${cargaSugerida[r.pedido] ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:700">${cargaSugerida[r.pedido]}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
           </tr>`).join('')}
       </tbody>
     </table>`;
+  }catch(e){
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro ao carregar: ${e.message}</p></div>`;
+  }
+}
+
+// ── Divergências ERP: cruza pedidos_info_erp (planilha de situação/vendedor)
+// com base_data e pedidos_sem_carga (planilha de expedição/produção). As
+// duas planilhas vêm do ERP em momentos diferentes; aqui aparece quando uma
+// sabe de algo que a outra ainda não recebeu. Só leitura — não grava nada,
+// nenhuma promoção automática (planilha de atualizações não tem peso, então
+// não dá pra criar pedido de produção só com ela).
+async function carregarDivergenciasErp(){
+  const container = document.getElementById('hist-div-container');
+  const badge = document.getElementById('hist-div-badge');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando divergências...</p>';
+  try{
+    const comCarga = await supaFetch('pedidos_info_erp?select=pedido,situacao,vendedor,carga_erp,data_pedido&carga_erp=not.is.null&order=data_pedido.desc&limit=10000') || [];
+    const numeros = comCarga.map(r => r.pedido);
+
+    const baseDataMap = {};
+    const semCargaSet = new Set();
+    for(let i = 0; i < numeros.length; i += 200){
+      const lote = numeros.slice(i, i + 200);
+      const [bd, sc] = await Promise.all([
+        supaFetch(`base_data?select=pedido,carga&pedido=in.(${lote.join(',')})`),
+        supaFetch(`pedidos_sem_carga?select=pedido&pedido=in.(${lote.join(',')})`),
+      ]);
+      (bd||[]).forEach(r => { baseDataMap[r.pedido] = String(r.carga); });
+      (sc||[]).forEach(r => { semCargaSet.add(r.pedido); });
+    }
+
+    const ausentes = comCarga.filter(r => !(r.pedido in baseDataMap) && !semCargaSet.has(r.pedido));
+    const semCargaConhecida = comCarga.filter(r => semCargaSet.has(r.pedido));
+    const cargaDivergente = comCarga.filter(r => (r.pedido in baseDataMap) && baseDataMap[r.pedido] !== String(r.carga_erp));
+
+    const totalDivergencias = ausentes.length + semCargaConhecida.length + cargaDivergente.length;
+    if(badge){
+      badge.textContent = totalDivergencias;
+      badge.style.display = totalDivergencias ? 'inline-block' : 'none';
+    }
+    const kpiAus = document.getElementById('hist-div-kpi-ausentes');
+    const kpiSc  = document.getElementById('hist-div-kpi-semcarga');
+    const kpiCg  = document.getElementById('hist-div-kpi-carga');
+    if(kpiAus) kpiAus.textContent = ausentes.length;
+    if(kpiSc)  kpiSc.textContent  = semCargaConhecida.length;
+    if(kpiCg)  kpiCg.textContent  = cargaDivergente.length;
+
+    if(!totalDivergencias){
+      container.innerHTML = '<p class="no-data">✅ Nenhuma divergência no momento — as duas planilhas estão batendo</p>';
+      return;
+    }
+
+    const _fmtData = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '-';
+    const _tabela = (titulo, cor, linhas, colunaExtra) => `
+      <div style="margin-bottom:24px">
+        <h4 style="font-size:.9rem;font-weight:800;color:${cor};margin-bottom:8px">${titulo} <span style="font-weight:600;color:var(--text-muted)">(${linhas.length})</span></h4>
+        ${!linhas.length ? '<p style="font-size:.82rem;color:var(--text-muted);padding:8px 0">Nenhum</p>' : `
+        <table style="width:100%;border-collapse:collapse;font-size:.84rem">
+          <thead>
+            <tr style="background:var(--bg-card2)">
+              <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Pedido</th>
+              <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Situação</th>
+              <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Data Pedido</th>
+              <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">${colunaExtra.titulo}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${linhas.map(r => `
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:6px 12px;font-weight:700;color:var(--text-primary)">${r.pedido}</td>
+                <td style="padding:6px 12px;color:var(--text-secondary)">${r.situacao||'-'}</td>
+                <td style="padding:6px 12px;color:var(--text-secondary)">${_fmtData(r.data_pedido)}</td>
+                <td style="padding:6px 12px;color:var(--text-secondary)">${colunaExtra.valor(r)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>`;
+
+    container.innerHTML =
+      _tabela('❌ Ausentes da planilha de expedição', '#dc2626', ausentes, { titulo: 'Carga (atualizações)', valor: r => r.carga_erp }) +
+      _tabela('⏳ Sem carga, mas já sabemos qual é', '#f59e0b', semCargaConhecida, { titulo: 'Carga sugerida', valor: r => r.carga_erp }) +
+      _tabela('🔀 Carga divergente entre as planilhas', '#7c3aed', cargaDivergente, { titulo: 'Produção → Atualizações', valor: r => `${baseDataMap[r.pedido]} → ${r.carga_erp}` });
   }catch(e){
     container.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro ao carregar: ${e.message}</p></div>`;
   }
