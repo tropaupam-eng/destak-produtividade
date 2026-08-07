@@ -38876,16 +38876,50 @@ function _ck_updateClassificacao(totalPct) {
 }
 
 function _ck_gerarLaudo() {
+  const val      = id => document.getElementById(id)?.value?.trim() || '';
+  const fmtDate  = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
+  const sep      = '─'.repeat(44);
+
+  // Dados do recebimento
+  const rData = val('ck-r-data'), rHora = val('ck-r-hora');
+  const linhasRecebimento = [
+    `Data/Hora  : ${fmtDate(rData)}${rHora?' às '+rHora:''}`,
+    `Fornecedor : ${val('ck-r-fornecedor')||'—'}`,
+    `Nota Fiscal: ${val('ck-r-nf')||'—'}`,
+    `Lote       : ${val('ck-r-lote')||'—'}`,
+    `Unidade/CD : ${val('ck-r-unidade')||'—'}`,
+    `Responsável: ${val('ck-r-responsavel')||'—'}`,
+    `Qtd. caixas: ${val('ck-r-caixas')||'—'}${val('ck-r-peso')?' | Peso total: '+val('ck-r-peso')+' kg':''}`,
+  ];
+
+  // Temperatura/umidade — só entram as que foram preenchidas
+  const temps = [
+    ['Temp. Baú', val('ck-t-bau'), '°C'],
+    ['Umidade Baú', val('ck-t-umidade'), '%'],
+    ['Temp. Caixas', val('ck-t-caixas'), '°C'],
+    ['Temp. Armazém', val('ck-t-armazem'), '°C'],
+    ['Temp. Galpão do Alho', val('ck-t-galpao'), '°C'],
+    ['Umidade Galpão do Alho', val('ck-t-umidgalpao'), '%'],
+  ].filter(([,v])=>v!=='');
+
+  // Checklist de inspeção
+  const STATUS_LBL = {ok:'Conforme', nc:'Não Conforme', na:'N/A'};
+  const linhasChecklist = _CK_ITEMS.map(it => {
+    const stTxt = STATUS_LBL[_ck_ciState[it.id]] || 'Não respondido';
+    const obs = val(`ck-ci-obs-txt-${it.id}`);
+    return `  [${it.crit}] ${it.txt}\n      → ${stTxt}${obs?' — '+obs:''}`;
+  });
+
+  // Amostragem / alterações
   const forn   = document.getElementById('ck-q-fornecedor')?.value || '—';
   const item   = document.getElementById('ck-q-item')?.value || 'Alho';
-  const dataV  = document.getElementById('ck-q-data')?.value || document.getElementById('ck-r-data')?.value || '';
+  const dataV  = document.getElementById('ck-q-data')?.value || rData;
   const pesoAm = parseFloat(document.getElementById('ck-q-peso')?.value) || 50;
   const obsEx  = document.getElementById('ck-q-obs-extra')?.value || '';
   const limAprov = parseFloat(document.getElementById('ck-lim-aprovado')?.value) || 5;
   const limAtenc = parseFloat(document.getElementById('ck-lim-atencao')?.value) || 10;
   const totalKg  = _ck_alteracoes.reduce((s,a)=>s+(a.kg||0),0);
   const totalPct = pesoAm > 0 ? totalKg / pesoAm * 100 : 0;
-  const fmtDate  = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
   let classif, classifTexto;
   if(totalPct <= limAprov) { classif='APROVADO'; classifTexto='dentro do padrão de qualidade'; }
   else if(totalPct <= limAtenc) { classif='ATENÇÃO — APROVADO COM RESSALVA'; classifTexto='com alterações que requerem atenção'; }
@@ -38893,7 +38927,31 @@ function _ck_gerarLaudo() {
   const linhasAlt = _ck_alteracoes.length
     ? _ck_alteracoes.map(a=>`  • ${a.tipo}: ${(a.kg||0).toFixed(1)} kg (${(a.pct||0).toFixed(1)}%)${a.obs?' — '+a.obs:''}`).join('\n')
     : '  Nenhuma alteração registrada.';
-  const laudo = `LAUDO DE RECEBIMENTO — ${item.toUpperCase()}\n${'─'.repeat(44)}\nFornecedor : ${forn}\nData       : ${fmtDate(dataV)}\nAmostra    : ${pesoAm} kg\n\nALTERAÇÕES ENCONTRADAS:\n${linhasAlt}\n${'─'.repeat(44)}\nTotal de alterações : ${totalKg.toFixed(1)} kg / ${totalPct.toFixed(1)}% da amostra\n\nCLASSIFICAÇÃO : ${classif}\nA carga apresenta-se ${classifTexto}.${obsEx?'\n\nObservação adicional:\n  '+obsEx:''}`;
+
+  // Decisão do lote
+  const DECISAO_LBL = {aprovado:'Aprovado', ressalva:'Aprovado com ressalva', segregado:'Segregado', reprovado:'Reprovado'};
+  const decisaoTxt = DECISAO_LBL[_ck_decisaoSel] || 'Não definida';
+  const justificativa = val('ck-d-justificativa');
+  const decResp = val('ck-d-responsavel'), decAssin = val('ck-d-assinatura');
+
+  const blocos = [
+    `LAUDO DE RECEBIMENTO — ${item.toUpperCase()}`,
+    sep,
+    'DADOS DO RECEBIMENTO',
+    linhasRecebimento.join('\n'),
+    temps.length ? '\nCONDIÇÕES DE TEMPERATURA/UMIDADE\n'+temps.map(([l,v,u])=>`  ${l}: ${v}${u}`).join('\n') : '',
+    sep,
+    'CHECKLIST DE INSPEÇÃO',
+    linhasChecklist.join('\n'),
+    sep,
+    `AMOSTRAGEM — ${item.toUpperCase()}\nFornecedor : ${forn}\nData       : ${fmtDate(dataV)}\nAmostra    : ${pesoAm} kg\n\nALTERAÇÕES ENCONTRADAS:\n${linhasAlt}`,
+    sep,
+    `Total de alterações : ${totalKg.toFixed(1)} kg / ${totalPct.toFixed(1)}% da amostra\n\nCLASSIFICAÇÃO : ${classif}\nA carga apresenta-se ${classifTexto}.${obsEx?'\n\nObservação adicional:\n  '+obsEx:''}`,
+    sep,
+    `DECISÃO DO LOTE : ${decisaoTxt}${justificativa?'\nJustificativa: '+justificativa:''}\nResponsável pela decisão: ${decResp||'—'}${decAssin?' | Assinatura/matrícula: '+decAssin:''}`,
+  ].filter(Boolean);
+
+  const laudo = blocos.join('\n');
   const prev = document.getElementById('ck-laudoText');
   if(prev) prev.textContent = laudo;
 }
@@ -39040,12 +39098,15 @@ async function _ck_salvar() {
   }
 }
 
+let _ck_historicoRows = [];
+
 async function _ck_renderHistorico() {
   const el = document.getElementById('ck-historicoWrap');
   if(!el) return;
   el.innerHTML = '<div class="ck-empty">Carregando...</div>';
   try {
     const rows = await supaFetch('checklist_alho?order=criado_em.desc&limit=200') || [];
+    _ck_historicoRows = rows;
     if(!rows.length) {
       el.innerHTML='<div class="ck-empty">Nenhum checklist registrado ainda.</div>'; return;
     }
@@ -39055,7 +39116,7 @@ async function _ck_renderHistorico() {
     el.innerHTML = `<div style="overflow-x:auto"><table>
       <thead><tr>
         <th>Data</th><th>Fornecedor</th><th>NF</th><th>Lote</th>
-        <th>✓</th><th>NC</th><th>Decisão</th><th>Responsável</th>
+        <th>✓</th><th>NC</th><th>Decisão</th><th>Responsável</th><th>Laudo</th>
       </tr></thead>
       <tbody>${rows.map((r,i)=>`<tr style="background:${i%2===0?'transparent':'var(--ck-grey-sf)'}">
         <td style="white-space:nowrap">${fmtDate(r.data)}${r.hora?' · '+r.hora:''}</td>
@@ -39066,11 +39127,92 @@ async function _ck_renderHistorico() {
         <td style="color:${(r.nao_conformes||0)>0?'#c23b3b':'var(--ck-mut)'};font-weight:700;text-align:center">${r.nao_conformes||0}</td>
         <td><span class="ck-badge ${decCls[r.decisao]||''}">${decLabel[r.decisao]||r.decisao||'—'}</span></td>
         <td>${_escapeHtml(r.responsavel||'—')}</td>
+        <td><button class="ck-btn ghost" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="_ck_baixarLaudoHistorico(${i})"><span data-feather="download" style="width:11px;height:11px"></span> PDF</button></td>
       </tr>`).join('')}</tbody>
     </table></div>`;
+    if(window.feather) feather.replace();
   } catch(e) {
     el.innerHTML = `<div class="ck-empty" style="color:#c23b3b">Erro: ${_escapeHtml(e.message)}</div>`;
   }
+}
+
+// Reconstrói o texto do laudo a partir de um registro salvo — usa o laudo já
+// gerado no momento do salvamento (obs.laudo) quando existe; para registros
+// antigos sem laudo gerado, remonta a partir dos campos brutos do registro.
+function _ck_montarLaudoDeRegistro(r) {
+  let obsData = {};
+  try { obsData = JSON.parse(r.obs||'{}'); } catch(e) {}
+  if(obsData.laudo && !obsData.laudo.startsWith('O laudo')) return obsData.laudo;
+
+  const fmtDate = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
+  const sep = '─'.repeat(44);
+  const linhasRecebimento = [
+    `Data/Hora  : ${fmtDate(r.data)}${r.hora?' às '+r.hora:''}`,
+    `Fornecedor : ${r.fornecedor||'—'}`,
+    `Nota Fiscal: ${r.nota_fiscal||'—'}`,
+    `Lote       : ${r.lote||'—'}`,
+    `Unidade/CD : ${r.unidade||'—'}`,
+    `Responsável: ${r.responsavel||'—'}`,
+    `Qtd. caixas: ${r.qtd_caixas||'—'}${r.peso_kg?' | Peso total: '+r.peso_kg+' kg':''}`,
+  ];
+  const temps = [
+    ['Temp. Baú', r.temp_bau, '°C'],
+    ['Umidade Baú', r.umid_bau, '%'],
+    ['Temp. Caixas', r.temp_caixas, '°C'],
+    ['Temp. Armazém', r.temp_armazem, '°C'],
+    ['Temp. Galpão do Alho', r.temp_galpao, '°C'],
+    ['Umidade Galpão do Alho', r.umid_galpao, '%'],
+  ].filter(([,v])=>v!=null && v!=='');
+  const STATUS_LBL = {ok:'Conforme', nc:'Não Conforme', na:'N/A'};
+  const itens = Array.isArray(r.itens) ? r.itens : [];
+  const linhasChecklist = itens.map(it => `  [${it.crit}] ${it.txt}\n      → ${STATUS_LBL[it.status]||'Não respondido'}${it.obs?' — '+it.obs:''}`);
+
+  const item   = obsData.item_laudo || 'Alho';
+  const forn   = obsData.fornecedor_laudo || r.fornecedor || '—';
+  const pesoAm = obsData.peso_amostra || 50;
+  const alteracoes = Array.isArray(obsData.alteracoes) ? obsData.alteracoes : [];
+  const totalKg  = alteracoes.reduce((s,a)=>s+(a.kg||0),0);
+  const totalPct = typeof obsData.total_pct === 'number' ? obsData.total_pct : (pesoAm>0 ? totalKg/pesoAm*100 : 0);
+  const linhasAlt = alteracoes.length
+    ? alteracoes.map(a=>`  • ${a.tipo}: ${(a.kg||0).toFixed(1)} kg (${(a.pct||0).toFixed(1)}%)${a.obs?' — '+a.obs:''}`).join('\n')
+    : '  Nenhuma alteração registrada.';
+  let classif, classifTexto;
+  if(totalPct<=5) { classif='APROVADO'; classifTexto='dentro do padrão de qualidade'; }
+  else if(totalPct<=10) { classif='ATENÇÃO — APROVADO COM RESSALVA'; classifTexto='com alterações que requerem atenção'; }
+  else { classif='BLOQUEADO — SEGREGAR/REJEITAR'; classifTexto='com alto índice de alterações'; }
+  const obsExtra = obsData.obs_extra || '';
+
+  const DECISAO_LBL = {aprovado:'Aprovado', aprovado_ressalva:'Aprovado com ressalva', segregado:'Segregado', rejeitado:'Reprovado'};
+  const decisaoTxt = DECISAO_LBL[r.decisao] || r.decisao || 'Não definida';
+
+  const blocos = [
+    `LAUDO DE RECEBIMENTO — ${item.toUpperCase()}`,
+    sep,
+    'DADOS DO RECEBIMENTO',
+    linhasRecebimento.join('\n'),
+    temps.length ? '\nCONDIÇÕES DE TEMPERATURA/UMIDADE\n'+temps.map(([l,v,u])=>`  ${l}: ${v}${u}`).join('\n') : '',
+    sep,
+    'CHECKLIST DE INSPEÇÃO',
+    linhasChecklist.length ? linhasChecklist.join('\n') : '  Sem itens registrados.',
+    sep,
+    `AMOSTRAGEM — ${item.toUpperCase()}\nFornecedor : ${forn}\nData       : ${fmtDate(r.data)}\nAmostra    : ${pesoAm} kg\n\nALTERAÇÕES ENCONTRADAS:\n${linhasAlt}`,
+    sep,
+    `Total de alterações : ${totalKg.toFixed(1)} kg / ${totalPct.toFixed(1)}% da amostra\n\nCLASSIFICAÇÃO : ${classif}\nA carga apresenta-se ${classifTexto}.${obsExtra?'\n\nObservação adicional:\n  '+obsExtra:''}`,
+    sep,
+    `DECISÃO DO LOTE : ${decisaoTxt}\nResponsável pela decisão: ${r.ass_recebimento||'—'}${r.ass_qualidade?' | Assinatura/matrícula: '+r.ass_qualidade:''}`,
+  ].filter(Boolean);
+
+  return blocos.join('\n');
+}
+
+function _ck_baixarLaudoHistorico(idx) {
+  const r = _ck_historicoRows[idx];
+  if(!r) { showToast('Registro não encontrado.','warning'); return; }
+  const laudo = _ck_montarLaudoDeRegistro(r);
+  _ck_switchTab('qualidade');
+  const prev = document.getElementById('ck-laudoText');
+  if(prev) prev.textContent = laudo;
+  _ck_baixarPdf();
 }
 
 async function _ck_renderDashboard() {
