@@ -14863,9 +14863,12 @@ async function salvarNovaRota(){
 async function carregarVeiculos(){
   try{
     await atualizarVeiculosOcupados();
-    const data = await supaFetch('veiculos?select=*&order=placa.asc&ativo=eq.true&limit=1000');
+    // Expedição pode escalar qualquer veículo — não filtra por ativo=eq.true aqui
+    // (ativo=false também cobre "aguardando liberação da Frota", que não deve
+    // esconder o veículo, só sinalizar). Ver abrirEditarDemanda() para o mesmo padrão.
+    const data = await supaFetch('veiculos?select=*&order=placa.asc&limit=1000');
     VEICULOS_CACHE = data||[];
-    // Ordenar: disponíveis primeiro, depois ocupados
+    // Ordenar: disponíveis primeiro, depois ocupados/manutenção
     VEICULOS_CACHE.sort((a,b)=>{
       const aOcup = _veiculosOcupados.has(a.placa);
       const bOcup = _veiculosOcupados.has(b.placa);
@@ -14878,8 +14881,9 @@ async function carregarVeiculos(){
       const cur = sel.value;
       sel.innerHTML = '<option value="">Selecione o veículo...</option>' +
         VEICULOS_CACHE.map(v=>{
-          const ocup  = _veiculosOcupados.has(v.placa);
-          const sufixo = ocup ? ' (em uso)' : '';
+          const emManut = _veiculosEmManut.has(v.placa);
+          const ocup  = !emManut && _veiculosOcupados.has(v.placa);
+          const sufixo = emManut ? ' (em manutenção)' : (ocup ? ' (em uso)' : '');
           return `<option value="${v.placa}" data-ocup="${ocup}">${v.placa}${v.tipo?' — '+v.tipo:''}${sufixo}</option>`;
         }).join('');
       if(cur) sel.value = cur;
@@ -36669,16 +36673,20 @@ async function _avisoRotasFiliais(){
 }
 
 async function _popularSelectsAbastecimento(){
-  // Veículos
+  // Veículos — busca direto (não usa o VEICULOS_CACHE compartilhado, que a tela
+  // de Cadastro > Veículos pode ter reduzido só a ativos) e não esconde veículo
+  // por ativo=false, só sinaliza quando realmente ocupado/em manutenção.
   const selVeic = document.getElementById('abast-veiculo');
   if(selVeic){
-    let veics = VEICULOS_CACHE.length ? VEICULOS_CACHE : [];
-    if(!veics.length){
-      const data = await supaFetch('veiculos?select=placa,tipo,motorista_fixo&order=placa.asc&ativo=eq.true').catch(()=>[]);
-      veics = data||[];
-    }
+    await atualizarVeiculosOcupados().catch(()=>{});
+    const veics = await supaFetch('veiculos?select=placa,tipo,motorista_fixo&order=placa.asc').catch(()=>[]) || [];
     selVeic.innerHTML = '<option value="">Selecione...</option>' +
-      veics.map(v=>`<option value="${v.placa}" data-tipo="${(v.tipo||'').toUpperCase()}" data-motorista-fixo="${v.motorista_fixo||''}">${v.placa}${v.tipo?' — '+v.tipo:''}</option>`).join('');
+      veics.map(v=>{
+        const emManut = _veiculosEmManut.has(v.placa);
+        const ocup = !emManut && _veiculosOcupados.has(v.placa);
+        const sufixo = emManut ? ' (em manutenção)' : (ocup ? ' (em uso)' : '');
+        return `<option value="${v.placa}" data-tipo="${(v.tipo||'').toUpperCase()}" data-motorista-fixo="${v.motorista_fixo||''}">${v.placa}${v.tipo?' — '+v.tipo:''}${sufixo}</option>`;
+      }).join('');
   }
 
   // Motoristas
