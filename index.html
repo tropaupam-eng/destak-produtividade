@@ -26390,6 +26390,20 @@ async function editarNumeroCarga(demandaId, cargaAtual){
       supaFetch(`atribuicoes_fiscal?carga=eq.${cargaAtual}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}),
       cargaAtual ? supaFetch(`conferencia_pedidos?carga=eq.${cargaAtual}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}) : Promise.resolve(),
     ]);
+    // Recalcula quantidade_pedidos/valor_total a partir do que já existe em
+    // base_data pra essa carga — sem isso, uma pré-carga que recebe o número
+    // de uma carga que já tinha pedidos (chegados antes da demanda existir)
+    // fica travada em 0, mesmo com pedidos reais em produção.
+    try{
+      const agregado = await supaFetch(`base_data?select=valor&carga=eq.${numNovo}`);
+      if(agregado){
+        const quantidade = agregado.length;
+        const valorTotal = agregado.reduce((soma, r) => soma + (Number(r.valor) || 0), 0);
+        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
+          method:'PATCH', body:JSON.stringify({ quantidade_pedidos: quantidade, valor_total: valorTotal })
+        });
+      }
+    }catch(_){}
     showToast('✅ Número da carga atualizado!','success');
     await carregarDemandas();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
