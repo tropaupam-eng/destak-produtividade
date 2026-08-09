@@ -26412,16 +26412,22 @@ async function editarNumeroCarga(demandaId, cargaAtual){
   if(!novo || novo == cargaAtual) return;
   const numNovo = parseInt(novo);
   if(isNaN(numNovo)){ showToast('Número inválido','warning'); return; }
-  const unidadeAtual = USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'';
   try{
-    if(unidadeAtual){
-      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeAtual)}&id=neq.${demandaId}`).catch(()=>[]);
+    // Unidade da própria demanda tem prioridade — nunca sobrescrever com a
+    // unidade de quem está editando (pode ser um admin ou alguém de outra
+    // unidade só corrigindo um número, não o "dono" da carga).
+    const demAtualRow = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=unidade`).catch(()=>[]);
+    const unidadeExistente = (demAtualRow?.[0]?.unidade||'').trim();
+    const unidadeCheck = unidadeExistente || (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
+    if(unidadeCheck){
+      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}`).catch(()=>[]);
       if(conflito && conflito.length){
-        showToast(`⚠️ Carga ${numNovo} já existe na unidade ${unidadeAtual} (motorista: ${conflito[0].motorista||'—'})`,'warning');
+        showToast(`⚠️ Carga ${numNovo} já existe na unidade ${unidadeCheck} (motorista: ${conflito[0].motorista||'—'})`,'warning');
         return;
       }
     }
-    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo, unidade: unidadeAtual||undefined})});
+    // Só grava unidade se a demanda ainda não tinha uma (self-heal pra linhas antigas sem backfill)
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo, unidade: unidadeExistente ? undefined : (unidadeCheck||undefined)})});
     // Propagar novo número de carga para todas as tabelas relacionadas
     await Promise.all([
       supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}),
