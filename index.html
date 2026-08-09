@@ -1754,7 +1754,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <span class="si-icon" data-feather="calendar"></span><span class="si-label">Absenteísmo</span>
   </div>
   <div class="sidebar-item" data-page="agendamento" onclick="showPage('agendamento',this)">
-    <span class="si-icon" data-feather="calendar"></span><span class="si-label">Agendamento</span>
+    <span class="si-icon" data-feather="calendar"></span><span class="si-label">Calendário de Rotas</span>
   </div>
   <div class="sidebar-item" data-page="datas-entrega" onclick="showPage('datas-entrega',this)">
     <span class="si-icon" data-feather="list"></span><span class="si-label">Datas de Entrega</span>
@@ -2838,7 +2838,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- Header -->
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:14px">
     <div>
-      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">🗓️ Agendamento de Rotas</h2>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">🗓️ Calendário de Rotas</h2>
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Controle mensal — rotas extras são detectadas automaticamente pelas pré-cargas sem agendamento</p>
     </div>
     <button onclick="abrirModalAgendamento(null)" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:.85rem;font-weight:700;cursor:pointer">➕ Novo Agendamento</button>
@@ -8938,6 +8938,30 @@ async function pushBaseData(records){
     showToast(`⚠️ ${invalidos} registros descartados (dados inválidos). Enviando ${validos.length}...`,'warning');
   }
 
+  // Enriquecer rota/rire vazios com o que já existe em lançamentos/demandas —
+  // a planilha às vezes vem sem a coluna Rota preenchida, mas a carga já pode
+  // ter sido lançada (R.I.) ou já ter pré-carga com rota definida (R.E.).
+  // Sem isso o pedido fica sem R.I./R.E. e some de qualquer tela que filtre
+  // por tipo de rota, mesmo depois de entregue. Lançamento tem prioridade
+  // sobre demanda — mesmo critério usado no resto do sistema.
+  const cargasSemRota = [...new Set(validos.filter(r=>!r.rota).map(r=>Number(r.carga)).filter(Boolean))];
+  if(cargasSemRota.length){
+    const rotaPorCarga = {};
+    for(let i=0;i<cargasSemRota.length;i+=200){
+      const lote = cargasSemRota.slice(i,i+200);
+      const [lancRotas, demRotas] = await Promise.all([
+        supaFetch(`lancamentos?carga=in.(${lote.join(',')})&rota=neq.&select=carga,rota,rire`).catch(()=>[]),
+        supaFetch(`demandas_rota?carga=in.(${lote.join(',')})&rota=neq.&select=carga,rota`).catch(()=>[]),
+      ]);
+      (demRotas||[]).forEach(d=>{ if(!rotaPorCarga[d.carga]) rotaPorCarga[d.carga] = {rota:d.rota, rire:''}; });
+      (lancRotas||[]).forEach(l=>{ rotaPorCarga[l.carga] = {rota:l.rota, rire:normRire(l.rire)||''}; }); // lançamento sobrescreve
+    }
+    validos.forEach(r=>{
+      const fonte = rotaPorCarga[Number(r.carga)];
+      if(!r.rota && fonte){ r.rota = fonte.rota; if(fonte.rire) r.rire = fonte.rire; }
+    });
+  }
+
   const mesesNoUpload = [...new Set(validos.map(r=>r.mes_ano).filter(Boolean))];
   const mesPrincipal = mesesNoUpload[0] || null;
   showToast(`📤 Gravando ${validos.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
@@ -11520,6 +11544,15 @@ async function lancar(){
   const temNaBase  = linhasBase.length>0;
   const rotaFinal  = rotaInput; // rota vem SEMPRE do dropdown (sistema), nunca da planilha
   const qtdPedidos = temNaBase?[...new Set(linhasBase.map(x=>x.pedido))].length:0;
+
+  // Propaga a rota do lançamento pra base_data quando os pedidos já chegaram
+  // pela planilha sem a coluna Rota preenchida — sem isso o pedido fica sem
+  // R.I./R.E. definido e some de qualquer tela que filtre por tipo de rota,
+  // mesmo já lançado e entregue. Fire-and-forget: não trava o lançamento.
+  if(temNaBase && rotaFinal){
+    supaFetch(`base_data?carga=eq.${carga}&rota=is.null`,{method:'PATCH',body:JSON.stringify({rota:rotaFinal, rire:'R.I.'})}).catch(()=>{});
+    supaFetch(`base_data?carga=eq.${carga}&rota=eq.`,{method:'PATCH',body:JSON.stringify({rota:rotaFinal, rire:'R.I.'})}).catch(()=>{});
+  }
 
   // Data do lançamento: admin pode escolher, operador usa o momento atual
   const _dataInput  = document.getElementById('l-data-lanc');
@@ -15041,7 +15074,8 @@ async function criarDemanda(){
         data_saida: data,
         valor_meta: valorMeta,
         status: 'pendente',
-        usuario_id: USUARIO_LOGADO?.id||null
+        usuario_id: USUARIO_LOGADO?.id||null,
+        unidade: USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||null
       })
     });
 
@@ -21525,7 +21559,7 @@ function renderPerfis(){
     expedicao:                  {label:'Expedição',            icon:'🚚'},
     ocorrencias:                {label:'Ocorrências',          icon:'⚠️'},
     lancamento:                 {label:'Lançamento',           icon:'📝'},
-    agendamento:                {label:'Agendamento',          icon:'📅'},
+    agendamento:                {label:'Calendário de Rotas',  icon:'📅'},
     motoristas:                 {label:'Motoristas',           icon:'🚗'},
     veiculos:                   {label:'Veículos',             icon:'🚛'},
     absenteismo:                {label:'Abs. Distribuição',    icon:'📅'},
@@ -26379,7 +26413,21 @@ async function editarNumeroCarga(demandaId, cargaAtual){
   const numNovo = parseInt(novo);
   if(isNaN(numNovo)){ showToast('Número inválido','warning'); return; }
   try{
-    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo})});
+    // Unidade da própria demanda tem prioridade — nunca sobrescrever com a
+    // unidade de quem está editando (pode ser um admin ou alguém de outra
+    // unidade só corrigindo um número, não o "dono" da carga).
+    const demAtualRow = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=unidade`).catch(()=>[]);
+    const unidadeExistente = (demAtualRow?.[0]?.unidade||'').trim();
+    const unidadeCheck = unidadeExistente || (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
+    if(unidadeCheck){
+      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}`).catch(()=>[]);
+      if(conflito && conflito.length){
+        showToast(`⚠️ Carga ${numNovo} já existe na unidade ${unidadeCheck} (motorista: ${conflito[0].motorista||'—'})`,'warning');
+        return;
+      }
+    }
+    // Só grava unidade se a demanda ainda não tinha uma (self-heal pra linhas antigas sem backfill)
+    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo, unidade: unidadeExistente ? undefined : (unidadeCheck||undefined)})});
     // Propagar novo número de carga para todas as tabelas relacionadas
     await Promise.all([
       supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo}),prefer:'return=minimal'}).catch(()=>{}),
@@ -26398,6 +26446,19 @@ async function editarNumeroCarga(demandaId, cargaAtual){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
           method:'PATCH', body:JSON.stringify({ quantidade_pedidos: quantidade, valor_total: valorTotal })
         });
+      }
+    }catch(_){}
+    // Propaga a rota da demanda pra base_data quando os pedidos chegaram pela
+    // planilha sem a coluna Rota preenchida — mesmo problema do lançamento
+    // (R.I.), mas do lado R.E./Expedição: sem isso o pedido entregue fica sem
+    // R.I./R.E. definido e some das telas que filtram por tipo de rota.
+    try{
+      const demRota = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=rota`);
+      const rotaDem = demRota?.[0]?.rota;
+      if(rotaDem){
+        const rireDem = getRireFromRota(rotaDem) || 'R.E.';
+        supaFetch(`base_data?carga=eq.${numNovo}&rota=is.null`,{method:'PATCH',body:JSON.stringify({rota:rotaDem, rire:rireDem})}).catch(()=>{});
+        supaFetch(`base_data?carga=eq.${numNovo}&rota=eq.`,{method:'PATCH',body:JSON.stringify({rota:rotaDem, rire:rireDem})}).catch(()=>{});
       }
     }catch(_){}
     showToast('✅ Número da carga atualizado!','success');
