@@ -8938,6 +8938,30 @@ async function pushBaseData(records){
     showToast(`⚠️ ${invalidos} registros descartados (dados inválidos). Enviando ${validos.length}...`,'warning');
   }
 
+  // Enriquecer rota/rire vazios com o que já existe em lançamentos/demandas —
+  // a planilha às vezes vem sem a coluna Rota preenchida, mas a carga já pode
+  // ter sido lançada (R.I.) ou já ter pré-carga com rota definida (R.E.).
+  // Sem isso o pedido fica sem R.I./R.E. e some de qualquer tela que filtre
+  // por tipo de rota, mesmo depois de entregue. Lançamento tem prioridade
+  // sobre demanda — mesmo critério usado no resto do sistema.
+  const cargasSemRota = [...new Set(validos.filter(r=>!r.rota).map(r=>Number(r.carga)).filter(Boolean))];
+  if(cargasSemRota.length){
+    const rotaPorCarga = {};
+    for(let i=0;i<cargasSemRota.length;i+=200){
+      const lote = cargasSemRota.slice(i,i+200);
+      const [lancRotas, demRotas] = await Promise.all([
+        supaFetch(`lancamentos?carga=in.(${lote.join(',')})&rota=neq.&select=carga,rota,rire`).catch(()=>[]),
+        supaFetch(`demandas_rota?carga=in.(${lote.join(',')})&rota=neq.&select=carga,rota`).catch(()=>[]),
+      ]);
+      (demRotas||[]).forEach(d=>{ if(!rotaPorCarga[d.carga]) rotaPorCarga[d.carga] = {rota:d.rota, rire:''}; });
+      (lancRotas||[]).forEach(l=>{ rotaPorCarga[l.carga] = {rota:l.rota, rire:normRire(l.rire)||''}; }); // lançamento sobrescreve
+    }
+    validos.forEach(r=>{
+      const fonte = rotaPorCarga[Number(r.carga)];
+      if(!r.rota && fonte){ r.rota = fonte.rota; if(fonte.rire) r.rire = fonte.rire; }
+    });
+  }
+
   const mesesNoUpload = [...new Set(validos.map(r=>r.mes_ano).filter(Boolean))];
   const mesPrincipal = mesesNoUpload[0] || null;
   showToast(`📤 Gravando ${validos.length} registros no banco (${mesesNoUpload.join(', ')})...`,'warning');
@@ -11520,6 +11544,15 @@ async function lancar(){
   const temNaBase  = linhasBase.length>0;
   const rotaFinal  = rotaInput; // rota vem SEMPRE do dropdown (sistema), nunca da planilha
   const qtdPedidos = temNaBase?[...new Set(linhasBase.map(x=>x.pedido))].length:0;
+
+  // Propaga a rota do lançamento pra base_data quando os pedidos já chegaram
+  // pela planilha sem a coluna Rota preenchida — sem isso o pedido fica sem
+  // R.I./R.E. definido e some de qualquer tela que filtre por tipo de rota,
+  // mesmo já lançado e entregue. Fire-and-forget: não trava o lançamento.
+  if(temNaBase && rotaFinal){
+    supaFetch(`base_data?carga=eq.${carga}&rota=is.null`,{method:'PATCH',body:JSON.stringify({rota:rotaFinal, rire:'R.I.'})}).catch(()=>{});
+    supaFetch(`base_data?carga=eq.${carga}&rota=eq.`,{method:'PATCH',body:JSON.stringify({rota:rotaFinal, rire:'R.I.'})}).catch(()=>{});
+  }
 
   // Data do lançamento: admin pode escolher, operador usa o momento atual
   const _dataInput  = document.getElementById('l-data-lanc');
@@ -26398,6 +26431,19 @@ async function editarNumeroCarga(demandaId, cargaAtual){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
           method:'PATCH', body:JSON.stringify({ quantidade_pedidos: quantidade, valor_total: valorTotal })
         });
+      }
+    }catch(_){}
+    // Propaga a rota da demanda pra base_data quando os pedidos chegaram pela
+    // planilha sem a coluna Rota preenchida — mesmo problema do lançamento
+    // (R.I.), mas do lado R.E./Expedição: sem isso o pedido entregue fica sem
+    // R.I./R.E. definido e some das telas que filtram por tipo de rota.
+    try{
+      const demRota = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=rota`);
+      const rotaDem = demRota?.[0]?.rota;
+      if(rotaDem){
+        const rireDem = getRireFromRota(rotaDem) || 'R.E.';
+        supaFetch(`base_data?carga=eq.${numNovo}&rota=is.null`,{method:'PATCH',body:JSON.stringify({rota:rotaDem, rire:rireDem})}).catch(()=>{});
+        supaFetch(`base_data?carga=eq.${numNovo}&rota=eq.`,{method:'PATCH',body:JSON.stringify({rota:rotaDem, rire:rireDem})}).catch(()=>{});
       }
     }catch(_){}
     showToast('✅ Número da carga atualizado!','success');
