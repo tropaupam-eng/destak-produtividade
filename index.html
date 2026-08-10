@@ -2637,6 +2637,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <select id="painel-ind-und-sel" onchange="mudarUndPainelIndicadores(this.value)" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
         <option value="">Todas as unidades</option>
       </select>
+      <span data-feather="repeat" style="width:15px;height:15px;color:var(--text-muted)"></span>
+      <select id="painel-ind-rire-sel" onchange="mudarRirePainelIndicadores(this.value)" title="Aplica-se a Liberação no Prazo, Carregamento no Prazo e Pedidos & Rotas" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
+        <option value="">R.I. + R.E.</option>
+        <option value="RI">R.I. (Interna)</option>
+        <option value="RE">R.E. (Externa)</option>
+      </select>
       <span data-feather="calendar" style="width:15px;height:15px;color:var(--text-muted)"></span>
       <select id="painel-ind-mes-sel" onchange="mudarMesPainelIndicadores(this.value)" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer"></select>
     </div>
@@ -26662,6 +26668,22 @@ function mudarUndPainelIndicadores(und){
   _recarregarAbaAtivaPainelIndicadores();
 }
 
+// R.I./R.E. — aplicado só em Liberação no Prazo, Carregamento no Prazo e
+// Pedidos & Rotas (indicadores de rota). Absenteísmo é sobre pessoas, não
+// rotas; Utilização de Frotas espelha renderFrotaDisp() de propósito e não
+// tem esse filtro pra continuar batendo com aquela tela.
+function mudarRirePainelIndicadores(rire){
+  window._painelIndRireSel = rire;
+  _recarregarAbaAtivaPainelIndicadores();
+}
+
+// true = passa no filtro. "" (R.I.+R.E.) sempre passa.
+function _passaFiltroRire(rota, rireSel){
+  if(!rireSel) return true;
+  const isRI = ROTAS_RI.has((rota||'').toUpperCase().trim());
+  return rireSel === 'RI' ? isRI : !isRI;
+}
+
 function _recarregarAbaAtivaPainelIndicadores(){
   const abaAtiva = document.querySelector('.painel-ind-tab.active')?.dataset.aba || 'abs-armazem';
   if(abaAtiva === 'abs-armazem') carregarPainelAbsArmazem();
@@ -27151,13 +27173,15 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
   try {
     const mes = mesSelecionado || window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
+    const rireSel = window._painelIndRireSel || '';
 
     // Buscar cargas agendadas no mês (mes_ano), que têm data_saida e já saíram (ts_saiu preenchido)
-    const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu&limit=5000`) || [];
+    const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
 
     let noPrazo = 0, fora = 0;
     demandas.forEach(d=>{
       if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
+      if(!_passaFiltroRire(d.rota, rireSel)) return;
       // Extrair data de saída real (ts_saiu) e comparar com data agendada (data_saida)
       const saidaReal = d.ts_saiu.split('T')[0]; // converte "2026-07-15T10:30:00" → "2026-07-15"
       const saidaAgendada = d.data_saida; // já é "2026-07-15"
@@ -27165,8 +27189,9 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
       if(saidaReal <= saidaAgendada) noPrazo++; else fora++;
     });
 
+    const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
     container.innerHTML = renderRelatorioNoPrazoSimples({
-      indicadorNum:'03', titulo:'Liberação no Prazo', eyebrow:'SAÍDA DO VEÍCULO', area:'OPERAÇÕES / DISTRIBUIÇÃO',
+      indicadorNum:'03', titulo:'Liberação no Prazo', eyebrow:'SAÍDA DO VEÍCULO'+eyebrowRire, area:'OPERAÇÕES / DISTRIBUIÇÃO',
       mesRef: mes, metaPct: 90, noPrazoCount: noPrazo, foraCount: fora,
       noPrazoDesc: 'Veículo saiu até a data agendada',
       foraDesc: 'Veículo saiu depois da data agendada'
@@ -27190,8 +27215,9 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const [anoC, numMesC] = mes.split('-').map(Number);
     const proxMesC = numMesC===12 ? (anoC+1)+'-01' : anoC+'-'+String(numMesC+1).padStart(2,'0');
     const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
+    const rireSel = window._painelIndRireSel || '';
 
-    const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&select=carga,data_saida&limit=5000`) || [];
+    const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&select=carga,data_saida,rota&limit=5000`) || [];
     const conferencias = await supaFetch(`conferencia_pedidos?conferido_em=gte.${mes}-01T00:00:00&conferido_em=lt.${proxMesC}-01T00:00:00&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=5000`) || [];
 
     const ultimaConfPorCarga = {};
@@ -27206,12 +27232,14 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     Object.keys(ultimaConfPorCarga).forEach(cargaNum=>{
       const demanda = demandas.find(d => d.carga == cargaNum);
       if (!demanda || !demanda.data_saida) return;
+      if(!_passaFiltroRire(demanda.rota, rireSel)) return;
       const confData = ultimaConfPorCarga[cargaNum].slice(0,10);
       if(confData <= demanda.data_saida) noPrazo++; else fora++;
     });
 
+    const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
     container.innerHTML = renderRelatorioNoPrazoSimples({
-      indicadorNum:'04', titulo:'Carregamento no Prazo', eyebrow:'CONFERÊNCIA DO ARMAZÉM', area:'OPERAÇÕES / ARMAZÉM',
+      indicadorNum:'04', titulo:'Carregamento no Prazo', eyebrow:'CONFERÊNCIA DO ARMAZÉM'+eyebrowRire, area:'OPERAÇÕES / ARMAZÉM',
       mesRef: mes, metaPct: 90, noPrazoCount: noPrazo, foraCount: fora,
       noPrazoDesc: 'Conferência concluída até a data agendada',
       foraDesc: 'Conferência concluída depois da data agendada'
@@ -27237,15 +27265,16 @@ async function carregarPainelPedidosRotas(){
   try {
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const undSel = window._painelIndUndSel || '';
+    const rireSel = window._painelIndRireSel || '';
     const hoje = new Date().toISOString().slice(0,10);
 
-    const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesAtual, 'RI', undSel);
+    const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
     const semData   = _calcPedidosPorSemana(bd, mesAtual);
-    const rotaCalc  = _calcEntregasPorRota(bd, cargaRota, cargaIsRI, 'RI');
+    const rotaCalc  = _calcEntregasPorRota(bd, cargaRota, cargaIsRI, rireSel);
     const dadosOtif = await _carregarOtifMes(mesAtual, undSel||undefined);
     const semOtif   = _calcOtifPorSemana(bd, mesAtual, dadosOtif, hoje);
 
-    container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, semData, rotaCalc, semOtif });
+    container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, semData, rotaCalc, semOtif, rireSel });
     _renderGraficoPainelRotas(rotaCalc);
   } catch(e){
     console.error('Erro ao carregar Pedidos & Rotas:', e);
@@ -27253,11 +27282,12 @@ async function carregarPainelPedidosRotas(){
   }
 }
 
-function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif}){
+function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rireSel}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
   const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(ultimoDia)}/${fmtBR(mes)}`;
+  const rireLabel = rireSel==='RI' ? ' · R.I. (INTERNA)' : rireSel==='RE' ? ' · R.E. (EXTERNA)' : ' · R.I. + R.E.';
   const fmtVal = v => v>=1000?'R$ '+(v/1000).toFixed(1).replace('.',',')+'k':'R$ '+v.toFixed(0);
 
   const maxPed = Math.max(...semData.map(s=>s.ped),1);
@@ -27305,7 +27335,7 @@ function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif}){
 
   return `
     <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif">
-      <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">INDICADOR 06 · VOLUME E ROTAS · ${periodoTxt}</div>
+      <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">INDICADOR 06 · VOLUME E ROTAS · ${periodoTxt}${rireLabel}</div>
       <h2 style="font-size:2.4rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Pedidos &amp; Entregas por Rota</h2>
       <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 28px"></div>
 
