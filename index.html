@@ -2036,6 +2036,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- ── CARGAS AUTO-REGISTRADAS POR MOTORISTAS ── -->
   <div id="lanc-mot-pendentes" style="display:none;margin-bottom:16px"></div>
 
+  <!-- ── CARGAS VINCULADAS POR AJUDANTE SEM LANÇAMENTO ── -->
+  <div id="lanc-aj-pendentes" style="display:none;margin-bottom:16px"></div>
+
   <div id="lanc-pane-demandas">
 
   <!-- Formulário de novo lançamento -->
@@ -11990,6 +11993,7 @@ function ehOrigemLancamento(l){
 
 function renderLanc(){
   renderExpMotPendentes().catch(()=>{});
+  renderAjudantePendentes().catch(()=>{});
   const cargasNaBase  = new Set(BASE_DATA.map(r=>Number(r.carga)).filter(Boolean));
   // Excluir cargas da pré-carga (Expedição) — elas têm fluxo próprio
   const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
@@ -20907,6 +20911,67 @@ async function renderExpMotPendentes(){
               <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${r.veiculo||'—'}</span>
               <span style="font-size:.73rem;color:var(--text-muted)">🕑 ${_dtBR2}</span>
               <button onclick="preencherCarga(${r.carga},'')" style="margin-left:auto;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.4);color:#fbbf24;border-radius:6px;padding:4px 12px;font-size:.76rem;font-weight:700;cursor:pointer">Completar →</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }catch(_){ el.innerHTML=''; el.style.display='none'; }
+}
+
+// Cargas em que um ajudante já se vinculou pelo portal, mas que ainda não têm
+// lançamento real (motorista/rota) de Lançamento nem de Expedição — desde a
+// correção de vincularAjudanteCarga(), esse caso não fabrica mais dado nenhum
+// em `lancamentos`, então precisa desse alerta à parte pra não ficar invisível
+// pro operador. Também cobre lançamentos-esqueleto antigos ('A DEFINIR MOTORISTA')
+// criados antes da correção.
+async function renderAjudantePendentes(){
+  const el = document.getElementById('lanc-aj-pendentes');
+  if(!el) return;
+  try{
+    const ajCargas = await supaFetch(
+      `ajudante_cargas?ativo=eq.true&select=carga,ajudante_nome,ts&order=ts.desc&limit=200`
+    ).catch(()=>[]) || [];
+    if(!ajCargas.length){ el.innerHTML=''; el.style.display='none'; return; }
+
+    // Última vinculação por carga (evita duplicar linha quando 2+ ajudantes na mesma carga)
+    const porCarga = {};
+    ajCargas.forEach(a=>{
+      const k = String(a.carga);
+      if(!porCarga[k] || a.ts > porCarga[k].ts) porCarga[k] = a;
+      else porCarga[k]._extra = (porCarga[k]._extra||0)+1;
+    });
+    const cargas = Object.keys(porCarga);
+    if(!cargas.length){ el.innerHTML=''; el.style.display='none'; return; }
+
+    const lancs = await supaFetch(
+      `lancamentos?carga=in.(${cargas.join(',')})&select=carga,motorista,rota`
+    ).catch(()=>[]) || [];
+    const lancPorCarga = {};
+    lancs.forEach(l=>{ lancPorCarga[String(l.carga)] = l; });
+
+    const pendentes = cargas.filter(c=>{
+      const l = lancPorCarga[c];
+      return !l || !(l.motorista||'').trim() || (l.motorista||'').toUpperCase()==='A DEFINIR MOTORISTA';
+    }).map(c=>porCarga[c]);
+
+    if(!pendentes.length){ el.innerHTML=''; el.style.display='none'; return; }
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div style="background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(29,78,216,.05));border:1px solid rgba(59,130,246,.3);border-left:4px solid #3b82f6;border-radius:12px;padding:14px 18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+          <div style="font-size:.82rem;font-weight:800;color:var(--text-primary)">⚠️ Cargas Vinculadas por Ajudante — Sem Lançamento
+            <span style="background:rgba(59,130,246,.25);color:#93c5fd;border-radius:20px;padding:2px 10px;font-size:.72rem;margin-left:6px">${pendentes.length}</span>
+          </div>
+          <span style="font-size:.73rem;color:var(--text-muted)">Lance a carga abaixo pra liberar Produtividade/Pagamentos</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${pendentes.map(p=>{
+            const _dtBR3 = p.ts ? new Date(p.ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+            return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <span style="font-size:.88rem;font-weight:800;color:var(--text-primary)">Carga #${p.carga}</span>
+              <span style="font-size:.78rem;color:#93c5fd">🤝 ${p.ajudante_nome||'—'}</span>
+              <span style="font-size:.73rem;color:var(--text-muted)">🕑 ${_dtBR3}</span>
+              <button onclick="preencherCarga(${p.carga},'')" style="margin-left:auto;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.4);color:#93c5fd;border-radius:6px;padding:4px 12px;font-size:.76rem;font-weight:700;cursor:pointer">Lançar →</button>
             </div>`;
           }).join('')}
         </div>
