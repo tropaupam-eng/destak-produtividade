@@ -2036,6 +2036,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- ── CARGAS AUTO-REGISTRADAS POR MOTORISTAS ── -->
   <div id="lanc-mot-pendentes" style="display:none;margin-bottom:16px"></div>
 
+  <!-- ── CARGAS VINCULADAS POR AJUDANTE SEM LANÇAMENTO ── -->
+  <div id="lanc-aj-pendentes" style="display:none;margin-bottom:16px"></div>
+
   <div id="lanc-pane-demandas">
 
   <!-- Formulário de novo lançamento -->
@@ -11990,6 +11993,7 @@ function ehOrigemLancamento(l){
 
 function renderLanc(){
   renderExpMotPendentes().catch(()=>{});
+  renderAjudantePendentes().catch(()=>{});
   const cargasNaBase  = new Set(BASE_DATA.map(r=>Number(r.carga)).filter(Boolean));
   // Excluir cargas da pré-carga (Expedição) — elas têm fluxo próprio
   const cargasPreCarga = new Set((_demandasCache||[]).map(d=>Number(d.carga)).filter(Boolean));
@@ -13887,19 +13891,16 @@ async function vincularAjudanteCarga(){
       const peds = [...new Set(bd.filter(r=>Number(r.ocorrencia)!==1).map(r=>r.pedido))];
       const agora = new Date().toISOString();
 
-      // Carga sem lançamento nenhum — cria um "esqueleto" já com o ajudante
-      // preenchido, com o mesmo padrão 'A DEFINIR MOTORISTA' usado no resto do
-      // sistema quando falta motorista. Fica fora do "if(peds.length)" de
-      // propósito: se a planilha ainda não trouxe os pedidos dessa carga agora,
-      // não dá pra saber se vai trazer ainda hoje ou nunca — sem o esqueleto
-      // criado já, a carga fica pra sempre invisível em Produtividade/Pagamentos
-      // mesmo depois que os pedidos aparecerem (ressincronizarAjudantePedidos
-      // só re-sincroniza ajudante_pedidos, não cria lançamento).
-      if(!lanc || !lanc.length){
-        const rotaBd = bd.find(r=>r.rota)?.rota || rota || '';
-        const motoristaSkeleton = motorista || 'A DEFINIR MOTORISTA';
+      // Regra do sistema: motorista e rota SÓ podem vir de Lançamento ou de
+      // Expedição — nunca fabricados pelo vínculo do ajudante. Se a Expedição
+      // já criou a pré-carga (dem existe), copia o motorista/rota reais de lá
+      // (informação legítima). Se não existe NEM lançamento NEM pré-carga,
+      // não cria lançamento nenhum — a carga fica só em ajudante_cargas/
+      // ajudante_pedidos até um motorista/operador lançar de verdade.
+      if((!lanc || !lanc.length) && dem && dem.length){
+        const rotaBd = rota || bd.find(r=>r.rota)?.rota || '';
         await supaFetch('lancamentos',{method:'POST',body:JSON.stringify({
-          carga:Number(carga), motorista:motoristaSkeleton, motorista_id:motoristaIdPorNome(motoristaSkeleton),
+          carga:Number(carga), motorista, motorista_id:motoristaIdPorNome(motorista),
           ajudante:(AJUDANTE.nome||'').toUpperCase(), rota:rotaBd,
           rire:getRireFromRota(rotaBd)||'R.E.', vinculado:true, pendente:false,
           ts:agora, mes_ano:mesAno, fonte:'ajudante_vinculo'
@@ -13917,7 +13918,10 @@ async function vincularAjudanteCarga(){
             }))
           )});
         }
-        showToast(`✅ Carga #${carga} vinculada! ${peds.length} pedidos atribuídos.`,'success');
+        const msgPeds = (lanc&&lanc.length)||(dem&&dem.length)
+          ? `✅ Carga #${carga} vinculada! ${peds.length} pedidos atribuídos.`
+          : `✅ Carga #${carga} vinculada! ${peds.length} pedidos atribuídos. ⚠️ Aguardando o motorista lançar essa carga (Lançamento ou Expedição) para aparecer em Produtividade/Pagamentos.`;
+        showToast(msgPeds,'success');
       } else {
         const msg = (lanc&&lanc.length)||(dem&&dem.length)
           ? `✅ Carga #${carga} vinculada!`
@@ -20948,6 +20952,67 @@ async function renderExpMotPendentes(){
   }catch(_){ el.innerHTML=''; el.style.display='none'; }
 }
 
+// Cargas em que um ajudante já se vinculou pelo portal, mas que ainda não têm
+// lançamento real (motorista/rota) de Lançamento nem de Expedição — desde a
+// correção de vincularAjudanteCarga(), esse caso não fabrica mais dado nenhum
+// em `lancamentos`, então precisa desse alerta à parte pra não ficar invisível
+// pro operador. Também cobre lançamentos-esqueleto antigos ('A DEFINIR MOTORISTA')
+// criados antes da correção.
+async function renderAjudantePendentes(){
+  const el = document.getElementById('lanc-aj-pendentes');
+  if(!el) return;
+  try{
+    const ajCargas = await supaFetch(
+      `ajudante_cargas?ativo=eq.true&select=carga,ajudante_nome,ts&order=ts.desc&limit=200`
+    ).catch(()=>[]) || [];
+    if(!ajCargas.length){ el.innerHTML=''; el.style.display='none'; return; }
+
+    // Última vinculação por carga (evita duplicar linha quando 2+ ajudantes na mesma carga)
+    const porCarga = {};
+    ajCargas.forEach(a=>{
+      const k = String(a.carga);
+      if(!porCarga[k] || a.ts > porCarga[k].ts) porCarga[k] = a;
+      else porCarga[k]._extra = (porCarga[k]._extra||0)+1;
+    });
+    const cargas = Object.keys(porCarga);
+    if(!cargas.length){ el.innerHTML=''; el.style.display='none'; return; }
+
+    const lancs = await supaFetch(
+      `lancamentos?carga=in.(${cargas.join(',')})&select=carga,motorista,rota`
+    ).catch(()=>[]) || [];
+    const lancPorCarga = {};
+    lancs.forEach(l=>{ lancPorCarga[String(l.carga)] = l; });
+
+    const pendentes = cargas.filter(c=>{
+      const l = lancPorCarga[c];
+      return !l || !(l.motorista||'').trim() || (l.motorista||'').toUpperCase()==='A DEFINIR MOTORISTA';
+    }).map(c=>porCarga[c]);
+
+    if(!pendentes.length){ el.innerHTML=''; el.style.display='none'; return; }
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div style="background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(29,78,216,.05));border:1px solid rgba(59,130,246,.3);border-left:4px solid #3b82f6;border-radius:12px;padding:14px 18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+          <div style="font-size:.82rem;font-weight:800;color:var(--text-primary)">⚠️ Cargas Vinculadas por Ajudante — Sem Lançamento
+            <span style="background:rgba(59,130,246,.25);color:#93c5fd;border-radius:20px;padding:2px 10px;font-size:.72rem;margin-left:6px">${pendentes.length}</span>
+          </div>
+          <span style="font-size:.73rem;color:var(--text-muted)">Lance a carga abaixo pra liberar Produtividade/Pagamentos</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${pendentes.map(p=>{
+            const _dtBR3 = p.ts ? new Date(p.ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+            return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <span style="font-size:.88rem;font-weight:800;color:var(--text-primary)">Carga #${p.carga}</span>
+              <span style="font-size:.78rem;color:#93c5fd">🤝 ${p.ajudante_nome||'—'}</span>
+              <span style="font-size:.73rem;color:var(--text-muted)">🕑 ${_dtBR3}</span>
+              <button onclick="preencherCarga(${p.carga},'')" style="margin-left:auto;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.4);color:#93c5fd;border-radius:6px;padding:4px 12px;font-size:.76rem;font-weight:700;cursor:pointer">Lançar →</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }catch(_){ el.innerHTML=''; el.style.display='none'; }
+}
+
 async function forcePushAll(){
   showToast('📤 Subindo todos os dados...','warning');
   try{
@@ -24636,7 +24701,10 @@ async function renderDashInterna(){
     // 12. Cards: Pedidos + Valor por Semana
     const semCardsEl = document.getElementById('dash-sem-cards');
     if(semCardsEl){
-      const _semDoMes = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); return Math.min(Math.ceil(_dt.getDate()/7),5); };
+      // Semana alinhada a domingo (mesma fórmula usada em semana_mes na importação
+      // da planilha): dia/7 puro ignora em que dia da semana o mês começa, o que
+      // faz a "semana 1" começar num sábado sempre que o dia 1 cair num sábado.
+      const _semDoMes = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
       const semLabels = ['1ª Semana','2ª Semana','3ª Semana','4ª Semana','5ª Semana'];
       const semData = [{ped:0,val:0},{ped:0,val:0},{ped:0,val:0},{ped:0,val:0},{ped:0,val:0}];
       const vistoPed = new Set();
@@ -24839,8 +24907,8 @@ async function renderDashInterna(){
       const ocorrSetOtif = new Set();
       (ocorrRowsOtif||[]).forEach(o=>{ if(o.pedido) ocorrSetOtif.add(String(o.pedido)); });
 
-      // _semDoMes: mesmo helper usado em Pedidos por Semana
-      const _semDoMesOtif = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); return Math.min(Math.ceil(_dt.getDate()/7),5); };
+      // _semDoMes: mesmo helper usado em Pedidos por Semana — alinhado a domingo
+      const _semDoMesOtif = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
 
       const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
       // Usa a mesma fonte e filtro RI/RE de "Pedidos por Semana" (bd) para garantir
@@ -25466,7 +25534,8 @@ async function renderDashLogistico(forcarRefresh){
   // pedido entrou). porSemanaOtif: semana da ENTREGA (usado em "OTIF por
   // Semana" — quando foi resolvido). São perguntas diferentes de propósito,
   // por isso dois acumuladores separados em vez de um só.
-  const _semDoMesDlog = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); return Math.min(Math.ceil(_dt.getDate()/7),5); };
+  // Alinhado a domingo — mesma fórmula usada em semana_mes/_semDoMesOtif
+  const _semDoMesDlog = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
   const porRota = {}, porMotorista = {}, porCliente = {};
   const porSemana     = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
   const porSemanaOtif = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
