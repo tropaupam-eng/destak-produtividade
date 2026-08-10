@@ -1784,6 +1784,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div class="sidebar-item" data-page="comercial-cancelamentos" onclick="showPage('comercial-cancelamentos',this)">
     <span class="si-icon" data-feather="x-circle"></span><span class="si-label">Cancelamentos</span>
   </div>
+  <div class="sidebar-item" data-page="comercial-cargas-pendentes" onclick="showPage('comercial-cargas-pendentes',this)">
+    <span class="si-icon" data-feather="clock"></span><span class="si-label">Cargas Pendentes</span>
+  </div>
   <div class="sidebar-divider"></div>
   <div class="sidebar-section-label">Armazém</div>
   <div class="sidebar-item" data-page="armazem" onclick="showPage('armazem',this)">
@@ -3116,6 +3119,25 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
   <div id="comercial-baixo-valor" style="margin-bottom:20px"></div>
   <div id="comercial-rotas-lista"></div>
+</div></div>
+
+<!-- ══ COMERCIAL — CARGAS PENDENTES ══ -->
+<div class="page" id="page-comercial-cargas-pendentes"><div class="container">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;flex-wrap:wrap;gap:14px">
+    <div>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">⏳ Cargas Pendentes</h2>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Cargas da Expedição ainda não concluídas (nem canceladas) — valor em aberto até a entrega fechar o ciclo</p>
+    </div>
+    <button onclick="carregarCargasPendentesComercial()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
+    <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Cargas Pendentes</div><div class="kpi-value" id="cargpend-kpi-qtd">—</div></div>
+    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Valor Total Pendente</div><div class="kpi-value" id="cargpend-kpi-valor" style="font-size:1.3rem">—</div></div>
+    <div class="kpi-card" style="border-top-color:var(--green)"><div class="kpi-label">Pedidos nas Cargas Pendentes</div><div class="kpi-value" id="cargpend-kpi-pedidos">—</div></div>
+  </div>
+  <div id="cargpend-container">
+    <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
+  </div>
 </div></div>
 
 <!-- ══ ABSENTEÍSMO ══ -->
@@ -21224,6 +21246,7 @@ function showPage(name,tab){
     verificarManutencoesFimHoje().catch(()=>{});
   },'gestao-frota');
   else if(name==='comercial-rotas') safe(()=>renderComercialRotas(),'comercial-rotas');
+  else if(name==='comercial-cargas-pendentes') safe(()=>carregarCargasPendentesComercial(),'comercial-cargas-pendentes');
   else if(name==='banco-dados')   safe(()=>renderBancoStatus(),'banco-dados');
   else if(name==='notificacoes')  safe(()=>carregarNotificacoes(),'notificacoes');
   else if(name==='tv')            { document.body.classList.add('tv-mode'); safe(()=>iniciarTV(),'tv'); return; }
@@ -38225,6 +38248,80 @@ async function limparComercialRotas(){
     renderComercialRotas();
     showToast('Rotas resolvidas removidas','success');
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// ══════════════════════════════════════════════════════
+// COMERCIAL — CARGAS PENDENTES
+// ══════════════════════════════════════════════════════
+// Cargas vindas da Expedição (demandas_rota) que ainda não fecharam o
+// ciclo — qualquer status diferente de concluido/cancelado. Fonte única:
+// demandas_rota.valor_total/quantidade_pedidos, já preenchidos pela
+// Expedição — esta tela só soma e lista, não recalcula nada.
+const _STATUS_CARGPEND_CFG = {
+  pendente:            {label:'⏳ Pendente',           cor:'#6b7280'},
+  separacao:           {label:'📦 Separação',          cor:'#f59e0b'},
+  carregamento:        {label:'🔄 Carregamento',       cor:'#3b82f6'},
+  aguardando_nf:       {label:'📋 Aguard. NF',         cor:'#059669'},
+  aguardando_manifesto:{label:'🛡️ Aguard. Manifesto', cor:'#7c3aed'},
+  pronto_viagem:       {label:'✅ Pronto p/ Viagem',   cor:'#065f46'},
+  saiu:                {label:'🚛 Em Viagem',          cor:'#E8000D'},
+  fim_viagem:          {label:'🏁 Retornou',           cor:'#2563eb'},
+};
+
+async function carregarCargasPendentesComercial(){
+  const container = document.getElementById('cargpend-container');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+
+  try{
+    const cargas = await supaFetch(
+      'demandas_rota?status=not.in.(concluido,cancelado)&select=carga,rota,motorista,veiculo,status,data_saida,valor_total,quantidade_pedidos&order=data_saida.asc&limit=2000'
+    ) || [];
+
+    const valorTotal   = cargas.reduce((s,c)=>s+(Number(c.valor_total)||0),0);
+    const pedidosTotal = cargas.reduce((s,c)=>s+(Number(c.quantidade_pedidos)||0),0);
+
+    const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+    set('cargpend-kpi-qtd', cargas.length);
+    set('cargpend-kpi-valor', valorTotal.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}));
+    set('cargpend-kpi-pedidos', pedidosTotal);
+
+    if(!cargas.length){
+      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">✅</span>Nenhuma carga pendente no momento.</p>';
+      return;
+    }
+
+    const fmtD = d => { try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d||'—'; } };
+    container.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem;background:var(--bg-card);border-radius:12px;overflow:hidden">
+      <thead><tr style="background:var(--bg-card2)">
+        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Carga</th>
+        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Rota</th>
+        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Motorista</th>
+        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Veículo</th>
+        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Data Saída</th>
+        <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Status</th>
+        <th style="padding:10px 14px;text-align:right;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Pedidos</th>
+        <th style="padding:10px 14px;text-align:right;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Valor</th>
+      </tr></thead>
+      <tbody>${cargas.map(c=>{
+        const cfg = _STATUS_CARGPEND_CFG[c.status] || {label:c.status||'—', cor:'#6b7280'};
+        return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
+          <td style="padding:10px 14px;font-weight:700;color:var(--text-primary)">${c.carga||'—'}</td>
+          <td style="padding:10px 14px;color:var(--text-secondary)">${c.rota||'—'}</td>
+          <td style="padding:10px 14px;color:var(--text-secondary)">${c.motorista||'—'}</td>
+          <td style="padding:10px 14px;color:var(--text-muted);font-family:monospace">${c.veiculo||'—'}</td>
+          <td style="padding:10px 14px;color:var(--text-secondary)">${fmtD(c.data_saida)}</td>
+          <td style="padding:10px 14px;text-align:center">
+            <span style="background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap">${cfg.label}</span>
+          </td>
+          <td style="padding:10px 14px;text-align:right;color:var(--text-secondary)">${c.quantidade_pedidos||0}</td>
+          <td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--text-primary)">${(Number(c.valor_total)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+  }catch(e){
+    container.innerHTML = '<p style="text-align:center;padding:40px;color:#dc2626">⚠️ Erro ao carregar: '+e.message+'</p>';
+  }
 }
 
 // ══════════════════════════════════════════════════════
