@@ -11682,14 +11682,24 @@ async function lancar(){
   const tsLanc = _dataAdm ? new Date(_dataAdm).toISOString() : new Date().toISOString();
 
   let isUpdate = false;
+  let _lancFalhou = false, _lancErroMsg = '';
   if(lancExistenteSupa){
     // Já existe lançamento para esta carga (UNIQUE(carga)) — atualiza em vez de
     // tentar inserir de novo, o que sempre resultaria em 409 Conflict.
     isUpdate = true;
-    await supaFetch(`lancamentos?id=eq.${lancExistenteSupa.id}`,{
-      method:'PATCH',
-      body:JSON.stringify({motorista:mot, motorista_id:motoristaIdPorNome(mot), rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase, rire:'R.I.', fonte:'lancamento'})
-    }).catch(e=>console.warn('Update lancamento:',e.message));
+    const _patchBody = {motorista:mot, motorista_id:motoristaIdPorNome(mot), rota:rotaFinal, veiculo, und, vinculado:temNaBase, pendente:!temNaBase, rire:'R.I.', fonte:'lancamento'};
+    try{
+      await supaFetch(`lancamentos?id=eq.${lancExistenteSupa.id}`,{method:'PATCH', body:JSON.stringify(_patchBody)});
+      // Reflete a mudança no estado local imediatamente — sem isso a tela continua
+      // mostrando o motorista/rota antigos até o próximo sync completo, mesmo com
+      // o PATCH já confirmado no banco.
+      const _lexist = lancamentos.find(l=>l._id===lancExistenteSupa.id);
+      if(_lexist) Object.assign(_lexist, _patchBody);
+      else lancamentos.unshift({..._patchBody, carga, ts: tsLanc, _id: lancExistenteSupa.id});
+    }catch(e){
+      _lancFalhou = true; _lancErroMsg = e.message||'erro de conexão';
+      console.warn('Update lancamento:', e.message);
+    }
   } else {
     lancamentos.unshift({
       carga, motorista:mot, motorista_id:motoristaIdPorNome(mot), ajudante:'', veiculo, rota:rotaFinal, und,
@@ -11727,7 +11737,9 @@ async function lancar(){
   }
   const prev = document.getElementById('carga-preview');
   if(prev) prev.style.display='none';
-  if(isUpdate){
+  if(_lancFalhou){
+    showToast('❌ Falha ao salvar o lançamento no banco ('+_lancErroMsg+') — verifique e tente novamente.','warning');
+  } else if(isUpdate){
     showToast('✅ Lançamento atualizado! Rota '+rotaFinal+' e dados completados.','success');
   } else {
     showToast(
@@ -13799,16 +13811,25 @@ async function carregarPortalAjudante(){
     // (lancamentos) ou já estiver na expedição (demandas_rota). Até lá, fica pendente.
     const cargasNums = [...new Set((ajCargas||[]).map(c=>Number(c.carga)))];
     const liberadas  = new Set();
+    // Rota ATUAL por carga (fonte: lançamento) — ajudante_cargas.rota é só a foto
+    // tirada no momento em que o ajudante vinculou a carga; se a rota for corrigida
+    // depois (planilha reprocessada, erro de digitação ajustado), o vínculo antigo
+    // ficava com a rota velha e o bônus previsto saía calculado na faixa errada.
+    const rotaAtualPorCarga = {};
     if(cargasNums.length){
       const listaIn = cargasNums.join(',');
       const [lancsLib, demsLib] = await Promise.all([
-        supaFetch(`lancamentos?carga=in.(${listaIn})&select=carga`).catch(()=>[]),
+        supaFetch(`lancamentos?carga=in.(${listaIn})&select=carga,rota`).catch(()=>[]),
         supaFetch(`demandas_rota?carga=in.(${listaIn})&select=carga`).catch(()=>[])
       ]);
-      (lancsLib||[]).forEach(l=>liberadas.add(Number(l.carga)));
+      (lancsLib||[]).forEach(l=>{
+        liberadas.add(Number(l.carga));
+        if(l.rota) rotaAtualPorCarga[Number(l.carga)] = l.rota;
+      });
       (demsLib||[]).forEach(d=>liberadas.add(Number(d.carga)));
     }
 
+    function rotaEfetiva(c){ return rotaAtualPorCarga[Number(c.carga)] || c.rota; }
     function getBonusAj(rota){ return getValorRota(rota).ajud || 0.50; }
 
     let totalPed=0, totalCargas=0, totalValor=0;
@@ -13817,7 +13838,7 @@ async function carregarPortalAjudante(){
       if(!liberadas.has(Number(c.carga))) return;
       const cnt = pedCount[String(c.carga)]||0;
       totalPed   += cnt;
-      totalValor += cnt * getBonusAj(c.rota);
+      totalValor += cnt * getBonusAj(rotaEfetiva(c));
     });
 
     const setEl = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
@@ -13837,7 +13858,7 @@ async function carregarPortalAjudante(){
       const lib        = liberadas.has(Number(c.carga));
       const numInvalido = Number(c.carga) > 30000;
       const cnt  = pedCount[String(c.carga)]||0;
-      const taxa = getBonusAj(c.rota);
+      const taxa = getBonusAj(rotaEfetiva(c));
       const val  = cnt * taxa;
       const dt   = new Date(c.ts).toLocaleDateString('pt-BR');
       const colQtd = lib
@@ -13854,7 +13875,7 @@ async function carregarPortalAjudante(){
       return `<tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
         <td style="padding:10px 14px;font-weight:800;color:#f8fafc">#${c.carga}</td>
         <td style="padding:10px 14px;font-size:.8rem;color:#94a3b8">${c.motorista||'—'}</td>
-        <td style="padding:10px 14px"><span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${c.rota||'—'}</span></td>
+        <td style="padding:10px 14px"><span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${rotaEfetiva(c)||'—'}</span></td>
         ${colQtd}
         ${colVal}
         <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${dt}</td>
@@ -18788,8 +18809,13 @@ async function registrarRotaAbsenteismo(motoristaNome, ajudanteNome, dataSaida){
   const data = dataSaida || new Date().toISOString().slice(0,10);
   const mesAno = data.slice(0,7);
 
-  async function lancar(nome, funcao){
-    if(!nome) return;
+  async function lancar(nomeOriginal, funcao){
+    if(!nomeOriginal) return;
+    // Normaliza pra maiúsculas — mesma convenção de _absUpsertPresenca. Sem isso,
+    // uma busca case-sensitive por "eq." não encontra o registro do dia já gravado
+    // em outra grafia (ex.: "João Silva" vs "JOÃO SILVA") e cria uma segunda linha
+    // duplicada pra mesma pessoa no mesmo dia.
+    const nome = nomeOriginal.toUpperCase().trim();
     try{
       const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nome)}&data=eq.${data}&select=id,status`) || [];
 
@@ -18801,7 +18827,7 @@ async function registrarRotaAbsenteismo(motoristaNome, ajudanteNome, dataSaida){
         // Qualquer outro status → não mexe
       } else {
         // Sem registro: verifica se tem rota ativa (viagem já iniciada e ainda não encerrada) cobrindo essa data
-        const rotaAtiva = await supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(nome)}&status=neq.cancelado&ts_saiu=lte.${data}T23:59:59&or=(ts_fim_viagem.is.null,ts_fim_viagem.gte.${data}T00:00:00)&select=id`).catch(()=>[]) || [];
+        const rotaAtiva = await supaFetch(`demandas_rota?motorista=eq.${encodeURIComponent(nomeOriginal)}&status=neq.cancelado&ts_saiu=lte.${data}T23:59:59&or=(ts_fim_viagem.is.null,ts_fim_viagem.gte.${data}T00:00:00)&select=id`).catch(()=>[]) || [];
         if(rotaAtiva.length){
           // Tem rota → lança automaticamente como rota
           await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
@@ -18811,8 +18837,8 @@ async function registrarRotaAbsenteismo(motoristaNome, ajudanteNome, dataSaida){
           })});
         } else {
           // Sem rota → abre popup para lançar manualmente
-          showToast(`⚠️ ${nome} sem registro no absenteísmo. Lance manualmente.`,'warning');
-          setTimeout(()=>{ abrirModalLancarAbsFunc(nome); }, 800);
+          showToast(`⚠️ ${nomeOriginal} sem registro no absenteísmo. Lance manualmente.`,'warning');
+          setTimeout(()=>{ abrirModalLancarAbsFunc(nomeOriginal); }, 800);
         }
       }
     }catch(e){ console.warn('Erro ao registrar rota no absenteísmo:', e.message); }
@@ -20081,11 +20107,38 @@ async function carregarPortalMotorista(mesCustom = null){
         }
       }catch(_){}
     }
+    // Exibir/ocultar formulário de registro manual (Cenário B)
+    const _elAutoLanc = document.getElementById('mot-auto-lancamento');
+    if(_elAutoLanc) _elAutoLanc.style.display = (da || _lancHoje) ? 'none' : 'block';
+
+    // ── DADOS DO MOTORISTA ─────────────────────────────
+    const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
+    const nomeRaw= USUARIO_LOGADO.nome || '';
+    let nomeDB   = nomeRaw.toUpperCase().trim();
+    let undDB    = (USUARIO_LOGADO.und || USUARIO_LOGADO.unidade || '').trim();
+
+    // Buscar nome e unidade exatos do banco
+    if(motId){
+      const row = await supaFetch(`motoristas?id=eq.${motId}&select=nome,unidade`).catch(()=>[]);
+      if(row&&row[0]){
+        nomeDB = (row[0].nome||nomeDB).toUpperCase().trim();
+        undDB  = (row[0].unidade||undDB||'').trim();
+      }
+    }
+
     // ── VERIFICAR DIVERGÊNCIAS COM LANÇAMENTO DO MOTORISTA ──
+    // Precisa rodar depois de nomeDB resolvido acima — usava nomeDB antes da
+    // declaração (TDZ do "let"), o que lançava ReferenceError sempre e o catch
+    // engolia em silêncio, então este aviso nunca aparecia pro motorista.
+    // Também usava a tabela divergencias_aceitas (schema: carga/usuario_id/
+    // aceita_em/mes_ano — dedup de divergência aceita pelo admin), que não tem
+    // as colunas motorista/tipo_divergencia/status/observacoes usadas aqui; o
+    // INSERT feito por _verificarDivergenciasExpedicao() sempre falhava. Passou
+    // a usar divergencias_expedicao, tabela própria para esse recurso.
     if(_lancHoje && _lancHoje.carga){
       try{
         const divs = await supaFetch(
-          `divergencias_aceitas?carga=eq.${_lancHoje.carga}&motorista=eq.${encodeURIComponent(nomeDB)}&status=eq.pendente_revisao&select=id,tipo_divergencia,observacoes&limit=5`
+          `divergencias_expedicao?carga=eq.${_lancHoje.carga}&motorista=eq.${encodeURIComponent(nomeDB)}&status=eq.pendente_revisao&select=id,tipo_divergencia,observacoes&limit=5`
         ).catch(()=>[]) || [];
         if(divs && divs.length > 0){
           const elCargaAtual = document.getElementById('mot-carga-atual');
@@ -20105,25 +20158,6 @@ async function carregarPortalMotorista(mesCustom = null){
           }
         }
       }catch(e){ console.warn('Erro ao buscar divergências:', e.message); }
-    }
-
-    // Exibir/ocultar formulário de registro manual (Cenário B)
-    const _elAutoLanc = document.getElementById('mot-auto-lancamento');
-    if(_elAutoLanc) _elAutoLanc.style.display = (da || _lancHoje) ? 'none' : 'block';
-
-    // ── DADOS DO MOTORISTA ─────────────────────────────
-    const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
-    const nomeRaw= USUARIO_LOGADO.nome || '';
-    let nomeDB   = nomeRaw.toUpperCase().trim();
-    let undDB    = (USUARIO_LOGADO.und || USUARIO_LOGADO.unidade || '').trim();
-
-    // Buscar nome e unidade exatos do banco
-    if(motId){
-      const row = await supaFetch(`motoristas?id=eq.${motId}&select=nome,unidade`).catch(()=>[]);
-      if(row&&row[0]){
-        nomeDB = (row[0].nome||nomeDB).toUpperCase().trim();
-        undDB  = (row[0].unidade||undDB||'').trim();
-      }
     }
 
     // Reconcilia em segundo plano lançamentos manuais sem demanda_rota (falha anterior).
@@ -20908,7 +20942,7 @@ async function _verificarDivergenciasExpedicao(cargaNum, rotaExpedicao, nomeMoto
 
     // Se há divergências, registrar
     if(divergencias.length > 0){
-      await supaFetch('divergencias_aceitas',{
+      await supaFetch('divergencias_expedicao',{
         method:'POST',
         body:JSON.stringify({
           carga: cargaNum,
@@ -24912,8 +24946,11 @@ async function renderDashInterna(){
       const saidaTsMapOtif = {}; // ts_saiu completo — início do prazo R.E.
       (saidaRowsOtif||[]).forEach(d=>{
         if(!d.carga) return;
-        if(d.data_saida) saidaMapCarga[String(d.carga)] = d.data_saida;
-        if(d.ts_saiu)    saidaTsMapOtif[String(d.carga)] = d.ts_saiu;
+        const ck = String(d.carga);
+        // Mesmo critério de desempate de _computeOtifStats: carga com múltiplas
+        // linhas em demandas_rota mantém a saída mais antiga, de forma determinística.
+        if(d.data_saida && (!saidaMapCarga[ck] || d.data_saida < saidaMapCarga[ck])) saidaMapCarga[ck] = d.data_saida;
+        if(d.ts_saiu && (!saidaTsMapOtif[ck] || d.ts_saiu < saidaTsMapOtif[ck])) saidaTsMapOtif[ck] = d.ts_saiu;
       });
       const lancDtMapOtif = {};
       const lancTsMapOtif = {}; // ts completo — fallback R.E. quando ts_saiu indisponível
@@ -24984,9 +25021,12 @@ async function renderDashInterna(){
             // data_pedido correta e do mês correto
             _inicioPrazoOtif = new Date(_dp+'T00:00:00');
           } else {
-            // data_pedido ausente ou de outro mês (dado corrompido): usar início da semana
-            const _weekStartDay = semIdxPedido * 7 + 1;
-            _inicioPrazoOtif = new Date(`${mesFiltro}-${String(_weekStartDay).padStart(2,'0')}T00:00:00`);
+            // data_pedido ausente ou de outro mês (dado corrompido): mesmo critério de
+            // exclusão do _computeOtifStats (fonte única de OTIF) — sem data_pedido não
+            // dá pra saber se está atrasado, então o pedido não conta nem a favor nem
+            // contra o OTIF. Antes estimava o início pelo começo da semana, o que podia
+            // classificar como no-prazo/atrasado um pedido sem dado suficiente pra isso.
+            return;
           }
         } else {
           const tsRe = (carga && saidaTsMapOtif[carga]) || (carga && lancTsMapOtif[carga]);
@@ -25136,9 +25176,14 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   const saidaTsMap={}; // timestamp completo da saída — início do prazo para R.E. (ts_saiu)
   (saidaRows||[]).forEach(d=>{
     if(d.carga==null) return;
+    const ck = String(d.carga);
     const dt = d.data_saida || (d.ts_saiu ? d.ts_saiu.slice(0,10) : null);
-    if(dt) saidaMap[String(d.carga)] = dt;
-    if(d.ts_saiu) saidaTsMap[String(d.carga)] = d.ts_saiu;
+    // Carga com mais de uma linha em demandas_rota (reenvio/correção) — a consulta
+    // não tem order=, então a ordem de retorno não é garantida. Mantém sempre a
+    // saída mais antiga (primeiro despacho real = início do prazo do cliente),
+    // senão qual linha "vence" varia entre execuções.
+    if(dt && (!saidaMap[ck] || dt < saidaMap[ck])) saidaMap[ck] = dt;
+    if(d.ts_saiu && (!saidaTsMap[ck] || d.ts_saiu < saidaTsMap[ck])) saidaTsMap[ck] = d.ts_saiu;
   });
   const lancDtMap={};
   const lancTsMap={}; // timestamp completo do lançamento — fallback R.E. quando ts_saiu indisponível
@@ -26383,7 +26428,15 @@ async function renderOtifDiario(){
     const feriadosSet  = dadosMes?.feriadosSet || new Set();
 
     const demandaMap = {};
-    demandas.forEach(d=>{ if(d.carga!=null) demandaMap[String(d.carga)]=d; });
+    demandas.forEach(d=>{
+      if(d.carga==null) return;
+      const ck = String(d.carga);
+      const atual = demandaMap[ck];
+      // Carga com múltiplas linhas em demandas_rota — mantém a de saída mais antiga
+      // (mesmo critério determinístico de _computeOtifStats), não a última da ordem
+      // de retorno da consulta (que não é garantida).
+      if(!atual || (d.ts_saiu && (!atual.ts_saiu || d.ts_saiu < atual.ts_saiu))) demandaMap[ck] = d;
+    });
 
     const lancMap = {};
     lancs.forEach(l=>{ if(l.carga!=null) lancMap[String(l.carga)]=l; });
@@ -26454,6 +26507,11 @@ async function renderOtifDiario(){
       const rireNorm=getRireFromRota(rotaNorm)||normRire(p.rire)||'R.E.';
       const prazoH=getPrazoH(rotaNorm,rireNorm);
       if(prazoH===null){ cargaStats[ck].semOtif++; return; }
+      // R.I. sem data_pedido não tem como calcular início de prazo — mesmo critério
+      // de exclusão do _computeOtifStats (fonte única de OTIF). Antes essa checagem
+      // ficava dentro de getSemaforo() e devolvia sempre 'ok', escondendo pedidos
+      // realmente atrasados que só não tinham data_pedido preenchida.
+      if(rireNorm==='R.I.' && !p.data_pedido){ cargaStats[ck].semOtif++; return; }
       const lancTs=lancMap[ck]?.ts||null;
       const saidaTs=demandaMap[ck]?.ts_saiu||null;
       const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido,lancTs,saidaTs);
@@ -27480,7 +27538,9 @@ async function salvarAbsGeral(){
   try{
     // Buscar todos os funcionários únicos no banco
     const todos = await supaFetch('absenteismo?select=nome,funcao&order=nome.asc') || [];
-    const funcs = [...new Map(todos.map(f=>[f.nome,f])).values()];
+    // Dedup por nome em maiúsculas — registros antigos gravados com grafias
+    // diferentes (ex.: "João Silva" vs "JOÃO SILVA") não podem virar 2 pessoas.
+    const funcs = [...new Map(todos.map(f=>[(f.nome||'').toUpperCase().trim(),f])).values()];
 
     if(!funcs.length){ showToast('Nenhum funcionário cadastrado','warning'); return; }
 
@@ -29266,12 +29326,15 @@ async function syncAbsenteismoRota(motorista, dataSaida, dataRetorno){
     // Marcar dias em rota
     if(dataSaida){
       const mesAno = dataSaida.slice(0,7);
-      const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(motorista)}&data=eq.${dataSaida}&select=id`) || [];
+      // Uppercase — mesma convenção de _absUpsertPresenca. Um "eq." case-sensitive
+      // contra grafia diferente da já gravada cria uma segunda linha duplicada.
+      const nomeUp = motorista.toUpperCase().trim();
+      const ex = await supaFetch(`absenteismo?nome=eq.${encodeURIComponent(nomeUp)}&data=eq.${dataSaida}&select=id`) || [];
       if(ex.length){
         await supaFetch(`absenteismo?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify({status:'rota',fonte:'sistema'})});
       } else {
         await supaFetch('absenteismo',{method:'POST',body:JSON.stringify({
-          nome:motorista, data:dataSaida, status:'rota', mes_ano:mesAno,
+          nome:nomeUp, data:dataSaida, status:'rota', mes_ano:mesAno,
           fonte:'sistema', criado_em:new Date().toISOString()
         })});
       }
@@ -32505,7 +32568,7 @@ async function carregarPortalConferente(){
       supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem")&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id&order=carga.desc`).catch(()=>[]),
-      supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status`).catch(()=>[]),
+      supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status,pedido_inicio`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.false&select=*&order=criado_em.desc`).catch(()=>[])
     ]);
 
@@ -32638,6 +32701,11 @@ async function carregarPortalConferente(){
 
     const pedPorCarga = {};
     (pedidosBDAll||[]).forEach(r=>{ if(!pedPorCarga[r.carga]) pedPorCarga[r.carga]=[]; pedPorCarga[r.carga].push(r); });
+    // Todas as atribuições por carga (não só as minhas) — usadas para limitar minha faixa
+    // ao pedido_inicio do próximo conferente, senão duas faixas abertas ("em diante") na
+    // mesma carga se sobrepõem e os dois conferentes conferem os mesmos pedidos.
+    const atribsPorCargaTodas = {};
+    (atribsAll||[]).forEach(a=>{ if(!atribsPorCargaTodas[a.carga]) atribsPorCargaTodas[a.carga]=[]; atribsPorCargaTodas[a.carga].push(a); });
     const confPorCarga = {};
     (confMeus||[]).forEach(c=>{ if(!confPorCarga[c.carga]) confPorCarga[c.carga]={}; confPorCarga[c.carga][c.pedido]=c; });
 
@@ -32652,7 +32720,16 @@ async function carregarPortalConferente(){
       if(atr.pedido_inicio){
         const sorted = pedidos.map(p=>p.pedido).sort((a,b)=>a-b);
         const idx = sorted.indexOf(Number(atr.pedido_inicio));
-        const slice = idx>=0 ? sorted.slice(idx) : sorted;
+        let slice = idx>=0 ? sorted.slice(idx) : sorted;
+        // Limita ao pedido_inicio do próximo conferente com faixa nesta mesma carga —
+        // sem isso, minha faixa aberta ("em diante") invade a do colega seguinte.
+        const proximosInicios = (atribsPorCargaTodas[atr.carga]||[])
+          .filter(a=>String(a.conferente_id)!==String(myId) && a.pedido_inicio!=null && Number(a.pedido_inicio) > Number(atr.pedido_inicio))
+          .map(a=>Number(a.pedido_inicio));
+        if(proximosInicios.length){
+          const limite = Math.min(...proximosInicios);
+          slice = slice.filter(p=>p < limite);
+        }
         pedidos = pedidos.filter(p=>slice.includes(p.pedido));
       }
 
@@ -40410,12 +40487,21 @@ async function _ck_salvar() {
   const pesoAm  = parseFloat(document.getElementById('ck-q-peso')?.value) || 50;
   const totalKg = _ck_alteracoes.reduce((s,a)=>s+(a.kg||0),0);
   const totalPct= pesoAm > 0 ? Math.round(totalKg/pesoAm*1000)/10 : 0;
+  // Congela os limites de classificação usados NESTE laudo — eles vêm de campos
+  // editáveis (ck-lim-aprovado/ck-lim-atencao) e podem variar por lote/fornecedor.
+  // Sem gravar aqui, reimprimir do Histórico usaria os limites padrão (5%/10%)
+  // vigentes na hora da reimpressão, podendo mudar o veredito (CLASSIFICAÇÃO)
+  // de um laudo já emitido e entregue ao fornecedor.
+  const limAprovSalvo = parseFloat(document.getElementById('ck-lim-aprovado')?.value) || 5;
+  const limAtencSalvo = parseFloat(document.getElementById('ck-lim-atencao')?.value) || 10;
   const obsQualidade = {
     fornecedor_laudo: document.getElementById('ck-q-fornecedor')?.value||'',
     item_laudo:       document.getElementById('ck-q-item')?.value||'',
     peso_amostra:     pesoAm,
     alteracoes:       _ck_alteracoes,
     total_pct:        totalPct,
+    limite_aprovado:  limAprovSalvo,
+    limite_atencao:   limAtencSalvo,
     obs_extra:        document.getElementById('ck-q-obs-extra')?.value||'',
     laudo:            document.getElementById('ck-laudoText')?.textContent||'',
   };
@@ -40544,9 +40630,14 @@ function _ck_montarLaudoDeRegistro(r) {
   const linhasAlt = alteracoes.length
     ? alteracoes.map(a=>`  • ${a.tipo}: ${(a.kg||0).toFixed(1)} kg (${(a.pct||0).toFixed(1)}%)${a.obs?' — '+a.obs:''}`).join('\n')
     : '  Nenhuma alteração registrada.';
+  // Usa os limites CONGELADOS no momento em que este laudo foi emitido — não os
+  // limites padrão atuais. Registros antigos sem o campo caem no default 5/10,
+  // que era o comportamento fixo antes desses limites virarem configuráveis.
+  const limAprov = typeof obsData.limite_aprovado === 'number' ? obsData.limite_aprovado : 5;
+  const limAtenc = typeof obsData.limite_atencao  === 'number' ? obsData.limite_atencao  : 10;
   let classif, classifTexto;
-  if(totalPct<=5) { classif='APROVADO'; classifTexto='dentro do padrão de qualidade'; }
-  else if(totalPct<=10) { classif='ATENÇÃO — APROVADO COM RESSALVA'; classifTexto='com alterações que requerem atenção'; }
+  if(totalPct<=limAprov) { classif='APROVADO'; classifTexto='dentro do padrão de qualidade'; }
+  else if(totalPct<=limAtenc) { classif='ATENÇÃO — APROVADO COM RESSALVA'; classifTexto='com alterações que requerem atenção'; }
   else { classif='BLOQUEADO — SEGREGAR/REJEITAR'; classifTexto='com alto índice de alterações'; }
   const obsExtra = obsData.obs_extra || '';
 
