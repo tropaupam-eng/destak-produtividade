@@ -19546,6 +19546,24 @@ async function vincularSoCarga(){
       body: JSON.stringify({carga})
     });
 
+    // Recalcula quantidade_pedidos/valor_total a partir do que já existe em
+    // base_data pra essa carga — sem isso, uma carga que já tem pedidos
+    // chegados pela integração do ERP (antes de vincular aqui) fica travada
+    // em 0 até alguém enviar uma planilha manual (passo 2), mesmo os
+    // pedidos já existindo de verdade em produção.
+    try{
+      const agregado = await supaFetch(`base_data?select=valor&carga=eq.${carga}`);
+      if(agregado && agregado.length){
+        const quantidade = agregado.length;
+        const valorTotal = agregado.reduce((soma, r) => soma + (Number(r.valor) || 0), 0);
+        await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
+          method:'PATCH', body:JSON.stringify({ quantidade_pedidos: quantidade, valor_total: valorTotal })
+        });
+        const dem2 = _demandasCache.find(d=>d.id===demandaId);
+        if(dem2){ dem2.quantidade_pedidos = quantidade; dem2.valor_total = valorTotal; }
+      }
+    }catch(_){}
+
     // Atualizar cache
     const dem = _demandasCache.find(d=>d.id===demandaId);
     if(dem) dem.carga = carga;
