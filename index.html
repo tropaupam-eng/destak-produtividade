@@ -25642,7 +25642,25 @@ async function renderDashLogistico(forcarRefresh){
     demandasMes = await supaFetch(`demandas_rota?data_saida=gte.${mesFiltro}-01&data_saida=lte.${proximoMesDlog}-01&select=carga,rota,status,veiculo,motorista&limit=10000`,{_quiet:true}).catch(()=>[]) || [];
   }catch(_){}
 
-  const veiculosUtilizados = new Set(Object.values(cargaInfo).map(i=>i.veiculo).filter(v=>v && v!=='A DEFINIR VEÍCULO' && veiculosPropriosSet.has(v)));
+  // Abastecimento de loja do período — também é uso real do veículo, mesmo
+  // sem gerar carga em base_data/lancamentos. Sem isso, veículo que só fez
+  // abastecimento no mês aparecia como "0 cargas" / frota parada, quando na
+  // verdade estava rodando (mesmo critério já usado em Gestão de Frota).
+  let abastMes = [];
+  try{
+    abastMes = await supaFetch(`abastecimento_loja?data_saida=gte.${mesFiltro}-01&data_saida=lte.${proximoMesDlog}-01&veiculo=not.is.null&select=veiculo,data_saida`,{_quiet:true}).catch(()=>[]) || [];
+  }catch(_){}
+  const veiculosAbastPorPlaca = {}; // placa -> nº de abastecimentos no período
+  abastMes.forEach(a=>{
+    const placa = (a.veiculo||'').toUpperCase().trim();
+    if(!placa) return;
+    veiculosAbastPorPlaca[placa] = (veiculosAbastPorPlaca[placa]||0) + 1;
+  });
+
+  const veiculosUtilizados = new Set([
+    ...Object.values(cargaInfo).map(i=>i.veiculo).filter(v=>v && v!=='A DEFINIR VEÍCULO' && veiculosPropriosSet.has(v)),
+    ...Object.keys(veiculosAbastPorPlaca).filter(v=>veiculosPropriosSet.has(v)),
+  ]);
   const totalFrotaPropria = Math.max(veiculosPropriosSet.size, 1);
   const pctUtilizacaoFrota = Math.round(veiculosUtilizados.size / totalFrotaPropria * 100);
 
@@ -25652,7 +25670,7 @@ async function renderDashLogistico(forcarRefresh){
     porRota, porMotorista, porCliente, porSemana, porSemanaOtif,
     noPrazo, atrasadas, pendentes, cancelados,
     veiculosAtivos, veiculosPropriosSet, veiculosEmManutencao, veiculosUtilizados, pctUtilizacaoFrota,
-    totalFrotaPropria, demandasMes,
+    totalFrotaPropria, demandasMes, veiculosAbastPorPlaca,
   };
   _dlogCache = cache;
 
@@ -25725,6 +25743,9 @@ function _dlogRenderAlertas(c){
   const veiculoUsoCount = {};
   c.veiculosPropriosSet.forEach(v=>veiculoUsoCount[v]=0);
   Object.values(c.cargaInfo).forEach(i=>{ if(i.veiculo && veiculoUsoCount.hasOwnProperty(i.veiculo)) veiculoUsoCount[i.veiculo]++; });
+  // Abastecimento de loja também é uso do veículo — soma no mesmo contador
+  // (mesmo critério de veiculosUtilizados/pctUtilizacaoFrota).
+  Object.entries(c.veiculosAbastPorPlaca||{}).forEach(([placa,n])=>{ if(veiculoUsoCount.hasOwnProperty(placa)) veiculoUsoCount[placa]+=n; });
   const veiculosParados = Object.entries(veiculoUsoCount).filter(([,n])=>n===0).length;
   if(veiculosParados>0) alertas.push({cor:'🔴', txt:`${veiculosParados} veículo(s) da frota própria sem nenhuma carga no período`});
 
@@ -25960,6 +25981,9 @@ function _dlogRenderFrota(c){
   const veiculoUsoCount = {};
   c.veiculosPropriosSet.forEach(v=>veiculoUsoCount[v]=0);
   Object.values(c.cargaInfo).forEach(i=>{ if(i.veiculo && veiculoUsoCount.hasOwnProperty(i.veiculo)) veiculoUsoCount[i.veiculo]++; });
+  // Abastecimento de loja também é uso do veículo — soma no mesmo contador
+  // (mesmo critério de veiculosUtilizados/pctUtilizacaoFrota).
+  Object.entries(c.veiculosAbastPorPlaca||{}).forEach(([placa,n])=>{ if(veiculoUsoCount.hasOwnProperty(placa)) veiculoUsoCount[placa]+=n; });
 
   const emOperacaoSet = new Set(c.demandasMes.filter(d=>['saiu','fim_viagem'].includes(d.status)).map(d=>(d.veiculo||'').toUpperCase().trim()));
   const carregandoSet = new Set(c.demandasMes.filter(d=>['carregamento','separacao','aguardando_nf'].includes(d.status)).map(d=>(d.veiculo||'').toUpperCase().trim()));
@@ -25985,12 +26009,12 @@ function _dlogRenderFrota(c){
       ${_dlogKpiCard('Disponibilidade', pctDisponibilidade+'%', pctDisponibilidade, 80, '%', false)}
     </div>
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px">
-      <div style="font-size:.82rem;font-weight:800;color:var(--text-primary);margin-bottom:10px">Veículos com menor utilização no período (cargas realizadas)</div>
+      <div style="font-size:.82rem;font-weight:800;color:var(--text-primary);margin-bottom:10px">Veículos com menor utilização no período (cargas + abastecimento de loja)</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
         ${ranking.map(([v,n])=>`<div style="background:var(--bg-card2);border-radius:8px;padding:8px 10px;text-align:center">
           <div style="font-size:.78rem;font-weight:700;color:var(--text-primary)">${v}</div>
           <div style="font-size:1.1rem;font-weight:900;color:${n===0?'#dc2626':n<3?'#f59e0b':'#059669'}">${n}</div>
-          <div style="font-size:.65rem;color:var(--text-muted)">cargas</div>
+          <div style="font-size:.65rem;color:var(--text-muted)">${n===1?'uso':'usos'}</div>
         </div>`).join('') || '<div style="color:var(--text-muted);font-size:.8rem">Sem veículos cadastrados</div>'}
       </div>
       <div style="font-size:.7rem;color:var(--text-muted);margin-top:10px">KM rodado e manutenções detalhadas: consulte a aba Frota &gt; Manutenção.</div>
