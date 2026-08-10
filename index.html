@@ -26899,8 +26899,36 @@ async function carregarPainelDisponibilidade(){
     const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
     const emRotaSet = new Set(emRota.map(d=>d.veiculo));
 
+    // Manutenções que tocam o período de referência (em andamento ou já concluídas) —
+    // um veículo na oficina não está disponível, então esses dias não podem contar
+    // como "dia sem rota" no denominador do aproveitamento.
+    const fimEfetivoRef = ehMesAtualRef ? hoje : `${mesRef}-${String(diasNoMesRef).padStart(2,'0')}`;
+    const manutencoes = await supaFetch(
+      `manutencoes_frota?status=in.(em_andamento,concluida)&data_inicio=lte.${fimEfetivoRef}&or=(data_fim.is.null,data_fim.gte.${mesRef}-01)&select=veiculo,data_inicio,data_fim,status`
+    ).catch(()=>[]) || [];
+    const diasManutPorVeic = {};   // placa -> Set de dias em manutenção dentro do período de referência
+    const emManutencaoAgoraSet = new Set(); // placas com manutenção em andamento agora
+    const inicioRefObj = new Date(mesRef+'-01T00:00:00');
+    const fimEfetivoObj = new Date(fimEfetivoRef+'T00:00:00');
+    manutencoes.forEach(m=>{
+      const placa = (m.veiculo||'').trim().toUpperCase();
+      if(!placa) return;
+      if(m.status === 'em_andamento') emManutencaoAgoraSet.add(placa);
+      let ini = new Date(m.data_inicio+'T00:00:00');
+      let fim = m.data_fim ? new Date(m.data_fim+'T00:00:00') : fimEfetivoObj;
+      if(ini < inicioRefObj) ini = inicioRefObj;
+      if(fim > fimEfetivoObj) fim = fimEfetivoObj;
+      if(ini > fim) return;
+      if(!diasManutPorVeic[placa]) diasManutPorVeic[placa] = new Set();
+      const cur = new Date(ini);
+      while(cur <= fim){
+        diasManutPorVeic[placa].add(cur.toISOString().slice(0,10));
+        cur.setDate(cur.getDate()+1);
+      }
+    });
+
     // Contar por status
-    const disponivel = veiculos.filter(v => !emRotaSet.has(v.placa)).length;
+    const disponivel = veiculos.filter(v => !emRotaSet.has(v.placa) && !emManutencaoAgoraSet.has((v.placa||'').toUpperCase())).length;
     const emUso = emRota.length;
     const total = veiculos.length;
     const taxaUtilizacao = total > 0 ? ((emUso / total) * 100).toFixed(1) : 0;
@@ -26925,13 +26953,20 @@ async function carregarPainelDisponibilidade(){
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
 
     // ── Utilização no mês (headline) — média da "Aprov. por Dia" só da frota
-    // fixa (exclui veículos de frete, que não são frota própria) ──
+    // fixa (exclui veículos de frete, que não são frota própria). Dias em
+    // manutenção saem do denominador — veículo na oficina não estava
+    // disponível pra rodar, não é justo contar isso como "dia parado". Se o
+    // veículo passou o período de referência inteiro na oficina, fica de
+    // fora da média (não tem como avaliar aproveitamento de quem não teve
+    // nenhum dia disponível).
     const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
     const pctDiasPorVeiculo = frotaFixa.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
       const nDias = diasPorVeic[placa]?.size || 0;
-      return diasDecorridosRef>0 ? (nDias/diasDecorridosRef*100) : 0;
-    });
+      const diasManut = diasManutPorVeic[placa]?.size || 0;
+      const diasDisponiveis = Math.max(diasDecorridosRef - diasManut, 0);
+      return diasDisponiveis>0 ? (nDias/diasDisponiveis*100) : null;
+    }).filter(p=>p!==null);
     const utilizacaoMedia = pctDiasPorVeiculo.length ? pctDiasPorVeiculo.reduce((a,b)=>a+b,0)/pctDiasPorVeiculo.length : 0;
     const metaUtilizacao = 80;
     const dentroDaMetaUtil = utilizacaoMedia >= metaUtilizacao;
@@ -27004,7 +27039,7 @@ async function carregarPainelDisponibilidade(){
               <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">RESULTADO</div>
               <div style="font-size:2.2rem;font-weight:700;margin-top:4px">${utilizacaoMedia.toFixed(0)}%</div>
               <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">UTILIZAÇÃO NO MÊS · ${dentroDaMetaUtil?'ACIMA DA META':'ABAIXO DA META'}</div>
-              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${frotaFixa.length} veículos de frota fixa acompanhados no mês (frete não entra nessa média).</div>
+              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${pctDiasPorVeiculo.length} de ${frotaFixa.length} veículos de frota fixa entram na média (frete não entra; veículo sem nenhum dia disponível no período — só oficina — também fica de fora).</div>
             </div>
           </div>
         </div>
@@ -27017,7 +27052,7 @@ async function carregarPainelDisponibilidade(){
 
       <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto">
         <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:4px">Frotas Ativas</h4>
-        <p style="font-size:.74rem;color:var(--text-muted);margin-bottom:12px">Aproveitamento de ${mesRef.split('-').reverse().join('/')} — por cargas (fatia do total de cargas do mês) e por dias (dias em que saiu ÷ dias ${ehMesAtualRef?'decorridos':'do mês'})</p>
+        <p style="font-size:.74rem;color:var(--text-muted);margin-bottom:12px">Aproveitamento de ${mesRef.split('-').reverse().join('/')} — por cargas (fatia do total de cargas do mês) e por dias (dias em que saiu ÷ dias disponíveis, descontando manutenção)</p>
         <table style="width:100%;border-collapse:collapse;font-size:.8rem">
           <thead>
             <tr style="border-bottom:1px solid var(--border)">
@@ -27034,20 +27069,24 @@ async function carregarPainelDisponibilidade(){
               const placa = (v.placa||'').trim().toUpperCase();
               const nCargas = cargasPorVeic[placa]?.size || 0;
               const nDias   = diasPorVeic[placa]?.size || 0;
+              const diasManut = diasManutPorVeic[placa]?.size || 0;
+              const diasDisp  = Math.max(diasDecorridosRef - diasManut, 0);
               const pctCargas = totalCargasMes>0 ? (nCargas/totalCargasMes*100) : 0;
-              const pctDias   = diasDecorridosRef>0 ? (nDias/diasDecorridosRef*100) : 0;
+              const pctDias   = diasDisp>0 ? (nDias/diasDisp*100) : null;
+              const emManut = emManutencaoAgoraSet.has(placa);
+              const statusLabel = emManut ? '🔧 Manutenção' : (emRotaSet.has(v.placa) ? '🚗 Em Uso' : '✅ Disponível');
+              const statusBg = emManut ? '#fee2e2' : (emRotaSet.has(v.placa) ? '#fcd34d' : '#d1fae5');
+              const statusCor = emManut ? '#991b1b' : (emRotaSet.has(v.placa) ? '#92400e' : '#065f46');
               return `
               <tr style="border-bottom:1px solid var(--border)">
                 <td style="padding:8px;font-weight:600">${v.placa||'—'}</td>
                 <td style="padding:8px;text-align:center">
-                  <span style="background:${emRotaSet.has(v.placa)?'#fcd34d':'#d1fae5'};color:${emRotaSet.has(v.placa)?'#92400e':'#065f46'};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">
-                    ${emRotaSet.has(v.placa)?'🚗 Em Uso':'✅ Disponível'}
-                  </span>
+                  <span style="background:${statusBg};color:${statusCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${statusLabel}</span>
                 </td>
                 <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nCargas}</td>
                 <td style="padding:8px;text-align:center;font-weight:700;color:${pctCargas>=15?'#059669':pctCargas>0?'#d97706':'var(--text-muted)'}">${pctCargas.toFixed(1)}%</td>
-                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nDias}/${diasDecorridosRef}</td>
-                <td style="padding:8px;text-align:center;font-weight:700;color:${pctDias>=70?'#059669':pctDias>=40?'#d97706':'#dc2626'}">${pctDias.toFixed(1)}%</td>
+                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nDias}/${diasDisp}${diasManut?` <span title="${diasManut} dia(s) em manutenção descontado(s)" style="color:var(--text-muted)">(−${diasManut}🔧)</span>`:''}</td>
+                <td style="padding:8px;text-align:center;font-weight:700;color:${pctDias===null?'var(--text-muted)':pctDias>=70?'#059669':pctDias>=40?'#d97706':'#dc2626'}">${pctDias===null?'—':pctDias.toFixed(1)+'%'}</td>
               </tr>
             `;}).join('')}
           </tbody>
