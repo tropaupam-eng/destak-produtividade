@@ -2632,7 +2632,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary);margin-bottom:8px;display:flex;align-items:center;gap:8px"><span data-feather="bar-chart-2" style="width:20px;height:20px"></span> Painel de Indicadores</h2>
       <p style="font-size:.83rem;color:var(--text-secondary)">Hub central de dashboards e indicadores de desempenho</p>
     </div>
-    <div style="display:flex;align-items:center;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span data-feather="map-pin" style="width:15px;height:15px;color:var(--text-muted)"></span>
+      <select id="painel-ind-und-sel" onchange="mudarUndPainelIndicadores(this.value)" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
+        <option value="">Todas as unidades</option>
+      </select>
       <span data-feather="calendar" style="width:15px;height:15px;color:var(--text-muted)"></span>
       <select id="painel-ind-mes-sel" onchange="mudarMesPainelIndicadores(this.value)" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer"></select>
     </div>
@@ -26604,6 +26608,7 @@ function mudarAbaIndicadores(aba){
 
 function carregarPainelIndicadores(){
   popularMesesPainelIndicadores();
+  popularUnidadesPainelIndicadores();
   mudarAbaIndicadores('abs-armazem');
 }
 
@@ -26626,8 +26631,38 @@ function popularMesesPainelIndicadores(){
   window._painelIndMesSel = sel.value;
 }
 
+// Seletor de unidade do Painel de Indicadores — mesma fonte usada em
+// Dashboard Interno (unidade de motoristas + ajudantes ativos). Sem filtro
+// selecionado (""), cada indicador usa sua própria regra padrão (unidade do
+// usuário logado, ou todas as unidades pra admin).
+function popularUnidadesPainelIndicadores(){
+  const sel = document.getElementById('painel-ind-und-sel');
+  if(!sel || sel.options.length > 1) return; // já populado
+  Promise.all([
+    supaFetch('motoristas?select=unidade&ativo=eq.true').catch(()=>[]),
+    supaFetch('ajudantes?select=unidade&ativo=eq.true').catch(()=>[])
+  ]).then(([mots, ajs])=>{
+    const unidades = [...new Set([...(mots||[]), ...(ajs||[])].map(x=>x.unidade).filter(Boolean))]
+      .sort((a,b)=>a.localeCompare(b,'pt-BR'));
+    unidades.forEach(u=>{
+      const o = document.createElement('option');
+      o.value = u; o.textContent = u;
+      sel.appendChild(o);
+    });
+  }).catch(()=>{});
+}
+
 function mudarMesPainelIndicadores(mes){
   window._painelIndMesSel = mes;
+  _recarregarAbaAtivaPainelIndicadores();
+}
+
+function mudarUndPainelIndicadores(und){
+  window._painelIndUndSel = und;
+  _recarregarAbaAtivaPainelIndicadores();
+}
+
+function _recarregarAbaAtivaPainelIndicadores(){
   const abaAtiva = document.querySelector('.painel-ind-tab.active')?.dataset.aba || 'abs-armazem';
   if(abaAtiva === 'abs-armazem') carregarPainelAbsArmazem();
   else if(abaAtiva === 'abs-distribuicao') carregarPainelAbsDistribuicao();
@@ -26650,7 +26685,7 @@ async function carregarPainelAbsArmazem(){
 
   try {
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
-    const r = await _calcularAbsenteismoArmazem(mesAtual, {});
+    const r = await _calcularAbsenteismoArmazem(mesAtual, {unidade: window._painelIndUndSel||''});
     const semanas = _calcAbsSemanaArmazem(mesAtual, r.porFunc);
 
     container.innerHTML = renderRelatorioAbsenteismo({
@@ -26792,7 +26827,7 @@ async function carregarPainelAbsDistribuicao(){
 
   try {
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
-    const r = await _calcularAbsenteismoDistribuicao(mesAtual, {});
+    const r = await _calcularAbsenteismoDistribuicao(mesAtual, {unidade: window._painelIndUndSel||''});
     const semanas = _calcAbsSemanaDistribuicao(mesAtual, r.porFunc, r.feriadosNacionais);
 
     container.innerHTML = renderRelatorioAbsenteismo({
@@ -26833,7 +26868,10 @@ async function carregarPainelDisponibilidade(){
     const diasDecorridosRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
 
     // Buscar dados de veículos
-    const veiculos = await supaFetch('veiculos?select=*&ativo=eq.true&order=placa.asc') || [];
+    const undSel = window._painelIndUndSel || '';
+    const veiculos = await supaFetch(
+      `veiculos?select=*&ativo=eq.true&order=placa.asc${undSel?`&unidade=eq.${encodeURIComponent(undSel)}`:''}`
+    ) || [];
 
     // Buscar demandas em rota (snapshot ao vivo, pra "Disponível agora" / "Em uso agora")
     const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
@@ -27092,6 +27130,16 @@ function renderRelatorioNoPrazoSimples({indicadorNum, titulo, eyebrow, area, mes
   `;
 }
 
+// demandas_rota não tem coluna de unidade — deriva o conjunto de cargas de
+// uma unidade no mês via lancamentos.und (mesma fonte usada em toda parte
+// do sistema pra filtro de unidade). Retorna null quando não há filtro
+// (todas as unidades), pra deixar claro que "sem filtro" ≠ "conjunto vazio".
+async function _cargasDaUnidadeNoMes(mes, unidade){
+  if(!unidade) return null;
+  const rows = await supaFetch(`lancamentos?mes_ano=eq.${mes}&und=eq.${encodeURIComponent(unidade)}&select=carga`) || [];
+  return new Set(rows.map(r=>String(Math.round(Number(r.carga)))).filter(Boolean));
+}
+
 // ── Liberação no Prazo: cargas AGENDADAS no mês (mes_ano), que saíram (ts_saiu)
 // na data agendada (data_saida) ou antes. Compara SAÍDA real vs SAÍDA agendada. ──
 async function carregarPainelConferenciaPrazo(mesSelecionado){
@@ -27102,12 +27150,14 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
 
   try {
     const mes = mesSelecionado || window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
 
     // Buscar cargas agendadas no mês (mes_ano), que têm data_saida e já saíram (ts_saiu preenchido)
     const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu&limit=5000`) || [];
 
     let noPrazo = 0, fora = 0;
     demandas.forEach(d=>{
+      if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
       // Extrair data de saída real (ts_saiu) e comparar com data agendada (data_saida)
       const saidaReal = d.ts_saiu.split('T')[0]; // converte "2026-07-15T10:30:00" → "2026-07-15"
       const saidaAgendada = d.data_saida; // já é "2026-07-15"
@@ -27139,12 +27189,14 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const mes = mesSelecionado || window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const [anoC, numMesC] = mes.split('-').map(Number);
     const proxMesC = numMesC===12 ? (anoC+1)+'-01' : anoC+'-'+String(numMesC+1).padStart(2,'0');
+    const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
 
     const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&select=carga,data_saida&limit=5000`) || [];
     const conferencias = await supaFetch(`conferencia_pedidos?conferido_em=gte.${mes}-01T00:00:00&conferido_em=lt.${proxMesC}-01T00:00:00&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=5000`) || [];
 
     const ultimaConfPorCarga = {};
     conferencias.forEach(conf => {
+      if(cargasUnidade && !cargasUnidade.has(String(conf.carga))) return;
       if (!ultimaConfPorCarga[conf.carga] || conf.conferido_em > ultimaConfPorCarga[conf.carga]) {
         ultimaConfPorCarga[conf.carga] = conf.conferido_em;
       }
@@ -27184,13 +27236,13 @@ async function carregarPainelPedidosRotas(){
 
   try {
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
-    const undUsuario = await _getUnidadeUsuario();
+    const undSel = window._painelIndUndSel || '';
     const hoje = new Date().toISOString().slice(0,10);
 
-    const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesAtual, 'RI', undUsuario||'');
+    const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesAtual, 'RI', undSel);
     const semData   = _calcPedidosPorSemana(bd, mesAtual);
     const rotaCalc  = _calcEntregasPorRota(bd, cargaRota, cargaIsRI, 'RI');
-    const dadosOtif = await _carregarOtifMes(mesAtual, undUsuario||undefined);
+    const dadosOtif = await _carregarOtifMes(mesAtual, undSel||undefined);
     const semOtif   = _calcOtifPorSemana(bd, mesAtual, dadosOtif, hoje);
 
     container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, semData, rotaCalc, semOtif });
@@ -31645,10 +31697,11 @@ function setAbsArmMes(mes){
 // Absenteísmo) e pelo Painel de Indicadores → Absenteísmo Armazém. Nenhuma
 // outra tela deve recalcular isso por conta própria — sempre chamar esta função.
 async function _calcularAbsenteismoArmazem(mes, filtros={}){
-  const { tipo = '', nome = '' } = filtros;
+  const { tipo = '', nome = '', unidade = '' } = filtros;
 
-  // 1. Unidade do usuário
-  const undUsuario = await _getUnidadeUsuario();
+  // 1. Unidade — filtro explícito (ex: seletor do Painel de Indicadores) tem
+  // prioridade; sem filtro explícito, cai na unidade do usuário logado
+  const undUsuario = unidade || await _getUnidadeUsuario();
 
   // 2. Buscar conferentes filtrando por unidade se disponível
   const urlConfsBase = undUsuario
