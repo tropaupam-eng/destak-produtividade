@@ -16438,6 +16438,94 @@ async function _buscarPrimeiraViagemPorVeiculo(){
   }
 }
 
+// Mapa de disponibilidade por veículo/dia — 'S' (rota, via demandas_rota OU
+// lançamento) ou 'C' (carregando hoje). Fonte única usada por Frota →
+// Disponibilidade (oficial) e pelo Painel de Indicadores → Utilização de
+// Frotas Fixas, pra garantir que as duas telas sempre mostrem o mesmo
+// número. Antes o Painel de Indicadores só lia demandas_rota (Expedição) e
+// ignorava lançamentos — rotas R.I. lançadas direto pela aba Lançamento
+// (sem passar pela Expedição) nunca contavam lá, derrubando a % pra quase
+// zero mesmo com o veículo rodando o mês inteiro.
+function _calcDispMapFrota({placas, demandas, lancamentosDisp, demandasC, abastecimentos, primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD}){
+  const dispMap = {};
+  placas.forEach(p => { dispMap[p] = {}; });
+
+  // S: faixa completa da viagem (data_saida → ts_fim_viagem) — Expedição
+  (demandas||[]).forEach(d => {
+    const placa = (d.veiculo||'').trim().toUpperCase();
+    if(!placa || !d.data_saida || !dispMap[placa]) return;
+    const dtIni = new Date(d.data_saida + 'T12:00:00');
+    let dtFim;
+    if(d.ts_fim_viagem) dtFim = new Date(d.ts_fim_viagem);
+    else if(d.status === 'saiu' || d.status === 'fim_viagem') dtFim = ehMesAtual ? hojeObj : mesFim;
+    else dtFim = dtIni;
+    const ini = dtIni < mesInicio ? mesInicio : dtIni;
+    const fim = dtFim  > mesFim   ? mesFim    : dtFim;
+    // Não contar dias ANTES da primeira viagem (veículos novos)
+    const primeiraViagem = primeiraViagemMap[placa];
+    const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
+    const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
+    const cur = new Date(iniAjustado);
+    while(cur <= fim){
+      const dia = String(cur.getDate()).padStart(2,'0');
+      dispMap[placa][dia] = 'S';
+      cur.setDate(cur.getDate()+1);
+    }
+  });
+
+  // S: lançamentos manuais — Lançamento. R.I. marcados do dia do ts até
+  // hoje; R.E. só no dia (mesma regra: só a Expedição sabe quando a viagem
+  // R.E. terminou de verdade).
+  (lancamentosDisp||[]).forEach(d => {
+    const placa = (d.veiculo||'').trim().toUpperCase();
+    if(!placa || !d.ts || !dispMap[placa]) return;
+    const isRI = ROTAS_RI.has((d.rota||'').trim().toUpperCase());
+    const dtIni = new Date(d.ts);
+    const primeiraViagem = primeiraViagemMap[placa];
+    const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
+    if(isRI){
+      const ini = dtIni < mesInicio ? mesInicio : dtIni;
+      const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
+      const fim = (ehMesAtual ? hojeObj : mesFim) > mesFim ? mesFim : (ehMesAtual ? hojeObj : mesFim);
+      const cur = new Date(iniAjustado);
+      while(cur <= fim){
+        const dia2 = String(cur.getDate()).padStart(2,'0');
+        if(!dispMap[placa][dia2]) dispMap[placa][dia2] = 'S';
+        cur.setDate(cur.getDate()+1);
+      }
+    } else {
+      if(dtPrimeiraViagem && dtIni < dtPrimeiraViagem) return;
+      const dia = String(dtIni.getDate()).padStart(2,'0');
+      if(!dispMap[placa][dia]) dispMap[placa][dia] = 'S';
+    }
+  });
+
+  // S: abastecimento de loja — veículo que saiu pra reabastecer uma loja
+  // também estava em uso naquele dia, mesmo sem carga/rota formal.
+  (abastecimentos||[]).forEach(d => {
+    const placa = (d.veiculo||'').trim().toUpperCase();
+    if(!placa || !d.data_saida || !dispMap[placa]) return;
+    const dtIni = new Date(d.data_saida + 'T12:00:00');
+    if(dtIni < mesInicio || dtIni > mesFim) return;
+    const primeiraViagem = primeiraViagemMap[placa];
+    const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
+    if(dtPrimeiraViagem && dtIni < dtPrimeiraViagem) return;
+    const dia = String(dtIni.getDate()).padStart(2,'0');
+    if(!dispMap[placa][dia]) dispMap[placa][dia] = 'S';
+  });
+
+  // C: carregando hoje (só faz sentido pro mês atual)
+  if(ehMesAtual && demandasC){
+    demandasC.forEach(d => {
+      const placa = (d.veiculo||'').trim().toUpperCase();
+      if(!placa || !dispMap[placa]) return;
+      if(!dispMap[placa][hojeD]) dispMap[placa][hojeD] = 'C';
+    });
+  }
+
+  return dispMap;
+}
+
 async function renderFrotaDisp(){
   const wrap = document.getElementById('frota-disp-wrap');
   if(!wrap) return;
@@ -16461,12 +16549,13 @@ async function renderFrotaDisp(){
     const queries = [
       supaFetch('veiculos?select=placa,tipo,unidade,ativo&order=placa.asc'),
       supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
-      supaFetch(`lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[])
+      supaFetch(`lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[]),
+      supaFetch(`abastecimento_loja?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&veiculo=not.is.null&select=veiculo,data_saida`).catch(()=>[])
     ];
     if(ehMesAtual){
       queries.push(supaFetch(`demandas_rota?select=veiculo,status&veiculo=not.is.null&data_saida=is.null&status=in.("carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem","separacao")`));
     }
-    const [veiculos, demandas, lancamentosDisp, demandasC] = await Promise.all(queries);
+    const [veiculos, demandas, lancamentosDisp, abastecimentos, demandasC] = await Promise.all(queries);
 
     const todosAtivos = (veiculos||[]).filter(v => v.ativo && !(v.placa||'').toUpperCase().includes('FRETE'));
 
@@ -16493,65 +16582,10 @@ async function renderFrotaDisp(){
     const mesFim    = new Date(ano, numMes-1, diasNoMes);
 
     // ── Mapa de status: dispMap[placa][dia] = 'S' | 'C' ──
-    const dispMap = {};
-    todos.forEach(v => { dispMap[v.placa] = {}; });
-
-    // S: faixa completa da viagem (data_saida → ts_fim_viagem)
-    (demandas||[]).forEach(d => {
-      const placa = (d.veiculo||'').trim().toUpperCase();
-      if(!placa || !d.data_saida || !dispMap[placa]) return;
-      const dtIni = new Date(d.data_saida + 'T12:00:00');
-      let dtFim;
-      if(d.ts_fim_viagem) dtFim = new Date(d.ts_fim_viagem);
-      else if(d.status === 'saiu' || d.status === 'fim_viagem') dtFim = ehMesAtual ? hojeObj : mesFim;
-      else dtFim = dtIni;
-      const ini = dtIni < mesInicio ? mesInicio : dtIni;
-      const fim = dtFim  > mesFim   ? mesFim    : dtFim;
-      // ── Não contar dias ANTES da primeira viagem (veículos novos)
-      const primeiraViagem = primeiraViagemMap[placa];
-      const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
-      const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
-      const cur = new Date(iniAjustado);
-      while(cur <= fim){
-        const dia = String(cur.getDate()).padStart(2,'0');
-        dispMap[placa][dia] = 'S';
-        cur.setDate(cur.getDate()+1);
-      }
+    const dispMap = _calcDispMapFrota({
+      placas: todos.map(v=>v.placa), demandas, lancamentosDisp, demandasC, abastecimentos,
+      primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD
     });
-
-    // S: lançamentos manuais — R.I. marcados do dia do ts até hoje; R.E. só no dia
-    (lancamentosDisp||[]).forEach(d => {
-      const placa = (d.veiculo||'').trim().toUpperCase();
-      if(!placa || !d.ts || !dispMap[placa]) return;
-      const isRI = ROTAS_RI.has((d.rota||'').trim().toUpperCase());
-      const dtIni = new Date(d.ts);
-      const primeiraViagem = primeiraViagemMap[placa];
-      const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
-      if(isRI){
-        const ini = dtIni < mesInicio ? mesInicio : dtIni;
-        const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
-        const fim = (ehMesAtual ? hojeObj : mesFim) > mesFim ? mesFim : (ehMesAtual ? hojeObj : mesFim);
-        const cur = new Date(iniAjustado);
-        while(cur <= fim){
-          const dia2 = String(cur.getDate()).padStart(2,'0');
-          if(!dispMap[placa][dia2]) dispMap[placa][dia2] = 'S';
-          cur.setDate(cur.getDate()+1);
-        }
-      } else {
-        if(dtPrimeiraViagem && dtIni < dtPrimeiraViagem) return;
-        const dia = String(dtIni.getDate()).padStart(2,'0');
-        if(!dispMap[placa][dia]) dispMap[placa][dia] = 'S';
-      }
-    });
-
-    // C: carregando hoje (somente mês atual)
-    if(ehMesAtual){
-      (demandasC||[]).forEach(d => {
-        const placa = (d.veiculo||'').trim().toUpperCase();
-        if(!placa || !dispMap[placa]) return;
-        if(!dispMap[placa][hojeD]) dispMap[placa][hojeD] = 'C';
-      });
-    }
 
     // ── Estrutura de colunas: separadores Dom (por semana) + dias Mon–Sat ──
     // Encontra o domingo anterior ao dia 1 do mês
@@ -27093,23 +27127,43 @@ async function carregarPainelDisponibilidade(){
     const taxaUtilizacao = total > 0 ? ((emUso / total) * 100).toFixed(1) : 0;
 
     // ── Aproveitamento do mês selecionado: por cargas rodadas e por dias ativos ──
-    // Mesmo filtro de status "viagem real" usado em renderFrotaDisp (Utilização de Frotas Fixas),
-    // pra manter os dois painéis consistentes entre si.
+    // Mesma fonte usada em renderFrotaDisp (Frota → Disponibilidade): dias
+    // com rota vêm de demandas_rota (Expedição) MERGEADO com lancamentos
+    // (aba Lançamento) via _calcDispMapFrota — antes este painel só lia
+    // demandas_rota e ignorava lançamentos, então rota R.I. lançada direto
+    // pela aba Lançamento (sem passar pela Expedição) nunca contava aqui,
+    // derrubando a % pra quase zero mesmo com o veículo rodando o mês inteiro.
     const viagensMes = await supaFetch(
-      `demandas_rota?select=veiculo,carga,data_saida&veiculo=not.is.null&data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
+      `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
     ).catch(()=>[]) || [];
+    const lancamentosDispRef = await supaFetch(
+      `lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}`
+    ).catch(()=>[]) || [];
+    const abastecimentosRef = await supaFetch(
+      `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,data_saida`
+    ).catch(()=>[]) || [];
+    const primeiraViagemMapRef = await _buscarPrimeiraViagemPorVeiculo();
 
     const cargasPorVeic = {};   // placa -> Set de cargas distintas
-    const diasPorVeic   = {};   // placa -> Set de dias (data_saida) distintos
     viagensMes.forEach(v=>{
       const placa = (v.veiculo||'').trim().toUpperCase();
       if(!placa) return;
       if(!cargasPorVeic[placa]) cargasPorVeic[placa] = new Set();
-      if(!diasPorVeic[placa])   diasPorVeic[placa]   = new Set();
       if(v.carga) cargasPorVeic[placa].add(v.carga);
-      if(v.data_saida) diasPorVeic[placa].add(v.data_saida);
     });
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
+
+    const dispMapRef = _calcDispMapFrota({
+      placas: veiculos.map(v=>v.placa),
+      demandas: viagensMes, lancamentosDisp: lancamentosDispRef, demandasC: null, abastecimentos: abastecimentosRef,
+      primeiraViagemMap: primeiraViagemMapRef,
+      mesInicio: new Date(anoRef, numMesRef-1, 1), mesFim: new Date(anoRef, numMesRef-1, diasNoMesRef),
+      ehMesAtual: ehMesAtualRef, hojeObj: new Date(), hojeD: hoje.slice(8,10)
+    });
+    const diasSPorVeic = {}; // placa -> nº de dias com rota ('S') dentro dos dias já decorridos
+    Object.keys(dispMapRef).forEach(placa=>{
+      diasSPorVeic[placa] = Object.entries(dispMapRef[placa]).filter(([dia,st])=>st==='S' && Number(dia)<=diasDecorridosRef).length;
+    });
 
     // ── Utilização no mês (headline) — média da "Aprov. por Dia" só da frota
     // fixa (exclui veículos de frete, que não são frota própria). Dias em
@@ -27121,7 +27175,7 @@ async function carregarPainelDisponibilidade(){
     const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
     const pctDiasPorVeiculo = frotaFixa.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
-      const nDias = diasPorVeic[placa]?.size || 0;
+      const nDias = diasSPorVeic[placa] || 0;
       const diasManut = diasManutPorVeic[placa]?.size || 0;
       const diasDisponiveis = Math.max(diasDecorridosRef - diasManut, 0);
       return diasDisponiveis>0 ? (nDias/diasDisponiveis*100) : null;
@@ -27133,6 +27187,22 @@ async function carregarPainelDisponibilidade(){
     const mediaUtil = pctDiasPorVeiculo.filter(p=>p>=40&&p<70).length;
     const baixaUtil = pctDiasPorVeiculo.filter(p=>p<40).length;
     const periodoTxt = `01/${String(numMesRef).padStart(2,'0')} A ${String(diasNoMesRef).padStart(2,'0')}/${String(numMesRef).padStart(2,'0')}`;
+
+    // ── Quebra Interna × Externa — usa o campo `uso` do cadastro do veículo
+    // (definido na tela de Frota, não a origem do lançamento) pra comparar
+    // o aproveitamento de quem roda rota R.I. contra quem roda R.E.
+    function _mediaUsoGrupo(usoAlvo){
+      const grupo = frotaFixa.filter(v=>v.uso===usoAlvo).map(v=>{
+        const placa = (v.placa||'').trim().toUpperCase();
+        const nDias = diasSPorVeic[placa] || 0;
+        const diasManut = diasManutPorVeic[placa]?.size || 0;
+        const diasDisponiveis = Math.max(diasDecorridosRef - diasManut, 0);
+        return diasDisponiveis>0 ? (nDias/diasDisponiveis*100) : null;
+      }).filter(p=>p!==null);
+      return { media: grupo.length ? grupo.reduce((a,b)=>a+b,0)/grupo.length : 0, n: grupo.length };
+    }
+    const usoInterno = _mediaUsoGrupo('interno');
+    const usoExterno = _mediaUsoGrupo('externo');
 
     container.innerHTML = `
       <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;margin-bottom:24px">
@@ -27200,6 +27270,17 @@ async function carregarPainelDisponibilidade(){
               <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">UTILIZAÇÃO NO MÊS · ${dentroDaMetaUtil?'ACIMA DA META':'ABAIXO DA META'}</div>
               <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${pctDiasPorVeiculo.length} de ${frotaFixa.length} veículos de frota fixa entram na média (frete não entra; veículo sem nenhum dia disponível no período — só oficina — também fica de fora).</div>
             </div>
+            <div style="border-top:1px solid #e5e5e5;margin-top:16px;padding-top:14px">
+              <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:8px">POR TIPO DE CADASTRO (VEÍCULO)</div>
+              <div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 0">
+                <span style="font-size:.78rem;color:#1d4ed8;font-weight:700">Interna (R.I.) · ${usoInterno.n} veíc.</span>
+                <span style="font-size:.95rem;font-weight:700">${usoInterno.media.toFixed(0)}%</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 0">
+                <span style="font-size:.78rem;color:#92400e;font-weight:700">Externa (R.E.) · ${usoExterno.n} veíc.</span>
+                <span style="font-size:.95rem;font-weight:700">${usoExterno.media.toFixed(0)}%</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -27216,6 +27297,7 @@ async function carregarPainelDisponibilidade(){
           <thead>
             <tr style="border-bottom:1px solid var(--border)">
               <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Placa</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Tipo</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Status</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Cargas no Mês</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Aprov. por Carga</th>
@@ -27227,7 +27309,7 @@ async function carregarPainelDisponibilidade(){
             ${veiculos.map(v=>{
               const placa = (v.placa||'').trim().toUpperCase();
               const nCargas = cargasPorVeic[placa]?.size || 0;
-              const nDias   = diasPorVeic[placa]?.size || 0;
+              const nDias   = diasSPorVeic[placa] || 0;
               const diasManut = diasManutPorVeic[placa]?.size || 0;
               const diasDisp  = Math.max(diasDecorridosRef - diasManut, 0);
               const pctCargas = totalCargasMes>0 ? (nCargas/totalCargasMes*100) : 0;
@@ -27236,9 +27318,15 @@ async function carregarPainelDisponibilidade(){
               const statusLabel = emManut ? '🔧 Manutenção' : (emRotaSet.has(v.placa) ? '🚗 Em Uso' : '✅ Disponível');
               const statusBg = emManut ? '#fee2e2' : (emRotaSet.has(v.placa) ? '#fcd34d' : '#d1fae5');
               const statusCor = emManut ? '#991b1b' : (emRotaSet.has(v.placa) ? '#92400e' : '#065f46');
+              const tipoLabel = v.uso==='interno' ? 'Interna' : v.uso==='externo' ? 'Externa' : '—';
+              const tipoBg = v.uso==='interno' ? '#dbeafe' : v.uso==='externo' ? '#fef3c7' : 'transparent';
+              const tipoCor = v.uso==='interno' ? '#1d4ed8' : v.uso==='externo' ? '#92400e' : 'var(--text-muted)';
               return `
               <tr style="border-bottom:1px solid var(--border)">
                 <td style="padding:8px;font-weight:600">${v.placa||'—'}</td>
+                <td style="padding:8px;text-align:center">
+                  <span style="background:${tipoBg};color:${tipoCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${tipoLabel}</span>
+                </td>
                 <td style="padding:8px;text-align:center">
                   <span style="background:${statusBg};color:${statusCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${statusLabel}</span>
                 </td>
