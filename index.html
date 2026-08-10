@@ -24821,9 +24821,15 @@ async function renderDashInterna(){
         const _pedMesOtif = (p.mes_ano || p.data_pedido || '').slice(0,7);
         if(!_pedMesOtif || _pedMesOtif !== mesFiltro) return;
 
-        // Semana: preferir semana_mes pré-calculado (imune a data_pedido errado)
-        const semIdx = (p.semana_mes || _semDoMesOtif(p.data_pedido)) - 1;
-        if(!(semIdx >= 0 && semIdx <= 4)) return;
+        // Semana do PEDIDO — usada só como fallback pra pedidos ainda sem data de
+        // entrega (ainda não é sabido em que semana a entrega vai cair).
+        // "Pedidos por Semana" agrupa por essa semana; "OTIF por Semana" agrupa
+        // pela semana da ENTREGA (mais abaixo, semIdxFinal) — são perguntas
+        // diferentes: uma é "quando o pedido entrou", a outra é "quando foi
+        // resolvido" (a fila de OTIF de uma semana reflete o que foi entregue
+        // nela, não o que entrou nela).
+        const semIdxPedido = (p.semana_mes || _semDoMesOtif(p.data_pedido)) - 1;
+        if(!(semIdxPedido >= 0 && semIdxPedido <= 4)) return;
 
         const ped   = String(p.pedido);
         const carga = p.carga != null ? String(Math.round(Number(p.carga))) : null;
@@ -24845,18 +24851,19 @@ async function renderDashInterna(){
             _inicioPrazoOtif = new Date(_dp+'T00:00:00');
           } else {
             // data_pedido ausente ou de outro mês (dado corrompido): usar início da semana
-            const _weekStartDay = semIdx * 7 + 1;
+            const _weekStartDay = semIdxPedido * 7 + 1;
             _inicioPrazoOtif = new Date(`${mesFiltro}-${String(_weekStartDay).padStart(2,'0')}T00:00:00`);
           }
         } else {
           const tsRe = (carga && saidaTsMapOtif[carga]) || (carga && lancTsMapOtif[carga]);
           if(!tsRe){
-            // R.E. sem ts_saiu: carga ainda no armazém aguardando despacho
-            // Conta no denominador como no prazo (prazo de 192h não iniciou)
+            // R.E. sem ts_saiu: carga ainda no armazém aguardando despacho — sem
+            // entrega ainda, então usa a semana do pedido (fallback) até ter uma
+            // data de entrega de verdade pra migrar pro balde certo.
             const _inF = !ocorrSetOtif.has(ped);
-            semOtif[semIdx].t++;
-            semOtif[semIdx].ot++;
-            if(_inF){ semOtif[semIdx].ifull++; semOtif[semIdx].ok++; }
+            semOtif[semIdxPedido].t++;
+            semOtif[semIdxPedido].ot++;
+            if(_inF){ semOtif[semIdxPedido].ifull++; semOtif[semIdxPedido].ok++; }
             return;
           }
           _inicioPrazoOtif = new Date(tsRe);
@@ -24891,16 +24898,25 @@ async function renderDashInterna(){
           else if(!dataFim && lancDtMapOtif[carga]) { dataFim = lancDtMapOtif[carga]; hasEntrega = true; }
           else if(dataFim) hasEntrega = true; // ent.saida/saidaMapCarga definiu dataFim
         }
+        // Semana final de acumulação: pela semana da ENTREGA (dataFim) quando ela
+        // cai dentro do próprio mês filtrado; senão cai no fallback (semana do
+        // pedido) — cobre tanto "ainda sem nenhuma data" quanto "entregue num mês
+        // diferente do filtrado" (não dá pra jogar num balde de semana que não existe
+        // na visão do mês corrente).
+        const _mesDataFimSem = dataFim ? dataFim.slice(0,7) : null;
+        const semIdxFinal = (dataFim && _mesDataFimSem === mesFiltro)
+          ? Math.min(Math.max(_semDoMesOtif(dataFim)-1, 0), 4)
+          : semIdxPedido;
         const _inFSem = !ocorrSetOtif.has(ped);
         if(!dataFim){
           // Sem qualquer data: dentro do prazo → no prazo; fora → atrasado
           const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
-          semOtif[semIdx].t++;
+          semOtif[semIdxFinal].t++;
           if(horasDecorridas > prazoH){
-            if(_inFSem) semOtif[semIdx].ifull++;
+            if(_inFSem) semOtif[semIdxFinal].ifull++;
           } else {
-            semOtif[semIdx].ot++;
-            if(_inFSem){ semOtif[semIdx].ifull++; semOtif[semIdx].ok++; }
+            semOtif[semIdxFinal].ot++;
+            if(_inFSem){ semOtif[semIdxFinal].ifull++; semOtif[semIdxFinal].ok++; }
           }
           return;
         }
@@ -24911,19 +24927,19 @@ async function renderDashInterna(){
         if(!hasEntrega){
           // saida sem ts confirmado: dentro do prazo → no prazo; fora → atrasado
           const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
-          semOtif[semIdx].t++;
+          semOtif[semIdxFinal].t++;
           if(horasDecorridas <= prazoH){
-            semOtif[semIdx].ot++;
-            if(isInFull){ semOtif[semIdx].ifull++; semOtif[semIdx].ok++; }
+            semOtif[semIdxFinal].ot++;
+            if(isInFull){ semOtif[semIdxFinal].ifull++; semOtif[semIdxFinal].ok++; }
           } else {
-            if(isInFull) semOtif[semIdx].ifull++;
+            if(isInFull) semOtif[semIdxFinal].ifull++;
           }
           return;
         }
-        semOtif[semIdx].t++;
-        if(isOnTime)             semOtif[semIdx].ot++;
-        if(isInFull)             semOtif[semIdx].ifull++;
-        if(isOnTime && isInFull) semOtif[semIdx].ok++;
+        semOtif[semIdxFinal].t++;
+        if(isOnTime)             semOtif[semIdxFinal].ot++;
+        if(isInFull)             semOtif[semIdxFinal].ifull++;
+        if(isOnTime && isInFull) semOtif[semIdxFinal].ok++;
       });
 
       const semLabels = ['1ª Semana','2ª Semana','3ª Semana','4ª Semana','5ª Semana'];
@@ -24967,7 +24983,9 @@ async function renderDashInterna(){
 // isOnTime EXIGE entrega real (ent.entrega de entrega_datas). Fallbacks (data_saida / lancamentos.ts)
 // indicam apenas que o veículo saiu — sem entrega confirmada não conta como no prazo.
 // Pedidos dentro do prazo sem entrega: pendentes (não contam). Prazo vencido sem entrega: conta como atrasado.
-// onPedido (opcional, 11º parâmetro): callback(pedido, carga, rota, rire, dataPedido, onTime, inFull)
+// onPedido (opcional, 11º parâmetro): callback(pedido, carga, rota, rire, dataPedido, onTime, inFull, dataFim)
+// dataFim é a data usada como entrega (real ou proxy) — null quando o pedido
+// ainda não tem nenhuma data de conclusão (aguardando despacho/sem lançamento).
 // chamado uma vez por pedido computado — usado pelo Dashboard de Indicadores
 // Logísticos pra segmentar OTIF por rota/motorista/cliente sem duplicar a
 // lógica de prazo acima. Todos os callers existentes continuam funcionando
@@ -25057,7 +25075,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
         const _inF=!ocorrSet.has(ped);
         total++; entG++; if(_inF) inFullG++; onTimeG++; if(_inF) otifG++;
         reTotal++; entRE++; if(_inF) inFullRE++; onTimeRE++; if(_inF) otifRE++;
-        if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, true, _inF);
+        if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, true, _inF, null);
         continue;
       }
       inicioPrazo=new Date(tsRe);
@@ -25099,7 +25117,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       total++; entG++; if(_ot)onTimeG++; if(_inF)inFullG++; if(_ot&&_inF)otifG++;
       if(_isRI){ riTotal++; if(_ot)onTimeRI++; if(_inF)inFullRI++; if(_ot&&_inF)otifRI++; }
       else     { reTotal++; if(_ot)onTimeRE++; if(_inF)inFullRE++; if(_ot&&_inF)otifRE++; }
-      if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, _ot, _inF);
+      if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, _ot, _inF, null);
       continue;
     }
     const diffHoras=Math.max(0,(new Date(dataFim)-inicioPrazo)/3600000);
@@ -25111,7 +25129,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       total++; entG++; if(_ot)onTimeG++; if(_inF)inFullG++; if(_ot&&_inF)otifG++;
       if(_isRI){ riTotal++; if(_ot)onTimeRI++; if(_inF)inFullRI++; if(_ot&&_inF)otifRI++; }
       else     { reTotal++; if(_ot)onTimeRE++; if(_inF)inFullRE++; if(_ot&&_inF)otifRE++; }
-      if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, _ot, _inF);
+      if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, _ot, _inF, dataFim);
       continue;
     }
     // Entrega confirmada — calcula isOnTime por diffHoras
@@ -25122,7 +25140,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
     if(_isRI){ riTotal++; onTimeRI+=isOnTime?1:0; inFullRI+=isInFull?1:0; if(isOTIF)otifRI++; }
     else     { reTotal++; onTimeRE+=isOnTime?1:0; inFullRE+=isInFull?1:0; if(isOTIF)otifRE++; }
-    if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, isOnTime, isInFull);
+    if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, isOnTime, isInFull, dataFim);
   }
   return { prazoMap, total, riTotal, reTotal,
            entG:total, onTimeG, inFullG, otifG,
@@ -25410,13 +25428,20 @@ async function renderDashLogistico(forcarRefresh){
   entF.forEach(e=>{ if(e.data_entrega) pedidoEntregueMap[String(e.pedido)] = true; });
 
   // ── OTIF segmentado: uma passada só, via callback onPedido ──
-  const porRota = {}, porMotorista = {}, porCliente = {}, porSemana = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
+  // porSemana: semana do PEDIDO (usado em "Entregas por Semana" — quando o
+  // pedido entrou). porSemanaOtif: semana da ENTREGA (usado em "OTIF por
+  // Semana" — quando foi resolvido). São perguntas diferentes de propósito,
+  // por isso dois acumuladores separados em vez de um só.
+  const _semDoMesDlog = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); return Math.min(Math.ceil(_dt.getDate()/7),5); };
+  const porRota = {}, porMotorista = {}, porCliente = {};
+  const porSemana     = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
+  const porSemanaOtif = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
   let noPrazo=0, atrasadas=0, pendentes=0;
   const semanaMap = {};
   bdF.forEach(b=>{ semanaMap[String(b.pedido)] = b.semana_mes; });
   const _acc = (map, key) => { if(!key) return null; if(!map[key]) map[key]={total:0,onTime:0,inFull:0,otif:0}; return map[key]; };
   const statsFiltrado = _computeOtifStats(bdF, entF, lancF, saidaF, dados.rotasRows, ocorrF, undefined, mesFiltro, dados.agendPedMap, dados.feriadosSet,
-    (pedido, carga, rota, rire, dataPedido, onTime, inFull) => {
+    (pedido, carga, rota, rire, dataPedido, onTime, inFull, dataFim) => {
       const isOtif = onTime && inFull;
       let r = _acc(porRota, rota||'(sem rota)');
       if(r){ r.total++; if(onTime)r.onTime++; if(inFull)r.inFull++; if(isOtif)r.otif++; }
@@ -25428,8 +25453,14 @@ async function renderDashLogistico(forcarRefresh){
       const cliente = pedidoClienteMap[pedido];
       let c = _acc(porCliente, cliente);
       if(c){ c.total++; if(onTime)c.onTime++; if(inFull)c.inFull++; if(isOtif)c.otif++; }
+      // "Entregas por Semana": pela semana do PEDIDO (quando entrou).
       const sem = semanaMap[pedido];
       if(sem && porSemana[sem]){ porSemana[sem].total++; if(onTime)porSemana[sem].onTime++; if(inFull)porSemana[sem].inFull++; if(isOtif)porSemana[sem].otif++; }
+      // "OTIF por Semana": pela semana da ENTREGA — sem entrega ainda (dataFim
+      // null) ou entregue fora do mês filtrado, cai no fallback (semana do pedido).
+      const mesDataFim = dataFim ? dataFim.slice(0,7) : null;
+      const semOtifDlog = (dataFim && mesDataFim===mesFiltro) ? _semDoMesDlog(dataFim) : sem;
+      if(semOtifDlog && porSemanaOtif[semOtifDlog]){ porSemanaOtif[semOtifDlog].total++; if(onTime)porSemanaOtif[semOtifDlog].onTime++; if(inFull)porSemanaOtif[semOtifDlog].inFull++; if(isOtif)porSemanaOtif[semOtifDlog].otif++; }
       // Status de entrega — pra seção "Entregas": no prazo / atrasada / pendente
       const entregue = !!pedidoEntregueMap[pedido];
       if(entregue && onTime) noPrazo++;
@@ -25476,7 +25507,7 @@ async function renderDashLogistico(forcarRefresh){
   const cache = {
     mesFiltro, undFiltro, rotaFiltro, cidadeFiltro, motoristaFiltro, veiculoFiltro, clienteFiltro, rireFiltro,
     dados, bdF, lancF, saidaF, entF, ocorrF, cargaInfo, statsFiltrado,
-    porRota, porMotorista, porCliente, porSemana,
+    porRota, porMotorista, porCliente, porSemana, porSemanaOtif,
     noPrazo, atrasadas, pendentes, cancelados,
     veiculosAtivos, veiculosPropriosSet, veiculosEmManutencao, veiculosUtilizados, pctUtilizacaoFrota,
     totalFrotaPropria, demandasMes,
@@ -25716,7 +25747,7 @@ function _dlogRenderOtifSecao(c){
   if(ctxOS) _dlogCharts.otifSemana = new Chart(ctxOS, {
     type:'line',
     data:{ labels:['Sem 1','Sem 2','Sem 3','Sem 4','Sem 5'],
-      datasets:[{ label:'OTIF %', data:[1,2,3,4,5].map(s=>c.porSemana[s].total?Math.round(c.porSemana[s].otif/c.porSemana[s].total*100):null),
+      datasets:[{ label:'OTIF %', data:[1,2,3,4,5].map(s=>c.porSemanaOtif[s].total?Math.round(c.porSemanaOtif[s].otif/c.porSemanaOtif[s].total*100):null),
         borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,.12)', fill:true, tension:.3, spanGaps:true, pointRadius:4 }] },
     options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{ticks:{color:txtColor},grid:{display:false}}, y:{ticks:{color:txtColor,callback:v=>v+'%'},grid:{color:gridColor},min:0,max:100}} }
   });
