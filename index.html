@@ -27411,6 +27411,90 @@ function renderRelatorioNoPrazoSimples({indicadorNum, titulo, eyebrow, area, mes
   `;
 }
 
+// Card "Rotas Liberadas por Semana" + "Atrasos e Motivos" — complemento do
+// indicador de Liberação no Prazo. Semana é a da SAÍDA AGENDADA (mesmo
+// critério de _calcPedidosPorSemana). Motivos vêm de agendamentos_rotas
+// (mesma tela/tabela usada em Rota → Agendamento pra registrar por que uma
+// rota atrasou), não de demandas_rota — que não guarda motivo nenhum.
+function renderLiberacaoSemanalMotivos({semData, motivosResumo, atrasos}){
+  const totalAtrasos = atrasos.length;
+  const totalMotivos = motivosResumo.reduce((a,[,n])=>a+n,0) || 1;
+  const coresMotivo = ['#b13b3b','#c2645f','#d4837e','#8a8a8a','#6b6b6b','#a8a8a8'];
+  const listaMotivos = motivosResumo.length ? motivosResumo.map(([label,n],i)=>{
+    const pct = Math.round(n/totalMotivos*100);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
+      <span style="width:10px;height:10px;border-radius:2px;background:${coresMotivo[i%coresMotivo.length]};flex-shrink:0"></span>
+      <span style="flex:1;font-size:.82rem;font-weight:600;color:#1a1a1a">${label}</span>
+      <span style="font-size:.78rem;color:#6b6b6b">${pct}%</span>
+      <span style="font-size:.82rem;font-weight:700;color:#1a1a1a;min-width:26px;text-align:right">${n}</span>
+    </div>`;
+  }).join('') : `<p style="color:#8a8a8a;font-size:.82rem;text-align:center;padding:20px">Nenhum atraso registrado no mês</p>`;
+
+  const listaAtrasos = atrasos.slice(0,8).map(a=>{
+    const dataFmt = a.data ? a.data.split('-').reverse().join('/') : '—';
+    return `<div style="padding:7px 0;border-bottom:1px solid #eee;font-size:.76rem">
+      <div style="display:flex;justify-content:space-between;gap:8px">
+        <span style="font-weight:700;color:#1a1a1a">${a.rota||'—'}</span>
+        <span style="color:#8a8a8a">${dataFmt}</span>
+      </div>
+      <div style="color:#6b6b6b;margin-top:1px">${a.motivo_label||'Não informado'}</div>
+    </div>`;
+  }).join('');
+  const maisAtrasos = atrasos.length>8 ? `<div style="text-align:center;padding-top:8px;font-size:.72rem;color:#8a8a8a">+ ${atrasos.length-8} atraso${atrasos.length-8===1?'':'s'} não listado${atrasos.length-8===1?'':'s'}</div>` : '';
+
+  return `
+    <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;margin-top:24px">
+      <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">LIBERAÇÃO NO PRAZO · POR SEMANA</div>
+      <h2 style="font-size:2.4rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Rotas Liberadas por Semana</h2>
+      <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 28px"></div>
+
+      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:20px;align-items:start">
+        <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #1a1a1a">
+          <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:14px">ROTAS LIBERADAS NO PRAZO × FORA — POR SEMANA</div>
+          <div style="position:relative;height:240px"><canvas id="chart-painel-liberacao-semanal"></canvas></div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #8a8a8a">
+          <div style="font-size:1.05rem;font-weight:700;letter-spacing:.3px">ATRASOS E MOTIVOS</div>
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px">${totalAtrasos} ATRASO${totalAtrasos===1?'':'S'} NO MÊS</div>
+          <div style="margin-top:14px">${listaMotivos}</div>
+          ${atrasos.length? `<div style="border-top:1px solid #e5e5e5;margin-top:16px;padding-top:12px">
+            <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:6px">ÚLTIMOS ATRASOS</div>
+            ${listaAtrasos}
+            ${maisAtrasos}
+          </div>` : ''}
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid #e0e0e0;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
+        <span>PAINEL DE METAS · ACOMPANHAMENTO MENSAL</span>
+        <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
+      </div>
+    </div>
+  `;
+}
+
+let _cPainelLiberacaoSemanal = null;
+function _renderGraficoLiberacaoSemanal(semData){
+  const ctx = document.getElementById('chart-painel-liberacao-semanal');
+  if(_cPainelLiberacaoSemanal){ _cPainelLiberacaoSemanal.destroy(); _cPainelLiberacaoSemanal=null; }
+  if(!ctx) return;
+  _cPainelLiberacaoSemanal = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels: semData.map((_,i)=>'S'+(i+1)),
+      datasets:[
+        { label:'No Prazo', data: semData.map(s=>s.noPrazo), backgroundColor:'#1a1a1a', stack:'a', borderRadius:3 },
+        { label:'Fora do Prazo', data: semData.map(s=>s.fora), backgroundColor:'#c7c7c7', stack:'a', borderRadius:3 }
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ stacked:true, grid:{display:false} }, y:{ stacked:true, beginAtZero:true, ticks:{precision:0}, grid:{color:'#eee'} } },
+      plugins:{ legend:{ position:'bottom', labels:{ color:'#6b6b6b', font:{size:10,weight:'600'}, boxWidth:10, padding:8 } } }
+    }
+  });
+}
+
 // demandas_rota não tem coluna de unidade — deriva o conjunto de cargas de
 // uma unidade no mês via lancamentos.und (mesma fonte usada em toda parte
 // do sistema pra filtro de unidade). Retorna null quando não há filtro
@@ -27437,6 +27521,10 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     // Buscar cargas agendadas no mês (mes_ano), que têm data_saida e já saíram (ts_saiu preenchido)
     const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
 
+    // Semana é a da SAÍDA AGENDADA (data_saida) — mesmo critério de _calcPedidosPorSemana
+    const _semDoMesLib = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
+    const semData = Array.from({length:5},()=>({noPrazo:0, fora:0}));
+
     let noPrazo = 0, fora = 0;
     demandas.forEach(d=>{
       if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
@@ -27445,8 +27533,28 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
       const saidaReal = d.ts_saiu.split('T')[0]; // converte "2026-07-15T10:30:00" → "2026-07-15"
       const saidaAgendada = d.data_saida; // já é "2026-07-15"
 
-      if(saidaReal <= saidaAgendada) noPrazo++; else fora++;
+      const estaNoPrazo = saidaReal <= saidaAgendada;
+      if(estaNoPrazo) noPrazo++; else fora++;
+
+      const s = _semDoMesLib(saidaAgendada);
+      if(s>=1 && s<=5){ if(estaNoPrazo) semData[s-1].noPrazo++; else semData[s-1].fora++; }
     });
+
+    // ── Atrasos e motivos — vêm de agendamentos_rotas (tela de Agendamento
+    // de Rotas), onde o motivo do atraso é registrado manualmente. demandas_rota
+    // não guarda motivo nenhum, só a saída em si.
+    const atrasosRaw = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&status=eq.atrasado&select=rota,data,carga,motivo_atraso,motivo_label&order=data.desc&limit=500`).catch(()=>[]) || [];
+    const atrasos = atrasosRaw.filter(a=>{
+      if(cargasUnidade && a.carga && !cargasUnidade.has(String(a.carga))) return false;
+      if(!_passaFiltroRire(a.rota, rireSel)) return false;
+      return true;
+    });
+    const motivosMap = {};
+    atrasos.forEach(a=>{
+      const label = a.motivo_label || '📝 Não informado';
+      motivosMap[label] = (motivosMap[label]||0)+1;
+    });
+    const motivosResumo = Object.entries(motivosMap).sort((a,b)=>b[1]-a[1]);
 
     const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
     container.innerHTML = renderRelatorioNoPrazoSimples({
@@ -27454,7 +27562,9 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
       mesRef: mes, metaPct: 90, noPrazoCount: noPrazo, foraCount: fora,
       noPrazoDesc: 'Veículo saiu até a data agendada',
       foraDesc: 'Veículo saiu depois da data agendada'
-    });
+    }) + renderLiberacaoSemanalMotivos({ semData, motivosResumo, atrasos });
+
+    _renderGraficoLiberacaoSemanal(semData);
   } catch(e){
     console.error('Erro ao carregar liberação no prazo:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
