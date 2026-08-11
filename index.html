@@ -27489,17 +27489,16 @@ function _renderGraficoLiberacaoSemanal(semData){
     data:{
       labels: semData.map((_,i)=>'S'+(i+1)),
       datasets:[
-        { type:'bar', label:'No Prazo', data: semData.map(s=>s.noPrazo), backgroundColor:'#1a1a1a', stack:'a', borderRadius:3, order:2 },
-        { type:'bar', label:'Fora do Prazo', data: semData.map(s=>s.fora), backgroundColor:'#c7c7c7', stack:'a', borderRadius:3, order:2 },
+        { type:'bar', label:'Atendido', data: semData.map(s=>s.atendido), backgroundColor:'#1a1a1a', borderRadius:3, order:2 },
         { type:'line', label:'Esperado (Agendado)', data: semData.map(s=>s.esperado), borderColor:'#b13b3b', backgroundColor:'#b13b3b', borderWidth:2, borderDash:[5,3], pointRadius:4, pointBackgroundColor:'#b13b3b', tension:0, fill:false, order:1 }
       ]
     },
     options:{
       responsive:true, maintainAspectRatio:false,
-      scales:{ x:{ stacked:true, grid:{display:false} }, y:{ stacked:true, beginAtZero:true, ticks:{precision:0}, grid:{color:'#eee'} } },
+      scales:{ x:{ grid:{display:false} }, y:{ beginAtZero:true, ticks:{precision:0}, grid:{color:'#eee'} } },
       plugins:{
         legend:{ position:'bottom', labels:{ color:'#6b6b6b', font:{size:10,weight:'600'}, boxWidth:10, padding:8 } },
-        tooltip:{ callbacks:{ footer: items=>{ const i=items[0].dataIndex; const s=semData[i]; return 'Esperado: '+s.esperado+' · Atendido: '+s.atendido; } } }
+        tooltip:{ callbacks:{ footer: items=>{ const i=items[0].dataIndex; const s=semData[i]; const pct=s.esperado>0?Math.round(s.atendido/s.esperado*100):0; return 'Atendimento: '+pct+'%'; } } }
       }
     }
   });
@@ -27528,36 +27527,50 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
     const rireSel = window._painelIndRireSel || '';
 
-    // Buscar TODAS as cargas agendadas no mês (mes_ano) com data_saida — saídas
-    // já ocorridas (ts_saiu preenchido) OU ainda não (agendada mas não atendida).
-    // O indicador principal (noPrazo/fora) só usa quem já saiu — igual antes.
-    const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
-
-    // Semana é a da SAÍDA AGENDADA (data_saida) — mesmo critério de _calcPedidosPorSemana
-    const _semDoMesLib = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
-    const semData = Array.from({length:5},()=>({esperado:0, atendido:0, noPrazo:0, fora:0}));
+    // Buscar cargas agendadas no mês (mes_ano), que têm data_saida e já saíram (ts_saiu preenchido)
+    const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
 
     let noPrazo = 0, fora = 0;
     demandas.forEach(d=>{
       if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
       if(!_passaFiltroRire(d.rota, rireSel)) return;
-
-      const s = _semDoMesLib(d.data_saida);
-      if(s>=1 && s<=5) semData[s-1].esperado++;
-
-      if(!d.ts_saiu) return; // agendada, ainda não atendida — só entra no "esperado"
-
       // Extrair data de saída real (ts_saiu) e comparar com data agendada (data_saida)
       const saidaReal = d.ts_saiu.split('T')[0]; // converte "2026-07-15T10:30:00" → "2026-07-15"
       const saidaAgendada = d.data_saida; // já é "2026-07-15"
 
-      const estaNoPrazo = saidaReal <= saidaAgendada;
-      if(estaNoPrazo) noPrazo++; else fora++;
+      if(saidaReal <= saidaAgendada) noPrazo++; else fora++;
+    });
 
-      if(s>=1 && s<=5){
-        semData[s-1].atendido++;
-        if(estaNoPrazo) semData[s-1].noPrazo++; else semData[s-1].fora++;
-      }
+    // ── Esperado × Atendido por semana — fonte: agendamentos_rotas (o
+    // PLANEJAMENTO real), não demandas_rota. demandas_rota tem "extras":
+    // cargas que saíram sem nunca terem sido agendadas (mesmo conceito de
+    // "extras" já usado na tela Rota → Agendamento). "Esperado" conta só
+    // quem estava no planejamento — extras ficam de fora.
+    // "Atendido" usa o MESMO critério de "saiu" do Calendário de Rotas
+    // (renderAgendamentos → _mkCal): status='realizado' OU lancado OU a
+    // demanda vinculada (mesma chave ROTA+DATA) já está em saiu/fim_viagem/
+    // concluido. Rota+data exato (não carga) é o vínculo usado lá porque o
+    // nº de carga do agendamento é preenchido manualmente e não é confiável.
+    const agendamentosMes = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga,status,lancado&limit=2000`).catch(()=>[]) || [];
+    const demandasMesTodas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&select=data_saida,rota,status&limit=5000`).catch(()=>[]) || [];
+    const _demMapLib = {};
+    demandasMesTodas.forEach(d=>{ _demMapLib[(d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')] = d.status; });
+
+    // Semana é a da data agendada — mesmo critério de _calcPedidosPorSemana
+    const _semDoMesLib = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
+    const semData = Array.from({length:5},()=>({esperado:0, atendido:0}));
+
+    agendamentosMes.forEach(a=>{
+      if(cargasUnidade && a.carga && !cargasUnidade.has(String(a.carga))) return;
+      if(!_passaFiltroRire(a.rota, rireSel)) return;
+
+      const s = _semDoMesLib(a.data);
+      if(s<1 || s>5) return;
+      semData[s-1].esperado++;
+
+      const demSt = _demMapLib[(a.rota||'').trim().toUpperCase()+'|'+a.data];
+      const saiu = a.status==='realizado' || a.lancado || ['saiu','fim_viagem','concluido'].includes(demSt);
+      if(saiu) semData[s-1].atendido++;
     });
 
     // ── Atrasos e motivos — vêm de agendamentos_rotas (tela de Agendamento
