@@ -3066,8 +3066,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <div style="display:grid;gap:14px">
         <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Rota *</label>
-          <input id="agend-rota" list="list-rotas-agend" placeholder="Nome da rota..." style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box">
-          <datalist id="list-rotas-agend"></datalist>
+          <select id="agend-rota" style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box;cursor:pointer">
+            <option value="">Selecione a rota...</option>
+          </select>
         </div>
         <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Data Programada *</label>
@@ -37692,7 +37693,7 @@ function vincularExtraComoAgendamento(rota, data, carga){
   abrirModalAgendamento(null, rota, data, carga);
 }
 
-function abrirModalAgendamento(id, _preRota, _preData, _preCarga){
+async function abrirModalAgendamento(id, _preRota, _preData, _preCarga){
   const modal = document.getElementById('modal-agendamento');
   const titulo = document.getElementById('agend-modal-titulo');
   const mesSel = document.getElementById('agend-mes-atual')?.value || new Date().toISOString().slice(0,7);
@@ -37705,9 +37706,34 @@ function abrirModalAgendamento(id, _preRota, _preData, _preCarga){
     if(mot==='outro'){ outraWrap.style.display='block'; if(outraInp) outraInp.value=label||''; }
     else{ outraWrap.style.display='none'; if(outraInp) outraInp.value=''; }
   };
+  const item = id ? getAgendamentos().find(a=>a.id===id) : null;
+  if(id && !item) return;
+
+  // Rota só pode vir do cadastro (rotas) — nenhuma aba do sistema pode
+  // lançar/agendar uma rota que não existe lá. Datalist antigo permitia
+  // digitar qualquer nome livre; agora é select restrito ao cadastro.
+  const rotaSel = document.getElementById('agend-rota');
+  if(rotaSel){
+    const rotasCad = await supaFetch('rotas?ativo=eq.true&select=nome&order=nome.asc').catch(()=>[]) || [];
+    const rotaAtual = (item?.rota || _preRota || '').trim();
+    const options = ['<option value="">Selecione a rota...</option>'];
+    let achouAtual = false;
+    rotasCad.forEach(r=>{
+      if(r.nome && r.nome.trim().toUpperCase() === rotaAtual.toUpperCase()) achouAtual = true;
+      options.push(`<option value="${r.nome}">${r.nome}</option>`);
+    });
+    // Registro antigo com rota fora do cadastro (dado legado): mantém visível
+    // pra não travar a edição, mas marcada — force o usuário a corrigir pro
+    // cadastro assim que puder.
+    if(rotaAtual && !achouAtual){
+      options.push(`<option value="${rotaAtual}">${rotaAtual} ⚠️ (fora do cadastro)</option>`);
+    }
+    rotaSel.innerHTML = options.join('');
+    rotaSel.value = rotaAtual;
+  }
+
   if(!id){
     document.getElementById('agend-id').value='';
-    document.getElementById('agend-rota').value=_preRota||'';
     const hoje = new Date().toISOString().slice(0,10);
     document.getElementById('agend-data').value = _preData || (mesSel ? mesSel+'-01' : hoje);
     document.getElementById('agend-obs').value='';
@@ -37715,22 +37741,12 @@ function abrirModalAgendamento(id, _preRota, _preData, _preCarga){
     _setMotivo('','');
     if(titulo) titulo.textContent = '🗓️ Novo Agendamento';
   } else {
-    const item = getAgendamentos().find(a=>a.id===id);
-    if(!item) return;
     document.getElementById('agend-id').value=item.id;
-    document.getElementById('agend-rota').value=item.rota||'';
     document.getElementById('agend-data').value=item.data||'';
     document.getElementById('agend-obs').value=item.obs||'';
     document.getElementById('agend-carga').value=item.carga||'';
     _setMotivo(item.motivo_atraso||'', item.motivo_label||'');
     if(titulo) titulo.textContent = '✏️ Editar Agendamento';
-  }
-  // Popular rotas datalist
-  const dl = document.getElementById('list-rotas-agend');
-  if(dl && dl.options.length===0){
-    supaFetch('rotas?ativo=eq.true&select=nome&order=nome.asc').then(rs=>{
-      (rs||[]).forEach(r=>{ const o=document.createElement('option'); o.value=r.nome; dl.appendChild(o); });
-    });
   }
   modal.style.display='flex';
 }
