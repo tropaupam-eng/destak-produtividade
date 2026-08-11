@@ -8483,6 +8483,10 @@ function validarTransicaoStatus(statusAtual, novoStatus){
       return {ok:false, msg:`Não é possível cancelar uma carga com status "${statusAtual}".`};
     return {ok:true};
   }
+  // "Voltar um passo" (FLUXO_REVERSO) é sempre permitido além do avanço normal —
+  // sem isso, o botão "← Voltar" do menu de ações falhava com "Transição
+  // inválida" pois só validava avanço (regra.next), nunca retrocesso.
+  if(typeof FLUXO_REVERSO !== 'undefined' && FLUXO_REVERSO[statusAtual] === novoStatus) return {ok:true};
   const regra = FLUXO_STATUS[statusAtual];
   if(!regra) return {ok:false, msg:`Status atual desconhecido: "${statusAtual}".`};
   if(regra.next !== novoStatus)
@@ -10337,13 +10341,19 @@ async function filtrarSidebarPorPerfil(){
 
   if(perfil !== 'admin'){
     try{
-      // Prioridade 1: override salvo em Cadastro > Perfis
+      // Prioridade 1: override salvo em Cadastro > Perfis — união com o padrão
+      // atual (_mergePerfilOverride), não substituição. Um override é um
+      // snapshot salvo no momento da edição; sem a união, qualquer página nova
+      // adicionada depois ao catálogo (ex: comercial-cargas-pendentes) nunca
+      // chegava à sidebar de um perfil que já tinha sido customizado uma vez.
       const overrides = await supaFetch(`configuracoes?chave=like.perfil_override_%25&select=chave,valor`,{_quiet:true}) || [];
       for(const row of overrides){
         try{
           const p = (typeof row.valor === 'string') ? JSON.parse(row.valor) : row.valor;
           if(p.key === perfil){
-            permitidos = p.paginas || [];
+            const chaveBuscaOv = perfil === 'opedor_fiscal' ? 'fiscal_op' : perfil;
+            const padraoOv = PERFIS_PADRAO_SISTEMA.find(pp=>pp.key===chaveBuscaOv);
+            permitidos = padraoOv ? _mergePerfilOverride(padraoOv, p).paginas : (p.paginas || []);
             break;
           }
         }catch(e){}
@@ -19026,7 +19036,7 @@ async function registrarRotaComCarga(demandaId, dataSaida){
 
 // Mapa reverso de status — para "voltar um passo"
 const FLUXO_REVERSO = {
-  separacao:'pendente', carregamento:'separacao', aguardando_nf:'carregamento',
+  pendente:'formacao', separacao:'pendente', carregamento:'separacao', aguardando_nf:'carregamento',
   aguardando_manifesto:'aguardando_nf', pronto_viagem:'aguardando_manifesto',
   saiu:'pronto_viagem', fim_viagem:'saiu', concluido:'fim_viagem'
 };
@@ -19052,7 +19062,7 @@ function _buildExpMenuContent(d){
   // Voltar um passo (admin/gestor)
   const prev = FLUXO_REVERSO[d.status];
   const isAdm = USUARIO_LOGADO && ['admin','gestor','exped_admin','adm_distribuicao'].includes(USUARIO_LOGADO.perfil);
-  if(prev && isAdm && d.status!=='pendente'){
+  if(prev && isAdm){
     opcoes.push(`<div onclick="${close};atualizarStatusDemanda('${d.id}','${prev}')"
       style="padding:7px 12px;font-size:.8rem;cursor:pointer;border-radius:6px;font-weight:600;background:rgba(245,158,11,.08);color:#b45309;border-left:3px solid #f59e0b;margin-bottom:1px"
       onmouseover="this.style.background='rgba(245,158,11,.18)'" onmouseout="this.style.background='rgba(245,158,11,.08)'">
@@ -21614,6 +21624,7 @@ const PAGINAS = {
   'retorno-veiculos':         {label:'Monitoramento (Retorno de Veículos)', icon:'🔄'},
   'comercial-rotas':          {label:'Rotas Comerciais',     icon:'🛣️'},
   'comercial-cancelamentos':  {label:'Cancelamentos',        icon:'📞'},
+  'comercial-cargas-pendentes':{label:'Cargas Pendentes',    icon:'⏳'},
   fiscal:                     {label:'Fiscal',               icon:'📋'},
   'gestao-fiscal':            {label:'Gestão Fiscal',        icon:'📊'},
   seguros:                    {label:'Seguros',              icon:'🛡️'},
@@ -21664,8 +21675,9 @@ const PAGINAS_GRUPOS = [
     ['gestao-frota','🔧 Manutenção'],
   ]},
   { grupo:'🛣️ Comercial', itens:[
-    ['comercial-rotas',         '🛣️ Rotas Comerciais'],
-    ['comercial-cancelamentos', '📞 Cancelamentos'],
+    ['comercial-rotas',            '🛣️ Rotas Comerciais'],
+    ['comercial-cancelamentos',    '📞 Cancelamentos'],
+    ['comercial-cargas-pendentes', '⏳ Cargas Pendentes'],
   ]},
   { grupo:'📋 Fiscal', itens:[
     ['fiscal',       '📋 Fiscal'],
@@ -21708,14 +21720,14 @@ const PAGINAS_GRUPOS = [
 // divergir: o que aparece na tela É o que é aplicado.
 const PERFIS_PADRAO_SISTEMA = [
   {key:'admin',           label:'👑 Admin',               cor:'#7c3aed', desc:'Acesso total ao sistema',                                          get paginas(){ return Object.keys(PAGINAS); }},
-  {key:'adm_distribuicao',label:'📦 ADM Distribuição',    cor:'#2563eb', desc:'Gestão completa da distribuição',                                  paginas:['dashboard','dash-logistico','dash-interna','historico','geral','financeiro','gerot','cftv','expedicao','ocorrencias','lancamento','agendamento','motoristas','veiculos','frota','frota-disponibilidade','absenteismo','cadastros','recursos-humanos','datas-entrega']},
-  {key:'exped_admin',     label:'🚚 Expedição Admin',     cor:'#2563eb', desc:'Gestão de expedição com frota e armazém',                          paginas:['dashboard','dash-logistico','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','frota-disponibilidade','armazem','absenteismo','datas-entrega']},
+  {key:'adm_distribuicao',label:'📦 ADM Distribuição',    cor:'#2563eb', desc:'Gestão completa da distribuição',                                  paginas:['dashboard','dash-logistico','dash-interna','historico','geral','financeiro','gerot','cftv','expedicao','ocorrencias','lancamento','agendamento','motoristas','veiculos','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','absenteismo','cadastros','recursos-humanos','datas-entrega']},
+  {key:'exped_admin',     label:'🚚 Expedição Admin',     cor:'#2563eb', desc:'Gestão de expedição com frota e armazém',                          paginas:['dashboard','dash-logistico','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','armazem','absenteismo','datas-entrega']},
   {key:'adm_armazem',     label:'🏭 ADM Armazém',         cor:'#d97706', desc:'Gestão completa do armazém',                                       paginas:['dashboard','dash-logistico','dash-interna','historico','geral','gerot','cftv','motoristas','veiculos','armazem','abs-armazem','abastecimento-loja','receitas-armazem','erro-conferente','cadastros','recursos-humanos']},
   {key:'adm_fiscal',      label:'📊 ADM Fiscal',          cor:'#059669', desc:'Gestão completa da área fiscal',                                   paginas:['dashboard','dash-logistico','fiscal','gestao-fiscal','seguros','caixa','motoristas','veiculos','geral','financeiro','gerot','cftv','historico','cadastros']},
   {key:'fiscal_admin',    label:'📋 Fiscal Admin',        cor:'#0891b2', desc:'Administração fiscal',                                             paginas:['dashboard','dash-logistico','fiscal','gestao-fiscal','seguros','motoristas','veiculos','geral','financeiro','gerot','cftv','historico']},
   {key:'fiscal_op',       label:'📋 Fiscal Operacional',  cor:'#0891b2', desc:'Operação fiscal — lançar NFs',                                     paginas:['dashboard','fiscal']},
   {key:'operador',        label:'🚚 Expedição Operador',  cor:'#2563eb', desc:'Acesso à expedição — lançar demandas e acompanhar status',         paginas:['dashboard','dash-logistico','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','frota','frota-disponibilidade','datas-entrega']},
-  {key:'comercial',       label:'💼 Comercial',           cor:'#7c3aed', desc:'Acesso às rotas e análises comerciais',                            paginas:['dashboard','dash-logistico','comercial-rotas','comercial-cancelamentos','historico','geral','gerot']},
+  {key:'comercial',       label:'💼 Comercial',           cor:'#7c3aed', desc:'Acesso às rotas e análises comerciais',                            paginas:['dashboard','dash-logistico','comercial-rotas','comercial-cancelamentos','comercial-cargas-pendentes','historico','geral','gerot']},
   {key:'vendedor',        label:'💼 Vendedor',            cor:'#0d9488', desc:'Portal de pedidos do vendedor',                                    paginas:[], extra:'Portal Vendedor'},
   {key:'seguros',         label:'🛡️ Seguros',             cor:'#7c3aed', desc:'Área de seguros',                                                  paginas:['dashboard','seguros']},
   {key:'caixa',           label:'💵 Caixa',               cor:'#065f46', desc:'Área de caixa',                                                    paginas:['dashboard','caixa']},
