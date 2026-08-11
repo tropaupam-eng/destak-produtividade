@@ -3145,7 +3145,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">⏳ Cargas Pendentes</h2>
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Cargas da Expedição que ainda não saíram (separação, carregamento, aguardando NF/manifesto) — valor parado no armazém até a viagem começar</p>
     </div>
-    <button onclick="carregarCargasPendentesComercial()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+    <div style="display:flex;gap:8px">
+      <button onclick="toggleCargPendModo()" id="cargpend-btn-modo" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">📊 Ver % da Meta</button>
+      <button onclick="carregarCargasPendentesComercial()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
     <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Cargas Pendentes</div><div class="kpi-value" id="cargpend-kpi-qtd">—</div></div>
@@ -38791,6 +38794,16 @@ const _STATUS_CARGPEND_CFG = {
   fim_viagem:          {label:'🏁 Retornou',           cor:'#2563eb'},
 };
 
+let _cargPendCache = null; // {cargas, rotasValorMeta} — evita refetch ao só trocar o modo de exibição
+let _cargPendModo   = 'valor'; // 'valor' | 'pct'
+
+function toggleCargPendModo(){
+  _cargPendModo = _cargPendModo === 'valor' ? 'pct' : 'valor';
+  const btn = document.getElementById('cargpend-btn-modo');
+  if(btn) btn.textContent = _cargPendModo === 'valor' ? '📊 Ver % da Meta' : '💰 Ver Valor';
+  _renderCargasPendentesComercial();
+}
+
 async function carregarCargasPendentesComercial(){
   const container = document.getElementById('cargpend-container');
   if(!container) return;
@@ -38803,6 +38816,17 @@ async function carregarCargasPendentesComercial(){
       'demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem)&select=carga,rota,motorista,veiculo,status,data_saida,valor_total,quantidade_pedidos&order=data_saida.asc&limit=2000'
     ) || [];
 
+    // Meta de valor (= valor de liberação) por rota, mesma fonte de
+    // renderCargasAbaixoValor — usada tanto pra colorir o valor abaixo da
+    // meta quanto pro modo "% da Meta".
+    let rotasValorMeta = {};
+    try{
+      const rotasMeta = await supaFetch('rotas?select=nome,valor_padrao&ativo=eq.true') || [];
+      rotasMeta.forEach(r=>{ if(r.nome && r.valor_padrao > 0) rotasValorMeta[r.nome.trim().toUpperCase()] = r.valor_padrao; });
+    }catch(e){}
+
+    _cargPendCache = { cargas, rotasValorMeta };
+
     const valorTotal   = cargas.reduce((s,c)=>s+(Number(c.valor_total)||0),0);
     const pedidosTotal = cargas.reduce((s,c)=>s+(Number(c.quantidade_pedidos)||0),0);
 
@@ -38811,34 +38835,61 @@ async function carregarCargasPendentesComercial(){
     set('cargpend-kpi-valor', valorTotal.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}));
     set('cargpend-kpi-pedidos', pedidosTotal);
 
-    if(!cargas.length){
-      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">✅</span>Nenhuma carga pendente no momento.</p>';
-      return;
-    }
-
-    const fmtD = d => { try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d||'—'; } };
-    container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px">
-      ${cargas.map(c=>{
-        const cfg = _STATUS_CARGPEND_CFG[c.status] || {label:c.status||'—', cor:'#6b7280'};
-        return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div style="font-size:1.05rem;font-weight:800;color:var(--text-primary);line-height:1.2">${c.rota||'—'}</div>
-            <span style="font-size:.68rem;font-weight:700;color:var(--text-muted);white-space:nowrap">#${c.carga||'—'}</span>
-          </div>
-          <span style="align-self:flex-start;background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap">${cfg.label}</span>
-          <div style="font-size:1.15rem;font-weight:800;color:var(--text-primary);margin-top:2px">${(Number(c.valor_total)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</div>
-          <div style="font-size:.78rem;color:var(--text-secondary);line-height:1.7;border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
-            <div>👤 ${c.motorista||'—'}</div>
-            <div>🚚 <span style="font-family:monospace">${c.veiculo||'—'}</span></div>
-            <div>📅 Saída: ${fmtD(c.data_saida)}</div>
-            <div>📦 ${c.quantidade_pedidos||0} pedido${c.quantidade_pedidos===1?'':'s'}</div>
-          </div>
-        </div>`;
-      }).join('')}
-    </div>`;
+    _renderCargasPendentesComercial();
   }catch(e){
     container.innerHTML = '<p style="text-align:center;padding:40px;color:#dc2626">⚠️ Erro ao carregar: '+e.message+'</p>';
   }
+}
+
+function _renderCargasPendentesComercial(){
+  const container = document.getElementById('cargpend-container');
+  if(!container || !_cargPendCache) return;
+  const { cargas, rotasValorMeta } = _cargPendCache;
+
+  if(!cargas.length){
+    container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">✅</span>Nenhuma carga pendente no momento.</p>';
+    return;
+  }
+
+  const fmtD = d => { try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d||'—'; } };
+  container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px">
+    ${cargas.map(c=>{
+      const cfg  = _STATUS_CARGPEND_CFG[c.status] || {label:c.status||'—', cor:'#6b7280'};
+      const val  = Number(c.valor_total)||0;
+      const meta = rotasValorMeta[(c.rota||'').trim().toUpperCase()] || 0;
+      const abaixoMeta = meta > 0 && val < meta;
+
+      let metricaHtml;
+      if(_cargPendModo === 'pct' && meta > 0){
+        const pct   = Math.round((val/meta)*100);
+        const falta = Math.max(0, 100 - pct);
+        const cor   = pct >= 100 ? 'var(--green)' : pct >= 80 ? '#f59e0b' : '#ef4444';
+        metricaHtml = `<div style="margin-top:2px">
+          <div style="font-size:1.15rem;font-weight:800;color:${cor}">${pct >= 100 ? '✅ Meta atingida' : `Falta ${falta}% p/ meta`}</div>
+          <div style="height:6px;background:var(--bg-card2);border-radius:3px;overflow:hidden;margin-top:5px">
+            <div style="height:100%;width:${Math.min(pct,100)}%;background:${cor};border-radius:3px"></div>
+          </div>
+        </div>`;
+      } else {
+        metricaHtml = `<div style="font-size:1.15rem;font-weight:800;color:${abaixoMeta?'#ef4444':'var(--text-primary)'};margin-top:2px">${val.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</div>`;
+      }
+
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="font-size:1.05rem;font-weight:800;color:var(--text-primary);line-height:1.2">${c.rota||'—'}</div>
+          <span style="font-size:.68rem;font-weight:700;color:var(--text-muted);white-space:nowrap">#${c.carga||'—'}</span>
+        </div>
+        <span style="align-self:flex-start;background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap">${cfg.label}</span>
+        ${metricaHtml}
+        <div style="font-size:.78rem;color:var(--text-secondary);line-height:1.7;border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
+          <div>👤 ${c.motorista||'—'}</div>
+          <div>🚚 <span style="font-family:monospace">${c.veiculo||'—'}</span></div>
+          <div>📅 Saída: ${fmtD(c.data_saida)}</div>
+          <div>📦 ${c.quantidade_pedidos||0} pedido${c.quantidade_pedidos===1?'':'s'}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
 
 // ══════════════════════════════════════════════════════
