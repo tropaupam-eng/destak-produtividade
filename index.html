@@ -8457,6 +8457,7 @@ async function resolverTodosErros(){
 // Para avançar o status: só é permitido ir para o `next` imediato.
 // `cancelado` é permitido de qualquer status ativo (exceto concluido).
 const FLUXO_STATUS = {
+  formacao:             { next:'pendente',               label:'⏳ Pendente' },
   pendente:             { next:'separacao',              label:'📦 Em Separação' },
   separacao:            { next:'carregamento',           label:'🚛 Em Carregamento' },
   carregamento:         { next:'aguardando_nf',          label:'📋 Aguardando NF' },
@@ -8469,7 +8470,7 @@ const FLUXO_STATUS = {
   cancelado:            { next:null,                     label:null },
 };
 
-const STATUS_CANCELAVEIS = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
+const STATUS_CANCELAVEIS = ['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
 
 /**
  * Valida se uma transição de status é permitida pelas regras do fluxo.
@@ -8555,6 +8556,16 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
   }catch(e){
     return {ok:false, msg:e.message};
   }
+}
+
+// Carga em formação sai automaticamente desse estágio (vira 'pendente')
+// assim que o valor bate a meta da rota (valor_meta, copiado de rotas.valor_padrao
+// na criação). Chamado toda vez que valor_total é recalculado. Transição
+// inválida (carga já não está mais em formação) é ignorada silenciosamente —
+// _patchStatusDemanda já valida isso via FLUXO_STATUS.
+async function _checarAutoAvancoFormacao(demandaId, valorMeta, valorTotalNovo){
+  if(!demandaId || !(valorMeta > 0) || !(valorTotalNovo >= valorMeta)) return;
+  try{ await _patchStatusDemanda(demandaId, 'pendente', 'auto_meta_atingida'); }catch(e){}
 }
 
 // Atualiza status_fiscal OU status_armazem sem tocar no status principal da carga
@@ -9292,12 +9303,17 @@ async function pushBaseData(records){
       });
       const cargasKeys = Object.keys(porCarga);
       for(let i=0; i<cargasKeys.length; i+=5){
-        await Promise.all(cargasKeys.slice(i,i+5).map(c =>
-          supaFetch(`demandas_rota?carga=eq.${c}`,{
-            method:'PATCH',
-            body: JSON.stringify({quantidade_pedidos: porCarga[c].pedidos.size, valor_total: porCarga[c].valor})
-          }).catch(()=>{})
-        ));
+        await Promise.all(cargasKeys.slice(i,i+5).map(async c => {
+          try{
+            await supaFetch(`demandas_rota?carga=eq.${c}`,{
+              method:'PATCH',
+              body: JSON.stringify({quantidade_pedidos: porCarga[c].pedidos.size, valor_total: porCarga[c].valor})
+            });
+            // Carga em formação sai automaticamente quando o valor bate a meta
+            const formando = await supaFetch(`demandas_rota?carga=eq.${c}&status=eq.formacao&select=id,valor_meta`).catch(()=>[]) || [];
+            await Promise.all(formando.map(d=>_checarAutoAvancoFormacao(d.id, d.valor_meta, porCarga[c].valor)));
+          }catch(_){}
+        }));
       }
       // Preencher ajudantes que se vincularam antes da planilha existir
       for(const c of cargasKeys){
@@ -15314,7 +15330,7 @@ async function criarDemanda(){
         motorista: motoristaSalvar, veiculo: veiculoSalvar, rota,
         data_saida: data,
         valor_meta: valorMeta,
-        status: 'pendente',
+        status: 'formacao',
         usuario_id: USUARIO_LOGADO?.id||null,
         unidade: USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||null
       })
@@ -15370,6 +15386,7 @@ function renderPipelineBar(){
   const el = document.getElementById('exp-pipeline-bar');
   if(!el) return;
   const stages = [
+    {key:'formacao',              label:'Em Formação',   color:'#6366f1'},
     {key:'pendente',              label:'Pendente',      color:'#f59e0b'},
     {key:'separacao',             label:'Separação',     color:'#3b82f6'},
     {key:'carregamento',          label:'Carregamento',  color:'#7c3aed'},
@@ -15432,7 +15449,7 @@ function filtrarUnidade(unidade, btn){
 
 // Popula os selects de Veículo, Motorista e Rota com disponibilidade
 function popularFiltrosExpedicao(){
-  const ocupadosStatuses = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
+  const ocupadosStatuses = new Set(['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
 
   // Derivar motoristas ocupados do cache de demandas ativas
   const motOcup = new Set(
@@ -16209,7 +16226,7 @@ async function renderFrotaUso(){
     // ── Queries: inclui rotas do mês anterior para carry-over (saiu em jun, voltou em jul) ──
     const _q = [
       supaFetch('veiculos?select=placa,tipo,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,ts_concluido,status,rota,carga&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,ts_concluido,status,rota,carga&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
       supaFetch(`lancamentos?select=veiculo,ts,rota,carga&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[])
     ];
     if(ehMesAtual){
@@ -16598,7 +16615,7 @@ async function renderFrotaDisp(){
 
     const queries = [
       supaFetch('veiculos?select=placa,tipo,unidade,ativo&order=placa.asc'),
-      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
+      supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
       supaFetch(`lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[]),
       supaFetch(`abastecimento_loja?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&veiculo=not.is.null&select=veiculo,data_saida`).catch(()=>[])
     ];
@@ -17417,6 +17434,7 @@ async function salvarEditarDemanda(){
             method:'PATCH', body:JSON.stringify({ quantidade_pedidos: quantidade, valor_total: valorTotal })
           });
           if(d){ d.quantidade_pedidos = quantidade; d.valor_total = valorTotal; }
+          _checarAutoAvancoFormacao(id, d?.valor_meta, valorTotal).catch(()=>{});
         }
       }catch(_){}
     }
@@ -18740,6 +18758,7 @@ async function carregarRetornosVeiculos(){
 
 function _getDemandasStatusConfig(){
   return {
+    formacao:             {label:'🧩 Em Formação',       bg:'#e0e7ff', color:'#3730a3', bar:'#6366f1'},
     pendente:             {label:'⏳ Pendente',          bg:'#fef3c7', color:'#92400e', bar:'#f59e0b'},
     separacao:            {label:'📦 Separação',         bg:'#dbeafe', color:'#1e40af', bar:'#3b82f6'},
     carregamento:         {label:'🚛 Carregamento',      bg:'#ede9fe', color:'#5b21b6', bar:'#7c3aed'},
@@ -18789,7 +18808,7 @@ function _filterDemandasData(){
 }
 
 function _buildDemandasAlerts(){
-  const _statusAtivos = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
+  const _statusAtivos = new Set(['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem']);
   const _mapVeic = {}, _mapMot = {}, _alertas = {};
 
   _demandasCache.forEach(x=>{
@@ -18909,8 +18928,8 @@ function renderDemandasCards(){
             ${temCarga?'🔗 '+d.carga:'📦 Vincular Pré-Carga'}
           </button>
           ${(()=>{
-            const pipeline = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
-            const pipeLabels = {pendente:'⏳ Pend.',separacao:'📦 Sep.',carregamento:'🚛 Carg.',aguardando_nf:'📋 NF',aguardando_manifesto:'🛡️ Man.',pronto_viagem:'✅ Pronto',saiu:'🚛 Saiu',fim_viagem:'🏁 Fim',concluido:'✅ Ok'};
+            const pipeline = ['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
+            const pipeLabels = {formacao:'🧩 Form.',pendente:'⏳ Pend.',separacao:'📦 Sep.',carregamento:'🚛 Carg.',aguardando_nf:'📋 NF',aguardando_manifesto:'🛡️ Man.',pronto_viagem:'✅ Pronto',saiu:'🚛 Saiu',fim_viagem:'🏁 Fim',concluido:'✅ Ok'};
             const curIdx = pipeline.indexOf(d.status);
             const nextStatus = curIdx >= 0 && curIdx < pipeline.length-1 ? pipeline[curIdx+1] : null;
             const nextLabel  = nextStatus ? pipeLabels[nextStatus] : null;
@@ -19013,7 +19032,7 @@ const FLUXO_REVERSO = {
 };
 
 function _buildExpMenuContent(d){
-  const lbs={pendente:'⏳ Pendente',separacao:'📦 Em Separação',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Aguardando NF',aguardando_manifesto:'🛡️ Aguardando Manifesto',pronto_viagem:'✅ Pronto para Viagem',saiu:'🚛 Em Viagem',fim_viagem:'🏁 Fim de Viagem',concluido:'✅ Concluído',cancelado:'❌ Cancelar Carga'};
+  const lbs={formacao:'🧩 Em Formação',pendente:'⏳ Pendente',separacao:'📦 Em Separação',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Aguardando NF',aguardando_manifesto:'🛡️ Aguardando Manifesto',pronto_viagem:'✅ Pronto para Viagem',saiu:'🚛 Em Viagem',fim_viagem:'🏁 Fim de Viagem',concluido:'✅ Concluído',cancelado:'❌ Cancelar Carga'};
   const temCarga = !!d.carga;
   const close = "_expMenuClose()";
   const opcoes = [];
@@ -19041,7 +19060,7 @@ function _buildExpMenuContent(d){
     </div>`);
   }
   // Cancelar
-  const cancelaveis = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
+  const cancelaveis = ['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
   if(cancelaveis.includes(d.status)){
     opcoes.push(`<div onclick="${close};atualizarStatusDemanda('${d.id}','cancelado')"
       style="padding:7px 12px;font-size:.8rem;cursor:pointer;border-radius:6px;font-weight:600;background:rgba(239,68,68,.08);color:#ef4444;border-left:3px solid #ef4444;margin-top:4px;border-top:1px solid var(--border)"
@@ -19626,6 +19645,7 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
               mes_ano: novos[0]?.mes_ano || ''
             })
           }).catch(e=>console.warn(e));
+          _checarAutoAvancoFormacao(demandaId, _demAntes?.valor_meta, totalValor).catch(()=>{});
 
           // ── Gravar no histórico de alterações ─────────────────────────
           try{
@@ -19862,6 +19882,7 @@ async function vincularSoCarga(){
         });
         const dem2 = _demandasCache.find(d=>d.id===demandaId);
         if(dem2){ dem2.quantidade_pedidos = quantidade; dem2.valor_total = valorTotal; }
+        _checarAutoAvancoFormacao(demandaId, dem2?.valor_meta, valorTotal).catch(()=>{});
       }
     }catch(_){}
 
@@ -20145,7 +20166,7 @@ async function carregarPortalMotorista(mesCustom = null){
     let da = null;
     try{
       const nomeDBTmp = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
-      const _statusAtivosMot = `"saiu","pronto_viagem","carregamento","aguardando_nf","aguardando_manifesto","pendente","separacao"`;
+      const _statusAtivosMot = `"saiu","pronto_viagem","carregamento","aguardando_nf","aguardando_manifesto","pendente","separacao","formacao"`;
       let demAtiva = await supaFetch(
         `demandas_rota?motorista=eq.${encodeURIComponent(nomeDBTmp)}&status=in.(${_statusAtivosMot})&select=*&order=data_saida.desc&limit=5`
       ).catch(()=>[]) || [];
@@ -20160,7 +20181,7 @@ async function carregarPortalMotorista(mesCustom = null){
       // Prioritize carga in 'saiu' status so motorista can register arrival even if a newer pre-departure carga exists
       da = demAtiva.find(d => d.status === 'saiu') || demAtiva[0];
       if(da && elCargaAtual){
-        const statusLabel = {saiu:'🚛 Em Rota',pronto_viagem:'✅ Pronto p/ Viagem',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Ag. NF',aguardando_manifesto:'🛡️ Ag. Manifesto',pendente:'⏳ Em Preparação',separacao:'📦 Em Separação'}[da.status]||da.status;
+        const statusLabel = {saiu:'🚛 Em Rota',pronto_viagem:'✅ Pronto p/ Viagem',carregamento:'🚛 Em Carregamento',aguardando_nf:'📋 Ag. NF',aguardando_manifesto:'🛡️ Ag. Manifesto',pendente:'⏳ Em Preparação',separacao:'📦 Em Separação',formacao:'🧩 Em Formação'}[da.status]||da.status;
         const fmtHora = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
         // Buscar KM da carga ativa
         let kmAtiva = null;
@@ -27190,7 +27211,7 @@ async function carregarPainelDisponibilidade(){
     // pela aba Lançamento (sem passar pela Expedição) nunca contava aqui,
     // derrubando a % pra quase zero mesmo com o veículo rodando o mês inteiro.
     const viagensMes = await supaFetch(
-      `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
+      `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
     ).catch(()=>[]) || [];
     const lancamentosDispRef = await supaFetch(
       `lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}`
@@ -27860,6 +27881,7 @@ async function renderDashboard(){
 
     // Status config
     const STATUS_CFG = {
+      formacao:           {label:'🧩 Em Formação',       cor:'#6366f1', setor:'Expedição'},
       pendente:           {label:'⏳ Pendente',          cor:'#6b7280', setor:'Expedição'},
       separacao:          {label:'📦 Separação',         cor:'#f59e0b', setor:'Armazém'},
       carregamento:       {label:'🔄 Carregamento',      cor:'#3b82f6', setor:'Armazém'},
@@ -27898,7 +27920,7 @@ async function renderDashboard(){
 
     // Renderizar por setor
     const setores = [
-      {nome:'📦 Expedição / Pendente', statuses:['pendente'], cor:'#6b7280'},
+      {nome:'📦 Expedição / Pendente', statuses:['formacao','pendente'], cor:'#6b7280'},
       {nome:'🏭 Armazém', statuses:['separacao','carregamento'], cor:'#f59e0b'},
       {nome:'📋 Fiscal', statuses:['aguardando_nf'], cor:'#059669'},
       {nome:'🛡️ Seguros + 💵 Caixa', statuses:['aguardando_manifesto','pronto_viagem'], cor:'#7c3aed'},
@@ -27938,8 +27960,8 @@ async function renderDashboard(){
               <!-- Barra de progresso do fluxo -->
               <div style="margin-top:8px">
                 <div style="display:flex;gap:2px">
-                  ${['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem'].map(st=>{
-                    const statuses = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem'];
+                  ${['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem'].map(st=>{
+                    const statuses = ['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem'];
                     const currentIdx = statuses.indexOf(d.status);
                     const stIdx = statuses.indexOf(st);
                     const done = stIdx < currentIdx;
@@ -28184,8 +28206,9 @@ async function editarNumeroCarga(demandaId, cargaAtual){
     // Unidade da própria demanda tem prioridade — nunca sobrescrever com a
     // unidade de quem está editando (pode ser um admin ou alguém de outra
     // unidade só corrigindo um número, não o "dono" da carga).
-    const demAtualRow = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=unidade`).catch(()=>[]);
+    const demAtualRow = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=unidade,valor_meta`).catch(()=>[]);
     const unidadeExistente = (demAtualRow?.[0]?.unidade||'').trim();
+    const valorMetaDemanda  = demAtualRow?.[0]?.valor_meta;
     const unidadeCheck = unidadeExistente || (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
     if(unidadeCheck){
       const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}`).catch(()=>[]);
@@ -28214,6 +28237,7 @@ async function editarNumeroCarga(demandaId, cargaAtual){
         await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
           method:'PATCH', body:JSON.stringify({ quantidade_pedidos: quantidade, valor_total: valorTotal })
         });
+        _checarAutoAvancoFormacao(demandaId, valorMetaDemanda, valorTotal).catch(()=>{});
       }
     }catch(_){}
     // Propaga a rota da demanda pra base_data quando os pedidos chegaram pela
@@ -36692,7 +36716,7 @@ async function testExpedicao(){
 
   // 3. Contar registros com cada status
   console.log('3. Registros por status:');
-  const statuses = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido','cancelado'];
+  const statuses = ['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido','cancelado'];
   for(const s of statuses){
     try{
       const data = await supaFetch(`demandas_rota?status=eq.${s}&select=id`,{_quiet:true});
@@ -38506,11 +38530,11 @@ async function acaoRotaUnificada(id, rota, data, tipo, motivo){
         showToast('⚠️ Já existe uma pré-carga ativa para '+rota+' em '+data,'warning');
         return;
       }
-      const body = { rota, status:'pendente', data_saida:data, motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO', usuario_id:USUARIO_LOGADO?.id||null, criado_em:new Date().toISOString() };
+      const body = { rota, status:'formacao', data_saida:data, motorista:'A DEFINIR MOTORISTA', veiculo:'A DEFINIR VEÍCULO', usuario_id:USUARIO_LOGADO?.id||null, criado_em:new Date().toISOString() };
       const novaPreCarga = await supaFetch('demandas_rota',{method:'POST',body:JSON.stringify(body),prefer:'return=representation'});
       const novaId = novaPreCarga?.[0]?.id || null;
       // Registrar criação no histórico
-      if(novaId) registrarHistoricoStatus(novaId, null, 'pendente', 'popup_expedicao_criar');
+      if(novaId) registrarHistoricoStatus(novaId, null, 'formacao', 'popup_expedicao_criar');
 
       // Atualiza o agendamento: marca lancado=true (pré-carga existe)
       // O popup usa _demandasCache para saber se existe, não o lancado
@@ -38784,6 +38808,7 @@ async function limparComercialRotas(){
 // demandas_rota.valor_total/quantidade_pedidos, já preenchidos pela
 // Expedição — esta tela só soma e lista, não recalcula nada.
 const _STATUS_CARGPEND_CFG = {
+  formacao:            {label:'🧩 Em Formação',        cor:'#6366f1'},
   pendente:            {label:'⏳ Pendente',           cor:'#6b7280'},
   separacao:           {label:'📦 Separação',          cor:'#f59e0b'},
   carregamento:        {label:'🔄 Carregamento',       cor:'#3b82f6'},
@@ -38852,48 +38877,63 @@ function _renderCargasPendentesComercial(){
   }
 
   const fmtD = d => { try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d||'—'; } };
-  container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px">
-    ${cargas.map(c=>{
-      const cfg  = _STATUS_CARGPEND_CFG[c.status] || {label:c.status||'—', cor:'#6b7280'};
-      const val  = Number(c.valor_total)||0;
-      const meta = rotasValorMeta[(c.rota||'').trim().toUpperCase()] || 0;
-      const abaixoMeta = meta > 0 && val < meta;
 
-      let metricaHtml;
-      if(_cargPendModo === 'pct'){
-        if(meta > 0){
-          // % já atingido da meta (não o que falta), travado em 100% quando bate ou passa
-          const pct = Math.min(100, Math.round((val/meta)*100));
-          const cor = pct >= 100 ? 'var(--green)' : pct >= 80 ? '#f59e0b' : '#ef4444';
-          metricaHtml = `<div style="margin-top:2px">
-            <div style="font-size:1.15rem;font-weight:800;color:${cor}">${pct}%</div>
-            <div style="height:6px;background:var(--bg-card2);border-radius:3px;overflow:hidden;margin-top:5px">
-              <div style="height:100%;width:${pct}%;background:${cor};border-radius:3px"></div>
-            </div>
-          </div>`;
-        } else {
-          metricaHtml = `<div style="font-size:1.15rem;font-weight:800;color:var(--text-muted);margin-top:2px">—</div>`;
-        }
+  const cardHtml = c => {
+    const cfg  = _STATUS_CARGPEND_CFG[c.status] || {label:c.status||'—', cor:'#6b7280'};
+    const val  = Number(c.valor_total)||0;
+    const meta = rotasValorMeta[(c.rota||'').trim().toUpperCase()] || 0;
+    const abaixoMeta = meta > 0 && val < meta;
+
+    let metricaHtml;
+    if(_cargPendModo === 'pct'){
+      if(meta > 0){
+        // % já atingido da meta (não o que falta), travado em 100% quando bate ou passa
+        const pct = Math.min(100, Math.round((val/meta)*100));
+        const cor = pct >= 100 ? 'var(--green)' : pct >= 80 ? '#f59e0b' : '#ef4444';
+        metricaHtml = `<div style="margin-top:2px">
+          <div style="font-size:1.15rem;font-weight:800;color:${cor}">${pct}%</div>
+          <div style="height:6px;background:var(--bg-card2);border-radius:3px;overflow:hidden;margin-top:5px">
+            <div style="height:100%;width:${pct}%;background:${cor};border-radius:3px"></div>
+          </div>
+        </div>`;
       } else {
-        metricaHtml = `<div style="font-size:1.15rem;font-weight:800;color:${abaixoMeta?'#ef4444':'var(--text-primary)'};margin-top:2px">${val.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</div>`;
+        metricaHtml = `<div style="font-size:1.15rem;font-weight:800;color:var(--text-muted);margin-top:2px">—</div>`;
       }
+    } else {
+      metricaHtml = `<div style="font-size:1.15rem;font-weight:800;color:${abaixoMeta?'#ef4444':'var(--text-primary)'};margin-top:2px">${val.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</div>`;
+    }
 
-      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-          <div style="font-size:1.05rem;font-weight:800;color:var(--text-primary);line-height:1.2">${c.rota||'—'}</div>
-          <span style="font-size:.68rem;font-weight:700;color:var(--text-muted);white-space:nowrap">#${c.carga||'—'}</span>
-        </div>
-        <span style="align-self:flex-start;background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap">${cfg.label}</span>
-        ${metricaHtml}
-        <div style="font-size:.78rem;color:var(--text-secondary);line-height:1.7;border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
-          <div>👤 ${c.motorista||'—'}</div>
-          <div>🚚 <span style="font-family:monospace">${c.veiculo||'—'}</span></div>
-          <div>📅 Saída: ${fmtD(c.data_saida)}</div>
-          <div>📦 ${c.quantidade_pedidos||0} pedido${c.quantidade_pedidos===1?'':'s'}</div>
-        </div>
-      </div>`;
-    }).join('')}
-  </div>`;
+    return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="font-size:1.05rem;font-weight:800;color:var(--text-primary);line-height:1.2">${c.rota||'—'}</div>
+        <span style="font-size:.68rem;font-weight:700;color:var(--text-muted);white-space:nowrap">#${c.carga||'—'}</span>
+      </div>
+      <span style="align-self:flex-start;background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap">${cfg.label}</span>
+      ${metricaHtml}
+      <div style="font-size:.78rem;color:var(--text-secondary);line-height:1.7;border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
+        <div>👤 ${c.motorista||'—'}</div>
+        <div>🚚 <span style="font-family:monospace">${c.veiculo||'—'}</span></div>
+        <div>📅 Saída: ${fmtD(c.data_saida)}</div>
+        <div>📦 ${c.quantidade_pedidos||0} pedido${c.quantidade_pedidos===1?'':'s'}</div>
+      </div>
+    </div>`;
+  };
+
+  // Cargas em formação (ainda coletando pedidos, sem valor fechado) ficam
+  // separadas embaixo — não competem visualmente com as já pendentes de fato.
+  const emFormacao = cargas.filter(c=>c.status==='formacao');
+  const demais      = cargas.filter(c=>c.status!=='formacao');
+
+  const grid = list => `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px">${list.map(cardHtml).join('')}</div>`;
+
+  let html = demais.length ? grid(demais) : '<p style="text-align:center;padding:24px;color:var(--text-muted)">Nenhuma carga pendente — só em formação.</p>';
+  if(emFormacao.length){
+    html += `<div style="margin-top:28px;padding-top:16px;border-top:1px dashed var(--border)">
+      <div style="font-size:.82rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:12px">🧩 Em Formação (${emFormacao.length})</div>
+      ${grid(emFormacao)}
+    </div>`;
+  }
+  container.innerHTML = html;
 }
 
 // ══════════════════════════════════════════════════════
