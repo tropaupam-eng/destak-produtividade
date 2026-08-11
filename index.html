@@ -4108,6 +4108,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <select id="hist-filtro-rota" onchange="carregarHistoricoRotas()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none">
         <option value="">Todas as rotas</option>
       </select>
+      <input id="hist-filtro-busca" type="text" placeholder="🔍 Buscar por pedido ou carga..." onkeydown="if(event.key==='Enter') carregarHistoricoRotas()"
+        style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none;min-width:190px">
       <button onclick="carregarHistoricoRotas()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄</button>
     </div>
   </div>
@@ -29956,6 +29958,7 @@ async function carregarHistoricoRotas(){
 
   const filtMes  = document.getElementById('hist-filtro-mes')?.value||'';
   const filtRota = document.getElementById('hist-filtro-rota')?.value||'';
+  const filtBusca = (document.getElementById('hist-filtro-busca')?.value||'').trim();
 
   try{
     // Buscar cargas concluídas
@@ -29984,7 +29987,7 @@ async function carregarHistoricoRotas(){
     // Buscar dados complementares de todos os setores
     const cargasIds = dados.map(d=>d.carga).filter(Boolean);
     const demIds = dados.map(d=>d.id).filter(Boolean);
-    const [rotasViagem, conferencias, nfs, atribsArm, atribsFiscal, validCaixa] = await Promise.all([
+    let [rotasViagem, conferencias, nfs, atribsArm, atribsFiscal, validCaixa] = await Promise.all([
       cargasIds.length ? supaFetch(`rotas_viagem?carga=in.(${cargasIds.join(',')})&select=*`) : Promise.resolve([]),
       cargasIds.length ? supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*&order=conferido_em.asc`) : Promise.resolve([]),
       cargasIds.length ? supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*&order=criado_em.asc`) : Promise.resolve([]),
@@ -29992,6 +29995,31 @@ async function carregarHistoricoRotas(){
       cargasIds.length ? supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=*`) : Promise.resolve([]),
       cargasIds.length ? supaFetch(`validacoes_caixa?carga=in.(${cargasIds.join(',')})&select=*&order=validado_em.asc`) : Promise.resolve([]),
     ]);
+
+    // Busca por pedido ou carga — precisa vir depois de buscar conferencia_pedidos
+    // (é lá que mora o vínculo pedido→carga; demandas_rota só tem a carga).
+    if(filtBusca){
+      const buscaNum = filtBusca.replace(/\D/g,'');
+      dados = dados.filter(d=>
+        String(d.carga||'').includes(filtBusca) ||
+        (buscaNum && (String(d.carga||'').includes(buscaNum) ||
+          conferencias.some(c=>c.carga===d.carga && String(c.pedido||'').includes(buscaNum))))
+      );
+      if(!dados.length){
+        container.innerHTML='<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga encontrada para "'+filtBusca+'".</p>';
+        return;
+      }
+      // Restringe os dados complementares às cargas que sobraram, senão os
+      // KPIs (pedidos/km/dias) continuam somando o conjunto inteiro filtrado
+      // só por mês/rota, ignorando a busca.
+      const cargasFiltradas = new Set(dados.map(d=>d.carga));
+      conferencias = conferencias.filter(c=>cargasFiltradas.has(c.carga));
+      nfs = nfs.filter(n=>cargasFiltradas.has(n.carga));
+      atribsArm = atribsArm.filter(a=>cargasFiltradas.has(a.carga));
+      atribsFiscal = atribsFiscal.filter(a=>cargasFiltradas.has(a.carga));
+      validCaixa = validCaixa.filter(v=>cargasFiltradas.has(v.carga));
+      rotasViagem = rotasViagem.filter(r=>cargasFiltradas.has(r.carga));
+    }
 
     // KPIs gerais
     const totalPed = conferencias.length;
@@ -30032,7 +30060,14 @@ async function carregarHistoricoRotas(){
       const confCarga = conferencias.filter(c=>c.carga===d.carga);
       const nfsCarga = nfs.filter(n=>n.carga===d.carga);
       const atribsCarga = atribsArm.filter(a=>a.carga===d.carga);
-      const conferentes = [...new Set(atribsCarga.map(a=>a.conferente_nome))].filter(Boolean);
+      // conferencia_pedidos.conferente_nome é quem de fato conferiu cada pedido;
+      // atribuicoes_armazem é só a atribuição (quem foi designado) — mantido
+      // como reforço, pra não perder nome em caso de pedido sem conferência
+      // registrada individualmente.
+      const conferentes = [...new Set([
+        ...confCarga.map(c=>c.conferente_nome),
+        ...atribsCarga.map(a=>a.conferente_nome)
+      ])].filter(Boolean);
       const pedOK = confCarga.filter(c=>c.status==='ok').length;
       const pedNOK = confCarga.filter(c=>c.status==='nok').length;
 
@@ -30092,8 +30127,12 @@ async function carregarHistoricoRotas(){
       ].filter(Boolean);
       const totalH = setores.reduce((s,x)=>s+x.horas,0)||1;
 
-      // Dados por setor
-      const fiscaisCarga = [...new Set(nfsCarga.map(n=>n.fiscal_nome).filter(Boolean))];
+      // Dados por setor — separa quem fez NF de quem fez boleto (às vezes é
+      // a mesma pessoa, às vezes não; o chip mostra o(s) papel(is) de cada um).
+      const fiscalPapeis = {};
+      nfsOnly.forEach(n=>{ if(n.fiscal_nome){ (fiscalPapeis[n.fiscal_nome]=fiscalPapeis[n.fiscal_nome]||new Set()).add('NF'); } });
+      boletosOnly.forEach(n=>{ if(n.fiscal_nome){ (fiscalPapeis[n.fiscal_nome]=fiscalPapeis[n.fiscal_nome]||new Set()).add('Boleto'); } });
+      const fiscaisCarga = Object.entries(fiscalPapeis).map(([nome,papeis])=>`${nome} (${[...papeis].join('+')})`);
       const caixasCarga  = [...new Set(validCaixa.filter(v=>v.carga===d.carga).map(v=>v.caixa_nome).filter(Boolean))];
       const confObs = confCarga.filter(c=>c.status==='nok'&&c.observacao);
 
