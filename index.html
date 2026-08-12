@@ -20376,10 +20376,6 @@ async function carregarPortalMotorista(mesCustom = null){
       }catch(e){ console.warn('Erro ao buscar divergências:', e.message); }
     }
 
-    // Reconcilia em segundo plano lançamentos manuais sem demanda_rota (falha anterior).
-    // Não bloqueia o carregamento do portal.
-    _reconciliarLancamentosPendentesMotorista(nomeDB).catch(()=>{});
-
     // ── FOLGAS DO MOTORISTA ────────────────────────────
     try{
       const [folgasMes, folgasTotal] = await Promise.all([
@@ -21095,47 +21091,9 @@ async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
       })
     });
   }
-  // O lançamento acima já está gravado e é o registro oficial de "carga recebida".
-  // A criação da demanda_rota é uma etapa complementar: se falhar aqui, NÃO desfazemos
-  // o lançamento — ele permanece registrado e a etapa pendente é reprocessada
-  // automaticamente por _reconciliarLancamentosPendentesMotorista().
-  await _garantirDemandaRotaMotorista(cargaNum, _nomeB, veicVal, _undB, _tsB);
-}
-
-// Cria a demanda_rota da carga se ainda não existir (idempotente).
-async function _garantirDemandaRotaMotorista(cargaNum, nomeB, veicVal, undB, tsB){
-  const jaExiste = await supaFetch(`demandas_rota?carga=eq.${cargaNum}&select=id&limit=1`).catch(()=>[]);
-  if(jaExiste && jaExiste.length) return;
-  await supaFetch('demandas_rota',{
-    method:'POST',
-    body:JSON.stringify({
-      carga: cargaNum,
-      motorista: nomeB,
-      veiculo: veicVal,
-      rota: '',
-      status: 'saiu',
-      ts_saiu: tsB,
-      data_saida: tsB.slice(0,10),
-      unidade: undB||null,
-      criado_em: tsB,
-      usuario_id: USUARIO_LOGADO?.id||null
-    })
-  });
-}
-
-// Reprocessa em segundo plano lançamentos manuais do motorista cuja demanda_rota
-// não foi criada (ex.: falha de rede na gravação anterior). Não bloqueia a tela.
-async function _reconciliarLancamentosPendentesMotorista(nomeDB){
-  try{
-    const lancs = await supaFetch(
-      `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&fonte=eq.motorista_b&select=carga,veiculo,und,ts&order=ts.desc&limit=20`
-    ).catch(()=>[]) || [];
-    for(const l of lancs){
-      await _garantirDemandaRotaMotorista(
-        Number(l.carga), nomeDB, l.veiculo||'', l.und||'', l.ts||new Date().toISOString()
-      ).catch(e=>console.warn('Reconciliação pendente falhou p/ carga', l.carga, e.message));
-    }
-  }catch(e){ console.warn('Reconciliação de lançamentos pendentes falhou:', e.message); }
+  // O lançamento acima é só um comparativo do motorista — não deve criar/alterar
+  // demanda_rota nem aparecer na Expedição. A carga oficial só existe quando a
+  // Expedição a lança; este registro só aparece em Histórico > Lançamentos.
 }
 
 // Verifica e registra divergências entre lançamento do motorista e da expedição
