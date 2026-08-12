@@ -41151,7 +41151,10 @@ function renderChecklistAlho() {
   const salvarBtn = document.getElementById('ck-salvarBtn');
   if(salvarBtn) salvarBtn.onclick = _ck_salvar;
   document.querySelectorAll('#ck-decisaoGrid .ck-dec-card').forEach(card => {
-    card.onclick = () => _ck_setDecisao(card.dataset.val);
+    card.onclick = () => {
+      _ck_setDecisao(card.dataset.val);
+      document.getElementById('ck-decisaoGrid')?.classList.remove('ck-dec-err');
+    };
   });
   const addAlt = document.getElementById('ck-addAlteracao');
   if(addAlt) addAlt.onclick = _ck_addAlteracao;
@@ -41164,13 +41167,13 @@ function renderChecklistAlho() {
   _ck_renderChecklist();
   _ck_renderAlteracoes();
   _ck_switchTab('recebimento');
-  // Remove erro visual ao preencher campos obrigatórios
+  // Remove erro visual ao preencher campos obrigatórios — usa .oninput (sobrescreve)
+  // em vez de addEventListener: essa função roda toda vez que a aba é aberta, e
+  // addEventListener empilharia um handler novo idêntico a cada navegação,
+  // deixando os campos cada vez mais lentos ao longo de uma sessão de uso.
   ['ck-r-data','ck-r-fornecedor','ck-r-nf','ck-r-lote','ck-r-unidade','ck-r-responsavel'].forEach(id => {
     const el = document.getElementById(id);
-    if(el) el.addEventListener('input', () => el.classList.remove('req-erro'), {once:false});
-  });
-  document.querySelectorAll('#ck-decisaoGrid .ck-dec-card').forEach(card => {
-    card.addEventListener('click', () => document.getElementById('ck-decisaoGrid')?.classList.remove('ck-dec-err'));
+    if(el) el.oninput = () => el.classList.remove('req-erro');
   });
 }
 
@@ -43612,25 +43615,33 @@ async function toggleRoteirizado(demandaId){
     const isActive = elem.style.background === 'rgb(34, 197, 94)' || elem.textContent.includes('☑');
     const newState = !isActive;
 
-    // Atualizar UI imediatamente
-    if(newState){
-      elem.style.background = '#dcfce7';
-      elem.style.color = '#22c55e';
-      elem.innerHTML = '<span>☑</span> Roteirizado';
-    } else {
-      elem.style.background = '#dbeafe';
-      elem.style.color = '#3b82f6';
-      elem.innerHTML = '<span>☐</span> Roteirizado';
-    }
+    const aplicarEstado = ativo => {
+      if(ativo){
+        elem.style.background = '#dcfce7';
+        elem.style.color = '#22c55e';
+        elem.innerHTML = '<span>☑</span> Roteirizado';
+      } else {
+        elem.style.background = '#dbeafe';
+        elem.style.color = '#3b82f6';
+        elem.innerHTML = '<span>☐</span> Roteirizado';
+      }
+    };
 
-    // Salvar no Supabase
-    await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
-      method:'PATCH',
-      body: JSON.stringify({roteirizado: newState})
-    }).catch(e => {
+    // Atualizar UI imediatamente
+    aplicarEstado(newState);
+
+    // Salvar no Supabase — se falhar, reverte a UI localmente (sem re-chamar
+    // a função: uma falha persistente de rede/permissão faria isso recursionar
+    // sem parar, travando a aba com uma rajada infinita de requisições)
+    try{
+      await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
+        method:'PATCH',
+        body: JSON.stringify({roteirizado: newState})
+      });
+    }catch(e){
       showToast('❌ Erro ao atualizar: '+e.message,'warning');
-      toggleRoteirizado(demandaId); // Reverter se falhar
-    });
+      aplicarEstado(isActive);
+    }
 
   }catch(e){
     showToast('❌ Erro: '+e.message,'warning');
