@@ -1538,12 +1538,19 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <p style="font-size:.78rem;color:#92400e;font-weight:600;margin:0">🔑 Primeiro acesso — use o CPF cadastrado pelo administrador.</p>
         <button onclick="switchLoginTab('email')" style="background:none;border:none;color:#6b7280;font-size:.75rem;cursor:pointer;white-space:nowrap;text-decoration:underline">← Voltar</button>
       </div>
-      <div style="margin-bottom:24px">
+      <div style="margin-bottom:16px">
         <label style="font-size:.78rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:6px">CPF</label>
-        <input type="text" id="login-cpf" placeholder="000.000.000-00" maxlength="14"
+        <input type="text" id="login-cpf" placeholder="000.000.000-00" maxlength="14" autocomplete="username"
+          style="width:100%;border:1.5px solid #d1d5db;border-radius:8px;padding:10px 14px;font-size:.95rem;box-sizing:border-box;outline:none"
+          oninput="mascaraCPF(this)" onkeydown="if(event.key==='Enter')document.getElementById('login-cpf-senha').focus()"/>
+      </div>
+      <div style="margin-bottom:6px">
+        <label style="font-size:.78rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:6px">Senha</label>
+        <input type="text" id="login-cpf-senha" placeholder="Digite seu CPF novamente" maxlength="14" autocomplete="current-password"
           style="width:100%;border:1.5px solid #d1d5db;border-radius:8px;padding:10px 14px;font-size:.95rem;box-sizing:border-box;outline:none"
           oninput="mascaraCPF(this)" onkeydown="if(event.key==='Enter')fazerLoginCPF()"/>
       </div>
+      <p style="font-size:.72rem;color:#9ca3af;margin:0 0 24px">No primeiro acesso, a senha é o seu próprio CPF. Depois de entrar, você escolhe seu e-mail e uma senha nova.</p>
     </div>
 
     <button onclick="loginAtivo==='cpf'?fazerLoginCPF():fazerLogin()" id="login-btn"
@@ -13518,12 +13525,19 @@ function mascaraCPF(input){
 }
 
 async function fazerLoginCPF(){
-  const cpfRaw = (document.getElementById('login-cpf')?.value||'').replace(/\D/g,'');
+  const cpfRaw      = (document.getElementById('login-cpf')?.value||'').replace(/\D/g,'');
+  const senhaCpfRaw = (document.getElementById('login-cpf-senha')?.value||'').replace(/\D/g,'');
   const btn    = document.getElementById('login-btn');
   const erro   = document.getElementById('login-erro');
 
   if(!cpfRaw || cpfRaw.length !== 11){
     if(erro){ erro.textContent='Informe o CPF completo (11 dígitos)'; erro.style.display='block'; }
+    return;
+  }
+  // No primeiro acesso a senha é o próprio CPF — evita depender de uma senha
+  // genérica que o admin precisaria repassar por fora do sistema.
+  if(!senhaCpfRaw || senhaCpfRaw !== cpfRaw){
+    if(erro){ erro.textContent='Senha incorreta. No primeiro acesso, a senha é o seu próprio CPF.'; erro.style.display='block'; }
     return;
   }
   if(btn){ btn.textContent='Entrando...'; btn.disabled=true; }
@@ -13551,28 +13565,19 @@ async function fazerLoginCPF(){
       const semDataNasc = !mot.data_nasc && !mot.data_nascimento;
       const primeiroAcesso = semEmail || semDataNasc;
 
-      if(primeiroAcesso){
-        // Primeiro acesso: liberar mesmo que ativo=false
-        USUARIO_LOGADO = { id:mot.id, nome:mot.nome, perfil:'motorista',
-          email:mot.email||'', unidade:mot.unidade||'', cpf:mot.cpf, _motoristaId:mot.id };
-        document.getElementById('login-screen').style.display='none';
-        mostrarPrimeiroAcessoMotorista(mot);
-        return;
+      // Quem já completou o cadastro não usa mais essa aba — a senha do CPF
+      // só serve pra liberar o primeiro acesso, não pode virar uma porta
+      // permanente que ignora a senha de verdade que a pessoa escolheu depois.
+      if(!primeiroAcesso){
+        if(!mot.ativo) throw new Error('Cadastro aguardando aprovação do administrador.');
+        throw new Error('Você já completou seu cadastro — entre pela aba "E-mail" com a senha que você criou.');
       }
 
-      // Cadastro completo: exige aprovação
-      if(!mot.ativo){
-        throw new Error('Cadastro aguardando aprovação do administrador.');
-      }
-
+      // Primeiro acesso: liberar mesmo que ativo=false
       USUARIO_LOGADO = { id:mot.id, nome:mot.nome, perfil:'motorista',
         email:mot.email||'', unidade:mot.unidade||'', cpf:mot.cpf, _motoristaId:mot.id };
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       document.getElementById('login-screen').style.display='none';
-      document.getElementById('portal-motorista-wrapper').style.display='block';
-      document.getElementById('mot-nome-topbar').textContent = mot.nome;
-      await carregarPortalMotorista();
-      await Promise.all([carregarPortalMotoristaCargasAjudante(), carregarKmMotorista()]);
+      mostrarPrimeiroAcessoMotorista(mot);
       return;
     }
 
@@ -13586,30 +13591,16 @@ async function fazerLoginCPF(){
       const semSenha = !aj.senha || aj.senha.trim() === '';
       const primeiroAcesso = semEmail || semSenha;
 
-      if(primeiroAcesso){
-        // Primeiro acesso: liberar mesmo que ativo=false
-        USUARIO_LOGADO = { id:aj.id, nome:aj.nome, perfil:'ajudante',
-          email:aj.email||'', unidade:aj.unidade||'', cpf:aj.cpf };
-        document.getElementById('login-screen').style.display='none';
-        mostrarPrimeiroAcessoAjudante(aj);
-        return;
+      if(!primeiroAcesso){
+        if(!aj.ativo && aj.status !== 'aprovado') throw new Error('Cadastro aguardando aprovação do administrador.');
+        throw new Error('Você já completou seu cadastro — entre pela aba "E-mail" com a senha que você criou.');
       }
 
-      // Cadastro completo: exige aprovação
-      if(!aj.ativo && aj.status !== 'aprovado'){
-        throw new Error('Cadastro aguardando aprovação do administrador.');
-      }
-
+      // Primeiro acesso: liberar mesmo que ativo=false
       USUARIO_LOGADO = { id:aj.id, nome:aj.nome, perfil:'ajudante',
         email:aj.email||'', unidade:aj.unidade||'', cpf:aj.cpf };
-      AJUDANTE = { id:aj.id, nome:aj.nome, email:aj.email||'',
-        unidade:aj.unidade||'', status:'aprovado', senha:aj.senha };
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
       document.getElementById('login-screen').style.display='none';
-      document.getElementById('portal-ajudante-wrapper').style.display='block';
-      document.getElementById('app-nome').textContent = aj.nome;
-      await carregarMinhasEntregas();
-      await carregarHistorico();
+      mostrarPrimeiroAcessoAjudante(aj);
       return;
     }
 
