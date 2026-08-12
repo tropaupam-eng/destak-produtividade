@@ -8866,32 +8866,33 @@ function _mesAnoLocal(tsISO){
 }
 
 async function pushLancamento(l){
-  try{
-    if(l._id){
-      await supaFetch(`lancamentos?id=eq.${l._id}`, {
-        method:'PATCH',
-        body: JSON.stringify({motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||_mesAnoLocal(l.ts),fonte:l.fonte||''})
-      });
-    } else {
-      const uid = USUARIO_LOGADO?USUARIO_LOGADO.id:null;
-      const res = await supaFetch('lancamentos', {
-        method:'POST',
-        body: JSON.stringify({carga:l.carga,motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||_mesAnoLocal(l.ts),fonte:l.fonte||''})
-      });
-      if(res&&res[0]) l._id = res[0].id;
-      // Preencher ajudantes que se vincularam antes deste lançamento existir
-      if(l.carga && l.motorista){
-        preencherAjudantesPendentes(l.carga, l.motorista, l.rota||'', l.mes_ano||_mesAnoLocal(l.ts)||_mesAnoLocal(new Date().toISOString())).catch(()=>{});
-      }
-    }
-    // #3 — Atualiza condutor em base_data para todos os pedidos desta carga
+  // Não engolir o erro aqui: quem chama (salvarLanc, forcePushAll, sincronizarTudo)
+  // precisa saber quando o POST/PATCH falha para avisar o usuário — antes disso,
+  // o catch silencioso fazia essas funções mostrarem "sucesso" mesmo sem gravar nada.
+  if(l._id){
+    await supaFetch(`lancamentos?id=eq.${l._id}`, {
+      method:'PATCH',
+      body: JSON.stringify({motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,mes_ano:l.mes_ano||_mesAnoLocal(l.ts),fonte:l.fonte||''})
+    });
+  } else {
+    const uid = USUARIO_LOGADO?USUARIO_LOGADO.id:null;
+    const res = await supaFetch('lancamentos', {
+      method:'POST',
+      body: JSON.stringify({carga:l.carga,motorista:l.motorista,motorista_id:l.motorista_id||motoristaIdPorNome(l.motorista),ajudante:l.ajudante||'',veiculo:l.veiculo||null,rota:l.rota||'',und:l.und||'',rire:l.rire||'',vinculado:l.vinculado,pendente:l.pendente,ts:l.ts,usuario_id:uid,mes_ano:l.mes_ano||_mesAnoLocal(l.ts),fonte:l.fonte||''})
+    });
+    if(res&&res[0]) l._id = res[0].id;
+    // Preencher ajudantes que se vincularam antes deste lançamento existir
     if(l.carga && l.motorista){
-      supaFetch(`base_data?carga=eq.${l.carga}`,{
-        method:'PATCH',
-        body: JSON.stringify({condutor: l.motorista})
-      }).catch(()=>{});
+      preencherAjudantesPendentes(l.carga, l.motorista, l.rota||'', l.mes_ano||_mesAnoLocal(l.ts)||_mesAnoLocal(new Date().toISOString())).catch(()=>{});
     }
-  }catch(e){ console.warn('Push erro:',e.message); }
+  }
+  // #3 — Atualiza condutor em base_data para todos os pedidos desta carga (melhor esforço, não bloqueia)
+  if(l.carga && l.motorista){
+    supaFetch(`base_data?carga=eq.${l.carga}`,{
+      method:'PATCH',
+      body: JSON.stringify({condutor: l.motorista})
+    }).catch(e=>console.warn('Push condutor base_data falhou:',e.message));
+  }
 }
 
 async function deleteLancamento(carga){
@@ -9011,6 +9012,12 @@ async function ressincronizarAjudantePedidos(cargas){
     let totalInseridos = 0, totalRemovidos = 0;
     for(const aj of ajCargas){
       const c = Math.round(Number(aj.carga));
+      // Se base_data não trouxe NENHUMA linha pra essa carga (ainda não subiu/
+      // reprocessou, ou a query caiu num intervalo intermediário), não dá pra
+      // confiar que "0 pedidos na planilha" é real — tratar como "sobrando" e
+      // apagar apagaria pedidos legítimos do ajudante. Só remove quando temos
+      // certeza (a carga apareceu em base_data, mesmo que com outro conjunto).
+      const temBaseData = Object.prototype.hasOwnProperty.call(pedsPorCarga, c);
       const pedsPlanilha = pedsPorCarga[c] || new Set();
 
       const jaTem = await supaFetch(
@@ -9019,7 +9026,7 @@ async function ressincronizarAjudantePedidos(cargas){
       const jaTemMap = new Map(jaTem.map(p=>[String(p.pedido), p.id]));
 
       const faltando = [...pedsPlanilha].filter(p=>!jaTemMap.has(p));
-      const sobrando = [...jaTemMap.keys()].filter(p=>!pedsPlanilha.has(p));
+      const sobrando = temBaseData ? [...jaTemMap.keys()].filter(p=>!pedsPlanilha.has(p)) : [];
 
       if(faltando.length){
         for(let i=0;i<faltando.length;i+=50){
@@ -9030,14 +9037,14 @@ async function ressincronizarAjudantePedidos(cargas){
               ajudante_id: aj.ajudante_id, ajudante_nome: aj.ajudante_nome,
               mes_ano: aj.mes_ano || agora.slice(0,7), ts: agora
             }))
-          )}).catch(()=>{});
+          )}).catch(e=>console.warn('ressincronizarAjudantePedidos: insert falhou p/ carga '+c+':', e.message));
         }
         totalInseridos += faltando.length;
       }
 
       if(sobrando.length){
         const idsRemover = sobrando.map(p=>jaTemMap.get(p));
-        await supaFetch(`ajudante_pedidos?id=in.(${idsRemover.join(',')})`,{method:'DELETE'}).catch(()=>{});
+        await supaFetch(`ajudante_pedidos?id=in.(${idsRemover.join(',')})`,{method:'DELETE'}).catch(e=>console.warn('ressincronizarAjudantePedidos: delete falhou p/ carga '+c+':', e.message));
         totalRemovidos += sobrando.length;
       }
     }
@@ -11725,8 +11732,13 @@ function renderVeic(){
 }
 function salvarLanc(){
   try{ localStorage.setItem('lancamentos_prod', JSON.stringify(lancamentos)); }catch(e){}
-  // Auto-sync: SEMPRE salvar no Supabase
-  lancamentos.filter(l=>!l._id).forEach(l => pushLancamento(l).catch(e=>console.warn('pushLanc:',e.message)));
+  // Auto-sync: SEMPRE salvar no Supabase — se falhar, o lançamento fica só no
+  // cache local deste navegador (outros usuários não veem), então o usuário
+  // precisa ser avisado em vez de a falha só ir pro console.
+  lancamentos.filter(l=>!l._id).forEach(l => pushLancamento(l).catch(e=>{
+    console.warn('pushLanc:',e.message);
+    showToast('❌ Falha ao sincronizar carga '+(l.carga||'?')+' com o banco ('+(e.message||'erro de conexão')+'). Verifique sua internet — o lançamento será reenviado automaticamente.','warning');
+  }));
 }
 
 
@@ -13850,14 +13862,16 @@ async function fazerCadastro(){
           unidade, senha: SENHA_PADRAO, ativo: false
         })
       });
-      // Criar também na tabela usuarios para login
+      // Criar também na tabela usuarios (login do motorista valida por motoristas.ativo
+      // OU usuarios — se este POST falhar, o motorista principal em `motoristas` já
+      // existe e ele consegue logar assim que aprovado; só registramos pra investigação).
       await supaFetch('usuarios',{
         method:'POST',
         body: JSON.stringify({
           nome: nome.toUpperCase(), email,
           senha: SENHA_PADRAO, perfil:'motorista', ativo: false
         })
-      }).catch(()=>{});
+      }).catch(e=>console.warn('Falha ao criar usuário de login p/ motorista '+nome+':', e.message));
       showMsg('msg-cadastro','✅ Cadastro realizado! Aguarde aprovação do administrador.','ok');
     } else {
       // Salvar na tabela ajudantes
@@ -14073,14 +14087,19 @@ async function vincularAjudanteCarga(){
       // (informação legítima). Se não existe NEM lançamento NEM pré-carga,
       // não cria lançamento nenhum — a carga fica só em ajudante_cargas/
       // ajudante_pedidos até um motorista/operador lançar de verdade.
-      if((!lanc || !lanc.length) && dem && dem.length){
+      // A pré-carga da Expedição pode ter motorista ainda "A DEFINIR MOTORISTA"
+      // (placeholder, não motorista real) — nesse caso também não cria lançamento
+      // oficial, senão o placeholder entra em Produtividade/Pagamentos como se
+      // fosse um motorista de verdade.
+      const motoristaReal = (motorista||'').trim().toUpperCase()!=='A DEFINIR MOTORISTA' ? motorista : '';
+      if((!lanc || !lanc.length) && dem && dem.length && motoristaReal){
         const rotaBd = rota || bd.find(r=>r.rota)?.rota || '';
         await supaFetch('lancamentos',{method:'POST',body:JSON.stringify({
-          carga:Number(carga), motorista, motorista_id:motoristaIdPorNome(motorista),
+          carga:Number(carga), motorista:motoristaReal, motorista_id:motoristaIdPorNome(motoristaReal),
           ajudante:(AJUDANTE.nome||'').toUpperCase(), rota:rotaBd,
           rire:getRireFromRota(rotaBd)||'R.E.', vinculado:true, pendente:false,
           ts:agora, mes_ano:mesAno, fonte:'ajudante_vinculo'
-        })}).catch(()=>{});
+        })}).catch(e=>console.warn('vincularAjudanteCarga: falha ao criar lançamento p/ carga '+carga+':', e.message));
       }
 
       if(peds.length){
@@ -19327,11 +19346,16 @@ async function confirmarSaidaRota(){
     const savedId = _demandaSaidaId;
     const patchResult = await _patchStatusDemanda(savedId, 'saiu', 'modal_saida', {extra:{ts_saiu:tsSaiu}});
     if(!patchResult.ok){ showToast('⛔ '+patchResult.msg,'warning'); return; }
+    // rotas_viagem é a fonte do bônus KM do motorista — se essa gravação falhar
+    // silenciosamente, o motorista fica sem o bônus daquela viagem sem ninguém notar.
     await supaFetch('rotas_viagem',{method:'POST',body:JSON.stringify({
       demanda_id:savedId, carga:dem?.carga||null,
       data_saida:data, km_inicial:kmIni, km_esperado:kmEsp,
       criado_em:new Date().toISOString()
-    })}).catch(()=>{});
+    })}).catch(e=>{
+      console.warn('rotas_viagem falhou p/ demanda '+savedId+':', e.message);
+      showToast('⚠️ Saída confirmada, mas o registro de KM (bônus do motorista) falhou ao salvar: '+e.message,'warning');
+    });
     // #4 — Propagar data_saida para entrega_datas por pedido (fonte única para OTIF)
     if(dem?.carga && data){
       try{
@@ -22712,7 +22736,14 @@ async function sincronizarRHComSistema(btn){
     // sem CPF ainda — evita criar um registro duplicado quando o RH traz o CPF depois.
     const nomeMotMap = new Map((mots||[]).map(m=>[_normNomeMot(m.nome), m]));
     const nomeAjuMap = new Map((ajs||[]).map(a=>[_normNomeMot(a.nome), a]));
-    let criadosMot=0, criadosAju=0, vinculadosMot=0, vinculadosAju=0, ignorados=0;
+    let criadosMot=0, criadosAju=0, vinculadosMot=0, vinculadosAju=0, ignorados=0, falhas=0;
+    // Cada escrita agora reporta sucesso/falha real — antes um POST/PATCH que
+    // falhava (ex: CPF duplicado, RLS, rede) ainda contava como "criado/vinculado"
+    // no toast final, mascarando cadastros que na verdade não foram gravados.
+    const _grava = async (path, opts) => {
+      try{ await supaFetch(path, opts); return true; }
+      catch(e){ console.warn('RH sync falhou ('+path+'):', e.message); falhas++; return false; }
+    };
 
     for(const f of (funcs||[])){
       const cargo  = (f.cargo||'').toUpperCase();
@@ -22727,44 +22758,47 @@ async function sincronizarRHComSistema(btn){
           const existente = nomeMotMap.get(nomeNorm);
           if(existente){
             // Já existe cadastro com esse nome (sem esse CPF) — completa o CPF em vez de duplicar
-            await supaFetch(`motoristas?id=eq.${existente.id}`,{method:'PATCH',body:JSON.stringify({cpf})}).catch(()=>{});
-            existente.cpf = cpf; vinculadosMot++;
+            if(await _grava(`motoristas?id=eq.${existente.id}`,{method:'PATCH',body:JSON.stringify({cpf})})){
+              existente.cpf = cpf; vinculadosMot++; cpfMotSet.add(cpf);
+            }
           } else {
-            await supaFetch('motoristas',{method:'POST',body:JSON.stringify({
+            if(await _grava('motoristas',{method:'POST',body:JSON.stringify({
               nome, cpf, unidade, ativo:true, senha:'destak123', criado_em:new Date().toISOString()
-            })}).catch(()=>{});
-            criadosMot++;
+            })})){
+              criadosMot++; cpfMotSet.add(cpf);
+            }
           }
-          cpfMotSet.add(cpf);
         }
         // Se o mesmo CPF existe em ajudantes, garante dados atualizados (vinculação silenciosa)
         const motRow = (mots||[]).find(m=>(m.cpf||'').replace(/\D/g,'')===cpf) || {unidade,senha:'destak123'};
         if(cpfAjuSet.has(cpf)){
-          await supaFetch(`ajudantes?cpf=eq.${cpf}`,{method:'PATCH',body:JSON.stringify({unidade:motRow.unidade||unidade})}).catch(()=>{});
+          await _grava(`ajudantes?cpf=eq.${cpf}`,{method:'PATCH',body:JSON.stringify({unidade:motRow.unidade||unidade})});
         }
       } else if(cargo.includes('AJUDANTE') || cargo.includes('AUXILIAR DE ENTREGA')){
         if(!cpfAjuSet.has(cpf)){
           const motVinc = (mots||[]).find(m=>(m.cpf||'').replace(/\D/g,'')===cpf);
           const existente = nomeAjuMap.get(nomeNorm);
           if(existente){
-            await supaFetch(`ajudantes?id=eq.${existente.id}`,{method:'PATCH',body:JSON.stringify({
+            if(await _grava(`ajudantes?id=eq.${existente.id}`,{method:'PATCH',body:JSON.stringify({
               cpf, unidade: motVinc?.unidade||undefined
-            })}).catch(()=>{});
-            existente.cpf = cpf; vinculadosAju++;
+            })})){
+              existente.cpf = cpf; vinculadosAju++; cpfAjuSet.add(cpf);
+            }
           } else {
-            await supaFetch('ajudantes',{method:'POST',body:JSON.stringify({
+            if(await _grava('ajudantes',{method:'POST',body:JSON.stringify({
               nome, cpf, unidade: motVinc?.unidade||unidade,
               ativo:true, status:'ativo', senha: motVinc?.senha||'destak123',
               criado_em:new Date().toISOString()
-            })}).catch(()=>{});
-            criadosAju++;
+            })})){
+              criadosAju++; cpfAjuSet.add(cpf);
+            }
           }
-          cpfAjuSet.add(cpf);
         }
       } else { ignorados++; }
     }
 
-    showToast(`✅ RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados (${vinculadosMot+vinculadosAju} CPFs vinculados a cadastros existentes)`,'success');
+    const _msgFalhas = falhas>0 ? ` — ⚠️ ${falhas} gravação(ões) falharam, veja o console` : '';
+    showToast(`${falhas>0?'⚠️':'✅'} RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados (${vinculadosMot+vinculadosAju} CPFs vinculados a cadastros existentes)${_msgFalhas}`, falhas>0?'warning':'success');
     renderRH();
   }catch(e){
     showToast('⛔ Erro na sincronização: '+e.message,'warning');
@@ -37466,6 +37500,10 @@ async function saveAgendamentos(arr){
   const idsNovos = new Set(arr.map(a=>a.id));
   const deletados = antigos.filter(a=>!idsNovos.has(a.id)).map(a=>a.id);
   _agendCache = arr;
+  // Cache write-through: grava local ANTES do Supabase para o toast de falha
+  // abaixo ser verdade — sem isso, uma falha de sync perdia o agendamento por
+  // completo no próximo reload (o cache em memória some, nada fica gravado).
+  try{ localStorage.setItem('agendamentos_prod', JSON.stringify(arr)); }catch(e){}
   await _syncAgendSupabase(arr, deletados); // fonte verdadeira (Supabase)
 }
 
