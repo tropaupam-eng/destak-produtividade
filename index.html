@@ -38788,7 +38788,12 @@ async function renderComercialRotas(){
     arr = await supaFetch('comercial_rotas?select=*&order=criado_em.desc') || [];
   }catch(e){ arr=[]; }
 
-  // Também incluir agendamentos com motivo_atraso='comercial' não ainda registrados
+  // Também incluir agendamentos com motivo_atraso='comercial' não ainda registrados.
+  // renderComercialRotas() roda toda vez que a aba é aberta (sem ação explícita
+  // do usuário) — o dedup abaixo só olha o array já carregado desta chamada, não
+  // uma trava no banco. Usa upsert por id (id é determinístico: 'agend_'+a.id)
+  // para reabrir a tela repetidas vezes antes do primeiro POST confirmar não
+  // duplicar a linha.
   const agendComercial = getAgendamentos()
     .filter(a => a.motivo_atraso === 'comercial')
     .filter(a => !arr.find(x => x.rota === a.rota && x.data === a.data));
@@ -38799,8 +38804,11 @@ async function renderComercialRotas(){
       criado_em:a.criado_em||a.data+'T00:00:00',
       usuario_id: USUARIO_LOGADO?.id||null
     }));
-    // Salvar no Supabase e adicionar ao array local
-    supaFetch('comercial_rotas',{method:'POST',body:JSON.stringify(toInsert)}).catch(()=>{});
+    // Salvar no Supabase (upsert por id, evita duplicar em reaberturas rápidas da aba) e adicionar ao array local
+    supaFetch('comercial_rotas?on_conflict=id',{
+      method:'POST', body:JSON.stringify(toInsert),
+      prefer:'resolution=merge-duplicates,return=minimal'
+    }).catch(e=>console.warn('renderComercialRotas: upsert falhou:', e.message));
     arr = [...arr, ...toInsert];
   }
 
