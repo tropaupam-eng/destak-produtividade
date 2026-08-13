@@ -19405,8 +19405,14 @@ async function confirmarSaidaRota(){
     await registrarRotaComCarga(savedId, data).catch(()=>{});
     // ── Cenário A: auto-criar lancamento se motorista ainda não tiver lançado ──
     try{
-      if(dem?.carga && dem?.motorista){
-        const _motNorm = dem.motorista.toUpperCase().trim();
+      const _motNorm = (dem?.motorista||'').toUpperCase().trim();
+      // Proibido criar lançamento sem motorista real (placeholder "A DEFINIR
+      // MOTORISTA"), exceto rota RETIRA — a Expedição pode confirmar saída de
+      // uma pré-carga que nunca teve motorista real atribuído, e sem essa
+      // trava esse placeholder virava lançamento oficial (polui Produtividade/Pagamentos).
+      const _rotaNormA = normalizarRota(dem?.rota||'');
+      const _semMotoristaReal = _motNorm === 'A DEFINIR MOTORISTA' && _rotaNormA !== 'RETIRA';
+      if(dem?.carga && dem?.motorista && !_semMotoristaReal){
         // lancamentos tem UNIQUE(carga) — checar só por carga, senão um lançamento
         // já existente sob outro motorista não é encontrado e o INSERT falha com 409.
         const _lancExist = await supaFetch(
@@ -23883,13 +23889,19 @@ function _renderPreviewCargaLanc(carga, linhas, lancExist){
   const rotaBase= normalizarRota(linhas[0]?.rota||'') || linhas[0]?.rota || '';
   const condutor= linhas[0]?.condutor||'';
   const rotaLanc= lancExist ? (normalizarRota(lancExist.rota||'')||lancExist.rota||'') : '';
-  // Verde = pedido na base + lançamento confirmado (tudo ok)
-  // Alerta = pedido na base mas sem lançamento (falta lançar)
-  const tudoOk = !!lancExist;
+  // Verde = pedido na base + lançamento com motorista REAL (tudo ok).
+  // Alerta = sem lançamento, OU lançamento existe mas ainda com o placeholder
+  // "A DEFINIR MOTORISTA" — sem essa distinção a tela mostrava "✅ Lançamento
+  // confirmado" pra uma carga que na prática ainda não tem motorista nenhum.
+  const _motPreview = (lancExist?.motorista||'').toUpperCase().trim();
+  const semMotoristaReal = !!lancExist && (!_motPreview || _motPreview==='A DEFINIR MOTORISTA');
+  const tudoOk = !!lancExist && !semMotoristaReal;
   if(title){
     title.textContent = tudoOk
       ? `✅ Carga ${carga} — Lançamento confirmado | Motorista: ${lancExist.motorista||'—'}`
-      : `⚠️ Carga ${carga} encontrada na base — sem lançamento`;
+      : semMotoristaReal
+        ? `⚠️ Carga ${carga} já tem pré-lançamento — falta definir o motorista`
+        : `⚠️ Carga ${carga} encontrada na base — sem lançamento`;
     title.style.color = tudoOk ? '#059669' : '#b45309';
   }
   if(prev){
