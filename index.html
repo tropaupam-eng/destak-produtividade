@@ -20483,9 +20483,12 @@ async function carregarPortalMotorista(mesCustom = null){
         }
       }catch(_){}
     }
-    // Exibir/ocultar formulário de registro manual (Cenário B)
+    // Formulário de registro manual (Cenário B) fica sempre visível — antes
+    // sumia assim que o motorista lançava a primeira carga do dia (ou tinha
+    // uma demanda ativa), impedindo registrar mais de uma carga/viagem no
+    // mesmo dia. Motorista pode legitimamente ter várias cargas por dia.
     const _elAutoLanc = document.getElementById('mot-auto-lancamento');
-    if(_elAutoLanc) _elAutoLanc.style.display = (da || _lancHoje) ? 'none' : 'block';
+    if(_elAutoLanc) _elAutoLanc.style.display = 'block';
 
     // ── DADOS DO MOTORISTA ─────────────────────────────
     const motId  = USUARIO_LOGADO.id || USUARIO_LOGADO._motoristaId;
@@ -20553,7 +20556,7 @@ async function carregarPortalMotorista(mesCustom = null){
     // ── LANÇAMENTOS DO MÊS ────────────────────────────
     // Fonte 1: lançamentos criados no mês
     let lancsDoMes = await supaFetch(
-      `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=2000`
+      `lancamentos?motorista=eq.${encodeURIComponent(nomeDB)}&ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire,ajudante,ts,pendente,fonte&order=ts.desc&limit=2000`
     ).catch(()=>[]) || [];
 
     // Fonte 2: demandas que saíram neste mês (ts_saiu) — captura cargas lançadas em mês anterior
@@ -20566,7 +20569,7 @@ async function carregarPortalMotorista(mesCustom = null){
     if(!lancsDoMes.length && !demsComSaida.length){
       const _nomeNormMot = _normNomeMot(nomeDB);
       const [_lancsMesTodos, _demsMesTodos] = await Promise.all([
-        supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire,ajudante,ts,motorista&order=ts.desc&limit=3000`).catch(()=>[]),
+        supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,rota,rire,ajudante,ts,motorista,pendente,fonte&order=ts.desc&limit=3000`).catch(()=>[]),
         supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,motorista&limit=1000`).catch(()=>[])
       ]);
       lancsDoMes    = (_lancsMesTodos||[]).filter(l => _normNomeMot(l.motorista) === _nomeNormMot);
@@ -20579,10 +20582,15 @@ async function carregarPortalMotorista(mesCustom = null){
     let lancs = lancsDoMes;
     if(cargasExtras.length > 0){
       const lancsExtras = await supaFetch(
-        `lancamentos?carga=in.(${cargasExtras.join(',')})&motorista=eq.${encodeURIComponent(nomeDB)}&select=carga,rota,rire,ajudante,ts&order=ts.desc&limit=500`
+        `lancamentos?carga=in.(${cargasExtras.join(',')})&motorista=eq.${encodeURIComponent(nomeDB)}&select=carga,rota,rire,ajudante,ts,pendente,fonte&order=ts.desc&limit=500`
       ).catch(()=>[]) || [];
       lancs = [...lancsDoMes, ...lancsExtras];
     }
+    // Auto-registro do motorista em campo (fonte:motorista_b) nasce com rota
+    // vazia e pendente:true até a Expedição lançar de verdade (ver
+    // _processarRegistroCargaMotoristaBg) — não é uma entrega "lançada" ainda,
+    // então não deve contar/aparecer aqui como R.I./R.E. até isso acontecer.
+    lancs = lancs.filter(l => !(l.fonte==='motorista_b' && l.pendente));
 
     // ── PEDIDOS DO MOTORISTA NO BASE_DATA ─────────────
     // Busca por número de carga (condutor pode estar vazio na planilha importada)
@@ -20733,7 +20741,7 @@ async function carregarPortalMotorista(mesCustom = null){
       const undFilter = undDB ? `&und=eq.${encodeURIComponent(undDB)}` : '';
       // Busca com carga incluso — fonte de verdade de quem fez o quê
       const todosLancTs = await supaFetch(
-        `lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00${undFilter}&select=motorista,rota,rire,carga&limit=2000`
+        `lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00${undFilter}&select=motorista,rota,rire,carga,pendente,fonte&limit=2000`
       ).catch(()=>[]) || [];
       // Cargas que saíram este mês mas o lancamento foi criado no mês anterior
       const demsDoMesRank = await supaFetch(
@@ -20744,10 +20752,12 @@ async function carregarPortalMotorista(mesCustom = null){
       let todosLanc = todosLancTs;
       if(cargasExtraRank.length > 0){
         const lancsExtRank = await supaFetch(
-          `lancamentos?carga=in.(${cargasExtraRank.join(',')})${undFilter}&select=motorista,rota,rire,carga&limit=500`
+          `lancamentos?carga=in.(${cargasExtraRank.join(',')})${undFilter}&select=motorista,rota,rire,carga,pendente,fonte&limit=500`
         ).catch(()=>[]) || [];
         todosLanc = [...todosLancTs, ...lancsExtRank];
       }
+      // Mesma regra: auto-registro do motorista ainda não lançado não entra no ranking
+      todosLanc = todosLanc.filter(l => !(l.fonte==='motorista_b' && l.pendente));
 
       const _isRI = l=>{ const r=(l.rire||'').replace(/\./g,'').trim().toUpperCase(); if(r==='RI') return true; if(r==='RE') return false; return ROTAS_RI.has((l.rota||'').trim().toUpperCase()); };
 
@@ -21241,7 +21251,7 @@ async function _processarRegistroCargaMotoristaBg(cargaNum, veicVal){
         ajudante: '',
         rota: '',
         und: _undB,
-        rire: 'R.E.',
+        rire: null, // sem rota real ainda — R.I./R.E. só é definido quando a Expedição/Lançamento lançar de verdade
         vinculado: false,
         pendente: true,
         ts: _tsB,
