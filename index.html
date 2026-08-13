@@ -33430,8 +33430,8 @@ async function carregarPortalConferente(){
       supaFetch(`conferencia_pedidos?conferente_id=eq.${myId}&conferido_em=gte.${mesInicio}&status=eq.ok&select=pedido,carga`).catch(()=>[]),
       supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem")&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id&order=carga.desc`).catch(()=>[]),
-      supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status,pedido_inicio`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem")&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id,quantidade_pedidos,data_saida&order=carga.desc`).catch(()=>[]),
+      supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status,pedido_inicio,tipo,demanda_id`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.false&select=*&order=criado_em.desc`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.true&confirmado_em=gte.${mesInicio}&select=id`).catch(()=>[])
     ]);
@@ -33508,6 +33508,34 @@ async function carregarPortalConferente(){
       }
     }
 
+    // ── Pedidos Pendentes (cargas sem ninguém vinculado ainda) ────
+    const divPend = document.getElementById('conf-pendentes-container');
+    if(divPend){
+      const pendentesGrid = (demandasAtivas||[]).filter(d=>d.status==='pendente');
+      if(!pendentesGrid.length){
+        divPend.innerHTML='<div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;color:var(--text-muted);font-size:.83rem;text-align:center">✅ Nenhuma carga pendente no momento</div>';
+      } else {
+        divPend.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
+          ${pendentesGrid.map(d=>{
+            const dataSaida = d.data_saida?new Date(d.data_saida).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}):'';
+            return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #f59e0b;border-radius:14px;padding:14px 16px">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px">
+              <span style="font-weight:800;color:var(--text-primary);font-size:.9rem">📍 ${d.rota||'—'}</span>
+              <span style="background:#fef3c7;color:#92400e;font-size:.65rem;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap">⏳ Pendente</span>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:.76rem;color:var(--text-secondary);margin-bottom:12px">
+              <span>Carga <b style="color:var(--text-primary)">${d.carga}</b></span>
+              <span>${d.quantidade_pedidos||0} pedidos</span>
+              ${dataSaida?`<span>📅 ${dataSaida}</span>`:''}
+            </div>
+            <button onclick="pegarCargaConferente('${d.id}',${d.carga})"
+              style="width:100%;background:linear-gradient(135deg,#b45309,#d97706);color:#fff;border:none;border-radius:8px;padding:9px;font-size:.8rem;font-weight:700;cursor:pointer">📦 Pegar Carga</button>
+          </div>`;
+          }).join('')}
+        </div>`;
+      }
+    }
+
     // ── Ranking visual ───────────────────────────────────────────
     const divRank = document.getElementById('conf-ranking-container');
     if(divRank){
@@ -33540,10 +33568,20 @@ async function carregarPortalConferente(){
 
     const atribsAtivas = (atribsMinha||[]).filter(a=>{
       const dem = demMap[a.carga];
-      return dem && ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(dem.status);
+      const tipo = a.tipo||'conferente';
+      return tipo==='conferente' && dem && ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(dem.status);
+    });
+    // Carregamento que eu peguei (etapa independente da separação — pode ser em carga diferente)
+    const atribsCarregamentoMinhas = (atribsMinha||[]).filter(a=>{
+      const dem = demMap[a.carga];
+      return a.tipo==='carregamento' && dem && ['carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(dem.status);
     });
 
-    if(!atribsAtivas.length){
+    const cargasAtivasSet = new Set(atribsAtivas.map(a=>a.carga));
+    // Cargas onde só peguei o carregamento (a separação foi de outro conferente)
+    const atribsCarregamentoSo = atribsCarregamentoMinhas.filter(a=>!cargasAtivasSet.has(a.carga));
+
+    if(!atribsAtivas.length && !atribsCarregamentoSo.length){
       set('conf-kpi-ok', 0);
       set('conf-kpi-pend', 0);
       container.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:8px">📭</div>Nenhuma carga ativa. Pegue uma carga acima!</div>';
@@ -33551,11 +33589,13 @@ async function carregarPortalConferente(){
     }
 
     // Buscar pedidos e conferências em lote
-    const idsAtivos = atribsAtivas.map(a=>a.carga);
+    const idsAtivos = [...new Set([...atribsAtivas.map(a=>a.carga), ...atribsCarregamentoSo.map(a=>a.carga)])];
     const _confCargaMes = _cargaMesMapDeDemandas(Object.values(demMap));
-    const [_pedidosBDRaw, confMeus] = await Promise.all([
+    const [_pedidosBDRaw, confMeus, confSeparadorTodos] = await Promise.all([
       supaFetch(`base_data?carga=in.(${idsAtivos.join(',')})&select=carga,pedido,rota,valor,mes_ano&order=pedido.asc`).catch(()=>[]),
-      supaFetch(`conferencia_pedidos?carga=in.(${idsAtivos.join(',')})&conferente_id=eq.${myId}&select=*`).catch(()=>[])
+      supaFetch(`conferencia_pedidos?carga=in.(${idsAtivos.join(',')})&conferente_id=eq.${myId}&select=*`).catch(()=>[]),
+      // Vínculo de separador é colaborativo (qualquer conferente vincula) — busca por carga, não por conferente
+      supaFetch(`conferencia_pedidos?carga=in.(${idsAtivos.join(',')})&select=carga,pedido,separador_nome`).catch(()=>[])
     ]);
     const _confUnd = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim().toUpperCase();
     const pedidosBDAll = (_pedidosBDRaw||[]).filter(r=>{
@@ -33573,6 +33613,16 @@ async function carregarPortalConferente(){
     (atribsAll||[]).forEach(a=>{ if(!atribsPorCargaTodas[a.carga]) atribsPorCargaTodas[a.carga]=[]; atribsPorCargaTodas[a.carga].push(a); });
     const confPorCarga = {};
     (confMeus||[]).forEach(c=>{ if(!confPorCarga[c.carga]) confPorCarga[c.carga]={}; confPorCarga[c.carga][c.pedido]=c; });
+    // Vínculos de separador por pedido (colaborativo — qualquer conferente pode ter vinculado)
+    const separadorPorCarga = {};
+    (confSeparadorTodos||[]).forEach(c=>{
+      if(!c.separador_nome) return;
+      if(!separadorPorCarga[c.carga]) separadorPorCarga[c.carga]={};
+      separadorPorCarga[c.carga][c.pedido]=c.separador_nome;
+    });
+    // Quem está com o carregamento de cada carga (tipo='carregamento' — etapa independente da separação)
+    const carregamentoPorCarga = {};
+    (atribsAll||[]).forEach(a=>{ if(a.tipo==='carregamento') carregamentoPorCarga[a.carga]={conferente_id:a.conferente_id, conferente_nome:a.conferente_nome}; });
 
     let totalPed=0, totalOk=0, totalNok=0;
     let htmlTotal = '';
@@ -33622,25 +33672,50 @@ async function carregarPortalConferente(){
       totalOk  += okCount;
       totalNok += nokCount;
 
-      htmlTotal += `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #2563eb;border-radius:14px;margin-bottom:18px;overflow:hidden">
-        <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(37,99,235,.05)">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <div>
-              <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">🚛 Carga ${atr.carga}</span>
-              <span style="margin-left:8px;font-size:.8rem;color:var(--text-secondary)">${dem.rota||'—'} • 🚗 ${dem.motorista||'—'}</span>
-              ${dem.veiculo&&dem.veiculo!=='A DEFINIR VEÍCULO'?`<span style="margin-left:4px;background:rgba(37,99,235,.1);color:#2563eb;font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:10px">🚘 ${dem.veiculo}</span>`:''}
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span style="font-size:.8rem;color:var(--text-secondary)">${okCount}/${pUnicos.length} OK</span>
-              ${todosConf && dem.status!=='aguardando_nf'?`<button onclick="concluirCarregamentoConferente(${atr.carga})" style="background:#059669;color:#fff;border:none;border-radius:7px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer">✅ Concluir Carregamento</button>`:''}
-              ${dem.status==='aguardando_nf'?'<span style="background:rgba(5,150,105,.1);color:#059669;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px">📋 Carregado — Aguardando NF</span>':''}
-            </div>
+      // ── Separação (vincular separador por pedido) e Carregamento são
+      // etapas independentes, cada uma com seu próprio responsável ──────
+      const separadorMap        = separadorPorCarga[atr.carga]||{};
+      const nSeparados          = pUnicos.filter(p=>!!separadorMap[p]).length;
+      const separacaoCompleta   = pUnicos.length>0 && nSeparados===pUnicos.length;
+      const separacaoFinalizada = dem.status!=='pendente' && dem.status!=='separacao';
+      const cargObj             = carregamentoPorCarga[atr.carga];
+      const carregamentoEhMeu   = !!cargObj && String(cargObj.conferente_id)===String(myId);
+      const carregamentoDeOutro = !!cargObj && !carregamentoEhMeu;
+
+      let corpoCard = '';
+      if(!separacaoFinalizada){
+        corpoCard = `<div style="padding:14px 18px">
+          <div style="font-size:.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:8px">Vincular separador (${nSeparados}/${pUnicos.length}${separacaoCompleta?'':' · falta vincular todos pra liberar Finalizar'})</div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
+            ${pUnicos.map(ped=>{
+              const nomeAtual = separadorMap[ped]||'';
+              return `<div style="display:flex;align-items:center;gap:10px">
+                <span style="font-size:.78rem;font-weight:700;width:60px;flex-shrink:0">#${ped}</span>
+                <input type="text" value="${escapeHtml(nomeAtual)}" placeholder="Nome do separador..."
+                  onchange="vincularSeparadorPedido(${atr.carga},${ped},this.value)"
+                  style="flex:1;border:1px solid ${nomeAtual?'rgba(5,150,105,.4)':'var(--border-med)'};background:${nomeAtual?'rgba(5,150,105,.06)':'var(--bg-input)'};border-radius:7px;padding:6px 10px;font-size:.78rem;color:var(--text-primary);outline:none"/>
+              </div>`;
+            }).join('')}
           </div>
-          <div style="margin-top:8px;background:rgba(255,255,255,.07);border-radius:3px;height:4px;overflow:hidden">
+          <button ${separacaoCompleta?`onclick="finalizarSeparacaoConferente('${dem.id}',${atr.carga})"`:'disabled'}
+            style="width:100%;background:${separacaoCompleta?'#059669':'var(--bg-card2)'};color:${separacaoCompleta?'#fff':'var(--text-muted)'};border:1px solid ${separacaoCompleta?'transparent':'var(--border)'};border-radius:8px;padding:9px;font-size:.82rem;font-weight:700;cursor:${separacaoCompleta?'pointer':'not-allowed'}">✅ Finalizar Separação</button>
+        </div>`;
+      } else if(!cargObj){
+        corpoCard = `<div style="padding:14px 18px">
+          <button onclick="pegarCarregamentoConferente('${dem.id}',${atr.carga})" style="width:100%;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:8px;padding:10px;font-size:.85rem;font-weight:700;cursor:pointer">🚚 Pegar Carregamento</button>
+        </div>`;
+      } else if(carregamentoDeOutro){
+        corpoCard = `<div style="padding:14px 18px;font-size:.8rem;color:var(--text-muted);text-align:center">🚚 ${escapeHtml(cargObj.conferente_nome||'Outro conferente')} está com o carregamento desta carga.</div>`;
+      } else {
+        corpoCard = `<div style="padding:12px 18px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:.8rem;color:var(--text-secondary)">${okCount}/${pUnicos.length} OK</span>
+            ${todosConf && dem.status!=='aguardando_nf'?`<button onclick="concluirCarregamentoConferente(${atr.carga})" style="background:#059669;color:#fff;border:none;border-radius:7px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer">✅ Concluir Carregamento</button>`:''}
+            ${dem.status==='aguardando_nf'?'<span style="background:rgba(5,150,105,.1);color:#059669;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px">📋 Carregado — Aguardando NF</span>':''}
+          </div>
+          <div style="background:rgba(255,255,255,.07);border-radius:3px;height:4px;overflow:hidden;margin-bottom:10px">
             <div style="height:100%;background:#2563eb;width:${pct}%;transition:width .4s"></div>
           </div>
-        </div>
-        <div style="padding:12px 18px">
           ${pUnicos.map(ped=>{
             const pedData = pedidos.find(r=>r.pedido===ped)||{};
             const conf = confMap[ped];
@@ -33661,8 +33736,104 @@ async function carregarPortalConferente(){
               </div>
             </div>`;
           }).join('')}
+        </div>`;
+      }
+
+      htmlTotal += `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #2563eb;border-radius:14px;margin-bottom:18px;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(37,99,235,.05)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <div>
+              <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">🚛 Carga ${atr.carga}</span>
+              <span style="margin-left:8px;font-size:.8rem;color:var(--text-secondary)">${dem.rota||'—'} • 🚗 ${dem.motorista||'—'}</span>
+              ${dem.veiculo&&dem.veiculo!=='A DEFINIR VEÍCULO'?`<span style="margin-left:4px;background:rgba(37,99,235,.1);color:#2563eb;font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:10px">🚘 ${dem.veiculo}</span>`:''}
+            </div>
+            ${!separacaoFinalizada?`<button onclick="largarSeparacaoConferente('${dem.id}',${atr.carga})" style="background:none;border:1px solid rgba(220,38,38,.35);color:#dc2626;font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:20px;cursor:pointer;white-space:nowrap">✕ Largar Separação</button>`:''}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:10px;background:var(--bg-card2);border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+            <div style="padding:7px 12px;border-right:1px solid var(--border)">
+              <div style="font-size:.58rem;text-transform:uppercase;color:var(--text-muted);font-weight:700;margin-bottom:2px">Separação</div>
+              <div style="font-size:.78rem;font-weight:700">${nSeparados}/${pUnicos.length}${separacaoFinalizada?' <span style="color:#059669;font-weight:800">✓ concluída</span>':''}</div>
+            </div>
+            <div style="padding:7px 12px">
+              <div style="font-size:.58rem;text-transform:uppercase;color:var(--text-muted);font-weight:700;margin-bottom:2px">Carregamento</div>
+              <div style="font-size:.78rem;font-weight:700">${cargObj?('👤 '+(carregamentoEhMeu?'Você':escapeHtml(cargObj.conferente_nome||'—'))):'<span style="color:var(--text-muted);font-style:italic;font-weight:400">— ninguém ainda</span>'}${carregamentoEhMeu?` <button onclick="largarCarregamentoConferente('${dem.id}',${atr.carga})" style="background:none;border:1px solid rgba(220,38,38,.35);color:#dc2626;font-size:.62rem;font-weight:700;padding:1px 7px;border-radius:20px;cursor:pointer;margin-left:4px">✕ largar</button>`:''}</div>
+            </div>
+          </div>
+        </div>
+        ${corpoCard}
+      </div>`;
+    }
+
+    // ── Cargas onde só peguei o carregamento (separação foi de outro conferente) ──
+    for(const atrC of atribsCarregamentoSo){
+      const dem = demMap[atrC.carga]||{};
+      const pedidos = (pedPorCarga[atrC.carga]||[]);
+      const pUnicosC = [...new Set(pedidos.map(p=>p.pedido))].sort((a,b)=>a-b);
+      if(!pUnicosC.length) continue;
+      const confMapC   = confPorCarga[atrC.carga]||{};
+      const separadorMapC = separadorPorCarga[atrC.carga]||{};
+      const okCountC   = pUnicosC.filter(p=>confMapC[p]?.status==='ok').length;
+      const todosConfC = pUnicosC.every(p=>confMapC[p]?.status==='ok'||confMapC[p]?.status==='nok');
+      const pctC       = Math.round(okCountC/pUnicosC.length*100);
+      totalPed += pUnicosC.length;
+      totalOk  += okCountC;
+      totalNok += pUnicosC.filter(p=>confMapC[p]?.status==='nok').length;
+
+      const nSeparadosC = pUnicosC.filter(p=>!!separadorMapC[p]).length;
+      const separadorPorNome = [...new Set(pUnicosC.map(p=>separadorMapC[p]).filter(Boolean))];
+
+      htmlTotal += `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #1d4ed8;border-radius:14px;margin-bottom:18px;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(29,78,216,.05)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">🚛 Carga ${atrC.carga} — ${dem.rota||'—'}</span>
+            <button onclick="largarCarregamentoConferente('${dem.id}',${atrC.carga})" style="background:none;border:1px solid rgba(220,38,38,.35);color:#dc2626;font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:20px;cursor:pointer;white-space:nowrap">✕ Largar Carregamento</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:10px;background:var(--bg-card2);border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+            <div style="padding:7px 12px;border-right:1px solid var(--border)">
+              <div style="font-size:.58rem;text-transform:uppercase;color:var(--text-muted);font-weight:700;margin-bottom:2px">Separação</div>
+              <div style="font-size:.78rem;font-weight:700">${nSeparadosC}/${pUnicosC.length} <span style="color:#059669;font-weight:800">✓ concluída</span>${separadorPorNome.length?` <span style="color:var(--text-muted);font-weight:400">(${separadorPorNome.map(escapeHtml).join(', ')})</span>`:''}</div>
+            </div>
+            <div style="padding:7px 12px">
+              <div style="font-size:.58rem;text-transform:uppercase;color:var(--text-muted);font-weight:700;margin-bottom:2px">Carregamento</div>
+              <div style="font-size:.78rem;font-weight:700">👤 Você</div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:12px 18px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:.8rem;color:var(--text-secondary)">${okCountC}/${pUnicosC.length} OK</span>
+            ${todosConfC && dem.status!=='aguardando_nf'?`<button onclick="concluirCarregamentoConferente(${atrC.carga})" style="background:#059669;color:#fff;border:none;border-radius:7px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer">✅ Concluir Carregamento</button>`:''}
+            ${dem.status==='aguardando_nf'?'<span style="background:rgba(5,150,105,.1);color:#059669;font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:20px">📋 Carregado — Aguardando NF</span>':''}
+          </div>
+          <div style="background:rgba(255,255,255,.07);border-radius:3px;height:4px;overflow:hidden;margin-bottom:10px">
+            <div style="height:100%;background:#1d4ed8;width:${pctC}%;transition:width .4s"></div>
+          </div>
+          ${pUnicosC.map(ped=>{
+            const pedData = pedidos.find(r=>r.pedido===ped)||{};
+            const conf = confMapC[ped];
+            const st = conf?.status||'pendente';
+            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:9px;margin-bottom:5px;background:${st==='ok'?'rgba(5,150,105,.08)':st==='nok'?'rgba(239,68,68,.08)':'var(--bg-card2)'}">
+              <div>
+                <div style="font-size:.85rem;font-weight:700;color:var(--text-primary)">Pedido ${ped}</div>
+                <div style="font-size:.72rem;color:var(--text-muted)">${pedData.rota||dem.rota||'—'}</div>
+                ${conf?.observacao?`<div style="font-size:.7rem;color:#ef4444;margin-top:2px">⚠️ ${escapeHtml(conf.observacao)}</div>`:''}
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                ${st==='pendente'?`
+                  <input type="text" id="obs-${atrC.carga}-${ped}" placeholder="Obs..." style="border:1px solid var(--border-med);border-radius:6px;padding:4px 8px;font-size:.75rem;width:110px;outline:none;background:var(--bg-input);color:var(--text-primary)"/>
+                  <button onclick="conferirPedidoPortal('${atrC.carga}','${ped}','ok')" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:.75rem;cursor:pointer;font-weight:700">✅</button>
+                  <button onclick="conferirPedidoPortal('${atrC.carga}','${ped}','nok')" style="background:#ef4444;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:.75rem;cursor:pointer;font-weight:700">❌</button>
+                `:`<span style="font-size:.8rem;font-weight:700;color:${st==='ok'?'#059669':'#ef4444'}">${st==='ok'?'✅ OK':'❌ NOK'}</span>
+                   <button onclick="resetarConferencia('${atrC.carga}','${ped}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:.7rem;cursor:pointer">↩</button>`}
+              </div>
+            </div>`;
+          }).join('')}
         </div>
       </div>`;
+    }
+
+    if(!htmlTotal){
+      htmlTotal = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:8px">📭</div>Nenhuma carga ativa. Pegue uma carga acima!</div>';
     }
 
     set('conf-kpi-ok',   totalOk);
@@ -33731,6 +33902,118 @@ async function pegarCargaConferente(demandaId, carga){
     if(inp) inp.value='';
     if(res) res.innerHTML='';
     showToast('✅ Carga '+carga+' vinculada a você!','success');
+    await carregarPortalConferente();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// ── Vincular separador por pedido (colaborativo — qualquer conferente pode
+// vincular pedidos ainda sem separador da mesma carga) ──────────────────
+async function vincularSeparadorPedido(carga, pedido, nomeRaw){
+  const nome = (nomeRaw||'').trim();
+  if(!USUARIO_LOGADO) return;
+  try{
+    const ex = await supaFetch(`conferencia_pedidos?carga=eq.${carga}&pedido=eq.${pedido}&select=id`) || [];
+    const patch = {
+      separador_nome: nome || null,
+      separador_vinculado_em: new Date().toISOString(),
+      separador_vinculado_por: USUARIO_LOGADO.nome
+    };
+    if(ex.length){
+      await supaFetch(`conferencia_pedidos?id=eq.${ex[0].id}`,{method:'PATCH',body:JSON.stringify(patch)});
+    } else {
+      await supaFetch('conferencia_pedidos',{method:'POST',body:JSON.stringify({carga:Number(carga), pedido:Number(pedido), ...patch})});
+    }
+    await carregarPortalConferente();
+  }catch(e){ showToast('Erro ao vincular separador: '+e.message,'warning'); }
+}
+
+// ── Finalizar separação — só libera carregamento quando 100% dos pedidos
+// tiverem separador vinculado. Revalida contra o banco (não confia no
+// estado da tela) pra evitar corrida entre dois conferentes finalizando
+// ao mesmo tempo. ─────────────────────────────────────────────────────
+async function finalizarSeparacaoConferente(demandaId, carga){
+  try{
+    const [pedidosRaw, confRows] = await Promise.all([
+      supaFetch(`base_data?carga=eq.${carga}&select=pedido`) || [],
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=pedido,separador_nome`) || []
+    ]);
+    const pUnicos = [...new Set((pedidosRaw||[]).map(p=>p.pedido))];
+    const sepMap = {};
+    (confRows||[]).forEach(c=>{ if(c.separador_nome) sepMap[c.pedido]=c.separador_nome; });
+    const faltam = pUnicos.filter(p=>!sepMap[p]);
+    if(faltam.length){
+      showToast(`Falta vincular separador em ${faltam.length} pedido(s)`,'warning');
+      await carregarPortalConferente();
+      return;
+    }
+    const r = await _patchStatusDemanda(demandaId, 'carregamento', 'finalizar_separacao_conferente');
+    if(r && r.ok===false){ showToast(r.msg||'Não foi possível finalizar a separação','warning'); }
+    else { showToast('✅ Separação finalizada — carregamento liberado!','success'); }
+    await carregarPortalConferente();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// ── Largar separação — libera a carga pra outro conferente pegar. Se eu
+// era o único responsável, a demanda volta pra "pendente" (senão fica
+// travada em "separacao" sem ninguém e some da lista de pendentes). ────
+async function largarSeparacaoConferente(demandaId, carga){
+  if(!USUARIO_LOGADO) return;
+  if(!confirm(`Largar a separação da carga ${carga}? Ela fica disponível pra qualquer conferente pegar.`)) return;
+  try{
+    await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&conferente_id=eq.${USUARIO_LOGADO.id}&tipo=eq.conferente`,{method:'DELETE'});
+    const restantes = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&tipo=eq.conferente&select=id`) || [];
+    if(!restantes.length){
+      await _patchStatusDemanda(demandaId, 'pendente', 'conferente_largar_separacao');
+    }
+    showToast('✅ Separação da carga '+carga+' liberada','success');
+    await carregarPortalConferente();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// ── Pegar carregamento — etapa independente da separação, pode ser um
+// conferente diferente. Índice único em (demanda_id) where tipo='carregamento'
+// evita dois conferentes pegando a mesma carga ao mesmo tempo. ─────────
+async function pegarCarregamentoConferente(demandaId, carga){
+  if(!USUARIO_LOGADO) return;
+  try{
+    const jaAtrib = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&tipo=eq.carregamento&select=id`) || [];
+    if(jaAtrib.length){ showToast('Outro conferente já pegou o carregamento desta carga','warning'); await carregarPortalConferente(); return; }
+    await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
+      demanda_id: demandaId,
+      carga: Number(carga),
+      conferente_id: USUARIO_LOGADO.id,
+      conferente_nome: USUARIO_LOGADO.nome,
+      tipo: 'carregamento',
+      status: 'pendente',
+      criado_em: new Date().toISOString()
+    })});
+    showToast('✅ Carregamento da carga '+carga+' vinculado a você!','success');
+    await carregarPortalConferente();
+  }catch(e){
+    // Corrida: outro conferente inseriu no mesmo instante — o índice único rejeita o insert.
+    if(String(e.message||'').toLowerCase().includes('duplicate')||String(e.message||'').toLowerCase().includes('unique')){
+      showToast('Outro conferente acabou de pegar o carregamento desta carga','warning');
+    } else {
+      showToast('Erro: '+e.message,'warning');
+    }
+    await carregarPortalConferente();
+  }
+}
+
+// ── Largar carregamento — libera pra outro conferente pegar. Reverte a
+// demanda pra "separacao" já que ninguém mais está carregando. ─────────
+async function largarCarregamentoConferente(demandaId, carga){
+  if(!USUARIO_LOGADO) return;
+  if(!confirm(`Largar o carregamento da carga ${carga}? Ela fica disponível pra qualquer conferente pegar.`)) return;
+  try{
+    await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&conferente_id=eq.${USUARIO_LOGADO.id}&tipo=eq.carregamento`,{method:'DELETE'});
+    // Só reverte o status se ainda estiver em "carregamento" — se já avançou
+    // (aguardando NF etc.) a liberação da atribuição já basta, sem reverter etapa.
+    const demDB = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=status`);
+    if(demDB?.[0]?.status==='carregamento'){
+      await _patchStatusDemanda(demandaId, 'separacao', 'conferente_largar_carregamento');
+    }
+    showToast('✅ Carregamento da carga '+carga+' liberado','success');
     await carregarPortalConferente();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -42460,6 +42743,14 @@ function _cftvRenderTable(data){
     <div style="margin-bottom:20px">
       <h3 style="font-size:.92rem;font-weight:800;color:var(--text-primary);margin-bottom:12px">🏪 Abastecimentos para Confirmar</h3>
       <div id="conf-abastecimentos-container">
+        <p style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</p>
+      </div>
+    </div>
+
+    <!-- Pedidos Pendentes -->
+    <div style="margin-bottom:20px">
+      <h3 style="font-size:.92rem;font-weight:800;color:var(--text-primary);margin-bottom:12px">📦 Pedidos Pendentes</h3>
+      <div id="conf-pendentes-container">
         <p style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</p>
       </div>
     </div>
