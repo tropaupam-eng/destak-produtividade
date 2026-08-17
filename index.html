@@ -2703,6 +2703,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('custo-armazem')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="custo-armazem">
       <span data-feather="trending-down" style="width:15px;height:15px"></span> Custo Armazém
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('prazo-formacao')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="prazo-formacao">
+      <span data-feather="clock" style="width:15px;height:15px"></span> Prazo Formação→Entrega
+    </button>
   </div>
 
   <!-- ABA 1: Absenteísmo Armazém -->
@@ -2757,6 +2760,25 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
 
     <div id="pica-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+  </div>
+
+  <!-- ABA 8: Prazo Formação→Entrega — desde a criação da carga (formação) até a entrega, contra prazo fixo de 8 dias. Métrica distinta do OTIF oficial (que conta desde a saída do veículo) — mede o tempo de armazém + transporte juntos. -->
+  <div id="aba-prazo-formacao" class="painel-ind-aba" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <p style="font-size:.83rem;color:var(--text-secondary);max-width:680px">Tempo desde a Expedição colocar a carga como "pendente" até a entrega ao cliente, contra o prazo de 8 dias — diferente do OTIF oficial, que só conta a partir da saída do veículo. Mostra onde o tempo está sendo gasto: armazém ou estrada.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select id="pf-filtro-mes" onchange="renderPrazoFormacao()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none"></select>
+        <button onclick="renderPrazoFormacao()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 16px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px">
+      <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">Pedidos Válidos</div><div class="kpi-value" id="pf-kpi-total">—</div></div>
+      <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Dentro do Prazo (8d)</div><div class="kpi-value" id="pf-kpi-dentro">—</div></div>
+      <div class="kpi-card" style="border-top-color:#dc2626"><div class="kpi-label">Fora do Prazo</div><div class="kpi-value" id="pf-kpi-fora">—</div></div>
+      <div class="kpi-card" style="border-top-color:#7c3aed"><div class="kpi-label">% Dentro do Prazo</div><div class="kpi-value" id="pf-kpi-pct">—</div></div>
+    </div>
+    <div id="pf-aviso-qualidade" style="display:none;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;font-size:.8rem;color:#92400e;margin-bottom:14px"></div>
+    <div id="pf-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
 </div></div>
@@ -27049,6 +27071,7 @@ function mudarAbaIndicadores(aba){
   else if(aba === 'carregamento-prazo') carregarPainelCarregamentoPrazo();
   else if(aba === 'pedidos-rotas') carregarPainelPedidosRotas();
   else if(aba === 'custo-armazem') renderCustoArmazem('pica');
+  else if(aba === 'prazo-formacao') renderPrazoFormacao();
 }
 
 function carregarPainelIndicadores(){
@@ -40329,6 +40352,185 @@ function _caFmtCompacto(v){
 
 // prefixo: 'ca' = página standalone (Armazém > Custo Armazém), 'pica' = aba dentro de Painel de Indicadores.
 // Mesma fonte de dados e lógica, ids isolados por prefixo pra não colidir entre as duas telas.
+// Prazo Formação→Entrega: desde o momento em que a Expedição coloca a carga
+// como "pendente" até a entrega (entrega_datas), contra prazo fixo de 8 dias
+// (192h) — decisão do usuário em 2026-08-17. Métrica separada do OTIF oficial
+// (que só conta a partir da saída do veículo, ts_saiu) — essa aqui mostra o
+// tempo de armazém + estrada juntos, pra achar onde o atraso realmente
+// acontece.
+//
+// Início do prazo: transição pra "pendente" em historico_status_carga quando
+// existe (carga que passou por "formacao" antes) — senão demandas_rota.
+// criado_em, que já É o momento "pendente" pra maioria das cargas (nascem
+// direto nesse status). Decisão do usuário em 2026-08-17, corrigindo uma
+// versão anterior que sempre usava criado_em e adiantava o relógio pras
+// cargas com etapa de formação.
+//
+// Descarta pares pendente→entrega com horas negativas (entrega "antes" do
+// início do prazo, fisicamente impossível) — sintoma conhecido de pedidos com
+// mais de uma data em entrega_datas no mesmo mes_ano (uma proxy antiga, uma
+// real). Mostra quantos foram descartados em vez de esconder o problema.
+async function renderPrazoFormacao(){
+  const el = id => document.getElementById(id);
+  const container = el('pf-container');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+
+  const PRAZO_HORAS = 192; // 8 dias
+
+  try{
+    const selMes = el('pf-filtro-mes');
+    if(selMes && !selMes.options.length){
+      selMes.innerHTML = '<option value="">Todos os meses</option>';
+      const nomes = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+      const hoje = new Date();
+      for(let i=0;i<6;i++){
+        const d = new Date(hoje.getFullYear(), hoje.getMonth()-i, 1);
+        const valor = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+        const opt = document.createElement('option');
+        opt.value = valor;
+        opt.textContent = nomes[d.getMonth()]+' de '+d.getFullYear();
+        selMes.appendChild(opt);
+      }
+    }
+    const mesSel = selMes?.value || '';
+
+    let demQuery = 'demandas_rota?carga=not.is.null&select=carga,criado_em,rota&limit=5000';
+    if(mesSel){
+      const [ano,mes] = mesSel.split('-').map(Number);
+      const proximo = mes===12 ? `${ano+1}-01` : `${ano}-${String(mes+1).padStart(2,'0')}`;
+      demQuery += `&criado_em=gte.${mesSel}-01T00:00:00-03:00&criado_em=lt.${proximo}-01T00:00:00-03:00`;
+    }
+    const demandas = await supaFetch(demQuery,{_quiet:true}).catch(()=>[]) || [];
+    if(!demandas.length){
+      container.innerHTML = '<p class="no-data">Nenhuma carga formada nesse período.</p>';
+      ['pf-kpi-total','pf-kpi-dentro','pf-kpi-fora','pf-kpi-pct'].forEach(id=>{ if(el(id)) el(id).textContent='—'; });
+      el('pf-aviso-qualidade').style.display = 'none';
+      return;
+    }
+    const formacaoPorCarga = new Map();
+    demandas.forEach(d=>{
+      const c = String(d.carga);
+      // mais de uma linha pra mesma carga (raro) — mantém a criação mais antiga
+      if(!formacaoPorCarga.has(c) || d.criado_em < formacaoPorCarga.get(c).criado_em){
+        formacaoPorCarga.set(c, { criado_em: d.criado_em, rota: d.rota });
+      }
+    });
+    const cargas = [...formacaoPorCarga.keys()];
+
+    // Início do prazo = quando a Expedição coloca a carga em "pendente"
+    // (não a criação/formação em si — algumas cargas passam por "formacao"
+    // antes de virar "pendente", e usar a criação nesses casos adiantava o
+    // relógio e gerava inconsistência). Busca a transição em
+    // historico_status_carga; quando não tem log (maioria das cargas, que já
+    // nascem em "pendente"), cai no criado_em da própria demanda — nesse caso
+    // criado_em já É o momento em que virou pendente.
+    let pendenteLog = [];
+    for(let i=0;i<cargas.length;i+=200){
+      const lote = cargas.slice(i,i+200);
+      const r = await supaFetch(`historico_status_carga?carga=in.(${lote.join(',')})&novo_status=eq.pendente&select=carga,criado_em`,{_quiet:true}).catch(()=>[]) || [];
+      pendenteLog = pendenteLog.concat(r);
+    }
+    const pendentePorCarga = new Map();
+    pendenteLog.forEach(r=>{
+      const c = String(r.carga);
+      if(!pendentePorCarga.has(c) || r.criado_em < pendentePorCarga.get(c)) pendentePorCarga.set(c, r.criado_em);
+    });
+    formacaoPorCarga.forEach((v,c)=>{ v.tsPendente = pendentePorCarga.get(c) || v.criado_em; });
+
+    let bdRows = [];
+    for(let i=0;i<cargas.length;i+=200){
+      const lote = cargas.slice(i,i+200);
+      const r = await supaFetch(`base_data?carga=in.(${lote.join(',')})&select=pedido,carga,rota,mes_ano`,{_quiet:true}).catch(()=>[]) || [];
+      bdRows = bdRows.concat(r);
+    }
+
+    const pedidos = [...new Set(bdRows.map(b=>String(b.pedido)))];
+    let entRows = [];
+    for(let i=0;i<pedidos.length;i+=200){
+      const lote = pedidos.slice(i,i+200);
+      const r = await supaFetch(`entrega_datas?pedido=in.(${lote.join(',')})&data_entrega=not.is.null&select=pedido,mes_ano,data_entrega`,{_quiet:true}).catch(()=>[]) || [];
+      entRows = entRows.concat(r);
+    }
+    const entMap = new Map(); // "pedido|mes_ano" -> menor data_entrega
+    entRows.forEach(e=>{
+      const k = `${e.pedido}|${e.mes_ano}`;
+      if(!entMap.has(k) || e.data_entrega < entMap.get(k)) entMap.set(k, e.data_entrega);
+    });
+
+    const porRota = {};
+    let impossiveis = 0;
+    bdRows.forEach(b=>{
+      const f = formacaoPorCarga.get(String(b.carga));
+      if(!f) return;
+      const dataEntrega = entMap.get(`${b.pedido}|${b.mes_ano}`);
+      if(!dataEntrega) return;
+      const horas = (new Date(dataEntrega) - new Date(f.tsPendente)) / 3600000;
+      if(horas < 0){ impossiveis++; return; }
+      const rota = b.rota || f.rota || '(sem rota)';
+      if(!porRota[rota]) porRota[rota] = { validos:0, somaHoras:0, dentro:0, fora:0 };
+      const r = porRota[rota];
+      r.validos++; r.somaHoras += horas;
+      if(horas <= PRAZO_HORAS) r.dentro++; else r.fora++;
+    });
+
+    const totalValidos = Object.values(porRota).reduce((s,r)=>s+r.validos,0);
+    const totalDentro  = Object.values(porRota).reduce((s,r)=>s+r.dentro,0);
+    const totalFora     = Object.values(porRota).reduce((s,r)=>s+r.fora,0);
+    if(el('pf-kpi-total')) el('pf-kpi-total').textContent = totalValidos;
+    if(el('pf-kpi-dentro')) el('pf-kpi-dentro').textContent = totalDentro;
+    if(el('pf-kpi-fora')) el('pf-kpi-fora').textContent = totalFora;
+    if(el('pf-kpi-pct')) el('pf-kpi-pct').textContent = totalValidos ? (totalDentro/totalValidos*100).toFixed(1)+'%' : '—';
+
+    const avisoEl = el('pf-aviso-qualidade');
+    if(avisoEl){
+      if(impossiveis > 0){
+        avisoEl.style.display = 'block';
+        avisoEl.textContent = `⚠️ ${impossiveis} pedido(s) descartado(s) dessa análise por terem data de entrega registrada ANTES da carga entrar como pendente (impossível — sintoma de data de entrega duplicada no mesmo mês; problema separado em entrega_datas, não relacionado a Cortes/Trocas ERP).`;
+      } else {
+        avisoEl.style.display = 'none';
+      }
+    }
+
+    if(!totalValidos){
+      container.innerHTML = '<p class="no-data">Nenhum par formação→entrega válido nesse período.</p>';
+      return;
+    }
+
+    const linhas = Object.entries(porRota).sort((a,b)=>b[1].validos-a[1].validos);
+    container.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:.84rem">
+        <thead>
+          <tr style="background:var(--bg-card2)">
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Rota</th>
+            <th style="text-align:right;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Válidos</th>
+            <th style="text-align:right;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Média</th>
+            <th style="text-align:right;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Dentro</th>
+            <th style="text-align:right;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">Fora</th>
+            <th style="text-align:right;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border)">% Fora</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${linhas.map(([rota,r])=>{
+            const pctFora = r.validos ? (r.fora/r.validos*100) : 0;
+            const dias = (r.somaHoras/r.validos/24).toFixed(1);
+            const cor = pctFora>=25 ? '#dc2626' : pctFora>0 ? '#f59e0b' : '#059669';
+            return `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 12px;font-weight:700;color:var(--text-primary)">${rota}</td>
+              <td style="padding:6px 12px;text-align:right;color:var(--text-secondary)">${r.validos}</td>
+              <td style="padding:6px 12px;text-align:right;color:var(--text-secondary)">${dias}d</td>
+              <td style="padding:6px 12px;text-align:right;color:#059669">${r.dentro}</td>
+              <td style="padding:6px 12px;text-align:right;color:#dc2626">${r.fora}</td>
+              <td style="padding:6px 12px;text-align:right;font-weight:700;color:${cor}">${pctFora.toFixed(1)}%</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  }catch(e){
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro ao carregar: ${e.message}</p></div>`;
+  }
+}
+
 async function renderCustoArmazem(prefixo){
   const p = prefixo || 'ca';
   const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
