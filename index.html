@@ -25497,7 +25497,7 @@ async function renderDashInterna(){
 // Logísticos pra segmentar OTIF por rota/motorista/cliente sem duplicar a
 // lógica de prazo acima. Todos os callers existentes continuam funcionando
 // sem passar esse parâmetro (fica undefined, checagem de tipo evita erro).
-function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr, mesFiltro, agendPedMap, feriadosSet, onPedido){
+function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr, mesFiltro, agendPedMap, feriadosSet, onPedido, cortesRows){
   if(!hojeStr) hojeStr = new Date().toISOString().slice(0,10);
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
   const prazoMap={};
@@ -25561,6 +25561,14 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   // sem isso, um pedido com avaria corrigida fica "fora do In Full" para sempre.
   const ocorrSet=new Set();
   (ocorrRows||[]).forEach(o=>{ if(o.pedido && o.status!=='resolvida') ocorrSet.add(String(o.pedido)); });
+  // Corte de quantidade (pedidos_itens_erp, comparado com a planilha de
+  // atualizações do ERP) também penaliza o In Full — decisão do usuário em
+  // 2026-08-17. Só corte (quantidade_atual < quantidade_original em item
+  // ativo) entra aqui; item "removido" ou "adicionado" (possível troca) fica
+  // de fora por enquanto, só no relatório de Cortes/Trocas ERP.
+  const cortesSet=new Set();
+  (cortesRows||[]).forEach(r=>{ if(r.pedido && Number(r.quantidade_atual) < Number(r.quantidade_original)) cortesSet.add(String(r.pedido)); });
+  const _semInFull = ped => ocorrSet.has(ped) || cortesSet.has(ped);
   let total=0,riTotal=0,reTotal=0;
   let entG=0,onTimeG=0,inFullG=0,otifG=0;
   let entRI=0,onTimeRI=0,inFullRI=0,otifRI=0;
@@ -25586,7 +25594,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       const tsRe=(carga&&saidaTsMap[carga])||(carga&&lancTsMap[carga]);
       if(!tsRe){
         // Carga ainda no armazém: conta no denominador como no prazo
-        const _inF=!ocorrSet.has(ped);
+        const _inF=!_semInFull(ped);
         total++; entG++; if(_inF) inFullG++; onTimeG++; if(_inF) otifG++;
         reTotal++; entRE++; if(_inF) inFullRE++; onTimeRE++; if(_inF) otifRE++;
         if(onPedido) onPedido(ped, carga, bd.rota, bd.rire, bd.dataPedido, true, _inF, null);
@@ -25626,7 +25634,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     if(!dataFim){
       // Sem qualquer data: dentro do prazo → no prazo; fora → atrasado
       const hd=(new Date(_hojeTs)-inicioPrazo)/3600000;
-      const _inF=!ocorrSet.has(ped);
+      const _inF=!_semInFull(ped);
       const _ot=hd<=prazoH;
       total++; entG++; if(_ot)onTimeG++; if(_inF)inFullG++; if(_ot&&_inF)otifG++;
       if(_isRI){ riTotal++; if(_ot)onTimeRI++; if(_inF)inFullRI++; if(_ot&&_inF)otifRI++; }
@@ -25638,7 +25646,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     if(!hasEntregaReal){
       // saida sem ts confirmado: dentro do prazo → no prazo; fora → atrasado
       const hd=(new Date(_hojeTs)-inicioPrazo)/3600000;
-      const _inF=!ocorrSet.has(ped);
+      const _inF=!_semInFull(ped);
       const _ot=hd<=prazoH;
       total++; entG++; if(_ot)onTimeG++; if(_inF)inFullG++; if(_ot&&_inF)otifG++;
       if(_isRI){ riTotal++; if(_ot)onTimeRI++; if(_inF)inFullRI++; if(_ot&&_inF)otifRI++; }
@@ -25648,7 +25656,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     }
     // Entrega confirmada — calcula isOnTime por diffHoras
     const isOnTime=diffHoras<=prazoH;
-    const isInFull=!ocorrSet.has(ped);
+    const isInFull=!_semInFull(ped);
     const isOTIF=isOnTime&&isInFull;
     total++;
     entG++; if(isOnTime)onTimeG++; if(isInFull)inFullG++; if(isOTIF)otifG++;
@@ -25706,7 +25714,7 @@ async function _carregarOtifMes(mes, und){
   bdRows.forEach(b=>{ if(b.rire) b.rire = normRire(b.rire) || getRireFromRota((b.rota||'').toUpperCase()) || b.rire; });
   // Busca entrega_datas e ocorrencias_distribuicao pelos pedidos reais do mês
   const pedidoList = [...new Set((bdRows||[]).map(b=>String(b.pedido)).filter(Boolean))];
-  let entRows = [], ocorrRows = [], agendPedRows = [];
+  let entRows = [], ocorrRows = [], agendPedRows = [], cortesRows = [];
   // Feriados do ano — uma única busca fora do loop
   const feriadosRows = await supaFetch(`feriados?data=gte.${mes.slice(0,4)}-01-01&data=lte.${mes.slice(0,4)}-12-31&select=data`,{_quiet:true}).catch(()=>[]);
   const feriadosSet  = new Set((feriadosRows||[]).map(r=>r.data).filter(Boolean));
@@ -25715,24 +25723,26 @@ async function _carregarOtifMes(mes, und){
     // Busca mes atual E próximo mês para capturar entregas cross-month
     // (pedido de junho entregue em julho: planilha grava mes_ano='2026-07')
     // entregas_motorista: confirmações do portal do motorista (R.I.) — data_confirmacao como data_entrega
-    const [rEnt, rEntProx, rOcorr, rMotEnt, rAgendPed] = await Promise.all([
+    const [rEnt, rEntProx, rOcorr, rMotEnt, rAgendPed, rCortes] = await Promise.all([
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${proximo}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00-03:00&criado_em=lt.${proximo}-01T00:00:00-03:00&select=pedido,tipo,status&limit=5000`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entregas_motorista?pedido=in.(${chunk.join(',')})&select=pedido,data_confirmacao&limit=5000`,{_quiet:true}).catch(()=>[]),
       supaFetch(`agendamentos_pedidos?pedido=in.(${chunk.join(',')})&select=pedido,data_entrega`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`pedidos_itens_erp?pedido=in.(${chunk.join(',')})&status=eq.ativo&select=pedido,quantidade_atual,quantidade_original&limit=5000`,{_quiet:true}).catch(()=>[]),
     ]);
     entRows      = entRows.concat(rEnt || [], rEntProx || []);
     (rMotEnt||[]).forEach(e=>{ if(e.pedido&&e.data_confirmacao) entRows.push({pedido:e.pedido,data_entrega:e.data_confirmacao}); });
     ocorrRows    = ocorrRows.concat(rOcorr || []);
     agendPedRows = agendPedRows.concat(rAgendPed || []);
+    cortesRows   = cortesRows.concat(rCortes || []);
   }
   const agendPedMap = new Map((agendPedRows||[]).map(r=>[String(r.pedido), r.data_entrega]));
   // stats: filtrado por data_pedido do mês (para Dashboard e widget)
   // statsAll: sem filtro de mês (para TV — mostra todos os pedidos das cargas do mês)
-  const stats    = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, mes, agendPedMap, feriadosSet);
-  const statsAll = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, undefined, agendPedMap, feriadosSet);
-  const result = { stats, statsAll, bdRows, entRows, ocorrRows, lancRows, saidaRows, rotasRows, cargasMes, agendPedMap, feriadosSet };
+  const stats    = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, mes, agendPedMap, feriadosSet, undefined, cortesRows);
+  const statsAll = _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, undefined, undefined, agendPedMap, feriadosSet, undefined, cortesRows);
+  const result = { stats, statsAll, bdRows, entRows, ocorrRows, cortesRows, lancRows, saidaRows, rotasRows, cargasMes, agendPedMap, feriadosSet };
   _otifCacheMap.set(cacheKey, result);
   _otifPromiseMap.delete(cacheKey);
   return result;
@@ -25919,6 +25929,7 @@ async function renderDashLogistico(forcarRefresh){
   const saidaF = (dados.saidaRows||[]).filter(s=>cargasF.has(String(s.carga)));
   const entF = (dados.entRows||[]).filter(e=>pedidosF.has(String(e.pedido)));
   const ocorrF = (dados.ocorrRows||[]).filter(o=>pedidosF.has(String(o.pedido)));
+  const cortesF = (dados.cortesRows||[]).filter(r=>pedidosF.has(String(r.pedido)));
 
   if(!bdF.length){
     if(loadingEl){ loadingEl.style.display='block'; loadingEl.innerHTML = `📭 Sem lançamentos pra esse filtro em ${mesFiltro.split('-').reverse().join('/')}.`; }
@@ -25974,7 +25985,8 @@ async function renderDashLogistico(forcarRefresh){
       if(entregue && onTime) noPrazo++;
       else if(!onTime) atrasadas++;
       else pendentes++;
-    }
+    },
+    cortesF
   );
 
   // Cancelamentos do mês (pedidos_cancelados) — cargas ainda saem de base_data quando cancelados no ERP
