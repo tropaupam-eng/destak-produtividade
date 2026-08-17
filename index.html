@@ -24838,7 +24838,7 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
   const semOtif = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
   if(!dadosOtif) return semOtif;
   const { entRows: entRowsOtif, ocorrRows: ocorrRowsOtif, saidaRows: saidaRowsOtif,
-          lancRows: lancRowsOtif, rotasRows: rotasRowsOtif,
+          lancRows: lancRowsOtif, rotasRows: rotasRowsOtif, cortesRows: cortesRowsOtif,
           agendPedMap: agendPedMapOtif, feriadosSet: feriadosSetOtif } = dadosOtif;
 
   const prazoMapOtif = {};
@@ -24876,6 +24876,10 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
   // Ocorrência já resolvida não penaliza mais o In Full (mesmo critério de _computeOtifStats)
   const ocorrSetOtif = new Set();
   (ocorrRowsOtif||[]).forEach(o=>{ if(o.pedido && o.status!=='resolvida') ocorrSetOtif.add(String(o.pedido)); });
+  // Corte de quantidade também penaliza o In Full (mesmo critério de _computeOtifStats, 2026-08-17)
+  const cortesSetOtif = new Set();
+  (cortesRowsOtif||[]).forEach(r=>{ if(r.pedido && Number(r.quantidade_atual) < Number(r.quantidade_original)) cortesSetOtif.add(String(r.pedido)); });
+  const _semInFullOtif = ped => ocorrSetOtif.has(ped) || cortesSetOtif.has(ped);
 
   const _semDoMesOtif = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
 
@@ -24916,7 +24920,7 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
     } else {
       const tsRe = (carga && saidaTsMapOtif[carga]) || (carga && lancTsMapOtif[carga]);
       if(!tsRe){
-        const _inF = !ocorrSetOtif.has(ped);
+        const _inF = !_semInFullOtif(ped);
         semOtif[semIdxPedido].t++;
         semOtif[semIdxPedido].ot++;
         if(_inF){ semOtif[semIdxPedido].ifull++; semOtif[semIdxPedido].ok++; }
@@ -24953,7 +24957,7 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
     const semIdxFinal = (dataFim && _mesDataFimSem === mesFiltro)
       ? Math.min(Math.max(_semDoMesOtif(dataFim)-1, 0), 4)
       : semIdxPedido;
-    const _inFSem = !ocorrSetOtif.has(ped);
+    const _inFSem = !_semInFullOtif(ped);
     if(!dataFim){
       const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
       semOtif[semIdxFinal].t++;
@@ -24967,7 +24971,7 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
     }
     const diffHoras = Math.max(0, (new Date(dataFim) - _inicioPrazoOtif) / 3600000);
     const isOnTime = hasEntrega && diffHoras <= prazoH;
-    const isInFull = !ocorrSetOtif.has(ped);
+    const isInFull = !_semInFullOtif(ped);
     if(!hasEntrega){
       const horasDecorridas = (new Date(hoje+'T23:59:59') - _inicioPrazoOtif) / 3600000;
       semOtif[semIdxFinal].t++;
@@ -26102,7 +26106,7 @@ async function renderDashLogistico(forcarRefresh){
 
   const cache = {
     mesFiltro, undFiltro, rotaFiltro, cidadeFiltro, motoristaFiltro, veiculoFiltro, clienteFiltro, rireFiltro,
-    dados, bdF, lancF, saidaF, entF, ocorrF, cargaInfo, statsFiltrado,
+    dados, bdF, lancF, saidaF, entF, ocorrF, cortesF, cargaInfo, statsFiltrado,
     porRota, porMotorista, porCliente, porSemana, porSemanaOtif,
     noPrazo, atrasadas, pendentes, cancelados,
     veiculosAtivos, veiculosPropriosSet, veiculosEmManutencao, veiculosUtilizados, pctUtilizacaoFrota,
@@ -26287,6 +26291,12 @@ function _dlogRenderOtifSecao(c){
   const tipoLbl = {inversao:'Inversão', falta:'Falta de mercadoria', corte:'Corte (falta de estoque)', avaria:'Avaria', erro_pedido:'Erro do Vendedor', outro:'Outro'};
   const causas = {};
   c.ocorrF.forEach(o=>{ const t=tipoLbl[o.tipo]||o.tipo||'Não informado'; causas[t]=(causas[t]||0)+1; });
+  // Corte de quantidade também penaliza o In Full (desde 2026-08-17) — sem
+  // isso aqui, esse painel mostrava "nenhuma ocorrência" mesmo quando corte
+  // era a causa real do In Full cair. Conta por PEDIDO (não por item — um
+  // pedido com 2 itens cortados é 1 causa, não 2).
+  const pedidosComCorte = new Set((c.cortesF||[]).filter(r=>Number(r.quantidade_atual)<Number(r.quantidade_original)).map(r=>String(r.pedido)));
+  if(pedidosComCorte.size) causas['Corte de Quantidade'] = pedidosComCorte.size;
   const causasOrd = Object.entries(causas).sort((a,b)=>b[1]-a[1]);
 
   const linhaTabela = (nome, d, pct) => `<tr>
@@ -26334,7 +26344,7 @@ function _dlogRenderOtifSecao(c){
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px">
         <div style="font-size:.8rem;font-weight:700;color:var(--text-secondary);margin-bottom:8px">Principais causas que prejudicaram o OTIF</div>
         ${causasOrd.length ? causasOrd.map(([t,n])=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)"><span style="font-size:.82rem;color:var(--text-primary)">${t}</span><span style="font-weight:800;color:var(--text-primary)">${n}</span></div>`).join('')
-          : '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:.82rem">Nenhuma ocorrência registrada no período.</div>'}
+          : '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:.82rem">Nenhuma ocorrência ou corte registrado no período.</div>'}
       </div>
     </div>`;
 
@@ -26843,6 +26853,9 @@ async function renderOtifDiario(){
       if(e.data_entrega&&(!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
     });
     const ocorrSet = new Set((ocorrRows||[]).filter(o=>o.status!=='resolvida').map(o=>String(o.pedido)).filter(Boolean));
+    // Corte de quantidade também penaliza o In Full (mesmo critério de _computeOtifStats, 2026-08-17)
+    const cortesRowsHoje = dadosMes?.cortesRows||[];
+    const cortesSet = new Set(cortesRowsHoje.filter(r=>Number(r.quantidade_atual)<Number(r.quantidade_original)).map(r=>String(r.pedido)));
     // Mesmos ajustes de prazo do _computeOtifStats (agendamento pré-acordado + feriados na janela)
     const agendPedMap = dadosMes?.agendPedMap || new Map();
     const feriadosSet  = dadosMes?.feriadosSet || new Set();
@@ -26936,7 +26949,7 @@ async function renderOtifDiario(){
       const saidaTs=demandaMap[ck]?.ts_saiu||null;
       const sem=getSemaforo(p.pedido,rotaNorm,rireNorm,p.data_pedido,lancTs,saidaTs);
       const entregue=!!entMap[String(p.pedido)];
-      const isInFull=!ocorrSet.has(String(p.pedido));
+      const isInFull=!ocorrSet.has(String(p.pedido)) && !cortesSet.has(String(p.pedido));
       cargaStats[ck].pedidos.push({...p,semaforo:sem,entregue,rireNorm,rotaNorm,isInFull});
       if(entregue){
         cargaStats[ck].entregues++;
