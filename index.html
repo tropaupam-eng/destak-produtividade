@@ -1812,9 +1812,6 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div class="sidebar-item" data-page="receitas-armazem" onclick="showPage('receitas-armazem',this)">
     <span class="si-icon" data-feather="dollar-sign"></span><span class="si-label">Financeiro</span>
   </div>
-  <div class="sidebar-item" data-page="custo-armazem" onclick="showPage('custo-armazem',this)">
-    <span class="si-icon" data-feather="trending-down"></span><span class="si-label">Custo Armazém</span>
-  </div>
   <div class="sidebar-item" data-page="checklist-alho" onclick="showPage('checklist-alho',this)">
     <span class="si-icon" data-feather="check-square"></span><span class="si-label">Checklist Alho</span>
   </div>
@@ -9219,6 +9216,7 @@ async function syncBaseData(mesFiltro){
           mes_ano:     (r.mes_ano||'').trim().slice(0,7),
           semana_mes:  Math.max(0, Number(r.semana_mes)||0),
           data_pedido: r.data_pedido||null,
+          hora_pedido: r.hora_pedido||null,
           cod_forn:    (r.cod_forn||'').trim().slice(0,50)||null,
           cliente:     (r.cliente||'').trim().slice(0,200)||null,
           bairro:      (r.bairro||'').trim().slice(0,100)||null,
@@ -9331,6 +9329,7 @@ async function pushBaseData(records){
     mes_ano:     r.mes_ano,
     semana_mes:  Math.max(0, Number(r.semana_mes)||0),
     data_pedido: r.data_pedido||null,
+    hora_pedido: r.hora_pedido||null,
     cod_forn:    (r.cod_forn||'').trim().slice(0,50)||null,
     cliente:     (r.cliente||'').trim().slice(0,200)||null,
     bairro:      (r.bairro||'').trim().slice(0,100)||null,
@@ -10837,6 +10836,12 @@ async function carregarPlanilha(file) {
             mes_ano: mesAno(dt),
             semana_mes: semDoMes(dt),
             data_pedido: (dt instanceof Date && !isNaN(dt)) ? dt.toISOString().slice(0,10) : null,
+            // Hora do pedido — usada pro corte das 16h no prazo do OTIF (R.I.).
+            // 00:00 exato é tratado como "sem hora" (célula só com data), não
+            // como pedido feito à meia-noite — evitaria falso corte pra 8h.
+            hora_pedido: (dt instanceof Date && !isNaN(dt) && (dt.getHours()!==0 || dt.getMinutes()!==0))
+              ? String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0')+':00'
+              : null,
             _source: 'planilha'
           });
         });
@@ -24720,7 +24725,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
 
   // Buscar base_data pelas cargas que saíram no mês (não por mes_ano do pedido)
   // Motivo: pedido criado no mês anterior mas entregue neste mês deve contar aqui
-  const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,mes_ano,semana_mes,valor,ocorrencia';
+  const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,hora_pedido,mes_ano,semana_mes,valor,ocorrencia';
   let baseDataSupa;
   if(!cargasUndLanc.size){
     baseDataSupa = [];
@@ -24928,7 +24933,8 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
     if(rireNorm.includes('I')){
       const _dp = (p.data_pedido||'').slice(0,10);
       if(_dp.length === 10 && _dp.startsWith(mesFiltro)){
-        _inicioPrazoOtif = new Date(_dp+'T00:00:00');
+        // Corte das 16h — mesmo critério de _inicioPrazoRI/_computeOtifStats.
+        _inicioPrazoOtif = _inicioPrazoRI(_dp, p.hora_pedido||null, null);
       } else {
         // data_pedido ausente ou de outro mês (dado corrompido): mesmo critério de
         // exclusão do _computeOtifStats (fonte única de OTIF) — sem data_pedido não
@@ -25590,6 +25596,27 @@ async function renderDashInterna(){
 // Logísticos pra segmentar OTIF por rota/motorista/cliente sem duplicar a
 // lógica de prazo acima. Todos os callers existentes continuam funcionando
 // sem passar esse parâmetro (fica undefined, checagem de tipo evita erro).
+// Corte das 16h pro início do prazo em rotas R.I. (Petrolina/Juazeiro/Ceasa —
+// qualquer rota com rire='R.I.'): o relógio só começa no momento exato do
+// pedido quando ele chega até as 16h de um dia útil (domingo/feriado não
+// contam). Depois disso, ou se o pedido chegou num dia não-útil, o prazo só
+// começa no próximo dia útil às 8h. Decisão do usuário em 2026-08-18.
+// Sem hora_pedido (planilhas antigas, ou célula só com data): mantém o
+// comportamento anterior — conta da meia-noite da data do pedido.
+function _inicioPrazoRI(dataPedido, horaPedido, feriadosSet){
+  const dateStr = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const diaUtil = d => d.getDay()!==0 && !(feriadosSet && feriadosSet.has(dateStr(d)));
+  if(!horaPedido) return new Date(dataPedido);
+  const momento = new Date(dataPedido+'T'+horaPedido);
+  if(isNaN(momento.getTime())) return new Date(dataPedido);
+  if(diaUtil(momento) && momento.getHours() < 16) return momento;
+  const prox = new Date(momento);
+  prox.setDate(prox.getDate()+1);
+  prox.setHours(8,0,0,0);
+  while(!diaUtil(prox)) prox.setDate(prox.getDate()+1);
+  return prox;
+}
+
 function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr, mesFiltro, agendPedMap, feriadosSet, onPedido, cortesRows, pendenteTsMap){
   if(!hojeStr) hojeStr = new Date().toISOString().slice(0,10);
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
@@ -25636,7 +25663,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     const rota=(carga&&lancRotaMap[carga])||normalizarRota(b.rota||'')||(b.rota||'').toUpperCase();
     // rire derivado da rota do lançamento
     const rireNorm=getRireFromRota(rota)||normRire(carga&&lancRireMap[carga]||'')||'R.E.';
-    pedMap[k]={ carga, rota, rire:rireNorm, dataPedido:b.data_pedido||null };
+    pedMap[k]={ carga, rota, rire:rireNorm, dataPedido:b.data_pedido||null, horaPedido:b.hora_pedido||null };
   });
   const entMap={};
   (entRows||[]).forEach(e=>{
@@ -25679,9 +25706,9 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
     let inicioPrazo;
     if(bd.rire==='R.I.'){
       if(!bd.dataPedido) continue; // R.I. sem data_pedido não pode calcular prazo
-      // data_pedido como data pura (UTC midnight) — consistente com data_entrega no banco
-      // Corte 16h ativado quando hora_pedido for adicionado à base_data
-      inicioPrazo=new Date(bd.dataPedido);
+      // Corte das 16h (ver _inicioPrazoRI) — usa hora_pedido quando disponível;
+      // sem hora, cai na meia-noite da data (comportamento antigo, planilhas sem horário).
+      inicioPrazo=_inicioPrazoRI(bd.dataPedido, bd.horaPedido, feriadosSet);
     } else {
       // R.E.: prazo começa quando a Expedição marca a carga como "pendente" —
       // decisão do usuário em 2026-08-17, trocando de ts_saiu (só contava o
@@ -25836,7 +25863,7 @@ async function _carregarOtifMes(mes, und){
   // base_data filtrada apenas pelas cargas (unidade já garantida via lancamentos acima)
   // limit=20000 evita truncamento silencioso do PostgREST (padrão = 1000 linhas)
   let bdRows = cargasMes.size
-    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido,mes_ano,semana_mes,ocorrencia,cliente,bairro,valor&limit=20000`,{_quiet:true}).catch(()=>[]) || []
+    ? await supaFetch(`base_data?carga=in.(${[...cargasMes].join(',')})&select=pedido,carga,rota,rire,data_pedido,hora_pedido,mes_ano,semana_mes,ocorrencia,cliente,bairro,valor&limit=20000`,{_quiet:true}).catch(()=>[]) || []
     : [];
   // Fallback 1: se Supabase não tem dados para essas cargas, usar BASE_DATA em memória
   if(!bdRows.length && cargasMes.size && BASE_DATA.length){
@@ -25844,7 +25871,7 @@ async function _carregarOtifMes(mes, und){
   }
   // Fallback 2: cargas WMS (13xxx) ≠ cargas internas — busca por mes_ano quando join por carga retorna vazio
   if(!bdRows.length && cargasMes.size){
-    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido,mes_ano,semana_mes,ocorrencia,cliente,bairro,valor&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
+    bdRows = await supaFetch(`base_data?mes_ano=eq.${mes}&select=pedido,carga,rota,rire,data_pedido,hora_pedido,mes_ano,semana_mes,ocorrencia,cliente,bairro,valor&limit=20000`,{_quiet:true}).catch(()=>[]) || [];
   }
   // Normalizar rire em todos os registros (RI → R.I., RE → R.E.) para consistência em todos os callers
   bdRows.forEach(b=>{ if(b.rire) b.rire = normRire(b.rire) || getRireFromRota((b.rota||'').toUpperCase()) || b.rire; });
