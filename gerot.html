@@ -443,7 +443,30 @@ const AREA_INFO = {
   ARMZ: { label: 'Armazenagem', icon: '📦', cor: '#7A3E93' }
 };
 
-var INDICADORES = JSON.parse(JSON.stringify(INDICADORES_ORIGINAL)); // cópia editável de trabalho
+// ══ SUPABASE ══════════════════════════════════════════
+// Gerot.html é um iframe separado do index.html principal — não compartilha
+// escopo JS, então precisa da própria config/fetch em vez de reusar supaFetch.
+const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhpeWRreXNsZ2lvbWR5Z2luZmR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwODg1NzMsImV4cCI6MjA5MzY2NDU3M30.-vKDIGglPUDEGTZCTfTqK7cVfdig_ahfuTnm8AovEEg';
+async function supaFetch(path, opts){
+  opts = opts || {};
+  var headers = Object.assign({
+    'apikey': SUPA_KEY,
+    'Authorization': 'Bearer ' + SUPA_KEY,
+    'Content-Type': 'application/json'
+  }, opts.headers || {});
+  var res = await fetch(SUPA_URL + '/rest/v1/' + path, Object.assign({}, opts, {headers: headers}));
+  if(!res.ok){
+    var txt = await res.text().catch(function(){ return ''; });
+    throw new Error('Supabase ' + res.status + ': ' + txt);
+  }
+  if(res.status === 204) return null;
+  var ct = res.headers.get('content-type') || '';
+  return ct.indexOf('application/json') !== -1 ? res.json() : null;
+}
+
+const ANO_ATUAL = 2026;
+var INDICADORES = JSON.parse(JSON.stringify(INDICADORES_ORIGINAL)); // fallback offline/erro — sobrescrito por carregarDadosGerot()
 var dadosAlterados = false;
 var currentAreaChart = null;
 
@@ -452,19 +475,72 @@ function uid(){ return 'i_' + Math.random().toString(36).slice(2,9); }
 // dá um id estável a cada indicador na primeira vez que rodamos
 INDICADORES.forEach(function(ind, idx){ ind._id = 'ind_' + idx; });
 
+// Busca indicadores + valores do ano no Supabase (fonte real dos dados).
+// Se a chamada falhar (offline, tabela ainda vazia), mantém o fallback
+// hardcoded acima — pior caso é mostrar dado desatualizado, não tela em branco.
+async function carregarDadosGerot(){
+  try{
+    var resultados = await Promise.all([
+      supaFetch('gerot_indicadores?select=*&ativo=eq.true&order=ordem.asc'),
+      supaFetch('gerot_valores?ano=eq.' + ANO_ATUAL + '&select=*')
+    ]);
+    var inds = resultados[0], vals = resultados[1];
+    if(!inds || !inds.length) return; // tabela vazia — mantém fallback local
+
+    var valsPorIndicador = {};
+    (vals || []).forEach(function(v){
+      if(!valsPorIndicador[v.indicador_id]) valsPorIndicador[v.indicador_id] = {};
+      valsPorIndicador[v.indicador_id][v.mes] = v;
+    });
+
+    INDICADORES = inds.map(function(ind){
+      var vmap = valsPorIndicador[ind.id] || {};
+      var metas = {}, reais = {};
+      MESES.forEach(function(mes){
+        var v = vmap[mes];
+        metas[mes] = (v && v.meta !== undefined) ? v.meta : null;
+        reais[mes] = (v && v.real !== undefined) ? v.real : null;
+      });
+      return { _id: ind.id, area: ind.area, nome: ind.nome, unid: ind.unid, pol: ind.pol, metas: metas, reais: reais };
+    });
+  }catch(e){
+    console.warn('Gerot: falha ao sincronizar com o Supabase, usando dados locais.', e.message);
+    toast('⚠️ Sem conexão com o banco — mostrando última cópia local. Edições não serão salvas até reconectar.');
+  }
+}
+
+// Write-through: grava no Supabase assim que uma célula é editada — sem
+// isso o valor só existe na memória da aba e some ao atualizar a página
+// (era exatamente o bug relatado: "coloco valor e não fica salvo").
+function salvarValorGerot(ind, mes, field, val){
+  var campo = field === 'metas' ? 'meta' : 'real';
+  var payload = { indicador_id: ind._id, ano: ANO_ATUAL, mes: mes };
+  payload[campo] = val;
+  supaFetch('gerot_valores?on_conflict=indicador_id,ano,mes', {
+    method: 'POST',
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(payload)
+  }).then(function(){
+    marcarSalvo();
+  }).catch(function(e){
+    toast('❌ Falha ao salvar no banco: ' + e.message);
+    marcarAlterado();
+  });
+}
+
 function marcarAlterado(){
   dadosAlterados = true;
   var el = document.getElementById('indicadorSalvo');
   var txt = document.getElementById('indicadorSalvoTxt');
   el.className = 'pendente';
-  txt.textContent = '⚠ Não exportado';
+  txt.textContent = '⏳ Salvando...';
 }
 function marcarSalvo(){
   dadosAlterados = false;
   var el = document.getElementById('indicadorSalvo');
   var txt = document.getElementById('indicadorSalvoTxt');
   el.className = 'ok';
-  txt.textContent = 'Tudo exportado';
+  txt.textContent = '✅ Salvo no servidor';
 }
 
 function toast(msg){
@@ -807,6 +883,7 @@ function onCellEdit(inputEl){
   ind[field][mes] = val;
   marcarAlterado();
   renderLancamento();
+  salvarValorGerot(ind, mes, field, val);
 }
 
 // ---------- Import / Export / Reset ----------
@@ -820,7 +897,6 @@ function exportarJSON(){
   a.download = 'Gerot_Indicadores_' + stamp + '.json';
   a.click();
   URL.revokeObjectURL(url);
-  marcarSalvo();
   toast('📤 Backup exportado.');
 }
 
@@ -832,10 +908,25 @@ function importarJSON(event){
     try{
       var data = JSON.parse(e.target.result);
       if(!Array.isArray(data.indicadores)) throw new Error('formato inválido (campo "indicadores" ausente)');
-      INDICADORES = data.indicadores;
-      INDICADORES.forEach(function(ind, idx){ if(!ind._id) ind._id = 'ind_' + idx; });
-      marcarSalvo();
-      toast('📥 Dados importados.');
+      // Casa pelo par (area, nome) — nunca pelo _id do arquivo, que num backup
+      // antigo era só um índice local ('ind_0'...) sem relação com o id real
+      // no banco. Só assim dá pra gravar de volta no Supabase corretamente.
+      var catalogo = {};
+      INDICADORES.forEach(function(ind){ catalogo[ind.area + '||' + ind.nome] = ind; });
+      var pendentes = [];
+      var semMatch = 0;
+      data.indicadores.forEach(function(imp){
+        var alvo = catalogo[imp.area + '||' + imp.nome];
+        if(!alvo){ semMatch++; return; }
+        MESES.forEach(function(mes){
+          var novaMeta = imp.metas ? imp.metas[mes] : undefined;
+          var novoReal = imp.reais ? imp.reais[mes] : undefined;
+          if(novaMeta !== undefined && novaMeta !== alvo.metas[mes]){ alvo.metas[mes] = novaMeta; pendentes.push([alvo, mes, 'metas', novaMeta]); }
+          if(novoReal !== undefined && novoReal !== alvo.reais[mes]){ alvo.reais[mes] = novoReal; pendentes.push([alvo, mes, 'reais', novoReal]); }
+        });
+      });
+      pendentes.forEach(function(p){ salvarValorGerot(p[0], p[1], p[2], p[3]); });
+      toast('📥 ' + pendentes.length + ' valor(es) importado(s) e salvos.' + (semMatch ? ' (' + semMatch + ' indicador(es) do arquivo não encontrados no catálogo atual)' : ''));
       populateMonthSelectors();
       renderDashboard();
       renderVisaoGeral();
@@ -849,14 +940,15 @@ function importarJSON(event){
 }
 
 function confirmarReset(){
-  if(!confirm('Isso vai descartar todas as alterações feitas nesta sessão e voltar aos dados originais da planilha. Exporte antes se quiser guardar o que já preencheu. Continuar?')) return;
-  INDICADORES = JSON.parse(JSON.stringify(INDICADORES_ORIGINAL));
-  INDICADORES.forEach(function(ind, idx){ ind._id = 'ind_' + idx; });
-  marcarSalvo();
-  populateMonthSelectors();
-  renderVisaoGeral();
-  renderLancamento();
-  toast('↺ Dados originais restaurados.');
+  if(!confirm('Isso descarta qualquer edição não sincronizada nesta aba e recarrega os valores direto do servidor. Continuar?')) return;
+  carregarDadosGerot().then(function(){
+    marcarSalvo();
+    populateMonthSelectors();
+    renderDashboard();
+    renderVisaoGeral();
+    renderLancamento();
+    toast('↺ Dados recarregados do servidor.');
+  });
 }
 
 // ---------- Dashboard ----------
@@ -1268,11 +1360,13 @@ function renderDetalheIndicador(){
 
 // ---------- Init ----------
 document.addEventListener('DOMContentLoaded', function(){
-  populateMonthSelectors();
   initNavTabs();
-  renderDashboard();
-  renderVisaoGeral();
-  renderLancamento();
+  carregarDadosGerot().then(function(){
+    populateMonthSelectors();
+    renderDashboard();
+    renderVisaoGeral();
+    renderLancamento();
+  });
 });
 
 </script>
