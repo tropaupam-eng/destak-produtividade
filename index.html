@@ -31965,8 +31965,13 @@ async function carregarPortalFiscal(){
   if(!container) return;
 
   try{
-    // Inclui separacao: conferente já está conferindo → fiscal já pode ver e agir
-    const statusFiscalAtivos = ['separacao','carregamento','aguardando_nf'];
+    // Inclui separacao: conferente já está conferindo → fiscal já pode ver e agir.
+    // Inclui também aguardando_manifesto/pronto_viagem/saiu: o fiscal precisa
+    // completar NF/boleto nesses estágios também — antes a query só buscava até
+    // aguardando_nf e a carga sumia do Portal Fiscal assim que a Expedição
+    // avançava o status. Só some da lista ativa quando a Expedição bate "Fim de
+    // Viagem" (ou o fiscal conclui manualmente, via status_fiscal — filtro abaixo).
+    const statusFiscalAtivos = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu'];
     const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.map(s=>`"${s}"`).join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem,mes_ano,criado_em`) || [];
     const cargasAtivas = new Set(demandasAtivas.map(d=>d.carga));
     const cargasStr = [...cargasAtivas].join(',');
@@ -31999,11 +32004,11 @@ async function carregarPortalFiscal(){
     // Adicionar NFs
     (nfs||[]).forEach(n=>{ if(cargasMap[n.carga]) cargasMap[n.carga].nfs.push(n); });
 
-    const statusConcluidos = ['aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
     const cargas = Object.keys(cargasMap).map(Number).sort((a,b)=>a-b);
-    // Carga só sai da lista ativa do fiscal quando o fiscal conclui (status_fiscal = concluido).
-    // O avanço do status geral pelo ADM (saiu, fim_viagem, etc.) NÃO remove a carga da lista ativa —
-    // o fiscal precisa completar NFs e boletos independente do estágio da rota.
+    // Carga sai da lista ativa do fiscal quando o fiscal conclui manualmente
+    // (status_fiscal='concluido') OU quando a Expedição bate "Fim de Viagem" —
+    // a query acima já para de buscar em "saiu", então fim_viagem/concluido
+    // nunca chegam a entrar em cargasMap.
     const cargasAtivasLista = cargas.filter(c=>
       cargasMap[c]?.demanda?.status_fiscal !== 'concluido' &&
       cargasMap[c]?.demanda?.status !== 'cancelado'
@@ -34541,8 +34546,9 @@ async function carregarPaginaFiscal(){
   try{
     const perfil = USUARIO_LOGADO?.perfil||'';
     const isAdminFiscal = ['admin','fiscal_admin','adm_fiscal'].includes(perfil);
-    // Todos os fiscais veem separacao + carregamento + aguardando_nf
-    const statusVisiveis = ['separacao','carregamento','aguardando_nf'];
+    // Todos os fiscais veem até "saiu" (em viagem) — só sai da lista em "Fim de
+    // Viagem" ou quando o fiscal conclui manualmente (status_fiscal, ver linha ~34612).
+    const statusVisiveis = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu'];
     const demandasFiscal = await supaFetch(`demandas_rota?status=in.(${statusVisiveis.map(s=>`"${s}"`).join(',')})&select=*&order=carga.asc`) || [];
 
     const cargasIds = demandasFiscal.map(d=>d.carga).filter(Boolean);
