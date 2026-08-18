@@ -8210,7 +8210,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.3.2';
+const APP_VERSION = '4.3.3';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -21524,7 +21524,10 @@ function showPage(name,tab){
   else if(name==='financeiro') safe(()=>renderFinanceiro(),'financeiro');
   else if(name==='gerot'){
     const ifr=document.getElementById('gerot-iframe');
-    if(ifr && !ifr.src && ifr.dataset.src) ifr.src=ifr.dataset.src;
+    // ?v=APP_VERSION força o navegador a buscar o gerot.html de novo a cada
+    // deploy — sem isso, o cache HTTP do GitHub Pages podia continuar servindo
+    // uma cópia antiga do iframe mesmo depois de um fix já estar no ar.
+    if(ifr && !ifr.src && ifr.dataset.src) ifr.src=ifr.dataset.src+'?v='+APP_VERSION;
   }
   else if(name==='cftv') safe(()=>carregarPaginaCFTV(),'cftv');
   else if(name==='prevencao-perdas') safe(()=>carregarPaginaPrevencao(),'prevencao-perdas');
@@ -30295,8 +30298,19 @@ async function reabrirCargaHistorico(demandaId, carga){
   try{
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
       method:'PATCH',
-      body:JSON.stringify({ status: novoStatus })
+      // ts_concluido zerado: a carga está saindo do status "concluído" — deixar
+      // esse timestamp marcado fazia o Monitoramento (Retorno de Veículos)
+      // continuar tratando a carga como já finalizada mesmo depois de reaberta.
+      body:JSON.stringify({ status: novoStatus, ts_concluido: null })
     });
+    // Retorno de Veículos considera "em rota" só quem NÃO tem retorno real
+    // registrado. Uma carga reaberta ainda carrega o retorno_real da viagem
+    // concluída anterior, então sumia do Monitoramento mesmo com status "saiu" —
+    // zera aqui pra ela voltar a aparecer como em rota.
+    await supaFetch(`retorno_veiculos?demanda_id=eq.${demandaId}`,{
+      method:'PATCH',
+      body:JSON.stringify({ data_retorno_real: null, data_retorno_agendado: null })
+    }).catch(()=>{}); // sem retorno_veiculos vinculado ainda — nada a limpar
     showToast(`✅ Carga ${carga} reaberta como "${label}"`, 'success');
     await carregarHistoricoRotas();
     // Recarrega a expedição se estiver visível
