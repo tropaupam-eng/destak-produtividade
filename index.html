@@ -32067,8 +32067,12 @@ async function carregarPortalFiscal(){
     // aguardando_nf e a carga sumia do Portal Fiscal assim que a Expedição
     // avançava o status. Só some da lista ativa quando a Expedição bate "Fim de
     // Viagem" (ou o fiscal conclui manualmente, via status_fiscal — filtro abaixo).
+    // OR status_fiscal=em_andamento: cobre o botão "↩ Reabrir" do Histórico —
+    // ele só muda status_fiscal (o status geral já pode estar fim_viagem/concluido
+    // há tempos), então sem esse OR a carga reaberta sumia do Histórico e não
+    // reaparecia em lugar nenhum pro fiscal lançar os pedidos de novo.
     const statusFiscalAtivos = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu'];
-    const demandasAtivas = await supaFetch(`demandas_rota?status=in.(${statusFiscalAtivos.map(s=>`"${s}"`).join(',')})&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem,mes_ano,criado_em`) || [];
+    const demandasAtivas = await supaFetch(`demandas_rota?or=(status.in.(${statusFiscalAtivos.map(s=>`"${s}"`).join(',')}),status_fiscal.eq.em_andamento)&carga=not.is.null&select=id,carga,rota,motorista,veiculo,status,status_fiscal,status_armazem,mes_ano,criado_em`) || [];
     const cargasAtivas = new Set(demandasAtivas.map(d=>d.carga));
     const cargasStr = [...cargasAtivas].join(',');
 
@@ -32109,9 +32113,11 @@ async function carregarPortalFiscal(){
       cargasMap[c]?.demanda?.status_fiscal !== 'concluido' &&
       cargasMap[c]?.demanda?.status !== 'cancelado'
     );
-    const cargasConcluidas  = cargas.filter(c=>
-      cargasMap[c]?.demanda?.status_fiscal === 'concluido'
-    );
+    // Histórico de concluídos — busca própria, independente do status geral da
+    // carga (que já pode estar fim_viagem/concluido há tempos e por isso nunca
+    // entraria em cargasMap acima). Sem isso, uma carga totalmente encerrada
+    // nunca aparecia aqui pro fiscal reabrir e lançar NF/boleto de novo.
+    const concluidasRaw = await supaFetch('demandas_rota?status_fiscal=eq.concluido&select=id,carga,rota,motorista&order=carga.desc&limit=100').catch(()=>[]) || [];
 
     // KPIs
     const totalPed  = cargas.reduce((s,c)=>s+cargasMap[c].pedidos.size,0);
@@ -32233,22 +32239,19 @@ async function carregarPortalFiscal(){
       </div>`;
     }).join('');
 
-    // Histórico concluídas
-    const htmlHist = cargasConcluidas.length ? `
+    // Histórico concluídas (fonte: concluidasRaw, independente da query acima)
+    const htmlHist = concluidasRaw.length ? `
       <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
-        <h3 style="font-size:.9rem;font-weight:700;color:var(--text-muted);margin-bottom:12px">📁 Histórico — Concluídos (${cargasConcluidas.length})</h3>
-        ${cargasConcluidas.map(carga=>{
-          const dados = cargasMap[carga];
-          const dem = dados?.demanda||{};
+        <h3 style="font-size:.9rem;font-weight:700;color:var(--text-muted);margin-bottom:12px">📁 Histórico — Concluídos (${concluidasRaw.length})</h3>
+        ${concluidasRaw.map(dem=>{
           const isFiscal = ['fiscal_op','opedor_fiscal','fiscal_admin','admin','adm_fiscal'].includes(USUARIO_LOGADO?.perfil||'');
           return `<div style="background:rgba(5,150,105,.05);border:1px solid rgba(5,150,105,.2);border-radius:10px;padding:10px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <div style="display:flex;align-items:center;gap:10px">
-              <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">✅ Carga ${carga}</span>
+              <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">✅ Carga ${dem.carga}</span>
               <span style="font-size:.82rem;font-weight:700">${dem.rota||'—'}</span>
               <span style="font-size:.78rem;color:var(--text-secondary)">🚗 ${dem.motorista||'—'}</span>
-              <span style="font-size:.75rem;color:var(--text-muted)">${dados.nfs.length} NFs</span>
             </div>
-            ${isFiscal?`<button onclick="reabrirFiscal(${carga},'${dem.id||''}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer">↩ Reabrir</button>`:''}
+            ${isFiscal?`<button onclick="reabrirFiscal(${dem.carga},'${dem.id||''}')" style="background:var(--bg-hover);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer">↩ Reabrir</button>`:''}
           </div>`;
         }).join('')}
       </div>` : '';
@@ -34644,8 +34647,11 @@ async function carregarPaginaFiscal(){
     const isAdminFiscal = ['admin','fiscal_admin','adm_fiscal'].includes(perfil);
     // Todos os fiscais veem até "saiu" (em viagem) — só sai da lista em "Fim de
     // Viagem" ou quando o fiscal conclui manualmente (status_fiscal, ver linha ~34612).
+    // OR status_fiscal=em_andamento: cobre o botão "↩ Reabrir" do Histórico — ele só
+    // muda status_fiscal, então sem esse OR a carga reaberta não voltava a aparecer
+    // aqui pro fiscal lançar os pedidos de novo (o status geral continua fim_viagem/concluido).
     const statusVisiveis = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu'];
-    const demandasFiscal = await supaFetch(`demandas_rota?status=in.(${statusVisiveis.map(s=>`"${s}"`).join(',')})&select=*&order=carga.asc`) || [];
+    const demandasFiscal = await supaFetch(`demandas_rota?or=(status.in.(${statusVisiveis.map(s=>`"${s}"`).join(',')}),status_fiscal.eq.em_andamento)&select=*&order=carga.asc`) || [];
 
     const cargasIds = demandasFiscal.map(d=>d.carga).filter(Boolean);
 
