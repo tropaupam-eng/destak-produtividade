@@ -4987,6 +4987,16 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div class="ck-field"><label>Peso da amostra avaliada (kg)</label><input type="number" id="ck-q-peso" placeholder="Ex: 50" value="50" min="0" step="0.1"></div>
         <div class="ck-field"><label>Observação adicional (opcional)</label><input type="text" id="ck-q-obs-extra" placeholder="Opcional"></div>
       </div>
+      <div class="ck-field" style="margin-top:16px">
+        <label>Fotos do Produto</label>
+        <input type="file" id="ck-fotos-input" accept="image/*" capture="environment" multiple style="display:none" onchange="_ck_adicionarFotos(event)">
+        <div>
+          <button type="button" class="ck-btn ghost" onclick="document.getElementById('ck-fotos-input').click()">
+            <span data-feather="camera" style="width:14px;height:14px"></span> Adicionar Fotos
+          </button>
+        </div>
+        <div id="ck-fotos-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"></div>
+      </div>
       <div class="ck-actions" style="margin:16px 0">
         <button class="ck-btn" id="ck-gerarLaudoBtn"><span data-feather="file-text" style="width:14px;height:14px"></span> Gerar Laudo</button>
         <button class="ck-btn ghost" id="ck-copiarLaudoBtn"><span data-feather="copy" style="width:14px;height:14px"></span> Copiar texto</button>
@@ -4996,6 +5006,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div class="ck-laudo-wm"><span>D</span></div>
         <div class="ck-laudo-head"><span class="d">D</span><span class="word">estak</span><span class="prime">PRIME</span></div>
         <div class="ck-laudo-text" id="ck-laudoText">O laudo gerado aparecerá aqui — preencha os campos acima e clique em "Gerar Laudo".</div>
+        <div class="ck-laudo-fotos" id="ck-laudoFotos" style="display:none;position:relative;z-index:1"></div>
       </div>
     </div>
   </div>
@@ -41929,6 +41940,10 @@ let _ck_ciState    = {};
 let _ck_decisaoSel = '';
 let _ck_alteracoes = [];
 let _ck_ncChart    = null;
+// Fotos do produto: {file, previewUrl, nome_arquivo} antes de salvar (sem url ainda —
+// só sobe pro Storage no clique de Salvar Checklist); {nome_arquivo, url} depois de
+// salvo/carregado do histórico (sem file, já tem a url pública definitiva).
+let _ck_fotos = [];
 
 function renderChecklistAlho() {
   const now = new Date();
@@ -41993,6 +42008,10 @@ function _ck_novo() {
   _ck_ciState    = {};
   _ck_decisaoSel = '';
   _ck_alteracoes = [];
+  _ck_fotos.forEach(f => { if(f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+  _ck_fotos = [];
+  _ck_renderFotosPreview();
+  _ck_renderGaleriaLaudo();
   ['ck-r-data','ck-r-hora','ck-r-fornecedor','ck-r-nf','ck-r-lote',
    'ck-r-unidade','ck-r-responsavel','ck-r-caixas','ck-r-peso',
    'ck-r-placa','ck-r-transportadora','ck-r-fabricacao','ck-r-validade',
@@ -42156,6 +42175,68 @@ function _ck_updateClassificacao(totalPct) {
   }
 }
 
+// ── FOTOS DO PRODUTO ──────────────────────────────────────────
+function _ck_adicionarFotos(event) {
+  const files = Array.from(event.target.files || []);
+  files.forEach(file => {
+    if(!file.type.startsWith('image/')) return;
+    _ck_fotos.push({ file, previewUrl: URL.createObjectURL(file), nome_arquivo: file.name });
+  });
+  event.target.value = ''; // permite escolher o mesmo arquivo de novo depois de remover
+  _ck_renderFotosPreview();
+}
+
+function _ck_removerFoto(idx) {
+  const f = _ck_fotos[idx];
+  if(f?.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  _ck_fotos.splice(idx, 1);
+  _ck_renderFotosPreview();
+}
+
+function _ck_renderFotosPreview() {
+  const el = document.getElementById('ck-fotos-preview');
+  if(!el) return;
+  el.innerHTML = _ck_fotos.map((f, i) => `
+    <div style="position:relative;width:84px;height:84px">
+      <img src="${f.previewUrl || f.url}" style="width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--ck-bord)">
+      <button type="button" onclick="_ck_removerFoto(${i})" title="Remover"
+        style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:#a83232;color:#fff;border:none;font-size:12px;cursor:pointer;line-height:1;padding:0">✕</button>
+    </div>`).join('');
+}
+
+// Sobe pro bucket checklist-alho-fotos — mesmo padrão de uploadParaStorage (NF/boleto),
+// só que com um path próprio (fotos de checklist não têm carga/pedido associado).
+async function _ck_uploadFoto(file) {
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const STORAGE_URL = SUPA_URL.replace('/rest/v1', '') + '/storage/v1/object/checklist-alho-fotos/' + path;
+  const res = await fetch(STORAGE_URL, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPA_KEY,
+      'Authorization': 'Bearer ' + SUPA_KEY,
+      'Content-Type': file.type || 'application/octet-stream',
+      'x-upsert': 'true'
+    },
+    body: file
+  });
+  if(!res.ok){ const err = await res.text(); throw new Error('Storage erro: ' + err); }
+  return SUPA_URL.replace('/rest/v1', '') + '/storage/v1/object/public/checklist-alho-fotos/' + path;
+}
+
+// Preenche a galeria dentro de #ck-laudoPreview — mesmo elemento que window.print()
+// usa pro PDF, então as fotos aparecem no relatório impresso/baixado automaticamente.
+function _ck_renderGaleriaLaudo() {
+  const el = document.getElementById('ck-laudoFotos');
+  if(!el) return;
+  if(!_ck_fotos.length){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'block';
+  el.innerHTML = '<div style="font-weight:800;margin:14px 0 8px;font-size:.85rem;border-top:1px solid var(--ck-bord);padding-top:14px">FOTOS DO PRODUTO</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:10px">'
+    + _ck_fotos.map(f => `<img src="${f.previewUrl || f.url}" style="width:160px;height:160px;object-fit:cover;border-radius:8px;border:1px solid var(--ck-bord)">`).join('')
+    + '</div>';
+}
+
 function _ck_gerarLaudo() {
   const val      = id => document.getElementById(id)?.value?.trim() || '';
   const fmtDate  = d => d ? new Date(d+'T12:00:00').toLocaleDateString('pt-BR') : '—';
@@ -42237,6 +42318,7 @@ function _ck_gerarLaudo() {
   const laudo = blocos.join('\n');
   const prev = document.getElementById('ck-laudoText');
   if(prev) prev.textContent = laudo;
+  _ck_renderGaleriaLaudo();
 }
 
 function _ck_copiarLaudo() {
@@ -42383,6 +42465,16 @@ async function _ck_salvar() {
   const btn = document.getElementById('ck-salvarBtn');
   if(btn){ btn.disabled=true; btn.textContent='⏳ Salvando...'; }
   try {
+    // Sobe as fotos ainda não enviadas (arquivo local, sem url) pro Storage antes
+    // de gravar o checklist — assim o registro já nasce com as urls definitivas.
+    if(_ck_fotos.length){
+      if(btn) btn.textContent = '📤 Enviando fotos...';
+      for(const f of _ck_fotos){
+        if(!f.url) f.url = await _ck_uploadFoto(f.file);
+      }
+      if(btn) btn.textContent = '⏳ Salvando...';
+    }
+    payload.fotos = _ck_fotos.map(f => ({ nome_arquivo: f.nome_arquivo, url: f.url }));
     const salvo = await supaFetch('checklist_alho', {method:'POST', body:JSON.stringify(payload)});
     const protocolo = salvo?.[0]?.id ? `CKA-${String(salvo[0].id).padStart(6,'0')}` : null;
     showToast(protocolo ? `✅ Checklist salvo — Nº do Laudo ${protocolo}` : '✅ Checklist salvo com sucesso!','success');
@@ -42521,6 +42613,9 @@ function _ck_baixarLaudoHistorico(idx) {
   _ck_switchTab('qualidade');
   const prev = document.getElementById('ck-laudoText');
   if(prev) prev.textContent = laudo;
+  // Fotos salvas com esse laudo (já têm url pública, sem file/previewUrl local)
+  _ck_fotos = Array.isArray(r.fotos) ? r.fotos.map(f => ({ nome_arquivo: f.nome_arquivo, url: f.url })) : [];
+  _ck_renderGaleriaLaudo();
   _ck_baixarPdf();
 }
 
