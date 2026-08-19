@@ -31970,8 +31970,36 @@ async function _buscarNFsFiscalCore(inputId, tipoId, resId){
       ? `notas_fiscais?pedido=eq.${numero}&select=*&order=criado_em.desc`
       : `notas_fiscais?carga=eq.${numero}&select=*&order=pedido.asc,criado_em.desc`;
     const docs = await supaFetch(query).catch(()=>[]) || [];
+
+    // Anexar novo arquivo — só na busca por pedido (carga+pedido não ambíguos).
+    // Funciona pra qualquer carga, inclusive já concluída/fim de viagem: essa
+    // carga some da lista ativa do fiscal (regra de visibilidade), mas o fiscal
+    // ainda pode precisar reenviar um documento depois disso.
+    let anexoHtml = '';
+    if(tipo === 'pedido'){
+      let cargaDoPedido = docs[0]?.carga;
+      if(!cargaDoPedido){
+        const bd = await supaFetch(`base_data?pedido=eq.${numero}&select=carga&limit=1`).catch(()=>[]) || [];
+        cargaDoPedido = bd[0]?.carga;
+      }
+      if(cargaDoPedido){
+        anexoHtml = `
+          <div style="background:var(--bg-base);border:1.5px dashed var(--border-med);border-radius:10px;padding:12px;margin-bottom:12px">
+            <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">📎 Anexar novo arquivo — Carga #${cargaDoPedido} · Pedido #${numero}</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <input type="file" id="fiscal-busca-anexo-${resId}" accept=".pdf,.jpg,.jpeg,.png,.xml" multiple style="flex:1;min-width:180px;font-size:.8rem;color:var(--text-primary)">
+              <button onclick="_fiscalAnexarViaBusca(${cargaDoPedido},${numero},'${resId}','${inputId}','${tipoId}')"
+                style="background:linear-gradient(135deg,#2563eb,#3b82f6);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap">
+                📤 Enviar
+              </button>
+            </div>
+            <div style="font-size:.68rem;color:var(--text-muted);margin-top:6px">Funciona mesmo se a carga já estiver concluída ou com viagem finalizada.</div>
+          </div>`;
+      }
+    }
+
     if(!docs.length){
-      res.innerHTML = `<p style="color:var(--text-muted);font-size:.82rem;padding:8px 0">Nenhum documento encontrado para ${tipo === 'pedido' ? 'pedido' : 'carga'} <strong style="color:var(--text-primary)">#${numero}</strong>.</p>`;
+      res.innerHTML = anexoHtml + `<p style="color:var(--text-muted);font-size:.82rem;padding:8px 0">Nenhum documento encontrado para ${tipo === 'pedido' ? 'pedido' : 'carga'} <strong style="color:var(--text-primary)">#${numero}</strong>.</p>`;
       return;
     }
     const fmtDt = ts => ts ? new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
@@ -31992,10 +32020,40 @@ async function _buscarNFsFiscalCore(inputId, tipoId, resId){
         <span style="font-size:.72rem;color:var(--text-muted);white-space:nowrap">${d.fiscal_nome||''}</span>
       </div>`;
     }).join('');
-    res.innerHTML = `<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:8px">${docs.length} documento(s) encontrado(s):</div>${rows}`;
+    res.innerHTML = anexoHtml + `<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:8px">${docs.length} documento(s) encontrado(s):</div>${rows}`;
   }catch(e){
     res.innerHTML = `<p style="color:#ef4444;font-size:.82rem">Erro na busca: ${e.message}</p>`;
   }
+}
+
+// Anexa um NF/boleto novo direto pela busca — funciona pra qualquer carga,
+// independente do status em demandas_rota (a busca não olha essa tabela).
+// Reusa o mesmo storage/POST de uploadNF, sem depender de carregarPaginaFiscal()
+// pra atualizar a tela (só refaz a própria busca, que é o painel realmente ativo aqui).
+async function _fiscalAnexarViaBusca(carga, pedido, resId, inputId, tipoId){
+  const fileInput = document.getElementById(`fiscal-busca-anexo-${resId}`);
+  const files = fileInput?.files;
+  if(!files || !files.length){ showToast('Selecione um arquivo','warning'); return; }
+  try{
+    showToast('📤 Enviando arquivo(s) para o servidor...','warning');
+    const _bdRows = (BASE_DATA||[]).filter(r=>Number(r.carga)===Number(carga)&&Number(r.pedido)===Number(pedido));
+    const _valorEmissao = _bdRows.reduce((s,r)=>s+(parseFloat(r.valor)||0), 0) || null;
+    let enviados = 0;
+    for(const file of files){
+      const tipoDoc = /boleto/i.test(file.name) ? 'boleto' : 'nf';
+      const url = await uploadParaStorage(file, carga, pedido);
+      await supaFetch('notas_fiscais',{method:'POST',body:JSON.stringify({
+        carga:Number(carga), pedido:Number(pedido),
+        nome_arquivo:file.name, tipo:tipoDoc, url, valor:_valorEmissao,
+        fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'',
+        criado_em:new Date().toISOString()
+      })});
+      enviados++;
+    }
+    showToast(`✅ ${enviados} arquivo(s) enviado(s) com sucesso!`,'success');
+    notificarSeguros(carga).catch(()=>{});
+    await _buscarNFsFiscalCore(inputId, tipoId, resId);
+  }catch(e){ showToast('Erro no upload: '+e.message,'warning'); }
 }
 
 async function carregarPortalFiscal(){
