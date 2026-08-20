@@ -11,7 +11,7 @@
 
 ## ✅ Status de correção — 2026-08-20 (o que já foi aplicado nesta data)
 
-Corrigido e **já em produção** (código, testado com `check.js` antes de cada push):
+Corrigido e **já em produção** (código, cada push testado com `check.js`, deploy verde no CI):
 
 | Commit | O que |
 |---|---|
@@ -19,16 +19,20 @@ Corrigido e **já em produção** (código, testado com `check.js` antes de cada
 | `b454701` | **Q2** — carga 100% devolvida não paga mais integral (3 sites). **Q3** — fim do pagamento duplicado em `confirmarPagamento`. |
 | `31c6af6` | **P5** — não desloga mais no bump de versão. **Q6** — `confirm()` antes de apagar o mês de OTIF. **P6** — gráficos legíveis no tema escuro. **P7** — `--text-muted` passa WCAG. |
 | `0ca8aa8` | **P4 (parte)** — `preconnect` do Supabase. |
+| `d75aae5` | **Q4** — rota externa (R.E.) não paga mais R$0: `lancar()` deriva `rire` de `getRireFromRota` (como os ~40 outros sites). **P4** — `defer` nos 4 scripts de CDN (verificado: nenhuma lib usada no top-level; `feather.replace()` garantido no `DOMContentLoaded`). |
+| `0a5e054` | **P1** — login paraleliza as 5 syncs independentes (`Promise.all`), semântica de erro preservada. ~5-6s → tempo do mais lento. |
+| `97eb667` | **Q1** — guards contra perda de dados no loop ERP de 5s: barra reentrância/offline/sem-permissão ANTES do DELETE + `pararMonitorIntegracaoERP()` no `logout()`. |
+| `6852705` | Remove `formatarMesAno()` duplicada e inalcançável (armadilha). |
+| `b23129a` | **ERP key** — fail-fast na `ERP_API_KEY` (remove o literal do repo público). **+** `seguranca/PLANO-SEGURANCA.md` (rollout do banco). |
 
-**Deixado de propósito para você/dono decidir (não empurrei blind):**
-- **Q4/Q5 (R.E. paga R$0 / classificação de rota):** o fix é derivar `rire` de `getRireFromRota`, mas ela depende de `ROTAS_RI`, que tem o bug de normalização (Q5) e, se `syncConfig` falhar no boot, fica só com 6 rotas → **tudo viraria R.E.**. O `'R.I.'` hardcoded no `lancar()` pode ser defesa deliberada. Consertar Q4 **exige** Q5 (normalizar `ROTAS_RI` com `normalizarRota` dos dois lados) — e isso toca a classificação usada no OTIF. Fix coordenado, não isolado.
-- **Q1 (loop ERP DELETE+INSERT):** fluxo do ERP, risco alto — é área que você está editando.
-- **P1/P2 (login em `Promise.all` / `syncBaseData(mesAtual)`):** mudam ordem de init / o que carrega no login; algumas telas podem assumir todos os meses carregados. Precisa do teu conhecimento das telas.
-- **P4 `defer`/lazy-load:** 48 usos de Chart/feather/XLSX — sem auditar todos, `defer` pode white-screenar. Você sabe se o init usa antes do `DOMContentLoaded`.
-- **Q7/Q8/Q9 (indicadores/fuso):** você está editando esse código agora (commit `1cba7d6`) — não toquei pra não bater de frente.
-- **Parte 1 inteira (RLS/Auth/senha) + Q11/Q12/Q13 (migrations):** é do dono do Supabase.
+**Deixado de propósito, com motivo (não empurrei blind):**
+- **Q5 (normalização do `ROTAS_RI`):** o fix "certo" é refactor de ~25 sites que tocam o OTIF, e o mismatch de acento é **teórico neste negócio** (rotas R.I. são as locais, sem acento). Não vale o risco. (O Q4, o bug de dinheiro real, já foi feito sem depender disso.)
+- **P2 (`syncBaseData(mesAtual)` no login):** a versão segura (mês atual + resto em background) quebra o empty-state na **virada de mês** (mês novo sem dados marcaria "sem base" e limparia o cache). Não dá pra testar em produção. O **P1 já entregou o ganho grande** do login.
+- **Q7/Q8/Q9 (indicadores/fuso):** você está editando esse código **agora** (commits `1cba7d6`, `847fb16` de hoje, em "liberação/carregamento no prazo"). Não toquei pra não bater de frente com o teu trabalho — estão documentados na Parte 2 com `arquivo:linha`.
+- **48 lançamentos de maio hardcoded / código morto:** é dado de negócio real embutido no fonte; deletar pode sumir com maio se não estiver no Supabase. Limpeza de baixo valor, risco real — deixei quieto.
+- **Fase 1-3 do banco (senha/Auth/RLS) + Q11/Q12/Q13 (migrations):** é do dono do Supabase, coordenado e testado em branch. Ver `seguranca/PLANO-SEGURANCA.md`.
 
-O Rafael tem os diffs/SQL prontos para os itens acima quando você quiser aplicar.
+O Rafael tem os diffs/SQL prontos para o que sobrou, quando você quiser coordenar.
 
 ---
 
