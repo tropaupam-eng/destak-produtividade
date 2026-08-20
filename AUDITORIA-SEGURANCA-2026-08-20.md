@@ -9,6 +9,29 @@
 
 ---
 
+## ✅ Status de correção — 2026-08-20 (o que já foi aplicado nesta data)
+
+Corrigido e **já em produção** (código, testado com `check.js` antes de cada push):
+
+| Commit | O que |
+|---|---|
+| `6ebacc3` | **D1** — `check.js` + step no workflow: barra deploy truncado/com erro de sintaxe. Testado contra o commit `7005a8f`. |
+| `b454701` | **Q2** — carga 100% devolvida não paga mais integral (3 sites). **Q3** — fim do pagamento duplicado em `confirmarPagamento`. |
+| `31c6af6` | **P5** — não desloga mais no bump de versão. **Q6** — `confirm()` antes de apagar o mês de OTIF. **P6** — gráficos legíveis no tema escuro. **P7** — `--text-muted` passa WCAG. |
+| `0ca8aa8` | **P4 (parte)** — `preconnect` do Supabase. |
+
+**Deixado de propósito para você/dono decidir (não empurrei blind):**
+- **Q4/Q5 (R.E. paga R$0 / classificação de rota):** o fix é derivar `rire` de `getRireFromRota`, mas ela depende de `ROTAS_RI`, que tem o bug de normalização (Q5) e, se `syncConfig` falhar no boot, fica só com 6 rotas → **tudo viraria R.E.**. O `'R.I.'` hardcoded no `lancar()` pode ser defesa deliberada. Consertar Q4 **exige** Q5 (normalizar `ROTAS_RI` com `normalizarRota` dos dois lados) — e isso toca a classificação usada no OTIF. Fix coordenado, não isolado.
+- **Q1 (loop ERP DELETE+INSERT):** fluxo do ERP, risco alto — é área que você está editando.
+- **P1/P2 (login em `Promise.all` / `syncBaseData(mesAtual)`):** mudam ordem de init / o que carrega no login; algumas telas podem assumir todos os meses carregados. Precisa do teu conhecimento das telas.
+- **P4 `defer`/lazy-load:** 48 usos de Chart/feather/XLSX — sem auditar todos, `defer` pode white-screenar. Você sabe se o init usa antes do `DOMContentLoaded`.
+- **Q7/Q8/Q9 (indicadores/fuso):** você está editando esse código agora (commit `1cba7d6`) — não toquei pra não bater de frente.
+- **Parte 1 inteira (RLS/Auth/senha) + Q11/Q12/Q13 (migrations):** é do dono do Supabase.
+
+O Rafael tem os diffs/SQL prontos para os itens acima quando você quiser aplicar.
+
+---
+
 ## Antes de qualquer coisa: ⚠️ NÃO "Enable RLS" sozinho
 
 Se você ler abaixo que "não existe RLS" e a reação for marcar **Enable Row Level Security** nas tabelas — **PARE.** Isso **derruba o app inteiro na hora**, para todos os motoristas, conferentes e fiscais.
