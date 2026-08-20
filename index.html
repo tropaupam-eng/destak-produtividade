@@ -28095,23 +28095,40 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
     const rireSel = window._painelIndRireSel || '';
 
+    // Universo completo do indicador: TODA carga que saiu no mês — antes, só
+    // entravam aqui as que também tinham conferência 'ok' registrada dentro do
+    // MESMO mês calendário; carga conferida em outro mês (ex: saiu dia 1 mas
+    // conferência foi feita no fim do mês anterior), ou nunca conferida, sumia
+    // da conta inteira, sem contar nem a favor nem contra — o indicador media
+    // uma interseção estreita, não a expedição como um todo.
     const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&select=carga,data_saida,rota&limit=5000`) || [];
-    const conferencias = await supaFetch(`conferencia_pedidos?conferido_em=gte.${mes}-01T00:00:00&conferido_em=lt.${proxMesC}-01T00:00:00&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=5000`) || [];
+    const demandasFiltradas = demandas.filter(d=>{
+      if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return false;
+      if(!_passaFiltroRire(d.rota, rireSel)) return false;
+      return true;
+    });
+
+    // Conferência 'ok' de cada carga em QUALQUER mês (a data real da conferência
+    // é o que importa pra decidir se foi no prazo, não em que mês ela caiu).
+    const cargasStr = [...new Set(demandasFiltradas.map(d=>d.carga))].join(',');
+    const conferencias = cargasStr
+      ? await supaFetch(`conferencia_pedidos?carga=in.(${cargasStr})&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=5000`) || []
+      : [];
 
     const ultimaConfPorCarga = {};
     conferencias.forEach(conf => {
-      if(cargasUnidade && !cargasUnidade.has(String(conf.carga))) return;
       if (!ultimaConfPorCarga[conf.carga] || conf.conferido_em > ultimaConfPorCarga[conf.carga]) {
         ultimaConfPorCarga[conf.carga] = conf.conferido_em;
       }
     });
 
     let noPrazo = 0, fora = 0;
-    Object.keys(ultimaConfPorCarga).forEach(cargaNum=>{
-      const demanda = demandas.find(d => d.carga == cargaNum);
-      if (!demanda || !demanda.data_saida) return;
-      if(!_passaFiltroRire(demanda.rota, rireSel)) return;
-      const confData = ultimaConfPorCarga[cargaNum].slice(0,10);
+    demandasFiltradas.forEach(demanda=>{
+      const ultimaConf = ultimaConfPorCarga[demanda.carga];
+      // Sem conferência 'ok' registrada (nunca conferida, ou só divergente/pendente)
+      // = não dá pra confirmar que saiu no prazo — conta contra, não fica de fora.
+      if(!ultimaConf){ fora++; return; }
+      const confData = ultimaConf.slice(0,10);
       if(confData <= demanda.data_saida) noPrazo++; else fora++;
     });
 
@@ -28119,8 +28136,8 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     container.innerHTML = renderRelatorioNoPrazoSimples({
       indicadorNum:'04', titulo:'Carregamento no Prazo', eyebrow:'CONFERÊNCIA DO ARMAZÉM'+eyebrowRire, area:'OPERAÇÕES / ARMAZÉM',
       mesRef: mes, metaPct: 90, noPrazoCount: noPrazo, foraCount: fora,
-      noPrazoDesc: 'Conferência concluída até a data agendada',
-      foraDesc: 'Conferência concluída depois da data agendada'
+      noPrazoDesc: 'Conferência concluída até a data de saída',
+      foraDesc: 'Conferência depois da saída, ou sem conferência "ok" registrada'
     });
   } catch(e){
     console.error('Erro ao carregar carregamento no prazo:', e);
