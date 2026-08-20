@@ -1,7 +1,9 @@
 # Regras do Projeto — Destak Produtividade
 
-> ⚠️ **LEIA ANTES DE MEXER EM SEGURANÇA/BANCO:** [`AUDITORIA-SEGURANCA-2026-08-20.md`](AUDITORIA-SEGURANCA-2026-08-20.md)
-> Uma revisão de segurança (feita pelo Claude, a pedido do Rafael, colaborador deste repo) achou que o app hoje **não tem controle de acesso server-side**: sem RLS, sem Supabase Auth, senha em texto puro, e uma chave de API do ERP hardcoded. **NÃO marque "Enable RLS" nas tabelas sem antes migrar a autenticação** — isso derruba o app inteiro (todo request usa a mesma chave `anon`; não há identidade para a policy avaliar). O conserto é coordenado (banco + `index.html`). Detalhes, `arquivo:linha` e ordem de conserto no arquivo acima.
+> ⚠️ **LEIA ANTES DE MEXER EM SEGURANÇA/BANCO/INDICADORES/DEPLOY:** [`AUDITORIA-SEGURANCA-2026-08-20.md`](AUDITORIA-SEGURANCA-2026-08-20.md)
+> Auditoria de 5 agentes (feita pelo Claude, a pedido do Rafael, colaborador deste repo). **Parte 1 (Segurança):** o app não tem controle de acesso server-side — sem RLS, sem Supabase Auth, senha em texto puro, chave do ERP hardcoded. **NÃO marque "Enable RLS" sem antes migrar a autenticação** — derruba o app inteiro (todo request usa a mesma `anon`; não há identidade para a policy avaliar). **Parte 2 (Corretude/Dados/Perf/Deploy):** bugs de dinheiro (carga devolvida paga integral, pagamento duplicado, R.E. paga R$0), o indicador "Carregamento no Prazo" pode estar medindo um `limit=5000` e não o armazém, bug de fuso sistêmico (71 lugares em UTC), e o deploy **não tem verificação** (já derrubou a produção uma vez, commit `7005a8f`). `arquivo:linha`, o que é código × o que é banco, e a ordem de conserto estão no arquivo.
+
+> **Correção da própria doc:** este app **não** é "único arquivo `index.html` ~21.000 linhas". São **44.756 linhas** no `index.html` + o painel `gerot.html` (iframe). E ~43 tabelas em uso não estão na tabela abaixo (ela cobre ~metade do sistema).
 
 ## Banco de Dados (Supabase) — REGRA OBRIGATÓRIA
 
