@@ -20476,25 +20476,48 @@ async function carregarPortalMotorista(mesCustom = null){
       try{
         const _hojeStr = new Date().toISOString().slice(0,10);
         const _nomeDbLanc = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
-        const _lhRes = await supaFetch(
-          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&ts=gte.${_hojeStr}T00:00:00-03:00&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
+        // Auto-registro (fonte=motorista_b) ainda pendente (rota vazia = Expedição
+        // nunca processou) aparece primeiro, não importa a data — sem isso, um
+        // registro de dias atrás que a Expedição esqueceu de confirmar simplesmente
+        // sumia do portal do motorista depois do 1º dia, mesmo continuando pendente
+        // (o motorista via a carga "sumir" sem nenhum aviso do que aconteceu).
+        let _lhRes = await supaFetch(
+          `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&fonte=eq.motorista_b&rota=eq.&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
         ).catch(()=>[]) || [];
+        if(!_lhRes.length){
+          // Sem auto-registro pendente — mantém o critério original (lançamento
+          // oficial de hoje, feito pela aba Lançamento/operador).
+          _lhRes = await supaFetch(
+            `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&ts=gte.${_hojeStr}T00:00:00-03:00&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
+          ).catch(()=>[]) || [];
+        }
         if(_lhRes.length && elCargaAtual){
           const _lh = _lhRes[0];
-          const _dtLH = _lh.ts ? new Date(_lh.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
+          const _tsLH = _lh.ts ? new Date(_lh.ts) : null;
+          // Ainda pendente há mais de 1 dia (auto-registro que a Expedição não
+          // processou) mostra data completa + aviso — "lançado às 10:48" sozinho
+          // fica confuso/enganoso quando já faz dias, parece ter sido hoje de manhã.
+          const _ehHoje = _tsLH && _tsLH.toISOString().slice(0,10) === _hojeStr;
+          const _dtLH = _tsLH ? (_ehHoje
+            ? _tsLH.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
+            : _tsLH.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})
+          ) : '—';
+          const _pendenteHaDias = !_ehHoje && !_lh.rota;
           elCargaAtual.innerHTML = `<div style="background:linear-gradient(135deg,#1e3a5f,#0f2d5a);border:1px solid rgba(37,99,235,.35);border-left:4px solid #2563eb;border-radius:14px;padding:16px 20px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-              <div style="font-size:.78rem;font-weight:800;color:#93c5fd;text-transform:uppercase;letter-spacing:.5px">📋 Carga Lançada Hoje</div>
+              <div style="font-size:.78rem;font-weight:800;color:#93c5fd;text-transform:uppercase;letter-spacing:.5px">📋 ${_ehHoje?'Carga Lançada Hoje':'Carga Registrada — Aguardando Expedição'}</div>
               <span style="background:rgba(37,99,235,.25);color:#93c5fd;padding:3px 12px;border-radius:20px;font-size:.72rem;font-weight:700">Lançada</span>
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
               <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">ROTA</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${_lh.rota||'—'}</div></div>
               <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">Nº CARGA</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">#${_lh.carga||'—'}</div></div>
               ${_lh.veiculo?`<div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">VEÍCULO</div><div style="font-size:1.1rem;font-weight:800;color:#f0f0f8">${_lh.veiculo}</div></div>`:''}
-              <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">LANÇADO ÀS</div><div style="font-size:1.1rem;font-weight:800;color:#94a3b8">${_dtLH}</div></div>
+              <div><div style="font-size:.67rem;color:#64748b;font-weight:600;margin-bottom:3px">LANÇADO EM</div><div style="font-size:1.1rem;font-weight:800;color:#94a3b8">${_dtLH}</div></div>
             </div>
-            <div style="margin-top:12px;padding:9px 12px;background:rgba(37,99,235,.08);border-radius:8px;font-size:.76rem;color:#93c5fd">
-              ✅ Sua carga foi registrada. Aguardando confirmação da expedição para iniciar.
+            <div style="margin-top:12px;padding:9px 12px;background:${_pendenteHaDias?'rgba(245,158,11,.12)':'rgba(37,99,235,.08)'};border-radius:8px;font-size:.76rem;color:${_pendenteHaDias?'#fbbf24':'#93c5fd'}">
+              ${_pendenteHaDias
+                ? '⚠️ Sua carga foi registrada, mas a Expedição ainda não confirmou — já faz mais de um dia. Avise o gestor se precisar.'
+                : '✅ Sua carga foi registrada. Aguardando confirmação da expedição para iniciar.'}
             </div>
           </div>`;
           _lancHoje = _lh;
