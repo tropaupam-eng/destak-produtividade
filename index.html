@@ -8905,6 +8905,7 @@ function logout(){
   USUARIO_LOGADO = null;
   localStorage.removeItem('usuario_logado');
   if(window._confAutoRefresh){ clearInterval(window._confAutoRefresh); window._confAutoRefresh=null; }
+  pararMonitorIntegracaoERP(); // para o loop de 5s do ERP (DELETE+INSERT) — sem isso seguia rodando sem sessão e apagava base_data sem repor
   // Esconder todos os portais
   ['portal-motorista-wrapper','portal-ajudante-wrapper','portal-armazem-adm-wrapper','portal-conferente-wrapper','portal-fiscal-wrapper','portal-seguros-wrapper','portal-caixa-wrapper','portal-operador-wrapper','portal-vendedor-wrapper','app-wrapper'].forEach(id=>{
     const el = document.getElementById(id);
@@ -9754,7 +9755,16 @@ async function erpProcessarDatasEntrega(erpRowsComData){
   }
 }
 
+let _erpPromovendo = false;
 async function erpPromoverAutomaticamente(){
+  // Guards contra perda de dados: o corpo faz DELETE base_data + INSERT sem transação.
+  // Sem permissão (pushBaseData aborta no meio), offline, ou reentrante (tick de 5s
+  // sobrepondo um lote que passou de 5s) -> o DELETE apaga e o INSERT não repõe.
+  // Barrar ANTES do DELETE.
+  if(_erpPromovendo) return;
+  if(!_connOk) return;
+  if(!USUARIO_LOGADO || !['admin','operador'].includes(USUARIO_LOGADO.perfil)) return;
+  _erpPromovendo = true;
   try{
     const rows = await supaFetch('base_data_erp_teste?select=carga_erp&carga_erp=not.is.null&limit=1') || [];
     if(!rows.length) return; // Sem dados com carga para promover
@@ -9856,6 +9866,8 @@ async function erpPromoverAutomaticamente(){
     console.log(`[ERP AUTO] ✅ Sucesso: ${registros.length} pedidos promovidos`);
   }catch(e){
     console.warn('[ERP AUTO] ❌ Erro ao promover automaticamente:', e.message);
+  } finally {
+    _erpPromovendo = false;
   }
 }
 
