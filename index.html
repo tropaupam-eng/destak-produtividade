@@ -28029,10 +28029,21 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     // Buscar cargas agendadas no mês (mes_ano), que têm data_saida e já saíram (ts_saiu preenchido)
     const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
 
+    // "Extra" (mesmo critério de renderAgendamentos e de Carregamento no
+    // Prazo): carga que saiu sem nunca ter sido agendada não tem prazo de
+    // entrega definido, então não pode ser cobrada por prazo de saída —
+    // conta sempre como no prazo. Só carga agendada tem data-limite real.
+    const agendamentosMes = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga,status,lancado&limit=2000`).catch(()=>[]) || [];
+    const _rotaChaveLib = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
+    const agendKeysLib   = new Set(agendamentosMes.map(a=>_rotaChaveLib(a.rota)+'|'+a.data));
+    const agendCargasLib = new Set(agendamentosMes.filter(a=>a.carga).map(a=>String(a.carga)));
+    const _ehAgendadaLib = d => agendKeysLib.has(_rotaChaveLib(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargasLib.has(String(d.carga)));
+
     let noPrazo = 0, fora = 0;
     demandas.forEach(d=>{
       if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
       if(!_passaFiltroRire(d.rota, rireSel)) return;
+      if(!_ehAgendadaLib(d)){ noPrazo++; return; } // extra — sem prazo definido, conta a favor
       // Extrair data de saída real (ts_saiu) e comparar com data agendada (data_saida)
       const saidaReal = d.ts_saiu.split('T')[0]; // converte "2026-07-15T10:30:00" → "2026-07-15"
       const saidaAgendada = d.data_saida; // já é "2026-07-15"
@@ -28050,7 +28061,6 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     // demanda vinculada (mesma chave ROTA+DATA) já está em saiu/fim_viagem/
     // concluido. Rota+data exato (não carga) é o vínculo usado lá porque o
     // nº de carga do agendamento é preenchido manualmente e não é confiável.
-    const agendamentosMes = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga,status,lancado&limit=2000`).catch(()=>[]) || [];
     const demandasMesTodas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&select=data_saida,rota,status&limit=5000`).catch(()=>[]) || [];
     const _demMapLib = {};
     demandasMesTodas.forEach(d=>{ _demMapLib[(d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')] = d.status; });
