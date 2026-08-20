@@ -28052,8 +28052,21 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
     const rireSel = window._painelIndRireSel || '';
 
-    // Buscar cargas agendadas no mês (mes_ano), que têm data_saida e já saíram (ts_saiu preenchido)
-    const demandas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&ts_saiu=not.is.null&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
+    // Buscar cargas agendadas no mês (mes_ano) com data_saida — inclui quem
+    // ainda não saiu (ts_saiu vazio). Antes exigia ts_saiu preenchido, o que
+    // excluía do denominador inteiro quem nunca chegou a sair — carga agendada
+    // que simplesmente não saiu é o pior caso de "fora do prazo", não devia
+    // sumir da conta. Só exclui 'cancelado' (nunca foi pra valer).
+    const demandasRaw = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&status=neq.cancelado&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
+    // Mesma carga pode ter mais de uma linha em demandas_rota (visto em
+    // Carregamento no Prazo — cargas 14542/14939, duas linhas "concluido"
+    // com datas diferentes). Desempate: mantém a saída mais antiga.
+    const _porCargaDedupLib = {};
+    demandasRaw.forEach(d=>{
+      const atual = _porCargaDedupLib[d.carga];
+      if(!atual || (d.data_saida && d.data_saida < atual.data_saida)) _porCargaDedupLib[d.carga] = d;
+    });
+    const demandas = Object.values(_porCargaDedupLib);
 
     // "Extra" (mesmo critério de renderAgendamentos e de Carregamento no
     // Prazo): carga que saiu sem nunca ter sido agendada não tem prazo de
@@ -28065,16 +28078,33 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     const agendCargasLib = new Set(agendamentosMes.filter(a=>a.carga).map(a=>String(a.carga)));
     const _ehAgendadaLib = d => agendKeysLib.has(_rotaChaveLib(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargasLib.has(String(d.carga)));
 
+    // Converte timestamp UTC pra data local de Brasília — mesma técnica de
+    // _mesAnoLocal() e do fix em Carregamento no Prazo. "Hoje" também em BRT,
+    // pra decidir se uma carga agendada que ainda não saiu já venceu o prazo
+    // ou se ainda dá tempo (não julga cedo demais).
+    const _dataLocalBRTLib = tsISO => {
+      if(!tsISO) return null;
+      const d = new Date(tsISO);
+      if(isNaN(d)) return null;
+      const dl = new Date(d.getTime() - 3*3600000);
+      return dl.getUTCFullYear()+'-'+String(dl.getUTCMonth()+1).padStart(2,'0')+'-'+String(dl.getUTCDate()).padStart(2,'0');
+    };
+    const hojeBRT = _dataLocalBRTLib(new Date().toISOString());
+
     let noPrazo = 0, fora = 0;
     demandas.forEach(d=>{
       if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
       if(!_passaFiltroRire(d.rota, rireSel)) return;
       if(!_ehAgendadaLib(d)){ noPrazo++; return; } // extra — sem prazo definido, conta a favor
-      // Extrair data de saída real (ts_saiu) e comparar com data agendada (data_saida)
-      const saidaReal = d.ts_saiu.split('T')[0]; // converte "2026-07-15T10:30:00" → "2026-07-15"
-      const saidaAgendada = d.data_saida; // já é "2026-07-15"
 
-      if(saidaReal <= saidaAgendada) noPrazo++; else fora++;
+      if(!d.ts_saiu){
+        // Nunca saiu — só julga se o prazo já venceu (senão ainda dá tempo,
+        // fica de fora da conta por enquanto, não é justo julgar cedo demais).
+        if(d.data_saida < hojeBRT) fora++;
+        return;
+      }
+      const saidaReal = _dataLocalBRTLib(d.ts_saiu);
+      if(saidaReal <= d.data_saida) noPrazo++; else fora++;
     });
 
     // ── Esperado × Atendido por semana — fonte: agendamentos_rotas (o
