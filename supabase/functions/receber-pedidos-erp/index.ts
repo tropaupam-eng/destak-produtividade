@@ -3,7 +3,15 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const API_KEY = Deno.env.get('ERP_API_KEY') ?? 'destak-erp-2026';
+// ⚠️ ANTES DE REDEPLOYAR ESTA FUNÇÃO: defina o secret, senão o ERP para de autenticar.
+//    supabase secrets set ERP_API_KEY=<valor novo e aleatório>
+// O fallback hardcoded ('destak-erp-2026') foi removido — estava num repo PÚBLICO
+// protegendo um endpoint que usa service_role. Segredo ausente deve derrubar a função,
+// nunca virar um default público.
+const API_KEY = Deno.env.get('ERP_API_KEY');
+if (!API_KEY) {
+  throw new Error('ERP_API_KEY não configurada. Defina com: supabase secrets set ERP_API_KEY=<valor>');
+}
 
 // Campos obrigatórios definidos com o time de negócio (13 campos — contrato
 // combinado com o ERP no documento "INTEGRAÇÃO DESTAK — GUIA PARA O ERP" v2.0)
