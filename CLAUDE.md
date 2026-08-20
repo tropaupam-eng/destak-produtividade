@@ -1,5 +1,8 @@
 # Regras do Projeto — Destak Produtividade
 
+> ⚠️ **LEIA ANTES DE MEXER EM SEGURANÇA/BANCO:** [`AUDITORIA-SEGURANCA-2026-08-20.md`](AUDITORIA-SEGURANCA-2026-08-20.md)
+> Uma revisão de segurança (feita pelo Claude, a pedido do Rafael, colaborador deste repo) achou que o app hoje **não tem controle de acesso server-side**: sem RLS, sem Supabase Auth, senha em texto puro, e uma chave de API do ERP hardcoded. **NÃO marque "Enable RLS" nas tabelas sem antes migrar a autenticação** — isso derruba o app inteiro (todo request usa a mesma chave `anon`; não há identidade para a policy avaliar). O conserto é coordenado (banco + `index.html`). Detalhes, `arquivo:linha` e ordem de conserto no arquivo acima.
+
 ## Banco de Dados (Supabase) — REGRA OBRIGATÓRIA
 
 **Todo dado de negócio DEVE ir para o Supabase. Ponto final.**
