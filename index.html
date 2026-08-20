@@ -28154,13 +28154,13 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
     const rireSel = window._painelIndRireSel || '';
 
-    // Universo completo do indicador: TODA carga que saiu no mês — antes, só
-    // entravam aqui as que também tinham conferência 'ok' registrada dentro do
-    // MESMO mês calendário; carga conferida em outro mês (ex: saiu dia 1 mas
-    // conferência foi feita no fim do mês anterior), ou nunca conferida, sumia
-    // da conta inteira, sem contar nem a favor nem contra — o indicador media
-    // uma interseção estreita, não a expedição como um todo.
-    const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&select=carga,data_saida,rota&limit=5000`) || [];
+    // Universo completo do indicador: TODA carga que já passou pela conferência
+    // do armazém no mês — antes não filtrava status nenhum, então contava
+    // "cancelado" (nunca aconteceu) e cargas ainda em formação/separação/
+    // carregamento (ainda nem chegaram na conferência, não dá pra julgar prazo
+    // de algo que não terminou) junto com as que realmente já saíram do
+    // armazém. Isso inflava o universo com linhas que não são "entrega".
+    const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&status=not.in.(cancelado,pendente,separacao,carregamento,formacao)&select=carga,data_saida,rota&limit=5000`) || [];
     const demandasFiltradas = demandas.filter(d=>{
       if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return false;
       if(!_passaFiltroRire(d.rota, rireSel)) return false;
@@ -28169,9 +28169,13 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
 
     // Conferência 'ok' de cada carga em QUALQUER mês (a data real da conferência
     // é o que importa pra decidir se foi no prazo, não em que mês ela caiu).
+    // limit bem acima do volume real (dezenas de cargas × pedidos/carga) —
+    // um limit=5000 aqui já truncou resultado em mês cheio (conferencia_pedidos
+    // tem 1 linha POR PEDIDO, não por carga; order=carga.asc faz a truncagem
+    // cortar justamente as cargas mais recentes do mês, as de nº mais alto).
     const cargasStr = [...new Set(demandasFiltradas.map(d=>d.carga))].join(',');
     const conferencias = cargasStr
-      ? await supaFetch(`conferencia_pedidos?carga=in.(${cargasStr})&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=5000`) || []
+      ? await supaFetch(`conferencia_pedidos?carga=in.(${cargasStr})&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=50000`) || []
       : [];
 
     const ultimaConfPorCarga = {};
@@ -28191,6 +28195,19 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const agendCargasCarreg = new Set(agendamentosMesCarreg.filter(a=>a.carga).map(a=>String(a.carga)));
     const _ehAgendada = d => agendKeysCarreg.has(_rotaChaveCarreg(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargasCarreg.has(String(d.carga)));
 
+    // Converte timestamp UTC do banco pra data local de Brasília (-03:00) antes
+    // de comparar — mesma técnica de _mesAnoLocal(). Sem isso, conferência feita
+    // entre 21h e 23h59 BRT (perto da virada do dia) grava conferido_em já no
+    // dia seguinte em UTC, e vira "fora do prazo" fantasma mesmo tendo sido
+    // concluída ainda no dia certo pelo relógio local.
+    const _dataLocalBRT = tsISO => {
+      if(!tsISO) return null;
+      const d = new Date(tsISO);
+      if(isNaN(d)) return null;
+      const dl = new Date(d.getTime() - 3*3600000);
+      return dl.getUTCFullYear()+'-'+String(dl.getUTCMonth()+1).padStart(2,'0')+'-'+String(dl.getUTCDate()).padStart(2,'0');
+    };
+
     let noPrazo = 0, fora = 0;
     demandasFiltradas.forEach(demanda=>{
       if(!_ehAgendada(demanda)){ noPrazo++; return; } // extra — sem prazo definido, conta a favor
@@ -28198,7 +28215,7 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
       // Sem conferência 'ok' registrada (nunca conferida, ou só divergente/pendente)
       // = não dá pra confirmar que saiu no prazo — conta contra, não fica de fora.
       if(!ultimaConf){ fora++; return; }
-      const confData = ultimaConf.slice(0,10);
+      const confData = _dataLocalBRT(ultimaConf);
       if(confData <= demanda.data_saida) noPrazo++; else fora++;
     });
 
