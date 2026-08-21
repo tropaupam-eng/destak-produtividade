@@ -7697,6 +7697,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
     <div id="tv-clock" style="font-size:1.5rem;font-weight:900;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:1px"></div>
     <div style="display:flex;align-items:center;gap:10px">
+      <select id="tv-und-sel" onchange="mudarUnidadeTV(this.value)" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;padding:5px 10px;font-size:.75rem;font-weight:600;cursor:pointer">
+        <option value="">Todas as Unidades</option>
+      </select>
       <span id="tv-refresh-badge" style="font-size:.68rem;color:rgba(255,255,255,.4);padding:3px 10px;border:1px solid rgba(255,255,255,.12);border-radius:20px">🔄 <span id="tv-countdown">60</span>s</span>
       <button onclick="sairTV()" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;padding:5px 14px;font-size:.75rem;cursor:pointer;font-weight:600">✕ Sair</button>
     </div>
@@ -8237,7 +8240,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.4.3';
+const APP_VERSION = '4.4.4';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -25118,25 +25121,14 @@ async function renderDashInterna(){
   const fimMes = new Date(mesFiltro.split('-')[0], Number(mesFiltro.split('-')[1]), 0).toISOString().slice(0,10);
   const hoje = hojeDataBRT();
 
-  // Preencher select de unidades a partir do cadastro de motoristas
-  // (mesma fonte que a aba Absenteísmo — valor = "cod - nome" igual ao base_data.und)
+  // Preencher select de unidades a partir do cadastro OFICIAL (Cadastros >
+  // Unidades) — antes pegava valores digitados livremente em
+  // motoristas.unidade/ajudantes.unidade, que fragmentava a mesma unidade em
+  // várias opções por causa de grafia inconsistente entre cadastros (ex:
+  // "19 - DESTAK PRIME" e "19 - PRIME CEASA" pro mesmo código 19, "DESTAK -
+  // RN"/"PE" soltos sem bater com nenhum código oficial, etc — 2026-08-21).
   const selUnd = document.getElementById('dash-int-und');
-  if(selUnd && selUnd.options.length <= 1){
-    try{
-      const [motsUnd, ajsUnd] = await Promise.all([
-        supaFetch('motoristas?select=unidade&ativo=eq.true').catch(()=>[]),
-        supaFetch('ajudantes?select=unidade&ativo=eq.true').catch(()=>[])
-      ]);
-      const unidades = [...new Set(
-        [...(motsUnd||[]), ...(ajsUnd||[])].map(x=>x.unidade).filter(Boolean)
-      )].sort((a,b)=>a.localeCompare(b,'pt-BR'));
-      unidades.forEach(u=>{
-        const o = document.createElement('option');
-        o.value = u; o.textContent = u;
-        selUnd.appendChild(o);
-      });
-    }catch(_){}
-  }
+  if(selUnd && selUnd.options.length <= 1) popularSelectUnidade('dash-int-und', true);
   const undFiltro  = selUnd?.value || '';
   const rireFiltro = document.getElementById('dash-int-rire')?.value ?? 'RI';
 
@@ -29244,13 +29236,13 @@ async function renderAbsenteismo(){
     const selUnd = document.getElementById('abs-filtro-unidade');
     const selNome = document.getElementById('abs-filtro-nome');
     if(selUnd && selUnd.options.length <= 1){
-      // Pré-selecionar unidade do usuário logado se existir
+      // Pré-selecionar unidade do usuário logado se existir. Lista vem do
+      // cadastro OFICIAL (Cadastros > Unidades) — antes pegava valores
+      // digitados livremente em motoristas.unidade/ajudantes.unidade, que
+      // fragmentava a mesma unidade em várias opções por grafia inconsistente
+      // (mesmo problema resolvido no filtro da Dashboard Interna, 2026-08-21).
       const undUsr = (USUARIO_LOGADO?.und || USUARIO_LOGADO?.unidade || '').trim();
-      const motsUnd = await supaFetch('motoristas?select=unidade&ativo=eq.true') || [];
-      const ajsUnd  = await supaFetch('ajudantes?select=unidade&ativo=eq.true') || [];
-      const unidades = [...new Set([...motsUnd, ...ajsUnd].map(x=>x.unidade).filter(Boolean))].sort();
-      unidades.forEach(u=>{ const o=document.createElement('option'); o.value=u; o.textContent=u; selUnd.appendChild(o); });
-      if(undUsr) selUnd.value = undUsr;
+      popularSelectUnidade('abs-filtro-unidade', true, undUsr);
     }
     // Popular select de nomes com todos os funcionários ativos/demitidos do período
     // Sempre limpar e repopular para refletir o mês e filtros corretos
@@ -41993,11 +41985,24 @@ function _tvClock(){
   el.textContent = d.charAt(0).toUpperCase()+d.slice(1)+' — '+t;
 }
 
+// Unidade do Painel de TV — cada TV física fica com um computador logado e a
+// tela aberta o tempo todo (não dá pra depender só do usuário logado), então
+// a escolha fica salva por navegador em localStorage e sobrevive a refresh.
+function mudarUnidadeTV(und){
+  try{ localStorage.setItem('tv_unidade_sel', und||''); }catch(e){}
+  carregarTV();
+}
+
 async function carregarTV(){
   const hoje = hojeDataBRT();
   _tvCountdown = 60;
   const el = document.getElementById('tv-countdown');
   if(el) el.textContent = 60;
+
+  const undSelTV = (()=>{ try{ return localStorage.getItem('tv_unidade_sel')||''; }catch(e){ return ''; } })();
+  const selUndTV = document.getElementById('tv-und-sel');
+  if(selUndTV && selUndTV.options.length<=1) popularSelectUnidade('tv-und-sel', true, undSelTV);
+  const _undQTV = undSelTV ? `&unidade=eq.${encodeURIComponent(undSelTV)}` : '';
 
   try{
     const mesStr = hoje.slice(0,7);
@@ -42008,17 +42013,17 @@ async function carregarTV(){
            veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, entRows,
            lancRows, demSaida] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=in.("pronto_viagem","saiu","fim_viagem")&select=carga,rota,motorista,veiculo,status,data_saida,quantidade_pedidos&order=data_saida.desc&limit=60`).catch(()=>[]),
-      supaFetch(`veiculos?ativo=eq.true&select=placa`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.("pronto_viagem","saiu","fim_viagem")&select=carga,rota,motorista,veiculo,status,data_saida,quantidade_pedidos&order=data_saida.desc&limit=60${_undQTV}`).catch(()=>[]),
+      supaFetch(`veiculos?ativo=eq.true&select=placa${_undQTV}`).catch(()=>[]),
       supaFetch(`manutencoes_frota?status=in.("agendada","em_andamento")&select=veiculo`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga`).catch(()=>[]),
-      supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga${_undQTV}`).catch(()=>[]),
+      supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status${_undQTV}`).catch(()=>[]),
       supaFetch(`notificacoes?ativo=eq.true&order=criado_em.desc&limit=5`).catch(()=>[]),
-      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&status=in.("saiu","fim_viagem")&select=carga,rota,ts_saiu`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&status=in.("saiu","fim_viagem")&select=carga,rota,ts_saiu${_undQTV}`).catch(()=>[]),
       supaFetch(`rotas?ativo=eq.true&select=nome,prazo_otif,tipo`).catch(()=>[]),
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
-      supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_prox}-01T00:00:00-03:00&select=carga,ts`).catch(()=>[]),
-      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_prox}-01T00:00:00-03:00&select=carga,ts_saiu`).catch(()=>[]),
+      supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_prox}-01T00:00:00-03:00&select=carga,ts${undSelTV?`&und=eq.${encodeURIComponent(undSelTV)}`:''}`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_prox}-01T00:00:00-03:00&select=carga,ts_saiu${_undQTV}`).catch(()=>[]),
     ]);
 
     // 2ª fase: base_data filtrado pelas cargas que saíram no mês
@@ -42036,14 +42041,16 @@ async function carregarTV(){
     // ── Ticker ──
     _tvRenderTicker(demRota||[]);
 
-    // ── OTIF do Mês — TV exibe todas as rotas (RI + RE) sem filtrar por unidade
-    // Limpar cache a cada refresh para garantir dados atualizados (novas cargas R.E. visíveis)
-    _otifCacheMap.delete(mesStr);
-    _otifPromiseMap.delete(mesStr);
-    const _tvDadosOtif = await _carregarOtifMes(mesStr, undefined);
-    // Usa .stats (mesma população filtrada por mês do Dashboard/Painel) — a TV é
-    // "sem filtro de unidade" (undefined acima), mas precisa bater com o mesmo
-    // %OTIF do mês mostrado nas outras telas, não uma população maior (.statsAll).
+    // ── OTIF do Mês — respeita a unidade escolhida no seletor da TV (ou todas,
+    // se nenhuma foi selecionada). Limpar cache a cada refresh para garantir
+    // dados atualizados (novas cargas R.E. visíveis).
+    const _tvOtifCacheKey = undSelTV ? `${mesStr}__${undSelTV}` : mesStr;
+    _otifCacheMap.delete(_tvOtifCacheKey);
+    _otifPromiseMap.delete(_tvOtifCacheKey);
+    const _tvDadosOtif = await _carregarOtifMes(mesStr, undSelTV||undefined);
+    // Usa .stats (mesma população filtrada por mês do Dashboard/Painel) — precisa
+    // bater com o mesmo %OTIF do mês mostrado nas outras telas pra essa unidade,
+    // não uma população maior (.statsAll).
     const otifStats = _tvDadosOtif ? (_tvDadosOtif.stats || _tvDadosOtif.statsAll) : _computeOtifStats(bdRows, entRows, lancRows, demSaida, rotasOtif, [], undefined, mesStr);
     (_tvDadosOtif?.rotasRows || rotasOtif||[]).forEach(r=>{ const nome=(r.nome||'').toUpperCase(); if(r.tipo==='RI'||r.tipo==='R.I.') ROTAS_RI.add(nome); });
     const { prazoMap } = otifStats;
