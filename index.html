@@ -8240,7 +8240,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.4.5';
+const APP_VERSION = '4.4.6';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -16925,7 +16925,7 @@ async function renderFrotaDisp(){
     const primeiraViagemMap = await _buscarPrimeiraViagemPorVeiculo();
 
     const queries = [
-      supaFetch('veiculos?select=placa,tipo,unidade,ativo&order=placa.asc'),
+      supaFetch('veiculos?select=placa,tipo,unidade,ativo,compartilhado&order=placa.asc'),
       supaFetch(`demandas_rota?select=veiculo,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMes}-01&data_saida=lt.${proxMes}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`),
       supaFetch(`lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mes}`).catch(()=>[]),
       supaFetch(`abastecimento_loja?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&veiculo=not.is.null&select=veiculo,data_saida`).catch(()=>[])
@@ -16945,8 +16945,8 @@ async function renderFrotaDisp(){
       undSel.innerHTML = '<option value="">Todas</option>' + unids.map(u=>`<option value="${u}"${prevVal===u?' selected':''}>${u}</option>`).join('');
     }
 
-    // Filtrar por unidade
-    const todos = undFiltro ? todosAtivos.filter(v=>(v.unidade||'').toUpperCase()===undFiltro) : todosAtivos;
+    // Filtrar por unidade — veículo compartilhado aparece em qualquer unidade filtrada
+    const todos = undFiltro ? todosAtivos.filter(v=>v.compartilhado || (v.unidade||'').toUpperCase()===undFiltro) : todosAtivos;
 
     if(!todos.length){
       wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Nenhum veículo ativo encontrado para a unidade selecionada.</div>';
@@ -23436,7 +23436,7 @@ async function cadCarregarVeiculos(){
       <div class="cad-item">
         <div class="cad-item-info">
           <div class="cad-item-nome">🚛 <span style="font-family:monospace;font-size:.95rem">${v.placa}</span></div>
-          <div class="cad-item-sub">${v.tipo||'—'}${v.uso?` • <span style="background:${v.uso==='interno'?'#dbeafe':'#fef3c7'};color:${v.uso==='interno'?'#1d4ed8':'#92400e'};padding:1px 6px;border-radius:4px;font-size:.7rem;font-weight:700">${v.uso==='interno'?'Interno':'Externo'}</span>`:' • <span style="color:var(--text-muted);font-size:.7rem">Uso n/d</span>'}${v.unidade?` • 🏭 ${v.unidade}`:''}${v.peso_max_kg?` • ${v.peso_max_kg.toLocaleString('pt-BR')} kg`:''}${v.cubagem_m3?` • ${v.cubagem_m3} m³`:''}${v.motorista_fixo?` • 👤 ${v.motorista_fixo}`:''}</div>
+          <div class="cad-item-sub">${v.tipo||'—'}${v.uso?` • <span style="background:${v.uso==='interno'?'#dbeafe':'#fef3c7'};color:${v.uso==='interno'?'#1d4ed8':'#92400e'};padding:1px 6px;border-radius:4px;font-size:.7rem;font-weight:700">${v.uso==='interno'?'Interno':'Externo'}</span>`:' • <span style="color:var(--text-muted);font-size:.7rem">Uso n/d</span>'}${v.unidade?` • 🏭 ${v.unidade}`:''}${v.compartilhado?` • <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:4px;font-size:.7rem;font-weight:700">🔗 Compartilhado</span>`:''}${v.peso_max_kg?` • ${v.peso_max_kg.toLocaleString('pt-BR')} kg`:''}${v.cubagem_m3?` • ${v.cubagem_m3} m³`:''}${v.motorista_fixo?` • 👤 ${v.motorista_fixo}`:''}</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <button onclick="abrirPopupEditarVeic('${v.id}')"
@@ -23511,6 +23511,7 @@ function abrirPopupEditarVeic(id){
   document.getElementById('popup-veic-motorista-fixo').value = v.motorista_fixo||'';
   popularSelectUnidade('popup-veic-unidade', false, v.unidade||'');
   document.getElementById('popup-veic-uso').value = v.uso||'';
+  document.getElementById('popup-veic-compartilhado').checked = !!v.compartilhado;
   document.getElementById('popup-editar-veic').style.display = 'flex';
 }
 
@@ -23523,10 +23524,11 @@ async function salvarPopupVeic(){
   const motFixo = document.getElementById('popup-veic-motorista-fixo').value.trim()||null;
   const unidade = document.getElementById('popup-veic-unidade').value.trim().toUpperCase()||null;
   const uso     = document.getElementById('popup-veic-uso').value||null;
+  const compartilhado = document.getElementById('popup-veic-compartilhado').checked;
   if(!placa){ showToast('Informe a placa','warning'); return; }
   try{
     // Monta body progressivamente — remove campos que o schema cache rejeitar
-    const body = {placa, tipo, unidade, uso};
+    const body = {placa, tipo, unidade, uso, compartilhado};
     if(peso   !== null) body.peso_max_kg = peso;
     if(cubagem!== null) body.cubagem_m3  = cubagem;
     if(motFixo!== null) body.motorista_fixo = motFixo;
@@ -23542,6 +23544,7 @@ async function salvarPopupVeic(){
         if(msg.includes('peso_max_kg')){ delete tentativa.peso_max_kg; }
         else if(msg.includes('cubagem_m3')){ delete tentativa.cubagem_m3; }
         else if(msg.includes('motorista_fixo')){ delete tentativa.motorista_fixo; }
+        else if(msg.includes('compartilhado')){ delete tentativa.compartilhado; }
         else throw e2;
       }
     }
@@ -27594,10 +27597,11 @@ async function carregarPainelDisponibilidade(){
     const ehMesAtualRef = mesRef === hoje.slice(0,7);
     const diasDecorridosRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
 
-    // Buscar dados de veículos
+    // Buscar dados de veículos — veículo compartilhado aparece em qualquer
+    // unidade filtrada, não só a cadastrada em veiculos.unidade.
     const undSel = window._painelIndUndSel || '';
     const veiculos = await supaFetch(
-      `veiculos?select=*&ativo=eq.true&order=placa.asc${undSel?`&unidade=eq.${encodeURIComponent(undSel)}`:''}`
+      `veiculos?select=*&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
     ) || [];
 
     // Buscar demandas em rota (snapshot ao vivo, pra "Disponível agora" / "Em uso agora")
@@ -42018,6 +42022,8 @@ async function carregarTV(){
   const selUndTV = document.getElementById('tv-und-sel');
   if(selUndTV && selUndTV.options.length<=1) popularSelectUnidade('tv-und-sel', true, undSelTV);
   const _undQTV = undSelTV ? `&unidade=eq.${encodeURIComponent(undSelTV)}` : '';
+  // Veículo compartilhado aparece mesmo filtrando por uma unidade específica.
+  const _undQTVVeic = undSelTV ? `&or=(unidade.eq.${encodeURIComponent(undSelTV)},compartilhado.eq.true)` : '';
 
   try{
     const mesStr = hoje.slice(0,7);
@@ -42029,7 +42035,7 @@ async function carregarTV(){
            lancRows, demSaida] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.("pronto_viagem","saiu","fim_viagem")&select=carga,rota,motorista,veiculo,status,data_saida,quantidade_pedidos&order=data_saida.desc&limit=60${_undQTV}`).catch(()=>[]),
-      supaFetch(`veiculos?ativo=eq.true&select=placa${_undQTV}`).catch(()=>[]),
+      supaFetch(`veiculos?ativo=eq.true&select=placa${_undQTVVeic}`).catch(()=>[]),
       supaFetch(`manutencoes_frota?status=in.("agendada","em_andamento")&select=veiculo`).catch(()=>[]),
       supaFetch(`demandas_rota?status=not.in.(concluido,cancelado,saiu,fim_viagem,pronto_viagem)&select=arm_status,carga${_undQTV}`).catch(()=>[]),
       supaFetch(`demandas_rota?data_saida=eq.${hoje}&select=carga,status${_undQTV}`).catch(()=>[]),
@@ -44016,6 +44022,12 @@ function _cftvRenderTable(data){
           <select id="popup-veic-unidade"
             style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);box-sizing:border-box"></select>
         </div>
+      </div>
+      <div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem;font-weight:600;color:var(--text-primary);background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:9px 12px">
+          <input type="checkbox" id="popup-veic-compartilhado" style="width:16px;height:16px;cursor:pointer"/>
+          🔗 Veículo Compartilhado — aparece nos filtros de todas as unidades, não só a de cima
+        </label>
       </div>
       <div>
         <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Uso do Veículo</label>
