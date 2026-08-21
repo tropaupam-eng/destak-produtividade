@@ -8240,7 +8240,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.4.6';
+const APP_VERSION = '4.5.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -12607,7 +12607,7 @@ function renderLancamentosFiltrados(){
   }
 }
 
-function showToast(msg,tipo){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+tipo;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),4000);}
+function showToast(msg,tipo,duracaoMs){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+tipo;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),duracaoMs||4000);}
 let cGSem = null;
 
 function _calcularTotaisGeral(){
@@ -16036,6 +16036,14 @@ async function carregarDemandas(){
     renderPipelineBar();
     renderFrotaStatus();
     renderPainelDia();
+    // Aviso único (uma vez só, nunca mais) explicando que as ações da carga
+    // (avançar, cancelar, histórico...) agora abrem no clique direito do
+    // mouse ou num toque longo no card — o botão "⋯" foi removido do rodapé
+    // pra não poluir o card, então sem isso a função ficaria escondida.
+    if(_demandasCache.length && !localStorage.getItem('exp_hint_menu_v1')){
+      localStorage.setItem('exp_hint_menu_v1', '1');
+      showToast('💡 Novidade: clique com o botão direito (ou segure no celular) em qualquer parte do card pra ver as ações da carga — avançar, cancelar, histórico e mais.', 'warning', 8000);
+    }
     // Cargas abaixo do valor mínimo na expedição — REMOVIDO (mostrar apenas em Comercial)
     // const _mesExpAtual = (()=>{ const h=new Date(); return h.getFullYear()+'-'+String(h.getMonth()+1).padStart(2,'0'); })();
     // renderCargasAbaixoValor(_mesExpAtual, 'exp-baixo-valor');
@@ -19203,7 +19211,9 @@ function renderDemandasCards(){
     const dataAtrasoTitle = mcfg ? ` title="${labelFinal.replace(/"/g,'&quot;')}"` : '';
     const dataAtrasoStyle = mcfg ? 'color:#ef4444;font-weight:700' : '';
 
-    return `<div class="exp-card" data-id="${d.id}">
+    return `<div class="exp-card" data-id="${d.id}"
+      oncontextmenu="event.preventDefault();_expMenuOpenAt(event.clientX,event.clientY,'${d.id}')"
+      ontouchstart="_expCardTouchStart(event,'${d.id}')" ontouchmove="_expCardTouchMove()" ontouchend="_expCardTouchEnd(event)" ontouchcancel="_expCardTouchEnd(event)">
       <!-- Barra de progresso no topo -->
       <div class="exp-progress">
         <div class="exp-progress-bar" style="width:${pct}%;background:${s.bar}"></div>
@@ -19238,15 +19248,15 @@ function renderDemandasCards(){
       <div class="exp-card-details">
         <div class="exp-card-motorista" style="${d.motorista==='A DEFINIR MOTORISTA'?'color:#f59e0b;font-weight:800':''}"><span data-feather="user"></span>${d.motorista||'—'}</div>
         <div class="exp-card-veiculo" style="${d.veiculo==='A DEFINIR VEÍCULO'?'color:#f59e0b;font-weight:800':''}"><span data-feather="truck"></span>${d.veiculo||'—'} ${badgePesoVeiculo(d.veiculo, d.carga, temCarga)} ${badgeRetorno}</div>
-        <div class="exp-card-ajudante" style="display:flex;align-items:center;gap:5px;font-size:.78rem;color:${d.ajudante?'var(--text-secondary)':'var(--text-muted)'}"><span data-feather="users"></span>${d.ajudante||'<span style="opacity:.5">Sem ajudante</span>'}</div>
+        ${d.ajudante?`<div class="exp-card-ajudante" style="display:flex;align-items:center;gap:5px;font-size:.78rem;color:var(--text-secondary)"><span data-feather="users"></span>${d.ajudante}</div>`:''}
       </div>
 
       <div class="exp-card-bottom">
         <span class="exp-card-data" style="${dataAtrasoStyle}"${dataAtrasoTitle}><span data-feather="calendar"></span>${fmtData(d.data_saida)}</span>
         <div class="exp-card-actions" style="position:relative">
           <button class="exp-btn-vincular ${temCarga?'vinculado':''}"
-            onclick="abrirVincularCarga('${d.id}')" style="display:flex;align-items:center;gap:5px">
-            <span data-feather="${temCarga?'link-2':'package'}" style="width:12px;height:12px"></span>${temCarga?d.carga:'Vincular Pré-Carga'}
+            onclick="abrirVincularCarga('${d.id}')" title="${temCarga?'Gerenciar vínculo da carga':'Vincular pré-carga'}" style="display:flex;align-items:center;gap:5px">
+            <span data-feather="${temCarga?'link-2':'package'}" style="width:12px;height:12px"></span>${temCarga?'':'Vincular Pré-Carga'}
           </button>
           ${(()=>{
             const pipeline = ['formacao','pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
@@ -19256,7 +19266,8 @@ function renderDemandasCards(){
             const nextLabel  = nextStatus ? pipeLabels[nextStatus] : null;
             const btnStyle = 'display:flex;align-items:center;gap:5px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap';
             if(d.status==='cancelado') return `<span style="display:flex;align-items:center;gap:5px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700"><span data-feather="x-circle" style="width:12px;height:12px"></span>Cancelado</span>`;
-            if(d.status==='concluido') return `<span style="display:flex;align-items:center;gap:5px;background:#d1fae5;color:#065f46;border:1px solid #a7f3d0;border-radius:6px;padding:5px 10px;font-size:.75rem;font-weight:700"><span data-feather="check-circle" style="width:12px;height:12px"></span>Concluído</span>`;
+            // "Concluído" já aparece no badge de status (topo do card) — não repete aqui.
+            if(d.status==='concluido') return '';
             if(d.status==='aguardando_nf'){
               if((d.status_fiscal||'pendente')!=='concluido'){
                 // Fiscal ainda não concluiu — mostra badge informativo mas NÃO bloqueia a expedição
@@ -19272,8 +19283,6 @@ function renderDemandasCards(){
               <span data-feather="arrow-right" style="width:12px;height:12px"></span>${nextLabel}
             </button>` : '';
           })()}
-          <button onclick="_expMenuToggle(this,'${d.id}')" data-menu-id="${d.id}"
-            style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:5px 10px;cursor:pointer;display:flex;align-items:center" title="Ações da carga"><span data-feather="more-horizontal" style="width:14px;height:14px"></span></button>
           <button onclick="abrirEditarDemanda('${d.id}')"
             style="background:rgba(37,99,235,.1);color:#2563eb;border:1px solid rgba(37,99,235,.2);border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:600;display:flex;align-items:center"
             title="Editar pré-carga"><span data-feather="edit-2" style="width:12px;height:12px"></span></button>
@@ -19428,31 +19437,59 @@ function _expMenuClose(){
   if(gm){ gm.style.display='none'; gm.dataset.openFor=''; }
 }
 
-function _expMenuToggle(btn, id){
+// Menu "Ações da carga" — antes era um botão "⋯" visível no card; agora abre
+// no clique direito do mouse ou num toque longo (touch), em qualquer ponto
+// do card, pra não ocupar espaço fixo no rodapé (pedido do usuário, 2026-08-21).
+function _expMenuOpenAt(x, y, id){
   var gm = document.getElementById('exp-global-dropdown');
   if(!gm) return;
   var isOpen = gm.style.display === 'block' && gm.dataset.openFor === id;
   _expMenuClose();
-  if(!isOpen){
-    var d = (_demandasCache||[]).find(function(x){ return x.id === id; });
-    if(!d) return;
-    gm.innerHTML = _buildExpMenuContent(d);
-    if(window.feather) feather.replace();
-    var r = btn.getBoundingClientRect();
-    var spB = window.innerHeight - r.bottom - 8;
-    var spA = r.top - 8;
-    gm.style.maxHeight = Math.min(340, Math.max(spB, spA, 100)) + 'px';
-    gm.style.left = Math.max(4, Math.min(r.right-210, window.innerWidth-218)) + 'px';
-    if(spB >= spA){
-      gm.style.top = (r.bottom+4) + 'px';
-      gm.style.bottom = 'auto';
-    } else {
-      gm.style.bottom = (window.innerHeight-r.top+4) + 'px';
-      gm.style.top = 'auto';
-    }
-    gm.style.display = 'block';
-    gm.dataset.openFor = id;
+  if(isOpen) return;
+  var d = (_demandasCache||[]).find(function(item){ return item.id === id; });
+  if(!d) return;
+  gm.innerHTML = _buildExpMenuContent(d);
+  if(window.feather) feather.replace();
+  var spB = window.innerHeight - y - 8;
+  var spA = y - 8;
+  gm.style.maxHeight = Math.min(340, Math.max(spB, spA, 100)) + 'px';
+  gm.style.left = Math.max(4, Math.min(x, window.innerWidth-218)) + 'px';
+  if(spB >= spA){
+    gm.style.top = (y+4) + 'px';
+    gm.style.bottom = 'auto';
+  } else {
+    gm.style.bottom = (window.innerHeight-y+4) + 'px';
+    gm.style.top = 'auto';
   }
+  gm.style.display = 'block';
+  gm.dataset.openFor = id;
+}
+
+// Toque longo (celular/tablet, onde não existe clique direito) — segurar
+// ~500ms em qualquer ponto do card abre o mesmo menu de "Ações da carga".
+// Solto antes disso ou arrastando o dedo = gesto normal (scroll/tap), cancela.
+var _expLongPressTimer = null;
+var _expLongPressFired = false;
+function _expCardTouchStart(e, id){
+  if(e.touches.length !== 1) return;
+  _expLongPressFired = false;
+  var t = e.touches[0], x = t.clientX, y = t.clientY;
+  clearTimeout(_expLongPressTimer);
+  _expLongPressTimer = setTimeout(function(){
+    _expLongPressFired = true;
+    if(navigator.vibrate) navigator.vibrate(15);
+    _expMenuOpenAt(x, y, id);
+  }, 500);
+}
+function _expCardTouchMove(){
+  clearTimeout(_expLongPressTimer);
+}
+function _expCardTouchEnd(e){
+  clearTimeout(_expLongPressTimer);
+  // Evita que o "soltar o dedo" do toque longo também dispare um clique
+  // normal no botão que estava por baixo do dedo (abriria o menu E ativaria
+  // a ação do botão ao mesmo tempo).
+  if(_expLongPressFired && e.cancelable) e.preventDefault();
 }
 
 async function atualizarStatusDemanda(id, status){
