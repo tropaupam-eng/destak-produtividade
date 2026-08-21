@@ -4208,7 +4208,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </button>
     <button id="hist-tab-cortes" onclick="histAba('cortes')"
       style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
-      ✂️ Cortes/Trocas ERP <span id="hist-cortes-badge" class="cad-badge" style="display:none;margin-left:4px">0</span>
+      ✂️ Cortes/Trocas ERP <span id="hist-cortes-badge" class="cad-badge" style="display:none;margin-left:4px">0</span><span id="hist-bloqueio-badge" class="cad-badge" style="display:none;margin-left:4px;background:#dc2626" title="Pedidos com bloqueio de crédito/gerencial ainda em carga">0</span>
     </button>
   </div>
 
@@ -4290,8 +4290,17 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div id="hist-pane-cortes" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <p style="font-size:.83rem;color:var(--text-secondary);max-width:680px">A partir de 2026-08-15 a planilha de atualizações do ERP passou a trazer item (mercadoria) e quantidade por linha. Aqui aparece quando um pedido teve a quantidade de algum item reduzida frente à primeira vez que vimos esse item, ou quando um item some/aparece entre uma exportação e outra. Revisão manual — não altera nenhum cálculo de OTIF.</p>
-      <button onclick="carregarCortesErp()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 16px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+      <button onclick="carregarCortesErp();carregarBloqueiosErp()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 16px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
     </div>
+
+    <!-- Bloqueio de crédito/gerencial (Situacao BC/BG) — decisão do usuário em
+         2026-08-21: só alerta, não sai de carga sozinho (diferente do
+         cancelado/CA). Fica visível aqui pra revisão manual. -->
+    <div id="hist-bloqueio-box" style="display:none;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:14px 16px;margin-bottom:18px">
+      <div style="font-weight:700;color:#92400e;font-size:.85rem;margin-bottom:8px">🔒 Pedidos com bloqueio no ERP (crédito ou gerencial) ainda em carga</div>
+      <div id="hist-bloqueio-container"></div>
+    </div>
+
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px">
       <div class="kpi-card" style="border-top-color:#dc2626"><div class="kpi-label">Cortes de Quantidade</div><div class="kpi-value" id="hist-cortes-kpi-corte">—</div></div>
       <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Itens Removidos</div><div class="kpi-value" id="hist-cortes-kpi-removido">—</div></div>
@@ -30971,6 +30980,7 @@ function histAba(aba){
     if(pCortes) pCortes.style.display='';
     _on(tCortes);
     carregarCortesErp();
+    carregarBloqueiosErp();
   } else {
     pHist.style.display=''; _on(tHist);
   }
@@ -31203,6 +31213,77 @@ async function carregarCortesErp(){
       </table>`;
   }catch(e){
     container.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro ao carregar: ${e.message}</p></div>`;
+  }
+}
+
+// Pedido com Situacao=BC (bloqueio de crédito) ou BG (bloqueio gerencial) na
+// planilha de atualizações do ERP — decisão do usuário em 2026-08-21: ao
+// contrário do cancelado (CA), esses NÃO saem de carga sozinhos (ainda podem
+// ser liberados no ERP) — só vira alerta de revisão manual aqui. Não mexe em
+// base_data nem em nenhum cálculo de OTIF/valor de carga.
+async function carregarBloqueiosErp(){
+  const box = document.getElementById('hist-bloqueio-box');
+  const container = document.getElementById('hist-bloqueio-container');
+  const badge = document.getElementById('hist-bloqueio-badge');
+  if(!container) return;
+  try{
+    const bloqueados = await supaFetch('pedidos_info_erp?select=pedido,situacao,cliente&situacao=in.(BC,BG)&limit=2000') || [];
+    if(!bloqueados.length){
+      if(box) box.style.display = 'none';
+      if(badge) badge.style.display = 'none';
+      return;
+    }
+    const numeros = bloqueados.map(b => b.pedido);
+    let ativos = [];
+    for(let i = 0; i < numeros.length; i += 200){
+      const lote = numeros.slice(i, i + 200);
+      const rows = await supaFetch(`base_data?select=pedido,carga,rota,valor&pedido=in.(${lote.join(',')})`) || [];
+      ativos = ativos.concat(rows);
+    }
+    if(!ativos.length){
+      if(box) box.style.display = 'none';
+      if(badge) badge.style.display = 'none';
+      return;
+    }
+    const situacaoMap = {}, clienteMap = {};
+    bloqueados.forEach(b => { situacaoMap[b.pedido] = b.situacao; clienteMap[b.pedido] = b.cliente; });
+    const _situacaoInfo = {
+      BC: { label: '🔴 Bloqueio de Crédito', cor: '#dc2626' },
+      BG: { label: '🟠 Bloqueio Gerencial',  cor: '#d97706' },
+    };
+    const _fmtValor = v => v == null ? '-' : Number(v).toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+
+    if(box) box.style.display = '';
+    if(badge){ badge.textContent = ativos.length; badge.style.display = 'inline-block'; }
+
+    container.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:.84rem">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:#92400e">Pedido</th>
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:#92400e">Cliente</th>
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:#92400e">Carga</th>
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:#92400e">Rota</th>
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:#92400e">Valor</th>
+            <th style="text-align:left;padding:6px 12px;font-size:.72rem;text-transform:uppercase;color:#92400e">Bloqueio</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ativos.map(a => {
+            const info = _situacaoInfo[situacaoMap[a.pedido]] || { label: situacaoMap[a.pedido] || '-', cor: 'var(--text-muted)' };
+            return `<tr style="border-bottom:1px solid #fde68a">
+              <td style="padding:6px 12px;font-weight:700;color:#78350f">${a.pedido}</td>
+              <td style="padding:6px 12px;color:#78350f">${clienteMap[a.pedido] || '-'}</td>
+              <td style="padding:6px 12px;color:#78350f">${a.carga}</td>
+              <td style="padding:6px 12px;color:#78350f">${a.rota || '-'}</td>
+              <td style="padding:6px 12px;color:#78350f">${_fmtValor(a.valor)}</td>
+              <td style="padding:6px 12px"><span style="color:${info.cor};font-weight:700">${info.label}</span></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  }catch(e){
+    if(container) container.innerHTML = `<p style="color:#dc2626">Erro ao carregar bloqueios: ${e.message}</p>`;
   }
 }
 
