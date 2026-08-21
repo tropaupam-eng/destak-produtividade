@@ -9973,6 +9973,28 @@ async function erpTestePreverPreCarga(){
   }
 }
 
+// Segundo sinal de cancelamento — independente do "status" que vem na
+// planilha de expedição (base_data_erp_teste.status), a planilha de
+// "atualizações" grava Situacao=CA em pedidos_info_erp separadamente. Os
+// dois botões de promoção (erpPromoverParaProducao/erpPromoverAutomatico)
+// só olhavam pro primeiro sinal — um pedido cancelado só nessa segunda
+// planilha era promovido normalmente. Aconteceu de verdade em produção em
+// 2026-08-20/21 (3 pedidos antigos promovidos de novo por esse caminho
+// depois de já terem sido removidos via atualizar-pedidos-erp/
+// receber-pedidos-erp). Corrigido em 2026-08-21 juntando os dois sinais.
+async function erpBuscarPedidosCanceladosPorSituacao(numerosPedido){
+  if(!numerosPedido || !numerosPedido.length) return new Set();
+  const unicos = [...new Set(numerosPedido)];
+  const LOTE = 200;
+  const cancelados = new Set();
+  for(let i=0;i<unicos.length;i+=LOTE){
+    const lote = unicos.slice(i,i+LOTE);
+    const rows = await supaFetch(`pedidos_info_erp?pedido=in.(${lote.join(',')})&situacao=eq.CA&select=pedido`).catch(()=>[]) || [];
+    rows.forEach(r => cancelados.add(Number(r.pedido)));
+  }
+  return cancelados;
+}
+
 // ── Promove os pedidos já validados em base_data_erp_teste pra base_data real
 // (produção) — mesma tabela e mesma função (pushBaseData) que a planilha usa,
 // então upsert por carga+pedido, validação e permissão admin/operador já
@@ -10017,9 +10039,13 @@ async function erpPromoverParaProducao(){
     lancamentos.forEach(l => { const c = Math.round(Number(l.carga)); if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l; });
 
     // Pedidos cancelados no ERP não são promovidos — saem da carga e vão para
-    // Comercial > Cancelamentos (erpProcessarPedidosCancelados)
-    const erpCancelados = erpRows.filter(r => (r.status||'').trim().toLowerCase() === 'cancelado');
-    const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
+    // Comercial > Cancelamentos (erpProcessarPedidosCancelados). Dois sinais
+    // de cancelamento: status='cancelado' (planilha de expedição) OU
+    // Situacao=CA em pedidos_info_erp (planilha de atualizações).
+    const canceladosPorSituacao = await erpBuscarPedidosCanceladosPorSituacao(erpRows.map(r => Number(r.numero_pedido_erp)));
+    const ehCancelado = r => (r.status||'').trim().toLowerCase() === 'cancelado' || canceladosPorSituacao.has(Number(r.numero_pedido_erp));
+    const erpCancelados = erpRows.filter(ehCancelado);
+    const erpAtivos = erpRows.filter(r => !ehCancelado(r));
     if(erpCancelados.length){
       el.innerHTML = `⏳ Processando ${erpCancelados.length} pedido(s) cancelado(s)...`;
       await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP] Erro ao processar cancelados:', e.message));
@@ -10154,9 +10180,13 @@ async function erpPromoverAutomatico(){
     lancamentos.forEach(l => { const c = Math.round(Number(l.carga)); if(!lancMapPorCarga[c]) lancMapPorCarga[c] = l; });
 
     // Pedidos cancelados no ERP não são promovidos — saem da carga e vão para
-    // Comercial > Cancelamentos (erpProcessarPedidosCancelados)
-    const erpCancelados = erpRows.filter(r => (r.status||'').trim().toLowerCase() === 'cancelado');
-    const erpAtivos = erpRows.filter(r => (r.status||'').trim().toLowerCase() !== 'cancelado');
+    // Comercial > Cancelamentos (erpProcessarPedidosCancelados). Dois sinais
+    // de cancelamento: status='cancelado' (planilha de expedição) OU
+    // Situacao=CA em pedidos_info_erp (planilha de atualizações).
+    const canceladosPorSituacao = await erpBuscarPedidosCanceladosPorSituacao(erpRows.map(r => Number(r.numero_pedido_erp)));
+    const ehCancelado = r => (r.status||'').trim().toLowerCase() === 'cancelado' || canceladosPorSituacao.has(Number(r.numero_pedido_erp));
+    const erpCancelados = erpRows.filter(ehCancelado);
+    const erpAtivos = erpRows.filter(r => !ehCancelado(r));
     if(erpCancelados.length){
       await erpProcessarPedidosCancelados(erpCancelados, lancMapPorCarga).catch(e=>console.warn('[ERP] Erro ao processar cancelados:', e.message));
     }
