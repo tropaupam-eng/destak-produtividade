@@ -8237,7 +8237,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.4.2';
+const APP_VERSION = '4.4.3';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -27341,6 +27341,12 @@ function _recarregarAbaAtivaPainelIndicadores(){
   else if(abaAtiva === 'conferencia-prazo') carregarPainelConferenciaPrazo();
   else if(abaAtiva === 'carregamento-prazo') carregarPainelCarregamentoPrazo();
   else if(abaAtiva === 'pedidos-rotas') carregarPainelPedidosRotas();
+  // "Prazo Formação→Entrega" não tinha filtro de unidade nenhum (nem o
+  // seletor global, nem um próprio) — mudar unidade/R.I.-R.E. no topo não
+  // recarregava essa aba, dava a impressão de que o filtro simplesmente não
+  // existia. custo-armazem fica de fora de propósito: já tem filtro de
+  // unidade próprio, independente do seletor global.
+  else if(abaAtiva === 'prazo-formacao') renderPrazoFormacao();
 }
 
 // Espelho do módulo oficial "Armazém → Absenteísmo" (_calcularAbsenteismoArmazem,
@@ -40908,7 +40914,30 @@ async function renderPrazoFormacao(){
         formacaoPorCarga.set(c, { criado_em: d.criado_em, rota: d.rota });
       }
     });
-    const cargas = [...formacaoPorCarga.keys()];
+    let cargas = [...formacaoPorCarga.keys()];
+
+    // Filtro de unidade (seletor compartilhado do Painel de Indicadores) —
+    // demandas_rota.unidade só está preenchida em ~79% das linhas, então usa
+    // lancamentos.und como fonte, mesmo critério de _cargasDaUnidadeNoMes()
+    // usado por Liberação/Carregamento no Prazo.
+    const undSelPF = window._painelIndUndSel || '';
+    if(undSelPF && cargas.length){
+      let cargasUndPF = [];
+      for(let i=0;i<cargas.length;i+=200){
+        const lote = cargas.slice(i,i+200);
+        const r = await supaFetch(`lancamentos?carga=in.(${lote.join(',')})&und=eq.${encodeURIComponent(undSelPF)}&select=carga`,{_quiet:true}).catch(()=>[]) || [];
+        cargasUndPF = cargasUndPF.concat(r.map(x=>String(Math.round(Number(x.carga)))));
+      }
+      const cargasUndSetPF = new Set(cargasUndPF);
+      cargas = cargas.filter(c=>cargasUndSetPF.has(c));
+      [...formacaoPorCarga.keys()].forEach(c=>{ if(!cargasUndSetPF.has(c)) formacaoPorCarga.delete(c); });
+      if(!cargas.length){
+        container.innerHTML = '<p class="no-data">Nenhuma carga formada nesse período para a unidade selecionada.</p>';
+        ['pf-kpi-total','pf-kpi-dentro','pf-kpi-fora','pf-kpi-pct'].forEach(id=>{ if(el(id)) el(id).textContent='—'; });
+        if(el('pf-aviso-qualidade')) el('pf-aviso-qualidade').style.display = 'none';
+        return;
+      }
+    }
 
     // Início do prazo = quando a Expedição coloca a carga em "pendente"
     // (não a criação/formação em si — algumas cargas passam por "formacao"
