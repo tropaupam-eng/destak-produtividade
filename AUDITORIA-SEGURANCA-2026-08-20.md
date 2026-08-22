@@ -9,6 +9,23 @@
 
 ---
 
+## 🔬 CORREÇÃO IMPORTANTE — verificação empírica dos indicadores (2026-08-20, tarde)
+
+Fui conferir contra a produção (consultas **só de contagem**, `Prefer: count=exact` + `Range: 0-0`, e uma leitura de 77 timestamps sem dado pessoal). **Um achado da Parte 2 estava ERRADO e é retratado aqui:**
+
+| Achado | O que a auditoria supôs | Realidade medida | Veredito |
+|---|---|---|---|
+| **Q7 — `limit=5000` truncava `conferencia_pedidos`** | ~7.800 linhas → truncava → "o ~30% mede o limit, não o armazém" | **554** linhas em julho (2.253 no histórico **inteiro**). O limite **nunca é atingido**. | ❌ **REFUTADO** |
+| **Q7/A3 — universo conta cancelado/em formação** | "6 canceladas + 4 em formação" → 44,9% vs 51,5% | **1** carga de 78 | ✅ real, mas ~1,3% |
+| **Q9 — indicador 03 exclui quem nunca saiu** | "8 cargas" → 85,7% vs 76,9% (9 p.p.) | **1** carga de 78 | ✅ real, mas ~1,3% |
+| **Q8 — comparação UTC × BRT** | "toda saída após 21h vira atraso fantasma" | das 77 cargas com `ts_saiu`, 3 têm data divergente e **2 vereditos mudam** | ✅ real, ~2,6 p.p. |
+
+**Conclusão prática:** o número que você reportou no commit `8fda19f` (**43 das 78 cargas sem conferência 'ok'**) **não era artefato de medição — é realidade operacional.** Pode confiar nele. A auditoria acertou os *mecanismos* no código, mas os *cenários de impacto* eram hipotéticos e superestimaram a magnitude. Desculpe o alarme falso.
+
+**E você já corrigiu o que restava:** `9ee0e93` (universo + fuso), `f9a1782` (Q9), `3b2fcd2`/#309 (fuso sistêmico com `hojeDataBRT()`), `cdebf93`/#310 (fonte única do OTIF). Conferi: sua implementação de `dataLocalBRT`/`hojeDataBRT` está correta e é **mais completa** que o patch que eu tinha preparado (você fez a varredura inteira, eu só ia corrigir os 2 pontos de comparação) — descartei o meu.
+
+---
+
 ## ✅ Status de correção — 2026-08-20 (o que já foi aplicado nesta data)
 
 Corrigido e **já em produção** (código, cada push testado com `check.js`, deploy verde no CI):
