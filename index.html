@@ -8388,7 +8388,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.10.0';
+const APP_VERSION = '4.10.1';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -40583,7 +40583,11 @@ function _renderCargasPendentesComercial(){
 // vinculados àquela rota (rotas_vendedores) e quanto cada um já vendeu
 // na carga em formação (base_data.vendedor_cod somado por carga). Quem
 // está vinculado mas ainda não vendeu nada nessa carga aparece com R$ 0,00
-// em vez de simplesmente não aparecer — pedido do usuário.
+// em vez de simplesmente não aparecer — pedido do usuário. Além disso,
+// vendedor que vendeu na carga mas ainda NÃO está vinculado à rota também
+// aparece (marcado como "não vinculado"), porque a venda é fato — o
+// cadastro em rotas_vendedores só serve pra garantir o R$ 0,00 de quem
+// não vendeu ainda, não pra esconder quem vendeu sem estar cadastrado lá.
 async function abrirVendedoresRota(rota, carga){
   const modal = document.getElementById('modal-vendedores-rota');
   const sub   = document.getElementById('vr-subtitulo');
@@ -40595,9 +40599,10 @@ async function abrirVendedoresRota(rota, carga){
 
   try{
     const rotaNorm = (rota||'').trim().toUpperCase();
-    const [vinculos, pedidos] = await Promise.all([
+    const [vinculos, pedidos, todosVendedores] = await Promise.all([
       supaFetch(`rotas_vendedores?rota=eq.${encodeURIComponent(rotaNorm)}&select=usuario_id,usuarios(nome,codigo_vendedor)`),
       carga ? supaFetch(`base_data?carga=eq.${encodeURIComponent(carga)}&vendedor_cod=not.is.null&select=vendedor_cod,valor`).catch(()=>[]) : Promise.resolve([]),
+      supaFetch('usuarios?perfil=eq.vendedor&select=id,nome,codigo_vendedor').catch(()=>[]),
     ]);
 
     const vendidoPorCod = {};
@@ -40607,13 +40612,29 @@ async function abrirVendedoresRota(rota, carga){
       vendidoPorCod[cod] = (vendidoPorCod[cod]||0) + (Number(p.valor)||0);
     });
 
-    const vendedores = (vinculos||[])
-      .filter(v=>v.usuarios)
-      .map(v=>({ nome: v.usuarios.nome, codigo: v.usuarios.codigo_vendedor, total: v.usuarios.codigo_vendedor!=null ? (vendidoPorCod[v.usuarios.codigo_vendedor]||0) : 0 }))
-      .sort((a,b)=>b.total-a.total || (a.nome||'').localeCompare(b.nome||''));
+    // Mapa por código de vendedor — evita duplicar quem está vinculado E vendeu.
+    const porCodigo = new Map();
+    (vinculos||[]).filter(v=>v.usuarios).forEach(v=>{
+      const codigo = v.usuarios.codigo_vendedor;
+      const chave = codigo!=null ? codigo : 'id:'+v.usuario_id;
+      porCodigo.set(chave, {
+        nome: v.usuarios.nome,
+        codigo,
+        total: codigo!=null ? (vendidoPorCod[codigo]||0) : 0,
+        vinculado: true,
+      });
+    });
+    Object.keys(vendidoPorCod).forEach(codStr=>{
+      const cod = Number(codStr);
+      if(porCodigo.has(cod)) return; // já veio pelo vínculo
+      const u = (todosVendedores||[]).find(x=>x.codigo_vendedor===cod);
+      porCodigo.set(cod, { nome: u ? u.nome : ('Vendedor cód. '+cod), codigo: cod, total: vendidoPorCod[cod], vinculado: false });
+    });
+
+    const vendedores = [...porCodigo.values()].sort((a,b)=>b.total-a.total || (a.nome||'').localeCompare(b.nome||''));
 
     if(!vendedores.length){
-      lista.innerHTML = '<p style="font-size:.85rem;color:var(--text-muted);margin:0">Nenhum vendedor vinculado a esta rota ainda. Vá em Cadastros &gt; Rotas &gt; Editar e marque os vendedores em "💼 Vendedores desta rota".</p>';
+      lista.innerHTML = '<p style="font-size:.85rem;color:var(--text-muted);margin:0">Nenhum vendedor vinculado a esta rota e nenhuma venda registrada nessa carga ainda. Vá em Cadastros &gt; Rotas &gt; Editar e marque os vendedores em "💼 Vendedores desta rota".</p>';
       return;
     }
 
@@ -40621,7 +40642,7 @@ async function abrirVendedoresRota(rota, carga){
       <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)">
         <div>
           <div style="font-size:.86rem;font-weight:700;color:var(--text-primary)">${v.nome}</div>
-          ${v.codigo!=null?`<div style="font-size:.7rem;color:var(--text-muted)">cód. ${v.codigo}</div>`:''}
+          <div style="font-size:.7rem;color:var(--text-muted)">${v.codigo!=null?`cód. ${v.codigo}`:''}${v.codigo!=null && !v.vinculado?' · ':''}${!v.vinculado?'não vinculado à rota':''}</div>
         </div>
         <div style="font-size:.9rem;font-weight:800;color:${v.total>0?'var(--green)':'var(--text-muted)'}">${v.total.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}</div>
       </div>`).join('');
