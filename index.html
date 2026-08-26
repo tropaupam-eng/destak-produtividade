@@ -8393,7 +8393,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.13.0';
+const APP_VERSION = '4.14.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -40498,7 +40498,23 @@ async function carregarCargasPendentesComercial(){
       rotasMeta.forEach(r=>{ if(r.nome && r.valor_padrao > 0) rotasValorMeta[r.nome.trim().toUpperCase()] = r.valor_padrao; });
     }catch(e){}
 
-    _cargPendCache = { cargas, rotasValorMeta };
+    // Data do 1º pedido da carga — só pras cargas que o usuário pediu pra
+    // acompanhar (formação/pendente), pra saber há quanto tempo ela está
+    // parada nesses estágios. Vem de base_data.data_pedido (menor data por
+    // carga), não de demandas_rota (que não tem essa granularidade).
+    let primeiroPedidoPorCarga = {};
+    try{
+      const cargasAcompanhar = [...new Set(cargas.filter(c=>c.status==='formacao'||c.status==='pendente').map(c=>c.carga))];
+      if(cargasAcompanhar.length){
+        const bd = await supaFetch(`base_data?carga=in.(${cargasAcompanhar.join(',')})&data_pedido=not.is.null&select=carga,data_pedido&limit=20000`) || [];
+        bd.forEach(r=>{
+          const atual = primeiroPedidoPorCarga[r.carga];
+          if(!atual || r.data_pedido < atual) primeiroPedidoPorCarga[r.carga] = r.data_pedido;
+        });
+      }
+    }catch(e){}
+
+    _cargPendCache = { cargas, rotasValorMeta, primeiroPedidoPorCarga };
 
     const valorTotal   = cargas.reduce((s,c)=>s+(Number(c.valor_total)||0),0);
     const pedidosTotal = cargas.reduce((s,c)=>s+(Number(c.quantidade_pedidos)||0),0);
@@ -40517,7 +40533,7 @@ async function carregarCargasPendentesComercial(){
 function _renderCargasPendentesComercial(){
   const container = document.getElementById('cargpend-container');
   if(!container || !_cargPendCache) return;
-  const { cargas, rotasValorMeta } = _cargPendCache;
+  const { cargas, rotasValorMeta, primeiroPedidoPorCarga } = _cargPendCache;
 
   if(!cargas.length){
     container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">✅</span>Nenhuma carga pendente no momento.</p>';
@@ -40525,6 +40541,19 @@ function _renderCargasPendentesComercial(){
   }
 
   const fmtD = d => { try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d||'—'; } };
+
+  // Quanto tempo desde o 1º pedido da carga até agora — só faz sentido pra
+  // quem ainda está em formação/pendente (parada nesses estágios).
+  const fmtTempoDesde = dataStr => {
+    if(!dataStr) return null;
+    try{
+      const hoje = new Date((typeof hojeDataBRT==='function'?hojeDataBRT():new Date().toISOString().slice(0,10))+'T12:00:00');
+      const dias = Math.round((hoje - new Date(dataStr.slice(0,10)+'T12:00:00'))/86400000);
+      if(dias <= 0) return 'Hoje';
+      if(dias === 1) return '1 dia';
+      return dias+' dias';
+    }catch(e){ return null; }
+  };
 
   const cardHtml = c => {
     const cfg  = _STATUS_CARGPEND_CFG[c.status] || {label:c.status||'—', cor:'#6b7280'};
@@ -40572,6 +40601,19 @@ function _renderCargasPendentesComercial(){
       ? `<button onclick="event.stopPropagation();abrirVendedoresRota('${(c.rota||'').replace(/'/g,"\\'")}','${(c.carga||'').toString().replace(/'/g,"\\'")}')" title="Vendedores desta rota" style="background:var(--bg-card2);border:1px solid var(--border);color:var(--text-secondary);border-radius:20px;width:22px;height:22px;flex-shrink:0;cursor:pointer;font-size:.75rem;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1">ℹ️</button>`
       : '';
 
+    // 1º pedido + há quanto tempo está parada — só em formação/pendente, que
+    // é onde o usuário quer acompanhar demora (pedido de 2026-08-26).
+    let primeiroPedidoHtml = '';
+    if(c.status==='formacao' || c.status==='pendente'){
+      const dataPrimeiro = (primeiroPedidoPorCarga||{})[c.carga];
+      if(dataPrimeiro){
+        const tempoTxt = fmtTempoDesde(dataPrimeiro);
+        const diasNum  = Math.round((new Date((typeof hojeDataBRT==='function'?hojeDataBRT():new Date().toISOString().slice(0,10))+'T12:00:00') - new Date(dataPrimeiro.slice(0,10)+'T12:00:00'))/86400000);
+        const corTempo = diasNum >= 3 ? '#ef4444' : diasNum >= 1 ? '#f59e0b' : 'var(--text-secondary)';
+        primeiroPedidoHtml = `<div>🕐 1º pedido: ${fmtD(dataPrimeiro)} <span style="color:${corTempo};font-weight:700">(${tempoTxt})</span></div>`;
+      }
+    }
+
     return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
         <div style="font-size:1.05rem;font-weight:800;color:var(--text-primary);line-height:1.2">${c.rota||'—'}</div>
@@ -40587,6 +40629,7 @@ function _renderCargasPendentesComercial(){
         ${temVeiculo?`<div>🚚 <span style="font-family:monospace">${c.veiculo}</span></div>`:''}
         <div>📅 Saída: ${fmtD(c.data_saida)}</div>
         <div>📦 ${c.quantidade_pedidos||0} pedido${c.quantidade_pedidos===1?'':'s'}</div>
+        ${primeiroPedidoHtml}
       </div>
     </div>`;
   };
