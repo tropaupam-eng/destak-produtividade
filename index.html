@@ -8924,58 +8924,18 @@ let USUARIO_LOGADO = null;
 
 async function login(email, senha){
   try{
-    const e2 = encodeURIComponent(email);
-    // Buscar usuarios por email (SEM passar senha na URL) — validar localmente
-    const [users, mots, ajs, confs] = await Promise.all([
-      supaFetch(`usuarios?email=eq.${e2}&ativo=eq.true&select=*`).catch(()=>[]),
-      supaFetch(`motoristas?email=eq.${e2}&ativo=eq.true&select=*`).catch(()=>[]),
-      supaFetch(`ajudantes?email=eq.${e2}&select=*`).catch(()=>[]), // ajudantes podem estar inativos
-      supaFetch(`conferentes?email=eq.${e2}&ativo=eq.true&select=*`).catch(()=>[]),
-    ]);
-
-    // Validar senha localmente (não passa em URL)
-    if(users?.length){
-      const u = users[0];
-      if(u.senha === senha){
-        USUARIO_LOGADO = u;
-        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-        return USUARIO_LOGADO;
-      }
-    }
-    if(mots?.length){
-      const m = mots[0];
-      if(m.senha === senha){
-        USUARIO_LOGADO = {...m, perfil:'motorista'};
-        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-        return USUARIO_LOGADO;
-      }
-    }
-    if(ajs?.length){
-      if(ajs.length > 1) console.warn('ATENÇÃO: múltiplos ajudantes com o mesmo email:', email);
-      const a = ajs.find(aj => aj.senha === senha && aj.ativo !== false);
-      if(a){
-        USUARIO_LOGADO = {...a, perfil:'ajudante'};
-        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-        return USUARIO_LOGADO;
-      }
-    }
-    if(confs?.length){
-      const c = confs[0];
-      if(c.senha === senha){
-        USUARIO_LOGADO = {...c, perfil: c.perfil||'conferente'};
-        localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-        return USUARIO_LOGADO;
-      }
-    }
-    // Fallback: ajudante aprovado mas ativo=false (bug de cadastro)
-    const ajAprv = ajs?.find(aj => aj.status === 'aprovado' && aj.senha === senha);
-    if(ajAprv){
-      await supaFetch(`ajudantes?id=eq.${ajAprv.id}`,{method:'PATCH',body:JSON.stringify({ativo:true})}).catch(()=>{});
-      USUARIO_LOGADO = {...ajAprv, ativo:true, perfil:'ajudante'};
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-      return USUARIO_LOGADO;
-    }
-    throw new Error('E-mail ou senha incorretos');
+    // Verificação server-side via RPC — desde 2026-08-28 a senha nunca mais
+    // trafega em texto puro pro navegador nem é comparada no cliente. A
+    // função verificar_login (SECURITY DEFINER) checa contra o hash bcrypt
+    // nas 4 tabelas e devolve o usuário já com o campo senha removido.
+    const resultado = await supaFetch('rpc/verificar_login', {
+      method: 'POST',
+      body: JSON.stringify({ p_email: email, p_senha: senha })
+    });
+    if(!resultado) throw new Error('E-mail ou senha incorretos');
+    USUARIO_LOGADO = resultado;
+    localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+    return USUARIO_LOGADO;
   }catch(e){
     if(e.message.includes('E-mail ou senha')) throw e;
     throw new Error('Erro de conexão com o servidor. Verifique sua internet.');
@@ -15388,8 +15348,19 @@ async function alterarSenha(){
     showMsg('msg-senha','Sessão expirada, faça login novamente');
     return;
   }
-  if(atual !== usr.senha){
-    showMsg('msg-senha','Senha atual incorreta');
+  // A senha não fica mais guardada em memória (login() usa verificar_login,
+  // que já devolve o usuário sem o campo senha) — confere a atual chamando
+  // a mesma verificação do login, com o e-mail da sessão.
+  try{
+    const confereAtual = await supaFetch('rpc/verificar_login', {
+      method:'POST', body: JSON.stringify({ p_email: usr.email, p_senha: atual })
+    });
+    if(!confereAtual){
+      showMsg('msg-senha','Senha atual incorreta');
+      return;
+    }
+  }catch(e){
+    showMsg('msg-senha','Erro ao verificar senha atual: '+e.message);
     return;
   }
   if(nova.length < 6){
@@ -15405,15 +15376,6 @@ async function alterarSenha(){
       method:'PATCH',
       body: JSON.stringify({senha: nova})
     });
-    // Atualizar sessão local
-    usr.senha = nova;
-    if(USUARIO_LOGADO){
-      USUARIO_LOGADO.senha = nova;
-      localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-    } else {
-      AJUDANTE.senha = nova;
-      localStorage.setItem('ajudante_logado', JSON.stringify(AJUDANTE));
-    }
     showMsg('msg-senha','✅ Senha alterada com sucesso!','ok');
     setTimeout(()=>{
       fecharModalSenha();
@@ -15503,7 +15465,14 @@ async function salvarSenhaAdmin(){
   };
 
   if(!USUARIO_LOGADO){ showMsgAdmin('Sessão expirada'); return; }
-  if(atual !== USUARIO_LOGADO.senha){ showMsgAdmin('Senha atual incorreta'); return; }
+  // Senha não fica mais em memória — confere a atual via verificar_login,
+  // mesma lógica usada em alterarSenha() pro portal.
+  try{
+    const confereAtual = await supaFetch('rpc/verificar_login', {
+      method:'POST', body: JSON.stringify({ p_email: USUARIO_LOGADO.email, p_senha: atual })
+    });
+    if(!confereAtual){ showMsgAdmin('Senha atual incorreta'); return; }
+  }catch(e){ showMsgAdmin('Erro ao verificar senha atual: '+e.message); return; }
   if(nova.length < 6){ showMsgAdmin('Nova senha deve ter no mínimo 6 caracteres'); return; }
   if(nova !== conf){ showMsgAdmin('As senhas não coincidem'); return; }
 
@@ -15512,8 +15481,6 @@ async function salvarSenhaAdmin(){
       method:'PATCH',
       body: JSON.stringify({senha: nova})
     });
-    USUARIO_LOGADO.senha = nova;
-    localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
     showMsgAdmin('✅ Senha alterada com sucesso!','ok');
     setTimeout(()=>{
       fecharModalSenhaAdmin();
