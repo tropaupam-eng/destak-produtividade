@@ -27778,11 +27778,38 @@ const MFV_ROTAS_RI = ['PETROLINA','JUAZEIRO','CEASA'];
 function _mfvNormRota(r){
   return (r||'').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 }
+// Fonte da verdade da classificacao e do prazo e a tabela `rotas`, que ja tem
+// `tipo` (RI/RE) e `prazo_otif` por rota. Antes isso estava chumbado aqui, o que
+// deixava o painel discordar do proprio cadastro da empresa. A lista fixa vira
+// so fallback para rota que aparece na base_data e nao esta cadastrada.
+let _mfvRotasCad = null;   // { NOMENORMALIZADO: {tipo, prazoH, ativo} }
+
+async function _mfvCarregarRotas(){
+  if(_mfvRotasCad) return _mfvRotasCad;
+  const m = {};
+  try{
+    const rs = await supaFetch('rotas?select=nome,tipo,prazo_otif,ativo&limit=500');
+    for(const r of (rs||[])){
+      const n = _mfvNormRota(r.nome);
+      if(n) m[n] = { tipo:(r.tipo||'').toUpperCase(), prazoH:r.prazo_otif, ativo:r.ativo };
+    }
+  }catch(e){ /* sem cadastro, cai no fallback */ }
+  _mfvRotasCad = m;
+  return m;
+}
+
 function _mfvClasseRota(r){
   const n = _mfvNormRota(r);
   if(!n) return 'SEM';
-  if(n === 'RETIRA') return 'RETIRA';
-  return MFV_ROTAS_RI.includes(n) ? 'RI' : 'RE';
+  const cad = _mfvRotasCad && _mfvRotasCad[n];
+  if(cad && (cad.tipo==='RI' || cad.tipo==='RE')) return cad.tipo;
+  return MFV_ROTAS_RI.includes(n) ? 'RI' : 'RE';   // fallback
+}
+
+// Prazo prometido daquela rota, em horas. null = rota sem prazo cadastrado.
+function _mfvPrazoRota(r){
+  const cad = _mfvRotasCad && _mfvRotasCad[_mfvNormRota(r)];
+  return (cad && cad.prazoH != null) ? Number(cad.prazoH) : null;
 }
 let MFV_ETAPAS = MFV_ETAPAS_RI;
 const MFV_CAMPOS = [
@@ -27882,6 +27909,11 @@ async function _mfvCarregarInterna(mes){
   const entrega = {};
   (ed||[]).forEach(e=>{ if(e.data_entrega) entrega[String(e.pedido)] = String(e.data_entrega).slice(0,10); });
   const dias = []; let semData = 0; const cargas = new Set();
+  // Cada rota interna tem o SEU prazo no cadastro (Petrolina e Juazeiro 36h,
+  // CEASA 8760h, RETIRA sem prazo). Medir todas contra um numero unico
+  // misturaria promessas diferentes no mesmo mapa.
+  let noPrazo = 0, foraPrazo = 0, semPrazo = 0;
+  const porRota = {};
   for(const r of (bd||[])){
     cargas.add(Number(r.carga));
     const de = entrega[String(r.pedido)];
@@ -27889,6 +27921,13 @@ async function _mfvCarregarInterna(mes){
     const d = (new Date(de+'T12:00:00') - new Date(String(r.data_pedido).slice(0,10)+'T12:00:00'))/86400000;
     if(d < 0 || d > 60) continue; // data invertida ou sujeira de importação
     dias.push(d);
+    const nr = _mfvNormRota(r.rota) || '(sem rota)';
+    const pr = _mfvPrazoRota(r.rota);
+    const b = porRota[nr] || (porRota[nr] = { n:0, dentro:0, prazoH:pr });
+    b.n++;
+    if(pr == null){ semPrazo++; }
+    else if(d*24 <= pr){ noPrazo++; b.dentro++; }
+    else { foraPrazo++; }
   }
   dias.sort((a,b)=>a-b);
   const n = dias.length;
@@ -27902,9 +27941,13 @@ async function _mfvCarregarInterna(mes){
   const etapas = MFV_ETAPAS_RI.map(e=>({ ...e, esperaH:0, amostras:0, semMedicao:true }));
   return {
     etapas, leadMedianaH: media*24, cargas: cargas.size, totalTransicoes: n,
-    interna: true, prazoH: 48,
+    interna: true,
     pedidosComEntrega: n, pedidosSemEntrega: semData,
-    pctNoPrazo: pct(d=>d<=2), pctMesmoDia: pct(d=>d===0), pctAtrasado: pct(d=>d>2)
+    comPrazo: noPrazo + foraPrazo, semPrazo,
+    pctNoPrazo: (noPrazo+foraPrazo) ? noPrazo/(noPrazo+foraPrazo)*100 : 0,
+    pctAtrasado: (noPrazo+foraPrazo) ? foraPrazo/(noPrazo+foraPrazo)*100 : 0,
+    pctMesmoDia: pct(d=>d===0),
+    porRota
   };
 }
 
@@ -27924,6 +27967,7 @@ async function carregarMFV(){
       }
       selMes.innerHTML = opts.join('');
     }
+    await _mfvCarregarRotas();   // classificacao e prazo vem do cadastro
     const mes  = selMes?.value || '';
     const rire = document.getElementById('mfv-rire')?.value || 'RI';
     MFV_ETAPAS = rire === 'RI' ? MFV_ETAPAS_RI : MFV_ETAPAS_RE;
@@ -28231,11 +28275,12 @@ function renderMFV(){
     ? `<span style="color:var(--green)">→ ${_mfvFmtH(futuro.lead)}</span>` : '';
   const D = _mfvDados;
   const kpiBase = D.interna
-    ? kpi('Dentro da promessa (48h)', D.pctNoPrazo.toFixed(1)+'%', D.pctNoPrazo>=90?'var(--green)':'var(--orange)',
-        `${D.pctMesmoDia.toFixed(0)}% no mesmo dia · ${D.pctAtrasado.toFixed(1)}% estoura`)
+    ? kpi('Dentro do prazo cadastrado', D.pctNoPrazo.toFixed(1)+'%', D.pctNoPrazo>=90?'var(--green)':'var(--orange)',
+        `${D.pctMesmoDia.toFixed(0)}% no mesmo dia · ${D.pctAtrasado.toFixed(1)}% estoura` +
+        (D.semPrazo ? ` · ${D.semPrazo} sem prazo, fora da conta` : ''))
     : kpi('Base medida', D.cargas+' cargas', 'var(--purple)', D.totalTransicoes+' transições de status');
   document.getElementById('mfv-kpis').innerHTML =
-    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?`promessa: 48 h · mediana medida ${_mfvFmtH(D.leadMedianaH)}`:`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
+    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?`prazo por rota (cadastro) · mediana medida ${_mfvFmtH(D.leadMedianaH)}`:`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
     kpi('Tempo que agrega valor', _mfvFmtH(alvo.processo), 'var(--green)', modo==='comparar'?`atual ${_mfvFmtH(atual.processo)} → futuro ${_mfvFmtH(futuro.processo)}`:'soma dos tempos de ciclo (campo)') +
     kpi('Razão de valor', (alvo.razao*100).toFixed(2)+'%', 'var(--red)', modo==='comparar'?`de ${(atual.razao*100).toFixed(2)}% para ${(futuro.razao*100).toFixed(2)}%`:'quanto do lead time é trabalho') +
     kpiBase;
@@ -28344,8 +28389,13 @@ function renderMFV(){
     <b>${D.pedidosComEntrega}</b> pedidos com data de entrega registrada
     (${D.pedidosSemEntrega} sem registro, fora da conta).
     <b>Granularidade é o dia</b>, não a hora: <code>hora_pedido</code> está vazio em todos os
-    pedidos internos, então "dentro de 48h" é lido como entrega até D+2. A promessa é em HORAS e o
+    pedidos internos, então a aderência é medida comparando <b>dias inteiros</b> contra o prazo em horas de cada rota. A promessa é em HORAS e o
     dado é em DIAS: não dá para separar um pedido de 26 h de um de 47 h.
+    <b>Composição da rota interna</b> (classificação e prazo vêm do cadastro <code>rotas</code>, não do código):
+    ${Object.entries(D.porRota||{}).sort((a,b)=>b[1].n-a[1].n).map(([nome,b])=>
+      `${escapeHtml(nome)} <b>${b.n}</b> ped. ${b.prazoH==null?'(sem prazo)':'· prazo '+b.prazoH+' h · '+(b.n?(b.dentro/b.n*100).toFixed(0):0)+'% dentro'}`
+    ).join(' &nbsp;·&nbsp; ')}.
+    Rotas com prazos diferentes no mesmo mapa são <b>famílias diferentes</b>: vale decidir se todas ficam.
     <b>As etapas do meio não são instrumentadas</b> — a rota interna não passa pela máquina de
     status da expedição nem pela conferência do armazém. Os tempos de ciclo vêm de cronometragem
     em campo, e essa lacuna é, por si só, um achado do mapa do estado atual.`
