@@ -8409,7 +8409,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.20.0';
+const APP_VERSION = '4.20.1';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -41055,14 +41055,15 @@ async function _carregarListaAbastecimento(){
 
     // Qtd. de pedidos + data do 1º pedido por carga — vêm de base_data (mesma
     // fonte que a integração Cronos alimenta), não são campos salvos em
-    // abastecimento_loja. Data de lançamento vem de lancamentos.ts (data real
-    // do lançamento da carga, não a "Saída" digitada manualmente no
-    // formulário) — pedido do usuário, 2026-08-28: comparar as duas pra saber
-    // quantos dias entre o pedido e o carregamento/envio.
+    // abastecimento_loja. "Data de lançamento" pra essas cargas de
+    // abastecimento É a própria "Saída" (r.data_saida, digitada no
+    // formulário) — essas cargas não passam por lancamentos nem por
+    // demandas_rota, então não existe outro evento de lançamento registrado
+    // pra elas (confirmado 2026-08-31: coluna extra vinda de lancamentos.ts
+    // ficava vazia pra quase toda carga — removida).
     const cargasUnicas = [...new Set(rows.map(r=>r.carga).filter(Boolean))];
     const pedidosPorCarga = {};
     const primeiroPedidoPorCarga = {};
-    const lancamentoPorCarga = {};
     if(cargasUnicas.length){
       try{
         const bd = await supaFetch(`base_data?carga=in.(${cargasUnicas.join(',')})&select=carga,pedido,data_pedido`) || [];
@@ -41073,10 +41074,6 @@ async function _carregarListaAbastecimento(){
           }
         });
       }catch(_){}
-      try{
-        const lancs = await supaFetch(`lancamentos?carga=in.(${cargasUnicas.join(',')})&select=carga,ts&order=ts.desc`) || [];
-        lancs.forEach(l=>{ if(!lancamentoPorCarga[l.carga]) lancamentoPorCarga[l.carga] = l.ts; });
-      }catch(_){}
     }
 
     const fmtDt = dt=>dt?new Date(dt).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
@@ -41086,9 +41083,8 @@ async function _carregarListaAbastecimento(){
       <thead><tr style="background:var(--bg-card2)">
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Registro</th>
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)" title="Menor data_pedido da carga, em base_data">Data Pedido</th>
-        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)" title="lancamentos.ts — data real do lançamento da carga">Data Lançamento</th>
-        <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)" title="Dias entre Data Pedido e Data Lançamento">Dias até Envio</th>
-        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Saída</th>
+        <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)" title="Data de saída = data de lançamento dessa carga">Saída</th>
+        <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)" title="Dias entre Data Pedido e Saída">Dias até Envio</th>
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Carga</th>
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Veículo</th>
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Motorista</th>
@@ -41108,10 +41104,11 @@ async function _carregarListaAbastecimento(){
           : `<span style="background:rgba(245,158,11,.12);color:#d97706;font-size:.73rem;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap">⏳ Aguardando</span>`;
         const qtdPedidos = pedidosPorCarga[r.carga] ? pedidosPorCarga[r.carga].size : 0;
         const dataPedido = primeiroPedidoPorCarga[r.carga] || null;
-        const dataLanc   = lancamentoPorCarga[r.carga] || null;
+        // "Data de lançamento" dessa carga É a Saída (r.data_saida) — não tem
+        // outro evento de lançamento pra essas cargas de abastecimento.
         let diasHtml = '—';
-        if(dataPedido && dataLanc){
-          const dias = Math.round((new Date(String(dataLanc).slice(0,10)+'T12:00:00') - new Date(dataPedido.slice(0,10)+'T12:00:00'))/86400000);
+        if(dataPedido && r.data_saida){
+          const dias = Math.round((new Date(r.data_saida+'T12:00:00') - new Date(dataPedido.slice(0,10)+'T12:00:00'))/86400000);
           const cor = dias>=5 ? '#ef4444' : dias>=2 ? '#f59e0b' : 'var(--text-secondary)';
           diasHtml = `<span style="font-weight:700;color:${cor}">${dias}d</span>`;
         }
@@ -41119,9 +41116,8 @@ async function _carregarListaAbastecimento(){
         <tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
           <td style="padding:10px 14px;color:var(--text-muted);font-size:.78rem">${fmtDt(r.criado_em)}</td>
           <td style="padding:10px 14px;color:var(--text-primary)">${fmtData(dataPedido)}</td>
-          <td style="padding:10px 14px;color:var(--text-primary)">${fmtData(dataLanc)}</td>
-          <td style="padding:10px 14px;text-align:center">${diasHtml}</td>
           <td style="padding:10px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary)">${r.data_saida ? new Date(r.data_saida+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+          <td style="padding:10px 14px;text-align:center">${diasHtml}</td>
           <td style="padding:10px 14px;font-weight:800;color:var(--text-primary)">#${r.carga}</td>
           <td style="padding:10px 14px;font-weight:600;color:var(--text-primary)">${r.veiculo}</td>
           <td style="padding:10px 14px;color:var(--text-primary)">${r.motorista}</td>
