@@ -2874,6 +2874,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- ABA 7b: Receitas Armazém — ao lado de Custo Armazém, mesmo padrão visual, fonte receitas_armazem. Usa Mês/Unidade globais também. -->
   <div id="aba-receita-armazem" class="painel-ind-aba" style="display:none">
     <div id="pira-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+    <div id="pira-container-ano" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
   <!-- ABA 8: Prazo Formação→Entrega — desde a criação da carga (formação) até a entrega, contra prazo fixo de 8 dias. Métrica distinta do OTIF oficial (que conta desde a saída do veículo) — mede o tempo de armazém + transporte juntos. -->
@@ -8410,7 +8411,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.21.0';
+const APP_VERSION = '4.22.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -27714,7 +27715,7 @@ function mudarAbaIndicadores(aba){
   else if(aba === 'carregamento-prazo') carregarPainelCarregamentoPrazo();
   else if(aba === 'pedidos-rotas') carregarPainelPedidosRotas();
   else if(aba === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
-  else if(aba === 'receita-armazem') renderReceitaArmazem('pira');
+  else if(aba === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
   else if(aba === 'prazo-formacao') renderPrazoFormacao();
 }
 
@@ -28138,7 +28139,7 @@ function _recarregarAbaAtivaPainelIndicadores(){
   else if(abaAtiva === 'carregamento-prazo') carregarPainelCarregamentoPrazo();
   else if(abaAtiva === 'pedidos-rotas') carregarPainelPedidosRotas();
   else if(abaAtiva === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
-  else if(abaAtiva === 'receita-armazem') renderReceitaArmazem('pira');
+  else if(abaAtiva === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
   // "Prazo Formação→Entrega" não tinha filtro de unidade nenhum (nem o
   // seletor global, nem um próprio) — mudar unidade/R.I.-R.E. no topo não
   // recarregava essa aba, dava a impressão de que o filtro simplesmente não
@@ -42683,6 +42684,135 @@ async function renderReceitaArmazem(prefixo){
     `;
   }catch(e){
     console.error('Erro ao carregar Receitas Armazém:', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
+  }
+}
+
+// Espelho de renderReceitaArmazem, mas em visão anual (mês a mês, Jan-Dez) em
+// vez de semanal — mesmo padrão de renderCustoArmazemAno, aparece logo abaixo
+// do card mensal na aba Receita Armazém do Painel de Indicadores. Ano = o ano
+// do mês selecionado no filtro global (window._painelIndMesSel); mesma
+// unidade global. Sem os 3 grupos especiais (temp/alim/alho) — receita não
+// tem esse recorte; mostra as top categorias cadastradas em tipos_receita.
+async function renderReceitaArmazemAno(prefixo){
+  const p = prefixo || 'pira';
+  const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const el = suf => document.getElementById(`${p}-${suf}`);
+  const container = el('container-ano');
+  if(!container) return;
+
+  try{
+    const receitas = await supaFetch('receitas_armazem?select=*&order=data_referencia.asc').catch(()=>[]) || [];
+
+    const mesSel = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const undSel = window._painelIndUndSel || '';
+    const anoSel = mesSel.slice(0,4);
+
+    let dados = receitas.filter(d=>(d.data_referencia||'').startsWith(anoSel));
+    if(undSel) dados = dados.filter(d=>d.unidade===undSel);
+
+    const NOMES_MES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
+    const bMes = Array(12).fill(0);
+    const totCategoria = {};
+    dados.forEach(d=>{
+      const valor = Number(d.valor||0);
+      totCategoria[d.tipo_receita_nome||'Outros'] = (totCategoria[d.tipo_receita_nome||'Outros']||0) + valor;
+      const mIdx = Number((d.data_referencia||'').slice(5,7)) - 1;
+      if(mIdx>=0 && mIdx<12) bMes[mIdx] += valor;
+    });
+
+    const somaTotal = bMes.reduce((a,b)=>a+b,0);
+    const catsOrdenadas = Object.entries(totCategoria).sort((a,b)=>b[1]-a[1]);
+    const maiorCategoria = catsOrdenadas[0] || null;
+    const mesesComDado = bMes.filter(v=>v>0).length || 1;
+    const mediaMensal = somaTotal / mesesComDado;
+
+    const eixoMax = Math.max(mediaMensal * 1.5, ...bMes, 1) * 1.15;
+    const alturaMedia = Math.min(100, (mediaMensal/eixoMax)*100);
+    const mesAtualIdx = anoSel === String(new Date().getFullYear()) ? new Date().getMonth() : -1;
+    const barras = bMes.map((v,i)=>{
+      const futuro = mesAtualIdx>=0 && i>mesAtualIdx;
+      const alturaPct = Math.min(100, (v/eixoMax)*100);
+      const acimaMedia = v > mediaMensal;
+      const alturaBase = Math.max(alturaPct, v>0?1.5:0);
+      return `
+        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0">
+          <div style="font-size:.6rem;font-weight:700;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v>0?_caFmtCompacto(v):''}</div>
+          <div style="position:relative;width:100%;max-width:32px;height:120px;display:flex;align-items:flex-end">
+            <div style="width:100%;height:${alturaBase}%;background:${futuro ? '#e5e5e5' : (acimaMedia ? 'linear-gradient(180deg,#1a1a1a 0%,#1a1a1a '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%,#b8b8b8 '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%)' : '#b8b8b8')};border-radius:2px 2px 0 0"></div>
+          </div>
+          <div style="font-size:.66rem;font-weight:700;color:#1a1a1a;margin-top:10px">${NOMES_MES[i]}</div>
+        </div>`;
+    }).join('');
+
+    const composicao = catsOrdenadas.length ? catsOrdenadas.slice(0,6).map(([nome,valor],i)=>{
+      const pct = somaTotal>0 ? Math.round(valor/somaTotal*100) : 0;
+      return `<div style="padding:16px 0;border-bottom:1px solid #e5e5e5">
+        <div style="display:flex;gap:14px;align-items:baseline">
+          <span style="font-size:.78rem;font-weight:700;color:#a0a0a0;flex-shrink:0">${String(i+1).padStart(2,'0')}</span>
+          <div style="flex:1">
+            <div style="font-size:.85rem;font-weight:700;color:#1a1a1a;letter-spacing:.3px">${nome} <span style="color:#8a8a8a;font-weight:600">— ${fv(valor)}</span></div>
+            <div style="font-size:.78rem;color:#6b6b6b;margin-top:4px">${pct}% da receita do ano</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('') : '<p style="text-align:center;padding:20px;color:#8a8a8a">Nenhuma receita lançada neste ano.</p>';
+
+    const undLabel = undSel ? undSel : 'todas as unidades';
+
+    container.innerHTML = `
+      <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:#fff;border:1px solid #d8d8d8;border-radius:8px;padding:7px 12px;font-size:.74rem;font-weight:700;color:#1a1a1a;cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">📷 Baixar Imagem</button>
+        <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">INDICADOR 08 · ARMAZÉM · ANO ${anoSel}</div>
+        <h2 style="font-size:2.4rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Receitas Armazém — Visão Anual</h2>
+        <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 28px"></div>
+
+        <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:start">
+          <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #1a1a1a">
+            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:10px">ACUMULADO NO ANO</div>
+            <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
+              <div style="display:flex;align-items:baseline;font-size:2.1rem;font-weight:700;line-height:1">${fv(somaTotal)}</div>
+              <div>
+                <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">MAIOR CATEGORIA</div>
+                <div style="font-size:1rem;font-weight:700">${maiorCategoria?maiorCategoria[0]:'—'}</div>
+                <div style="font-size:.68rem;color:#6b6b6b;font-weight:700;margin-top:2px">${maiorCategoria?fv(maiorCategoria[1]):'Sem lançamentos'}</div>
+              </div>
+              <div>
+                <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">MÉDIA MENSAL</div>
+                <div style="font-size:1rem;font-weight:600">${fv(mediaMensal)}</div>
+              </div>
+            </div>
+            <div style="border-top:1px solid #e5e5e5;padding-top:20px">
+              <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:14px">EVOLUÇÃO MENSAL</div>
+              <div style="display:flex;gap:4px">${barras}</div>
+            </div>
+            <div style="border-top:1px solid #e5e5e5;margin-top:22px;padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+              <span style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">CONSOLIDADO DO ANO</span>
+              <span style="font-size:.78rem;font-weight:600">${dados.length} lançamento${dados.length===1?'':'s'} · ${undLabel}</span>
+            </div>
+          </div>
+
+          <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #8a8a8a">
+            <div style="font-size:1.05rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO DO ANO</div>
+            <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px">ORIGEM DAS RECEITAS REGISTRADAS</div>
+            <div style="margin-top:6px">${composicao}</div>
+            <div style="margin-top:8px">
+              <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">RESULTADO</div>
+              <div style="font-size:2.2rem;font-weight:700;margin-top:4px">${fv(somaTotal)}</div>
+              <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">RECEITA TOTAL NO ANO</div>
+              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${dados.length} lançamento${dados.length===1?'':'s'} de receita, ${undLabel}.</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid #e0e0e0;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
+          <span>PAINEL DE METAS · ACOMPANHAMENTO ANUAL</span>
+          <span>OPERAÇÕES / ARMAZÉM</span>
+        </div>
+      </div>
+    `;
+  }catch(e){
+    console.error('Erro ao carregar Receitas Armazém (ano):', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
   }
 }
