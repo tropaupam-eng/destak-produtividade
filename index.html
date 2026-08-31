@@ -2762,6 +2762,26 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px">
+      <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin:0">MFV pedido a pedido</h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:.72rem;color:var(--text-secondary);display:flex;align-items:center;gap:5px">
+          Jornada (min)
+          <input id="mfv-jornada" type="number" min="1" step="1" value="480" onchange="renderMFVPedidos()"
+            style="width:66px;text-align:right;border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.72rem;background:var(--bg-input);color:var(--text-primary)">
+        </label>
+        <button class="btn btn-sm" onclick="mfvExportarPedidos()" style="font-size:.72rem">Exportar CSV</button>
+      </div>
+    </div>
+    <p style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">
+      Cada pedido tem a própria linha do tempo, reconstruída dos carimbos do sistema. É <b>amostra</b>, não censo: só entra quem tem a cadeia medida. A cobertura real está declarada abaixo.
+    </p>
+    <div id="mfv-ped-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px"></div>
+    <div id="mfv-ped-etapas" style="overflow-x:auto;margin-bottom:16px"></div>
+    <div id="mfv-ped-tabela" style="overflow-x:auto"></div>
+  </div>
+
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
     <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">Linha do tempo</h3>
     <p style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Degrau de cima = espera (não agrega valor). Degrau de baixo = processamento.</p>
     <div id="mfv-timeline" style="overflow-x:auto"></div>
@@ -27880,14 +27900,201 @@ async function carregarMFV(){
       const rows = await supaFetch(url) || [];
       _mfvDados = _mfvCalcular(rows);
     }
-    [_mfvFila] = await Promise.all([
+    [_mfvFila, , _mfvPed] = await Promise.all([
       _mfvCarregarFila(rire).catch(()=>null),
-      _mfvCarregarCampos()
+      _mfvCarregarCampos(),
+      _mfvCarregarPedidos(mes, rire).catch(()=>null)
     ]);
     renderMFV();
+    renderMFVPedidos();
   }catch(e){
     if(box) box.innerHTML = `<p style="color:var(--orange);font-size:.8rem">Erro ao carregar: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MFV PEDIDO A PEDIDO — reconstrói a jornada individual de cada pedido.
+// Regra que não pode ser violada: a janela dos EVENTOS tem que ser MAIOR que a
+// janela dos PEDIDOS. Pedido do fim do mês é conferido no mês seguinte; com
+// janela igual ele some da conta e o lead sai inflado (medido: 13 d contra 11 d).
+let _mfvPed = null;
+
+const MFV_PED_ETAPAS = [
+  { k:'espera_conf', label:'Pedido → Conferência', va:false },
+  { k:'conf_carreg', label:'Conferência → Carregamento', va:true },
+  { k:'carreg_saiu', label:'Carregamento → Saída', va:false },
+  { k:'transito',    label:'Saída → Entrega', va:false, transporte:true }
+];
+
+const _mfvPKey = v => (v===null||v===undefined) ? '' : (String(v).trim().replace(/^0+/,'') || '0');
+function _mfvTs(v){ if(!v) return null; const d=new Date(v); return isNaN(d)?null:d; }
+// data pura -> meio-dia BRT. data_pedido e data_entrega não têm hora; ancorar no
+// meio-dia evita que o fuso empurre o dia para trás e crie duração negativa.
+function _mfvDia(v){ if(!v) return null; const d=new Date(String(v).slice(0,10)+'T12:00:00-03:00'); return isNaN(d)?null:d; }
+function _mfvMesOffset(mes,n){ const d=new Date(mes+'-01T12:00:00'); d.setMonth(d.getMonth()+n);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+
+async function _mfvCarregarPedidos(mes, rire){
+  const base = mes || (typeof hojeDataBRT==='function'?hojeDataBRT():new Date().toISOString().slice(0,10)).slice(0,7);
+  const ini = base+'-01', fim = _mfvMesOffset(base,1)+'-01';
+  const evIni = _mfvMesOffset(base,-1)+'-01T00:00:00-03:00';
+  const evFim = _mfvMesOffset(base,3)+'-01T00:00:00-03:00';
+  const mesesEnt = [-1,0,1,2].map(n=>_mfvMesOffset(base,n));
+
+  const filtroRota = rire==='RI'
+    ? '&rota=in.('+MFV_ROTAS_RI.join(',')+')'
+    : '&rota=not.in.('+MFV_ROTAS_RI.join(',')+')&rota=neq.';
+
+  const [bd, cf, ed] = await Promise.all([
+    supaFetch('base_data?data_pedido=gte.'+ini+'&data_pedido=lt.'+fim+filtroRota+'&data_pedido=not.is.null&select=pedido,carga,rota,data_pedido,valor&limit=20000').catch(()=>[]),
+    supaFetch('conferencia_pedidos?conferido_em=gte.'+evIni+'&conferido_em=lt.'+evFim+'&select=pedido,conferido_em&limit=20000').catch(()=>[]),
+    supaFetch('entrega_datas?mes_ano=in.('+mesesEnt.join(',')+')&select=pedido,data_entrega&limit=30000').catch(()=>[])
+  ]);
+  const pedidos = bd||[];
+  const cargas = [...new Set(pedidos.map(r=>Number(r.carga)).filter(Boolean))];
+  let hs = [];
+  for(let i=0;i<cargas.length;i+=300){
+    const lote = cargas.slice(i,i+300);
+    const r = await supaFetch('historico_status_carga?carga=in.('+lote.join(',')+')&criado_em=gte.'+evIni+'&criado_em=lt.'+evFim+'&select=carga,novo_status,criado_em&limit=20000').catch(()=>[]);
+    if(r) hs = hs.concat(r);
+  }
+
+  // primeiro evento de cada tipo (o mais antigo), nunca o último
+  const conf = {};
+  for(const r of (cf||[])){ const k=_mfvPKey(r.pedido), t=_mfvTs(r.conferido_em);
+    if(k && t && (!conf[k] || t<conf[k])) conf[k]=t; }
+  const entr = {};
+  for(const r of (ed||[])){ const k=_mfvPKey(r.pedido), t=_mfvDia(r.data_entrega);
+    if(k && t && (!entr[k] || t<entr[k])) entr[k]=t; }
+  const stc = {};
+  for(const r of hs){ const t=_mfvTs(r.criado_em); if(!t) continue;
+    const d = stc[r.carga] || (stc[r.carga]={});
+    if(!d[r.novo_status] || t<d[r.novo_status]) d[r.novo_status]=t; }
+
+  const H=(a,b)=> (a&&b) ? (b-a)/3600000 : null;
+  const ok=h=> (h!==null && h>=0 && h<=2160); // descarta relógio invertido e acima de 90 dias
+  const linhas=[];
+  for(const r of pedidos){
+    const k=_mfvPKey(r.pedido);
+    const dp=_mfvDia(r.data_pedido), c=conf[k], e=entr[k], st=stc[r.carga]||{};
+    const car=st['carregamento']||null, saiu=st['saiu']||null;
+    const et={ espera_conf:H(dp,c), conf_carreg:H(c,car), carreg_saiu:H(car,saiu), transito:H(saiu,e) };
+    for(const kk in et){ if(!ok(et[kk])) et[kk]=null; }
+    const lead=H(dp,e);
+    const medidas=Object.keys(et).filter(kk=>et[kk]!==null).length;
+    linhas.push({ pedido:k, carga:r.carga, rota:(r.rota||'').trim(),
+      dp:dp, conf:c, car:car, saiu:saiu, ent:e, et:et, lead: ok(lead)?lead:null,
+      cobertura:medidas, completo:medidas===4 });
+  }
+  const comLead=linhas.filter(l=>l.lead!==null);
+  const diasOper=new Set(pedidos.map(r=>String(r.data_pedido).slice(0,10))).size;
+  return { linhas:linhas, comLead:comLead, totalPedidos:pedidos.length, diasOper:diasOper,
+           demandaDia: diasOper? pedidos.length/diasOper : 0, mes:base, rire:rire };
+}
+
+function _mfvQuantil(v,q){ if(!v.length) return null; const a=v.slice().sort((x,y)=>x-y);
+  return a[Math.min(a.length-1, Math.max(0, Math.ceil(q*a.length)-1))]; }
+function _mfvMediana(v){ if(!v.length) return null; const a=v.slice().sort((x,y)=>x-y);
+  const m=Math.floor(a.length/2); return a.length%2 ? a[m] : (a[m-1]+a[m])/2; }
+
+function renderMFVPedidos(){
+  const P=_mfvPed; if(!P) return;
+  const kbox=document.getElementById('mfv-ped-kpis');
+  const ebox=document.getElementById('mfv-ped-etapas');
+  const tbox=document.getElementById('mfv-ped-tabela');
+  if(!kbox||!ebox||!tbox) return;
+  if(!P.comLead.length){
+    kbox.innerHTML=''; ebox.innerHTML='';
+    tbox.innerHTML='<p style="font-size:.8rem;color:var(--text-muted)">Nenhum pedido desta família tem a cadeia medida no período. '+
+      (P.rire==='RI'?'Era esperado: a rota interna não passa pela conferência nem pela máquina de status. Isso é o achado do estado atual, não falha da consulta. ':'')+
+      'Base: '+P.totalPedidos+' pedidos.</p>';
+    return;
+  }
+  const leads=P.comLead.map(l=>l.lead);
+  const jornada=Number(document.getElementById('mfv-jornada')?.value)||480;
+  const takt=P.demandaDia>0 ? jornada/P.demandaDia : null;
+  const cob=P.totalPedidos? P.comLead.length/P.totalPedidos*100 : 0;
+  const fmt=h=> h===null?'—':(h>=24 ? (h/24).toFixed(2)+' d' : h.toFixed(1)+' h');
+  const kpi=(rot,val,cor,sub)=>'<div style="background:var(--bg-card2);border:1px solid var(--border);border-left:3px solid '+cor+';border-radius:10px;padding:12px 14px">'+
+    '<div style="font-size:.64rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px">'+rot+'</div>'+
+    '<div style="font-size:1.3rem;font-weight:800;color:var(--text-primary);line-height:1.1">'+val+'</div>'+
+    '<div style="font-size:.68rem;color:var(--text-secondary);margin-top:3px">'+sub+'</div></div>';
+  kbox.innerHTML =
+    kpi('Lead mediano', fmt(_mfvMediana(leads)), 'var(--blue)', 'média '+fmt(leads.reduce((a,b)=>a+b,0)/leads.length)) +
+    kpi('P90 do lead', fmt(_mfvQuantil(leads,.9)), 'var(--orange)', 'um em cada dez passa disso') +
+    kpi('Takt', takt? takt.toFixed(1)+' min/pedido' : '—', 'var(--purple)',
+        jornada+' min ÷ '+P.demandaDia.toFixed(1)+' pedidos/dia') +
+    kpi('Amostra medida', P.comLead.length+' de '+P.totalPedidos, cob<25?'var(--orange)':'var(--green)',
+        cob.toFixed(1)+'% do período · amostra, não censo');
+
+  const leadMed=_mfvMediana(leads)||1;
+  const linhasEt = MFV_PED_ETAPAS.map(e=>{
+    const v=P.comLead.map(l=>l.et[e.k]).filter(x=>x!==null);
+    return { k:e.k, label:e.label, va:e.va, n:v.length, med:_mfvMediana(v),
+             avg:v.length? v.reduce((a,b)=>a+b,0)/v.length : null, p90:_mfvQuantil(v,.9) };
+  });
+  const maxMed=Math.max.apply(null,linhasEt.map(e=>e.med||0).concat([1]));
+  const th=(h,al)=>'<th style="text-align:'+al+';padding:6px 8px;font-size:.63rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700">'+h+'</th>';
+  ebox.innerHTML='<table style="width:100%;min-width:600px;border-collapse:collapse;font-size:.8rem"><thead><tr style="border-bottom:1.5px solid var(--border-med)">'+
+    th('Etapa','left')+th('','left')+th('Mediana','right')+th('Média','right')+th('P90','right')+th('% do lead','right')+th('n','right')+
+    '</tr></thead><tbody>'+ linhasEt.map(e=>{
+      if(!e.n) return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:7px 8px;color:var(--text-muted)">'+e.label+
+        '</td><td colspan="6" style="padding:7px 8px;color:var(--text-muted);font-style:italic">não instrumentado — medir em campo</td></tr>';
+      const pct=e.med/leadMed*100;
+      const cor = pct>=50 ? 'var(--red)' : (e.va?'var(--green)':'var(--orange)');
+      return '<tr style="border-bottom:1px solid var(--border)">'+
+        '<td style="padding:7px 8px;font-weight:600;color:var(--text-primary)">'+e.label+'</td>'+
+        '<td style="padding:7px 8px;width:110px"><div style="height:9px;background:var(--bg-card2);border-radius:2px"><div style="height:100%;width:'+Math.min(100,(e.med/maxMed)*100)+'%;background:'+cor+';border-radius:2px"></div></div></td>'+
+        '<td style="padding:7px 8px;text-align:right;font-weight:700">'+fmt(e.med)+'</td>'+
+        '<td style="padding:7px 8px;text-align:right;color:var(--text-secondary)">'+fmt(e.avg)+'</td>'+
+        '<td style="padding:7px 8px;text-align:right;color:var(--text-secondary)">'+fmt(e.p90)+'</td>'+
+        '<td style="padding:7px 8px;text-align:right;font-weight:700;color:'+(pct>=50?'var(--red)':'var(--text-primary)')+'">'+pct.toFixed(0)+'%</td>'+
+        '<td style="padding:7px 8px;text-align:right;color:var(--text-muted)">'+e.n+'</td></tr>';
+    }).join('')+'</tbody></table>'+
+    '<p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">O <b>n</b> de cada etapa é diferente de propósito: nem todo pedido tem todos os carimbos. Etapa sem amostra aparece como não instrumentada, nunca como zero.</p>';
+
+  // Só entra na vitrine quem tem etapa medida de verdade. Pedido com 0 ou 1 carimbo
+  // pode ter lead 0 só porque data_pedido e data_entrega caem no mesmo dia — dado
+  // ausente lido como zero viraria o "pedido mais rápido da operação".
+  const pool=P.comLead.filter(l=>l.cobertura>=2);
+  const excl=P.comLead.length-pool.length;
+  if(!pool.length){ tbox.innerHTML='<p style="font-size:.8rem;color:var(--text-muted)">Nenhum pedido com pelo menos 2 etapas medidas para exibir como referência.</p>'; return; }
+  const ord=pool.slice().sort((a,b)=>a.lead-b.lead);
+  const iMed=Math.floor(ord.length/2), iP95=Math.max(0,Math.ceil(.95*ord.length)-1), iUlt=ord.length-1;
+  const rot={}; rot[0]='mais rápido'; rot[iMed]='mediano'; rot[iP95]='P95'; rot[iUlt]='mais lento';
+  const idxs=[...new Set([0,iMed,iP95,iUlt])];
+  tbox.innerHTML='<div style="font-size:.75rem;font-weight:700;color:var(--text-primary);margin-bottom:6px">Pedidos de referência</div>'+
+    '<p style="font-size:.68rem;color:var(--text-muted);margin-bottom:8px">Escolhidos por posição na distribuição, não a dedo. Caso individual ilustra padrão; sozinho não prova gargalo. Fora da vitrine: '+excl+' pedido(s) com menos de 2 etapas medidas, que apareceriam com lead falso.</p>'+
+    '<table style="width:100%;min-width:700px;border-collapse:collapse;font-size:.78rem"><thead><tr style="border-bottom:1.5px solid var(--border-med)">'+
+    th('','left')+th('Pedido','left')+th('Rota','left')+th('Pedido em','left')+
+    MFV_PED_ETAPAS.map(e=>th(e.label,'right')).join('')+th('Lead','right')+th('Dado','right')+
+    '</tr></thead><tbody>'+ idxs.map(i=>{
+      const l=ord[i];
+      return '<tr style="border-bottom:1px solid var(--border)">'+
+        '<td style="padding:7px 8px;font-size:.63rem;text-transform:uppercase;letter-spacing:.05em;color:var(--purple);font-weight:700">'+(rot[i]||'')+'</td>'+
+        '<td style="padding:7px 8px;font-weight:700">'+l.pedido+'</td>'+
+        '<td style="padding:7px 8px;color:var(--text-secondary)">'+escapeHtml(l.rota)+'</td>'+
+        '<td style="padding:7px 8px;color:var(--text-secondary)">'+(l.dp?l.dp.toLocaleDateString('pt-BR'):'-')+'</td>'+
+        MFV_PED_ETAPAS.map(e=>'<td style="padding:7px 8px;text-align:right;color:'+(l.et[e.k]===null?'var(--text-muted)':'var(--text-primary)')+'">'+fmt(l.et[e.k])+'</td>').join('')+
+        '<td style="padding:7px 8px;text-align:right;font-weight:800">'+fmt(l.lead)+'</td>'+
+        '<td style="padding:7px 8px;text-align:right;font-weight:700;color:'+(l.completo?'var(--green)':'var(--orange)')+'">'+l.cobertura+'/4</td></tr>';
+    }).join('')+'</tbody></table>';
+}
+
+function mfvExportarPedidos(){
+  const P=_mfvPed;
+  if(!P || !P.comLead.length){ showToast('Nada para exportar','warning'); return; }
+  // sem cliente e sem vendedor: o dado é da empresa e o uso é acadêmico
+  const cab=['pedido','rota','data_pedido','espera_conferencia_h','conferencia_carregamento_h','carregamento_saida_h','transito_h','lead_total_h','etapas_medidas'];
+  const linhas=P.comLead.map(l=>[l.pedido,l.rota,l.dp?l.dp.toISOString().slice(0,10):''].concat(
+    MFV_PED_ETAPAS.map(e=>l.et[e.k]===null?'':l.et[e.k].toFixed(2)),
+    [l.lead.toFixed(2), l.cobertura]).join(';'));
+  const csv='﻿'+[cab.join(';')].concat(linhas).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='mfv_pedidos_'+P.rire+'_'+P.mes+'.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  showToast(P.comLead.length+' pedidos exportados','success');
 }
 
 async function _mfvCarregarCampos(){
