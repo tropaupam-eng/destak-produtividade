@@ -8404,7 +8404,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.25.0';
+const APP_VERSION = '4.26.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -28869,9 +28869,33 @@ async function carregarPainelDisponibilidade(){
     // Buscar dados de veículos — veículo compartilhado aparece em qualquer
     // unidade filtrada, não só a cadastrada em veiculos.unidade.
     const undSel = window._painelIndUndSel || '';
-    const veiculos = await supaFetch(
+    const veiculosCadastro = await supaFetch(
       `veiculos?select=*&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
     ) || [];
+
+    // Lançamentos do mês, filtrados pela unidade (lancamentos.und) — buscado
+    // cedo pra poder completar a lista de veículos abaixo antes de qualquer
+    // conta usar "veiculos".
+    const lancamentosDispRef = await supaFetch(
+      `lancamentos?select=veiculo,carga,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
+    ).catch(()=>[]) || [];
+
+    // Veículo que lançou carga de VERDADE nessa unidade (lancamentos.und) mas
+    // cujo cadastro (veiculos.unidade) aponta pra outra unidade e não está
+    // marcado "compartilhado" simplesmente sumia da tela, mesmo tendo rodado
+    // o mês inteiro. Pedido do usuário, 2026-08-31: "tem que fazer essa
+    // pesquisa no lançamento da unidade, não por onde o veículo é" — a fonte
+    // de quem pertence à unidade é o lançamento, não o cadastro do veículo.
+    // "FRETE" fica de fora de propósito (não é veículo próprio, é frete
+    // terceirizado sem unidade fixa).
+    const placasCadastroSet = new Set(veiculosCadastro.map(v=>(v.placa||'').trim().toUpperCase()));
+    const placasFaltantes = [...new Set(lancamentosDispRef.map(l=>(l.veiculo||'').trim().toUpperCase()))]
+      .filter(p=>p && !p.includes('FRETE') && !placasCadastroSet.has(p));
+    let veiculosExtra = [];
+    if(placasFaltantes.length){
+      veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=*`).catch(()=>[]) || [];
+    }
+    const veiculos = [...veiculosCadastro, ...veiculosExtra];
 
     // Buscar demandas em rota (snapshot ao vivo, pra "Disponível agora" / "Em uso agora")
     const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
@@ -28920,9 +28944,6 @@ async function carregarPainelDisponibilidade(){
     // derrubando a % pra quase zero mesmo com o veículo rodando o mês inteiro.
     const viagensMes = await supaFetch(
       `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
-    ).catch(()=>[]) || [];
-    const lancamentosDispRef = await supaFetch(
-      `lancamentos?select=veiculo,carga,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}`
     ).catch(()=>[]) || [];
     const abastecimentosRef = await supaFetch(
       `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,data_saida`
@@ -29149,8 +29170,11 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
   const viagensMes = await supaFetch(
     `demandas_rota?select=veiculo,carga,data_saida&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
   ).catch(()=>[]) || [];
+  // Filtrado por lancamentos.und (a unidade de verdade de quem lançou),
+  // não pelo cadastro do veículo — mesmo motivo do fix em
+  // carregarPainelDisponibilidade().
   const lancamentosDispRef = await supaFetch(
-    `lancamentos?select=veiculo,carga&veiculo=not.is.null&mes_ano=eq.${mesRef}`
+    `lancamentos?select=veiculo,carga&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
   ).catch(()=>[]) || [];
 
   const cargasPorVeic = {}; // placa -> Set de cargas distintas no mês
@@ -29165,7 +29189,11 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
   viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
   lancamentosDispRef.forEach(l=>_addCarga(l.veiculo, l.carga));
 
-  return { diasUteisMes, cargasPorVeic };
+  // Placas que lançaram carga de verdade nessa unidade neste mês — usado
+  // pelo caller pra completar a lista de veículos além do cadastro.
+  const placasLancNaUnidade = new Set(lancamentosDispRef.map(l=>(l.veiculo||'').trim().toUpperCase()).filter(Boolean));
+
+  return { diasUteisMes, cargasPorVeic, placasLancNaUnidade };
 }
 
 async function carregarPainelDisponibilidadeAno(){
@@ -29177,13 +29205,13 @@ async function carregarPainelDisponibilidadeAno(){
     const undSel = window._painelIndUndSel || '';
     const mesAtualStr = new Date().toISOString().slice(0,7);
 
-    const veiculos = await supaFetch(
+    const veiculosCadastro = await supaFetch(
       `veiculos?select=placa,uso&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
     ) || [];
-    const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
 
     const bMes = Array(12).fill(null);
     const cargasAnoPorVeic = {}; // placa -> total de cargas distintas no ano
+    const placasLancNaUnidadeAno = new Set();
     let diasUteisAno = 0;
     for(let m=1;m<=12;m++){
       const mesStr = anoSel+'-'+String(m).padStart(2,'0');
@@ -29196,8 +29224,22 @@ async function carregarPainelDisponibilidadeAno(){
         cargasAnoPorVeic[placa] = (cargasAnoPorVeic[placa]||0) + set.size;
         cargasMesFrota += set.size;
       });
+      r.placasLancNaUnidade.forEach(p=>placasLancNaUnidadeAno.add(p));
       if(r.diasUteisMes>0) bMes[m-1] = Math.min(cargasMesFrota/r.diasUteisMes*100, 999);
     }
+
+    // Mesmo fix de carregarPainelDisponibilidade(): veículo que lançou carga
+    // de verdade nessa unidade mas cujo cadastro aponta pra outra e não está
+    // "compartilhado" entra na lista mesmo assim — a fonte de unidade é o
+    // lançamento, não o cadastro do veículo.
+    const placasCadastroSet = new Set(veiculosCadastro.map(v=>(v.placa||'').trim().toUpperCase()));
+    const placasFaltantes = [...placasLancNaUnidadeAno].filter(p=>p && !p.includes('FRETE') && !placasCadastroSet.has(p));
+    let veiculosExtra = [];
+    if(placasFaltantes.length){
+      veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=placa,uso`).catch(()=>[]) || [];
+    }
+    const veiculos = [...veiculosCadastro, ...veiculosExtra];
+    const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
 
     const pctPorVeiculo = frotaFixa.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
