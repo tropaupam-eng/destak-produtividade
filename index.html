@@ -8376,7 +8376,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.24.0';
+const APP_VERSION = '4.25.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -28147,7 +28147,7 @@ function _renderBarrasMensaisAno(bMes, {refLine, anoSel, invertido}={}){
     const alturaBase = Math.max(alturaPct, v>0?1.5:0);
     return `
       <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;${futuro?'opacity:.4':''}">
-        <div style="font-size:.6rem;font-weight:700;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v.toFixed(0)}%</div>
+        <div style="font-size:.6rem;font-weight:700;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v.toFixed(1).replace('.',',')}%</div>
         <div style="position:relative;width:100%;max-width:32px;height:120px;display:flex;align-items:flex-end">
           <div style="width:100%;height:${alturaBase}%;background:${pior ? 'linear-gradient(180deg,#1a1a1a 0%,#1a1a1a '+(alturaRef/Math.max(alturaBase,.01)*100)+'%,#b8b8b8 '+(alturaRef/Math.max(alturaBase,.01)*100)+'%)' : '#b8b8b8'};border-radius:2px 2px 0 0"></div>
         </div>
@@ -28628,20 +28628,29 @@ async function carregarPainelDisponibilidade(){
       `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
     ).catch(()=>[]) || [];
     const lancamentosDispRef = await supaFetch(
-      `lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}`
+      `lancamentos?select=veiculo,carga,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}`
     ).catch(()=>[]) || [];
     const abastecimentosRef = await supaFetch(
       `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,data_saida`
     ).catch(()=>[]) || [];
     const primeiraViagemMapRef = await _buscarPrimeiraViagemPorVeiculo();
 
-    const cargasPorVeic = {};   // placa -> Set de cargas distintas
-    viagensMes.forEach(v=>{
-      const placa = (v.veiculo||'').trim().toUpperCase();
-      if(!placa) return;
+    // placa -> Set de cargas distintas — mesclando demandas_rota (Expedição)
+    // com lancamentos (aba Lançamento), igual já é feito pra "dias ativos"
+    // logo abaixo. Antes só lia demandas_rota, então carga lançada direto
+    // pela aba Lançamento (sem passar pela Expedição) nunca contava aqui —
+    // veículo aparecia com "0 cargas" mesmo tendo rodado o mês inteiro.
+    const cargasPorVeic = {};
+    const _addCarga = (placaRaw, cargaRaw) => {
+      const placa = (placaRaw||'').trim().toUpperCase();
+      if(!placa || cargaRaw==null || cargaRaw==='') return;
+      const carga = Math.round(Number(cargaRaw));
+      if(!carga) return;
       if(!cargasPorVeic[placa]) cargasPorVeic[placa] = new Set();
-      if(v.carga) cargasPorVeic[placa].add(v.carga);
-    });
+      cargasPorVeic[placa].add(carga);
+    };
+    viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
+    lancamentosDispRef.forEach(l=>_addCarga(l.veiculo, l.carga));
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
 
     const dispMapRef = _calcDispMapFrota({
@@ -28815,115 +28824,144 @@ async function carregarPainelDisponibilidade(){
   }
 }
 
-// Núcleo de cálculo de carregarPainelDisponibilidade (só a "Utilização no
-// Mês" headline, sem a tabela de Frotas Ativas) — extraído pra poder rodar
-// em loop pelos 12 meses do ano na visão anual.
-async function _calcUtilizacaoFrotaMes(mesRef, undSel){
+// Conta dias úteis (Seg-Sex) entre o dia 1 e diaFim (inclusive) de um mês —
+// mesmo critério de _diasUteisAte, generalizado pra qualquer mês/ano (não só
+// o mês corrente).
+function _contarDiasUteisMes(ano, mesIdx0, diaFim){
+  let count = 0;
+  for(let d=1; d<=diaFim; d++){
+    const dow = new Date(ano, mesIdx0, d).getDay();
+    if(dow>=1 && dow<=5) count++;
+  }
+  return count;
+}
+
+// Cargas por veículo (demandas_rota + lancamentos mesclados, igual ao fix de
+// carregarPainelDisponibilidade) e dias úteis do mês — núcleo de cálculo da
+// visão anual de Utilização de Frotas, que mede utilização por CARGAS ÷ DIAS
+// ÚTEIS em vez do critério de "dias com rota" usado no card mensal. Pedido
+// do usuário, 2026-08-31: "quero que mostre a utilização pela quantidade de
+// cargas e dias úteis e quero a %".
+async function _calcCargasEDiasUteisMes(mesRef, undSel){
   const hoje = hojeDataBRT();
   const [anoRef, numMesRef] = mesRef.split('-').map(Number);
   const proxMesRef = numMesRef===12 ? (anoRef+1)+'-01' : anoRef+'-'+String(numMesRef+1).padStart(2,'0');
   const prevMesRef = numMesRef===1 ? (anoRef-1)+'-12' : anoRef+'-'+String(numMesRef-1).padStart(2,'0');
   const diasNoMesRef = new Date(anoRef, numMesRef, 0).getDate();
   const ehMesAtualRef = mesRef === hoje.slice(0,7);
-  const diasDecorridosRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
-
-  const veiculos = await supaFetch(
-    `veiculos?select=*&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
-  ) || [];
-
-  const fimEfetivoRef = ehMesAtualRef ? hoje : `${mesRef}-${String(diasNoMesRef).padStart(2,'0')}`;
-  const manutencoes = await supaFetch(
-    `manutencoes_frota?status=in.(em_andamento,concluida)&data_inicio=lte.${fimEfetivoRef}&or=(data_fim.is.null,data_fim.gte.${mesRef}-01)&select=veiculo,data_inicio,data_fim,status`
-  ).catch(()=>[]) || [];
-  const diasManutPorVeic = {};
-  const inicioRefObj = new Date(mesRef+'-01T00:00:00');
-  const fimEfetivoObj = new Date(fimEfetivoRef+'T00:00:00');
-  manutencoes.forEach(m=>{
-    const placa = (m.veiculo||'').trim().toUpperCase();
-    if(!placa) return;
-    let ini = new Date(m.data_inicio+'T00:00:00');
-    let fim = m.data_fim ? new Date(m.data_fim+'T00:00:00') : fimEfetivoObj;
-    if(ini < inicioRefObj) ini = inicioRefObj;
-    if(fim > fimEfetivoObj) fim = fimEfetivoObj;
-    if(ini > fim) return;
-    if(!diasManutPorVeic[placa]) diasManutPorVeic[placa] = new Set();
-    const cur = new Date(ini);
-    while(cur <= fim){
-      diasManutPorVeic[placa].add(cur.toISOString().slice(0,10));
-      cur.setDate(cur.getDate()+1);
-    }
-  });
+  const diaFimRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
+  const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diaFimRef);
 
   const viagensMes = await supaFetch(
-    `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
+    `demandas_rota?select=veiculo,carga,data_saida&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
   ).catch(()=>[]) || [];
   const lancamentosDispRef = await supaFetch(
-    `lancamentos?select=veiculo,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}`
+    `lancamentos?select=veiculo,carga&veiculo=not.is.null&mes_ano=eq.${mesRef}`
   ).catch(()=>[]) || [];
-  const abastecimentosRef = await supaFetch(
-    `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,data_saida`
-  ).catch(()=>[]) || [];
-  const primeiraViagemMapRef = await _buscarPrimeiraViagemPorVeiculo();
 
-  const dispMapRef = _calcDispMapFrota({
-    placas: veiculos.map(v=>v.placa),
-    demandas: viagensMes, lancamentosDisp: lancamentosDispRef, demandasC: null, abastecimentos: abastecimentosRef,
-    primeiraViagemMap: primeiraViagemMapRef,
-    mesInicio: new Date(anoRef, numMesRef-1, 1), mesFim: new Date(anoRef, numMesRef-1, diasNoMesRef),
-    ehMesAtual: ehMesAtualRef, hojeObj: new Date(), hojeD: hoje.slice(8,10)
-  });
-  const diasSPorVeic = {};
-  Object.keys(dispMapRef).forEach(placa=>{
-    diasSPorVeic[placa] = Object.entries(dispMapRef[placa]).filter(([dia,st])=>st==='S' && Number(dia)<=diasDecorridosRef).length;
-  });
-
-  const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
-  const pctDiasPorVeiculo = frotaFixa.map(v=>{
-    const placa = (v.placa||'').trim().toUpperCase();
-    const nDias = diasSPorVeic[placa] || 0;
-    const diasManut = diasManutPorVeic[placa]?.size || 0;
-    const diasDisponiveis = Math.max(diasDecorridosRef - diasManut, 0);
-    return diasDisponiveis>0 ? (nDias/diasDisponiveis*100) : null;
-  }).filter(p=>p!==null);
-  const utilizacaoMedia = pctDiasPorVeiculo.length ? pctDiasPorVeiculo.reduce((a,b)=>a+b,0)/pctDiasPorVeiculo.length : null;
-
-  return {
-    utilizacaoMedia,
-    altaUtil:  pctDiasPorVeiculo.filter(p=>p>=70).length,
-    mediaUtil: pctDiasPorVeiculo.filter(p=>p>=40&&p<70).length,
-    baixaUtil: pctDiasPorVeiculo.filter(p=>p<40).length,
+  const cargasPorVeic = {}; // placa -> Set de cargas distintas no mês
+  const _addCarga = (placaRaw, cargaRaw) => {
+    const placa = (placaRaw||'').trim().toUpperCase();
+    if(!placa || cargaRaw==null || cargaRaw==='') return;
+    const carga = Math.round(Number(cargaRaw));
+    if(!carga) return;
+    if(!cargasPorVeic[placa]) cargasPorVeic[placa] = new Set();
+    cargasPorVeic[placa].add(carga);
   };
+  viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
+  lancamentosDispRef.forEach(l=>_addCarga(l.veiculo, l.carga));
+
+  return { diasUteisMes, cargasPorVeic };
 }
 
 async function carregarPainelDisponibilidadeAno(){
   const container = document.getElementById('painel-ind-disponibilidade-container-ano');
   if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
   try {
     const anoSel = _anoSelPainelIndicadores();
     const undSel = window._painelIndUndSel || '';
-    const bMes = Array(12).fill(null);
-    let altaTotal=0, mediaTotal=0, baixaTotal=0;
     const mesAtualStr = new Date().toISOString().slice(0,7);
+
+    const veiculos = await supaFetch(
+      `veiculos?select=placa,uso&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
+    ) || [];
+    const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
+
+    const bMes = Array(12).fill(null);
+    const cargasAnoPorVeic = {}; // placa -> total de cargas distintas no ano
+    let diasUteisAno = 0;
     for(let m=1;m<=12;m++){
       const mesStr = anoSel+'-'+String(m).padStart(2,'0');
       if(mesStr > mesAtualStr) break;
-      const r = await _calcUtilizacaoFrotaMes(mesStr, undSel).catch(()=>null);
-      if(!r || r.utilizacaoMedia==null) continue;
-      bMes[m-1] = r.utilizacaoMedia;
-      altaTotal += r.altaUtil; mediaTotal += r.mediaUtil; baixaTotal += r.baixaUtil;
+      const r = await _calcCargasEDiasUteisMes(mesStr, undSel).catch(()=>null);
+      if(!r) continue;
+      diasUteisAno += r.diasUteisMes;
+      let cargasMesFrota = 0;
+      Object.entries(r.cargasPorVeic).forEach(([placa,set])=>{
+        cargasAnoPorVeic[placa] = (cargasAnoPorVeic[placa]||0) + set.size;
+        cargasMesFrota += set.size;
+      });
+      if(r.diasUteisMes>0) bMes[m-1] = Math.min(cargasMesFrota/r.diasUteisMes*100, 999);
     }
-    const valores = bMes.filter(v=>v!=null);
-    const pctAnual = valores.length ? valores.reduce((a,b)=>a+b,0)/valores.length : 0;
+
+    const pctPorVeiculo = frotaFixa.map(v=>{
+      const placa = (v.placa||'').trim().toUpperCase();
+      const cargas = cargasAnoPorVeic[placa] || 0;
+      return diasUteisAno>0 ? (cargas/diasUteisAno*100) : 0;
+    });
+    const pctAnual = pctPorVeiculo.length ? pctPorVeiculo.reduce((a,b)=>a+b,0)/pctPorVeiculo.length : 0;
+    const totalCargasAno = Object.values(cargasAnoPorVeic).reduce((a,b)=>a+b,0);
+
+    const linhasTabela = frotaFixa.map(v=>{
+      const placa = (v.placa||'').trim().toUpperCase();
+      const cargas = cargasAnoPorVeic[placa] || 0;
+      const pct = diasUteisAno>0 ? (cargas/diasUteisAno*100) : 0;
+      return { placa: v.placa||'—', tipo: v.uso, cargas, pct };
+    }).sort((a,b)=>b.cargas-a.cargas);
+
+    const tabelaHtml = `
+      <div style="background:var(--bg-card);border-radius:12px;padding:20px;overflow-x:auto;margin-top:20px">
+        <h4 style="font-size:.95rem;font-weight:700;color:var(--text-primary);margin-bottom:4px">Frotas Ativas — Visão Anual</h4>
+        <p style="font-size:.74rem;color:var(--text-muted);margin-bottom:12px">Utilização de ${anoSel} por veículo: cargas no ano ÷ dias úteis no ano (${diasUteisAno} dias úteis, Seg-Sex, ${anoSel===mesAtualStr.slice(0,4)?'até hoje':'ano completo'})</p>
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border)">
+              <th style="padding:8px;text-align:left;color:var(--text-muted);font-weight:600">Placa</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Tipo</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Cargas no Ano</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Dias Úteis no Ano</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">% Utilização</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${linhasTabela.map(r=>{
+              const tipoLabel = r.tipo==='interno' ? 'Interna' : r.tipo==='externo' ? 'Externa' : '—';
+              const tipoBg = r.tipo==='interno' ? '#dbeafe' : r.tipo==='externo' ? '#fef3c7' : 'transparent';
+              const tipoCor = r.tipo==='interno' ? '#1d4ed8' : r.tipo==='externo' ? '#92400e' : 'var(--text-muted)';
+              const cor = r.pct>=70 ? '#059669' : r.pct>=40 ? '#d97706' : '#dc2626';
+              return `<tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:8px;font-weight:600">${r.placa}</td>
+                <td style="padding:8px;text-align:center"><span style="background:${tipoBg};color:${tipoCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${tipoLabel}</span></td>
+                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${r.cargas}</td>
+                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${diasUteisAno}</td>
+                <td style="padding:8px;text-align:center;font-weight:700;color:${cor}">${r.pct.toFixed(1)}%</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
     container.innerHTML = _renderCardVisaoAnualPercentual({
       indicador: 'INDICADOR 02 · FROTAS FIXAS', titulo: 'Utilização de Frotas Fixas', area: 'OPERAÇÕES / FROTA',
-      anoSel, pctAnual, metaNum: 80, invertido: true, bMes,
+      anoSel, pctAnual, metaNum: null, invertido: true, bMes,
       composicaoItems: [
-        {label:'ALTA', valor: altaTotal, desc:'Veículo-mês com ≥ 70% dos dias com rota.'},
-        {label:'MÉDIA', valor: mediaTotal, desc:'Veículo-mês com 40% a 69% dos dias com rota.'},
-        {label:'BAIXA', valor: baixaTotal, desc:'Veículo-mês com < 40% dos dias com rota.'},
+        {label:'ALTA', valor: pctPorVeiculo.filter(p=>p>=70).length, desc:'Veículos com ≥ 70% de cargas por dia útil no ano.'},
+        {label:'MÉDIA', valor: pctPorVeiculo.filter(p=>p>=40&&p<70).length, desc:'Veículos com 40% a 69% de cargas por dia útil no ano.'},
+        {label:'BAIXA', valor: pctPorVeiculo.filter(p=>p<40).length, desc:'Veículos com < 40% de cargas por dia útil no ano.'},
       ],
-      baseTxt: `${valores.length} meses com dado · frota fixa`
-    });
+      baseTxt: `${totalCargasAno} cargas · ${diasUteisAno} dias úteis · frota fixa`
+    }) + tabelaHtml;
   } catch(e){
     console.error('Erro ao carregar disponibilidade (ano):', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
