@@ -27742,14 +27742,22 @@ let _mfvFila = null;           // estoque entre etapas (retrato do agora)
 async function _mfvCarregarFila(rire){
   const hoje = (typeof hojeDataBRT==='function' ? hojeDataBRT() : new Date().toISOString().slice(0,10));
   const dAtras = n => { const d = new Date(hoje+'T12:00:00'); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); };
+  // Demanda diária divide por DIAS DE OPERAÇÃO (dias distintos com movimento no
+  // período), nunca por 30 corridos. A operação é seg-sáb: dividir por dia de
+  // calendário subestima o ritmo real e torce toda a conversão de fila em dias.
+  const porDiaOperacao = (linhas, campoData) => {
+    const dias = new Set((linhas||[]).map(r => String(r[campoData]||'').slice(0,10)).filter(Boolean));
+    return dias.size ? (linhas.length/dias.size) : 0;
+  };
   if(rire === 'RE'){
     const stats = MFV_ETAPAS_RE.map(e=>`"${e.key}"`).join(',');
     const [wip, saidas] = await Promise.all([
       supaFetch(`demandas_rota?status=in.(${stats})&carga=not.is.null&select=status`).catch(()=>[]),
-      supaFetch(`demandas_rota?ts_saiu=gte.${dAtras(30)}T00:00:00-03:00&select=carga`).catch(()=>[])
+      supaFetch(`demandas_rota?data_saida=gte.${dAtras(30)}&select=carga,data_saida`).catch(()=>[])
     ]);
     const por = {}; (wip||[]).forEach(r=>{ por[r.status] = (por[r.status]||0)+1; });
-    return { porEtapa: por, total: (wip||[]).length, demandaDia: (saidas||[]).length/30 };
+    return { porEtapa: por, total: (wip||[]).length,
+             demandaDia: porDiaOperacao(saidas,'data_saida'), diasOper: new Set((saidas||[]).map(r=>String(r.data_saida||'').slice(0,10)).filter(Boolean)).size };
   }
   // Interna: sem status por etapa (não instrumentada) → a fila é UMA, ponta a ponta.
   // Contar "pedido sem entrega" ao vivo NÃO funciona: o registro de entrega chega por
@@ -27757,8 +27765,9 @@ async function _mfvCarregarFila(rire){
   // registrada fica dias atrás do calendário), então o "sem entrega" mediria o atraso
   // da importação, não a fila. A estimativa honesta é a Lei de Little sobre o que é
   // medido: fila média = demanda diária × lead médio.
-  const bd = await supaFetch(`base_data?rota=in.(${MFV_ROTAS_RI.join(',')})&data_pedido=gte.${dAtras(30)}&select=pedido&limit=20000`).catch(()=>[]);
-  return { little: true, demandaDia: (bd||[]).length/30 };
+  const bd = await supaFetch(`base_data?rota=in.(${MFV_ROTAS_RI.join(',')})&data_pedido=gte.${dAtras(30)}&select=pedido,data_pedido&limit=20000`).catch(()=>[]);
+  return { little: true, demandaDia: porDiaOperacao(bd,'data_pedido'),
+           diasOper: new Set((bd||[]).map(r=>String(r.data_pedido||'').slice(0,10)).filter(Boolean)).size };
 }
 
 function _mfvHoras(ms){ return ms/3600000; }
@@ -28037,7 +28046,7 @@ function renderMFV(){
            <p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">
              A rota interna não tem status por etapa, então a fila é uma só, ponta a ponta — mais um
              efeito da falta de instrumentação. Estimada pela <b>Lei de Little</b>
-             (fila = demanda × lead): ${F.demandaDia.toFixed(1)} pedidos/dia (últimos 30 dias) ×
+             (fila = demanda × lead): ${F.demandaDia.toFixed(1)} pedidos por dia de operação (${F.diasOper} dias com movimento no período) ×
              lead médio de ${_mfvFmtH(D.leadMedianaH)}. Não dá pra contar ao vivo porque o registro
              de entrega chega por importação, com atraso.</p>`;
       } else {
@@ -28045,7 +28054,7 @@ function renderMFV(){
           `<div style="display:flex;gap:5px;min-width:${D.etapas.length*113}px">${
             D.etapas.map(e=>tri(F.porEtapa[e.key]||0, e.label)).join('')}</div>
            <p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">
-             ${F.total} carga(s) em fluxo agora · demanda: ${F.demandaDia.toFixed(1)} cargas/dia (saídas dos últimos 30 dias).</p>`;
+             ${F.total} carga(s) em fluxo agora · demanda: ${F.demandaDia.toFixed(1)} cargas por dia de operação (${F.diasOper} dias com saída no período).</p>`;
       }
     }
   }
