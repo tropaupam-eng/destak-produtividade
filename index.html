@@ -2754,6 +2754,14 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
+    <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">Estoque entre etapas (▲ fila agora)</h3>
+    <p style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">
+      Retrato do momento: quanto está parado em cada etapa, convertido em <b>dias de demanda</b> (fila ÷ demanda diária dos últimos 30 dias) — o triângulo do MFV clássico. Independe do mês selecionado acima.
+    </p>
+    <div id="mfv-fila" style="overflow-x:auto"></div>
+  </div>
+
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
     <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">Linha do tempo</h3>
     <p style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Degrau de cima = espera (não agrega valor). Degrau de baixo = processamento.</p>
     <div id="mfv-timeline" style="overflow-x:auto"></div>
@@ -27726,6 +27734,32 @@ const MFV_CAMPOS = [
 ];
 let _mfvDados = null;          // resultado medido
 let _mfvCampos = {};           // {etapa: {tc, setup, op, disp, erro, meta}}
+let _mfvFila = null;           // estoque entre etapas (retrato do agora)
+
+// ── Estoque entre etapas: o triângulo (▲) do MFV clássico — fila ÷ demanda diária = dias.
+// É retrato do AGORA, de propósito: fila muda a cada hora, o seletor de mês é história.
+// Demanda diária vem das saídas dos últimos 30 dias.
+async function _mfvCarregarFila(rire){
+  const hoje = (typeof hojeDataBRT==='function' ? hojeDataBRT() : new Date().toISOString().slice(0,10));
+  const dAtras = n => { const d = new Date(hoje+'T12:00:00'); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); };
+  if(rire === 'RE'){
+    const stats = MFV_ETAPAS_RE.map(e=>`"${e.key}"`).join(',');
+    const [wip, saidas] = await Promise.all([
+      supaFetch(`demandas_rota?status=in.(${stats})&carga=not.is.null&select=status`).catch(()=>[]),
+      supaFetch(`demandas_rota?ts_saiu=gte.${dAtras(30)}T00:00:00-03:00&select=carga`).catch(()=>[])
+    ]);
+    const por = {}; (wip||[]).forEach(r=>{ por[r.status] = (por[r.status]||0)+1; });
+    return { porEtapa: por, total: (wip||[]).length, demandaDia: (saidas||[]).length/30 };
+  }
+  // Interna: sem status por etapa (não instrumentada) → a fila é UMA, ponta a ponta.
+  // Contar "pedido sem entrega" ao vivo NÃO funciona: o registro de entrega chega por
+  // importação em lote com ~2 semanas de atraso (verificado: última data_entrega
+  // registrada fica dias atrás do calendário), então o "sem entrega" mediria o atraso
+  // da importação, não a fila. A estimativa honesta é a Lei de Little sobre o que é
+  // medido: fila média = demanda diária × lead médio.
+  const bd = await supaFetch(`base_data?rota=in.(${MFV_ROTAS_RI.join(',')})&data_pedido=gte.${dAtras(30)}&select=pedido&limit=20000`).catch(()=>[]);
+  return { little: true, demandaDia: (bd||[]).length/30 };
+}
 
 function _mfvHoras(ms){ return ms/3600000; }
 
@@ -27837,7 +27871,10 @@ async function carregarMFV(){
       const rows = await supaFetch(url) || [];
       _mfvDados = _mfvCalcular(rows);
     }
-    await _mfvCarregarCampos();
+    [_mfvFila] = await Promise.all([
+      _mfvCarregarFila(rire).catch(()=>null),
+      _mfvCarregarCampos()
+    ]);
     renderMFV();
   }catch(e){
     if(box) box.innerHTML = `<p style="color:var(--orange);font-size:.8rem">Erro ao carregar: ${escapeHtml(e.message)}</p>`;
@@ -27976,6 +28013,42 @@ function renderMFV(){
         ${inputs}
       </div>`;
   }).join('');
+
+  // ── Estoque entre etapas (▲) ──
+  const F = _mfvFila;
+  const filaEl = document.getElementById('mfv-fila');
+  if(filaEl){
+    if(!F){
+      filaEl.innerHTML = '<p style="font-size:.75rem;color:var(--text-muted)">Não consegui medir a fila agora.</p>';
+    } else {
+      const emDias = n => F.demandaDia > 0 ? (n/F.demandaDia).toFixed(1)+' d' : '—';
+      const tri = (n, rot) => `
+        <div style="width:108px;flex:0 0 108px;text-align:center">
+          <div style="font-size:1.1rem;line-height:1;color:${n>0?'var(--orange)':'var(--text-muted)'}">▲</div>
+          <div style="font-size:.95rem;font-weight:800;color:var(--text-primary)">${n}</div>
+          <div title="fila ÷ demanda diária" style="font-size:.66rem;color:var(--text-secondary);font-weight:700">${emDias(n)}</div>
+          <div style="font-size:.6rem;color:var(--text-muted);min-height:24px">${rot}</div>
+        </div>`;
+      if(D.interna){
+        // Lei de Little: fila média = demanda diária × lead médio (ambos medidos)
+        const filaMedia = Math.round(F.demandaDia * (D.leadMedianaH/24));
+        filaEl.innerHTML =
+          `<div style="display:flex;gap:5px">${tri(filaMedia, 'pedidos em processo, em média (ponta a ponta)')}</div>
+           <p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">
+             A rota interna não tem status por etapa, então a fila é uma só, ponta a ponta — mais um
+             efeito da falta de instrumentação. Estimada pela <b>Lei de Little</b>
+             (fila = demanda × lead): ${F.demandaDia.toFixed(1)} pedidos/dia (últimos 30 dias) ×
+             lead médio de ${_mfvFmtH(D.leadMedianaH)}. Não dá pra contar ao vivo porque o registro
+             de entrega chega por importação, com atraso.</p>`;
+      } else {
+        filaEl.innerHTML =
+          `<div style="display:flex;gap:5px;min-width:${D.etapas.length*113}px">${
+            D.etapas.map(e=>tri(F.porEtapa[e.key]||0, e.label)).join('')}</div>
+           <p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">
+             ${F.total} carga(s) em fluxo agora · demanda: ${F.demandaDia.toFixed(1)} cargas/dia (saídas dos últimos 30 dias).</p>`;
+      }
+    }
+  }
 
   // ── Linha do tempo dupla ──
   const etapas = _mfvDados.etapas;
