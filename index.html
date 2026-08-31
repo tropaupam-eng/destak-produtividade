@@ -2714,8 +2714,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <span data-feather="calendar" style="width:15px;height:15px;color:var(--text-muted)"></span>
       <select id="mfv-mes" onchange="carregarMFV()" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer"></select>
       <span data-feather="repeat" style="width:15px;height:15px;color:var(--text-muted)"></span>
-      <select id="mfv-rire" onchange="carregarMFV()" title="A interna (Petrolina/Juazeiro/CEASA) tem promessa de 24h. A externa fecha por rota." style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
-        <option value="RI">R.I. — Interna (24h)</option>
+      <select id="mfv-rire" onchange="carregarMFV()" title="A interna (Petrolina/Juazeiro/CEASA) tem promessa de 48h. A externa fecha por rota." style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
+        <option value="RI">R.I. — Interna (48h)</option>
         <option value="RE">R.E. — Externa (fecha rota)</option>
       </select>
       <select id="mfv-estado" onchange="renderMFV()" title="Estado atual = medido. Estado futuro = com as metas que você definir nas caixas." style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
@@ -27861,9 +27861,9 @@ async function _mfvCarregarInterna(mes){
   const etapas = MFV_ETAPAS_RI.map(e=>({ ...e, esperaH:0, amostras:0, semMedicao:true }));
   return {
     etapas, leadMedianaH: media*24, cargas: cargas.size, totalTransicoes: n,
-    interna: true, prazoH: 24,
+    interna: true, prazoH: 48,
     pedidosComEntrega: n, pedidosSemEntrega: semData,
-    pctNoPrazo: pct(d=>d<=1), pctMesmoDia: pct(d=>d===0), pctAtrasado: pct(d=>d>1)
+    pctNoPrazo: pct(d=>d<=2), pctMesmoDia: pct(d=>d===0), pctAtrasado: pct(d=>d>2)
   };
 }
 
@@ -28027,11 +28027,15 @@ function renderMFVPedidos(){
     kpi('Amostra medida', P.comLead.length+' de '+P.totalPedidos, cob<25?'var(--orange)':'var(--green)',
         cob.toFixed(1)+'% do período · amostra, não censo');
 
-  const leadMed=_mfvMediana(leads)||1;
+  // O % do lead é a MEDIANA DA RAZÃO pedido a pedido, nunca a mediana da etapa
+  // dividida pela mediana do lead: são séries diferentes, com n diferente, e a
+  // mediana da soma não é a soma das medianas. O jeito errado dava 99%.
   const linhasEt = MFV_PED_ETAPAS.map(e=>{
     const v=P.comLead.map(l=>l.et[e.k]).filter(x=>x!==null);
+    const raz=P.comLead.filter(l=>l.et[e.k]!==null && l.lead>0).map(l=>l.et[e.k]/l.lead);
     return { k:e.k, label:e.label, va:e.va, n:v.length, med:_mfvMediana(v),
-             avg:v.length? v.reduce((a,b)=>a+b,0)/v.length : null, p90:_mfvQuantil(v,.9) };
+             avg:v.length? v.reduce((a,b)=>a+b,0)/v.length : null, p90:_mfvQuantil(v,.9),
+             pct: raz.length? _mfvMediana(raz)*100 : null, nRaz: raz.length };
   });
   const maxMed=Math.max.apply(null,linhasEt.map(e=>e.med||0).concat([1]));
   const th=(h,al)=>'<th style="text-align:'+al+';padding:6px 8px;font-size:.63rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700">'+h+'</th>';
@@ -28040,18 +28044,18 @@ function renderMFVPedidos(){
     '</tr></thead><tbody>'+ linhasEt.map(e=>{
       if(!e.n) return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:7px 8px;color:var(--text-muted)">'+e.label+
         '</td><td colspan="6" style="padding:7px 8px;color:var(--text-muted);font-style:italic">não instrumentado — medir em campo</td></tr>';
-      const pct=e.med/leadMed*100;
-      const cor = pct>=50 ? 'var(--red)' : (e.va?'var(--green)':'var(--orange)');
+      const pct=e.pct;
+      const cor = (pct!==null&&pct>=50) ? 'var(--red)' : (e.va?'var(--green)':'var(--orange)');
       return '<tr style="border-bottom:1px solid var(--border)">'+
         '<td style="padding:7px 8px;font-weight:600;color:var(--text-primary)">'+e.label+'</td>'+
         '<td style="padding:7px 8px;width:110px"><div style="height:9px;background:var(--bg-card2);border-radius:2px"><div style="height:100%;width:'+Math.min(100,(e.med/maxMed)*100)+'%;background:'+cor+';border-radius:2px"></div></div></td>'+
         '<td style="padding:7px 8px;text-align:right;font-weight:700">'+fmt(e.med)+'</td>'+
         '<td style="padding:7px 8px;text-align:right;color:var(--text-secondary)">'+fmt(e.avg)+'</td>'+
         '<td style="padding:7px 8px;text-align:right;color:var(--text-secondary)">'+fmt(e.p90)+'</td>'+
-        '<td style="padding:7px 8px;text-align:right;font-weight:700;color:'+(pct>=50?'var(--red)':'var(--text-primary)')+'">'+pct.toFixed(0)+'%</td>'+
+        '<td style="padding:7px 8px;text-align:right;font-weight:700;color:'+((pct!==null&&pct>=50)?'var(--red)':'var(--text-primary)')+'">'+(pct===null?'\u2014':pct.toFixed(0)+'%')+'</td>'+
         '<td style="padding:7px 8px;text-align:right;color:var(--text-muted)">'+e.n+'</td></tr>';
     }).join('')+'</tbody></table>'+
-    '<p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">O <b>n</b> de cada etapa é diferente de propósito: nem todo pedido tem todos os carimbos. Etapa sem amostra aparece como não instrumentada, nunca como zero.</p>';
+    '<p style="font-size:.68rem;color:var(--text-muted);margin-top:8px">O <b>% do lead</b> é a mediana da razão pedido a pedido, não a mediana da etapa dividida pela mediana do lead — são séries diferentes. O <b>n</b> de cada etapa é diferente de propósito: nem todo pedido tem todos os carimbos. Etapa sem amostra aparece como não instrumentada, nunca como zero.</p>';
 
   // Só entra na vitrine quem tem etapa medida de verdade. Pedido com 0 ou 1 carimbo
   // pode ter lead 0 só porque data_pedido e data_entrega caem no mesmo dia — dado
@@ -28189,11 +28193,11 @@ function renderMFV(){
     ? `<span style="color:var(--green)">→ ${_mfvFmtH(futuro.lead)}</span>` : '';
   const D = _mfvDados;
   const kpiBase = D.interna
-    ? kpi('Dentro da promessa (24h)', D.pctNoPrazo.toFixed(1)+'%', D.pctNoPrazo>=90?'var(--green)':'var(--orange)',
+    ? kpi('Dentro da promessa (48h)', D.pctNoPrazo.toFixed(1)+'%', D.pctNoPrazo>=90?'var(--green)':'var(--orange)',
         `${D.pctMesmoDia.toFixed(0)}% no mesmo dia · ${D.pctAtrasado.toFixed(1)}% estoura`)
     : kpi('Base medida', D.cargas+' cargas', 'var(--purple)', D.totalTransicoes+' transições de status');
   document.getElementById('mfv-kpis').innerHTML =
-    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?`promessa: 24 h · mediana medida ${_mfvFmtH(D.leadMedianaH)}`:`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
+    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?`promessa: 48 h · mediana medida ${_mfvFmtH(D.leadMedianaH)}`:`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
     kpi('Tempo que agrega valor', _mfvFmtH(alvo.processo), 'var(--green)', modo==='comparar'?`atual ${_mfvFmtH(atual.processo)} → futuro ${_mfvFmtH(futuro.processo)}`:'soma dos tempos de ciclo (campo)') +
     kpi('Razão de valor', (alvo.razao*100).toFixed(2)+'%', 'var(--red)', modo==='comparar'?`de ${(atual.razao*100).toFixed(2)}% para ${(futuro.razao*100).toFixed(2)}%`:'quanto do lead time é trabalho') +
     kpiBase;
@@ -28302,7 +28306,8 @@ function renderMFV(){
     <b>${D.pedidosComEntrega}</b> pedidos com data de entrega registrada
     (${D.pedidosSemEntrega} sem registro, fora da conta).
     <b>Granularidade é o dia</b>, não a hora: <code>hora_pedido</code> está vazio em todos os
-    pedidos internos, então "dentro de 24h" é lido como entrega até D+1.
+    pedidos internos, então "dentro de 48h" é lido como entrega até D+2. A promessa é em HORAS e o
+    dado é em DIAS: não dá para separar um pedido de 26 h de um de 47 h.
     <b>As etapas do meio não são instrumentadas</b> — a rota interna não passa pela máquina de
     status da expedição nem pela conferência do armazém. Os tempos de ciclo vêm de cronometragem
     em campo, e essa lacuna é, por si só, um achado do mapa do estado atual.`
