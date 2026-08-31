@@ -8404,7 +8404,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.26.1';
+const APP_VERSION = '4.27.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -17978,6 +17978,19 @@ async function salvarEditarDemanda(){
   if(data) patch.data_saida = data;
   if(cargaVal !== '') patch.carga = cargaVal ? parseInt(cargaVal) : null;
   patch.ajudante = ajudVal || null;
+
+  // Carga já lançada (aba Lançamento) com outro veículo → avisa antes de
+  // sobrescrever. Pedido do usuário 2026-08-31, depois de achar carga com
+  // veículo diferente na Expedição e no Lançamento pra mesma carga.
+  const _cargaParaChecar = cargaVal ? parseInt(cargaVal) : (_demandasCache.find(x=>x.id===id)?.carga ?? null);
+  if(_cargaParaChecar && veic){
+    const _lancJaExiste = await supaFetch(`lancamentos?carga=eq.${_cargaParaChecar}&select=veiculo,motorista&limit=1`).catch(()=>[]);
+    const _lj = _lancJaExiste && _lancJaExiste[0];
+    if(_lj && _lj.veiculo && _lj.veiculo !== veic){
+      const ok = confirm(`⚠️ A carga ${_cargaParaChecar} já foi lançada na aba Lançamento com o veículo ${_lj.veiculo} (motorista: ${_lj.motorista||'—'}).\n\nVocê está salvando com o veículo ${veic}, diferente do lançamento.\n\nConfirma mesmo assim?`);
+      if(!ok) return;
+    }
+  }
 
   try{
     const d = _demandasCache.find(x=>x.id===id);
@@ -42168,9 +42181,32 @@ async function abastCargaChange(){
   hint.textContent='🔎 Buscando dados da carga na integração...';
   try{
     const rows = await supaFetch(`base_data?carga=eq.${carga}&select=pedido,valor,volume`) || [];
+
+    // Carga já lançada (aba Lançamento ou Expedição) → usa o motorista/veículo
+    // OFICIAIS de lá em vez de deixar a pessoa escolher outro na mão. Pedido do
+    // usuário 2026-08-31, depois de achar carga com veículo diferente no
+    // Lançamento e no Abastecimento de Loja pra mesma carga — a fonte de
+    // verdade do veículo/motorista de uma carga é o lançamento, então aqui só
+    // repete o que já foi lançado.
+    const lancRows = await supaFetch(`lancamentos?carga=eq.${carga}&select=motorista,veiculo&order=ts.desc&limit=1`).catch(()=>[]);
+    const jaLancada = lancRows && lancRows.length ? lancRows[0] : null;
+    let avisoLancamento = '';
+    if(jaLancada){
+      const veicEl = document.getElementById('abast-veiculo');
+      const motEl  = document.getElementById('abast-motorista');
+      if(jaLancada.veiculo && veicEl && [...veicEl.options].some(o=>o.value===jaLancada.veiculo)){
+        veicEl.value = jaLancada.veiculo;
+        if(typeof abastVeiculoChange==='function') abastVeiculoChange(veicEl);
+      }
+      if(jaLancada.motorista && motEl && [...motEl.options].some(o=>o.value===jaLancada.motorista)){
+        motEl.value = jaLancada.motorista;
+      }
+      avisoLancamento = `📋 Carga já lançada — Motorista: ${jaLancada.motorista||'—'} · Veículo: ${jaLancada.veiculo||'—'} (preenchido automaticamente). `;
+    }
+
     if(!rows.length){
-      hint.style.color='#d97706';
-      hint.textContent='⚠️ Carga não encontrada — preencha quantidade e valor manualmente.';
+      hint.style.color = jaLancada ? '#059669' : '#d97706';
+      hint.textContent = avisoLancamento || '⚠️ Carga não encontrada — preencha quantidade e valor manualmente.';
       return;
     }
     const qtdPedidos  = new Set(rows.map(r=>r.pedido)).size;
@@ -42183,7 +42219,7 @@ async function abastCargaChange(){
     if(vEl && !vEl.value) vEl.value = valorTotal.toFixed(2);
 
     hint.style.color='#059669';
-    hint.textContent = `✅ ${qtdPedidos} pedido(s)${volumeTotal>0?' — '+Math.round(volumeTotal)+' produto(s)':''} — ${valorTotal.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} (dados da integração — pode ajustar se precisar)`;
+    hint.textContent = `${avisoLancamento}✅ ${qtdPedidos} pedido(s)${volumeTotal>0?' — '+Math.round(volumeTotal)+' produto(s)':''} — ${valorTotal.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} (dados da integração — pode ajustar se precisar)`;
   }catch(e){
     hint.style.color='#ef4444';
     hint.textContent='Erro ao buscar dados da carga: '+e.message;
