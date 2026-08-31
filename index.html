@@ -4578,8 +4578,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Nº da Carga *</label>
-          <input type="number" id="abast-carga" min="1" placeholder="Ex: 13450"
+          <input type="number" id="abast-carga" min="1" placeholder="Ex: 13450" onchange="abastCargaChange()"
             style="width:100%;box-sizing:border-box;background:var(--bg-input);border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;color:var(--text-primary);outline:none"/>
+          <p id="abast-carga-hint" style="display:none;font-size:.72rem;margin-top:4px"></p>
         </div>
         <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Data de Saída *</label>
@@ -8403,7 +8404,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.18.0';
+const APP_VERSION = '4.19.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -41016,7 +41017,21 @@ async function _carregarListaAbastecimento(){
       lista.innerHTML='<div style="text-align:center;padding:48px;color:var(--text-muted)"><div style="font-size:2rem;margin-bottom:8px">🏪</div><p>Nenhum abastecimento registrado ainda.</p></div>';
       return;
     }
+
+    // Qtd. de pedidos por carga — vem de base_data (mesma fonte que a
+    // integração Cronos alimenta), não é um campo salvo em abastecimento_loja.
+    // Produtos/Valor (r.quantidade/r.valor) já são salvos na hora do registro.
+    const cargasUnicas = [...new Set(rows.map(r=>r.carga).filter(Boolean))];
+    const pedidosPorCarga = {};
+    if(cargasUnicas.length){
+      try{
+        const bd = await supaFetch(`base_data?carga=in.(${cargasUnicas.join(',')})&select=carga,pedido`) || [];
+        bd.forEach(r=>{ (pedidosPorCarga[r.carga] ||= new Set()).add(r.pedido); });
+      }catch(_){}
+    }
+
     const fmtDt = dt=>dt?new Date(dt).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+    const fmtVlr = v=>v!=null?Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}):'—';
     lista.innerHTML=`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem;background:var(--bg-card);border-radius:12px;overflow:hidden">
       <thead><tr style="background:var(--bg-card2)">
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Registro</th>
@@ -41027,6 +41042,9 @@ async function _carregarListaAbastecimento(){
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Conferente</th>
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Origem</th>
         <th style="padding:10px 14px;text-align:left;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Destino</th>
+        <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)" title="Vem de base_data — integração Cronos">Pedidos</th>
+        <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Produtos</th>
+        <th style="padding:10px 14px;text-align:right;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Valor</th>
         <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Confirmação</th>
         <th style="padding:10px 14px;text-align:center;font-size:.7rem;text-transform:uppercase;color:var(--text-muted)">Ação</th>
       </tr></thead>
@@ -41035,6 +41053,7 @@ async function _carregarListaAbastecimento(){
         const statusHtml = confirmado
           ? `<span style="background:rgba(5,150,105,.12);color:#059669;font-size:.73rem;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap">✅ ${fmtDt(r.confirmado_em)}</span>`
           : `<span style="background:rgba(245,158,11,.12);color:#d97706;font-size:.73rem;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap">⏳ Aguardando</span>`;
+        const qtdPedidos = pedidosPorCarga[r.carga] ? pedidosPorCarga[r.carga].size : 0;
         return `
         <tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
           <td style="padding:10px 14px;color:var(--text-muted);font-size:.78rem">${fmtDt(r.criado_em)}</td>
@@ -41045,6 +41064,9 @@ async function _carregarListaAbastecimento(){
           <td style="padding:10px 14px;color:var(--text-primary)">${r.conferente_nome||'—'}</td>
           <td style="padding:10px 14px"><span style="background:rgba(100,116,139,.1);color:var(--text-secondary);font-size:.75rem;font-weight:700;padding:2px 10px;border-radius:20px">${r.unidade_origem||'—'}</span></td>
           <td style="padding:10px 14px"><span style="background:rgba(37,99,235,.1);color:#2563eb;font-size:.75rem;font-weight:700;padding:2px 10px;border-radius:20px">${r.unidade}</span></td>
+          <td style="padding:10px 14px;text-align:center;color:var(--text-primary)">${qtdPedidos||'—'}</td>
+          <td style="padding:10px 14px;text-align:center;color:var(--text-primary)">${r.quantidade!=null?r.quantidade:'—'}</td>
+          <td style="padding:10px 14px;text-align:right;color:var(--text-primary);white-space:nowrap">${fmtVlr(r.valor)}</td>
           <td style="padding:10px 14px;text-align:center">${statusHtml}</td>
           <td style="padding:10px 14px;text-align:center">
             <button onclick="excluirAbastecimento('${r.id}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:3px 10px;font-size:.75rem;cursor:pointer;font-weight:600">🗑 Excluir</button>
@@ -41097,9 +41119,48 @@ async function abrirPopupAbastecimento(){
   // Limpar msg
   const msg = document.getElementById('msg-abast');
   if(msg) msg.style.display = 'none';
+  const hint = document.getElementById('abast-carga-hint');
+  if(hint) hint.style.display = 'none';
   // Popular selects se ainda vazios
   await renderAbastecimentoLoja(true);
   document.getElementById('modal-abastecimento').style.display = 'flex';
+}
+
+// Ao informar o número da carga, busca em base_data (mesma fonte que a
+// integração Cronos alimenta) e pré-preenche quantidade de produtos e valor
+// — só se os campos ainda estiverem vazios, pra não sobrescrever algo que o
+// usuário já digitou. Continua editável depois, é só um ponto de partida.
+async function abastCargaChange(){
+  const cargaEl = document.getElementById('abast-carga');
+  const hint    = document.getElementById('abast-carga-hint');
+  const carga   = parseInt(cargaEl?.value||'')||null;
+  if(!hint) return;
+  if(!carga){ hint.style.display='none'; return; }
+
+  hint.style.display='block'; hint.style.color='var(--text-muted)';
+  hint.textContent='🔎 Buscando dados da carga na integração...';
+  try{
+    const rows = await supaFetch(`base_data?carga=eq.${carga}&select=pedido,valor,volume`) || [];
+    if(!rows.length){
+      hint.style.color='#d97706';
+      hint.textContent='⚠️ Carga não encontrada — preencha quantidade e valor manualmente.';
+      return;
+    }
+    const qtdPedidos  = new Set(rows.map(r=>r.pedido)).size;
+    const valorTotal  = rows.reduce((s,r)=>s+(Number(r.valor)||0),0);
+    const volumeTotal = rows.reduce((s,r)=>s+(Number(r.volume)||0),0);
+
+    const qEl = document.getElementById('abast-quantidade');
+    const vEl = document.getElementById('abast-valor');
+    if(qEl && !qEl.value) qEl.value = volumeTotal>0 ? Math.round(volumeTotal) : qtdPedidos;
+    if(vEl && !vEl.value) vEl.value = valorTotal.toFixed(2);
+
+    hint.style.color='#059669';
+    hint.textContent = `✅ ${qtdPedidos} pedido(s)${volumeTotal>0?' — '+Math.round(volumeTotal)+' produto(s)':''} — ${valorTotal.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} (dados da integração — pode ajustar se precisar)`;
+  }catch(e){
+    hint.style.color='#ef4444';
+    hint.textContent='Erro ao buscar dados da carga: '+e.message;
+  }
 }
 
 async function salvarAbastecimento(){
