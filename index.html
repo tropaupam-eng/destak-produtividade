@@ -27764,6 +27764,19 @@ const MFV_ETAPAS_RI = [
   { key:'ri_entrega',    label:'Entrega',                va:false, transporte:true },
 ];
 const MFV_ROTAS_RI = ['PETROLINA','JUAZEIRO','CEASA'];
+// O cadastro de rota NAO e padronizado: existem PETROLINA e Petrolina, CEASA e
+// Ceasa, IRECE e IRECÊ como valores distintos. Filtrar por igualdade exata jogava
+// 275 pedidos internos de julho para dentro da externa. Normalizar antes de comparar.
+// RETIRA tambem nao e rota: e o cliente buscando na loja, outro fluxo, fora do mapa.
+function _mfvNormRota(r){
+  return (r||'').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+}
+function _mfvClasseRota(r){
+  const n = _mfvNormRota(r);
+  if(!n) return 'SEM';
+  if(n === 'RETIRA') return 'RETIRA';
+  return MFV_ROTAS_RI.includes(n) ? 'RI' : 'RE';
+}
 let MFV_ETAPAS = MFV_ETAPAS_RI;
 const MFV_CAMPOS = [
   { k:'tc',    label:'T. ciclo (min)',   dica:'Tempo de toque medido no cronômetro' },
@@ -27806,7 +27819,7 @@ async function _mfvCarregarFila(rire){
   // registrada fica dias atrás do calendário), então o "sem entrega" mediria o atraso
   // da importação, não a fila. A estimativa honesta é a Lei de Little sobre o que é
   // medido: fila média = demanda diária × lead médio.
-  const bd = await supaFetch(`base_data?rota=in.(${MFV_ROTAS_RI.join(',')})&data_pedido=gte.${dAtras(30)}&select=pedido,data_pedido&limit=20000`).catch(()=>[]);
+  const bd = await supaFetch(`base_data?data_pedido=gte.${dAtras(30)}&select=pedido,data_pedido,rota&limit=20000`).then(rs=>(rs||[]).filter(r=>_mfvClasseRota(r.rota)==='RI')).catch(()=>[]);
   return { little: true, demandaDia: porDiaOperacao(bd,'data_pedido'),
            diasOper: new Set((bd||[]).map(r=>String(r.data_pedido||'').slice(0,10)).filter(Boolean)).size };
 }
@@ -27856,7 +27869,7 @@ async function _mfvCarregarInterna(mes){
   })();
   const inMeses = `(${meses.join(',')})`;
   const [bd, ed] = await Promise.all([
-    supaFetch(`base_data?rota=in.(${MFV_ROTAS_RI.join(',')})&mes_ano=in.${inMeses}&data_pedido=not.is.null&select=carga,pedido,rota,data_pedido&limit=20000`).catch(()=>[]),
+    supaFetch(`base_data?mes_ano=in.${inMeses}&data_pedido=not.is.null&select=carga,pedido,rota,data_pedido&limit=20000`).then(rs=>(rs||[]).filter(r=>_mfvClasseRota(r.rota)==='RI')).catch(()=>[]),
     supaFetch(`entrega_datas?mes_ano=in.${inMeses}&select=pedido,data_entrega&limit=20000`).catch(()=>[])
   ]);
   const entrega = {};
@@ -27962,12 +27975,9 @@ async function _mfvCarregarPedidos(mes, rire){
   const evFim = _mfvMesOffset(base,3)+'-01T00:00:00-03:00';
   const mesesEnt = [-1,0,1,2].map(n=>_mfvMesOffset(base,n));
 
-  const filtroRota = rire==='RI'
-    ? '&rota=in.('+MFV_ROTAS_RI.join(',')+')'
-    : '&rota=not.in.('+MFV_ROTAS_RI.join(',')+')&rota=neq.';
 
   const [bd, cf, ed] = await Promise.all([
-    supaFetch('base_data?data_pedido=gte.'+ini+'&data_pedido=lt.'+fim+filtroRota+'&data_pedido=not.is.null&select=pedido,carga,rota,data_pedido,valor&limit=20000').catch(()=>[]),
+    supaFetch('base_data?data_pedido=gte.'+ini+'&data_pedido=lt.'+fim+'&data_pedido=not.is.null&select=pedido,carga,rota,data_pedido,valor&limit=20000').then(rs=>(rs||[]).filter(r=>_mfvClasseRota(r.rota)===rire)).catch(()=>[]),
     supaFetch('conferencia_pedidos?conferido_em=gte.'+evIni+'&conferido_em=lt.'+evFim+'&select=pedido,conferido_em&limit=20000').catch(()=>[]),
     supaFetch('entrega_datas?mes_ano=in.('+mesesEnt.join(',')+')&select=pedido,data_entrega&limit=30000').catch(()=>[])
   ]);
