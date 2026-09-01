@@ -8427,7 +8427,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.31.0';
+const APP_VERSION = '4.32.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -15770,6 +15770,19 @@ function motoristaIdPorNome(nome){
   if(!alvo || alvo==='LOJA' || alvo==='A DEFINIR MOTORISTA' || alvo==='RETIRA') return null;
   const m = (MOTORISTAS_CACHE||[]).find(x=>String(x.nome||'').trim().toUpperCase()===alvo);
   return m ? m.id : null;
+}
+
+// Similaridade por sobreposição de palavras — mesma lógica do nomeSimilar()
+// usado em Financeiro pra recuperar lançamento com nome fora do cadastro. Aqui
+// serve pro caso oposto: avisar ANTES de criar um cadastro novo parecido com um
+// já existente (ex.: RH manda "ARAUHO" e já existe "ARAUJO" — sem esse aviso o
+// typo vira um segundo motorista/ajudante fantasma, com cargas/pagamentos
+// divididos entre os dois pro resto da vida).
+function nomeParecido(a, b){
+  const wa = String(a||'').toUpperCase().split(' ').filter(x=>x.length>2);
+  const wb = new Set(String(b||'').toUpperCase().split(' ').filter(x=>x.length>2));
+  const comuns = wa.filter(w=>wb.has(w)).length;
+  return comuns / Math.max(wa.length, wb.size, 1);
 }
 
 let ROTAS_CACHE = [];
@@ -23292,7 +23305,7 @@ async function salvarDemissao(tabela, id, data){
     })});
     showToast('✅ Demissão registrada!','success');
     if(tabela==='motoristas') await cadCarregarMotoristas();
-    else await cadCarregarAjudantes();
+    else await syncAjudantes();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 async function cadCarregarMotoristas(){
@@ -23421,6 +23434,16 @@ async function salvarNovoMotorista(){
       const exCpf = await supaFetch(`motoristas?cpf=eq.${cpf.replace(/\D/g,'')}&select=id,nome`) || [];
       if(exCpf.length){ msg.style.display='block'; msg.style.background='#fee2e2'; msg.style.color='#991b1b'; msg.textContent='CPF já cadastrado para: '+exCpf[0].nome; return; }
     }
+    // Aviso de nome parecido (typo de RH/planilha criando um segundo cadastro
+    // da mesma pessoa) — não bloqueia, só confirma antes de duplicar.
+    let melhorSim = null, melhorScore = 0;
+    (MOTORISTAS_CACHE||[]).forEach(m=>{
+      const score = nomeParecido(nome, m.nome||'');
+      if(score > melhorScore){ melhorScore = score; melhorSim = m; }
+    });
+    if(melhorSim && melhorScore >= 0.5){
+      if(!confirm(`Já existe um motorista cadastrado com nome parecido:\n\n"${melhorSim.nome}"${melhorSim.cpf?' — CPF '+melhorSim.cpf:''}\n\nTem certeza que "${nome}" é uma pessoa diferente?`)) return;
+    }
 
     await supaFetch('motoristas',{method:'POST',body:JSON.stringify({
       nome, unidade:und, senha, ativo:true,
@@ -23463,6 +23486,17 @@ async function salvarNovoAjudante(){
     if(cpf){
       const exCpf = await supaFetch(`ajudantes?cpf=eq.${cpf}&select=id,nome`) || [];
       if(exCpf.length){ msg.style.display='block'; msg.style.background='#fee2e2'; msg.style.color='#991b1b'; msg.textContent='CPF já cadastrado para: '+exCpf[0].nome; return; }
+    }
+    // Aviso de nome parecido (typo de RH/planilha criando um segundo cadastro
+    // da mesma pessoa) — não bloqueia, só confirma antes de duplicar.
+    const todosAj = await supaFetch('ajudantes?select=nome,cpf&ativo=eq.true') || [];
+    let melhorSimAj = null, melhorScoreAj = 0;
+    todosAj.forEach(a=>{
+      const score = nomeParecido(nome, a.nome||'');
+      if(score > melhorScoreAj){ melhorScoreAj = score; melhorSimAj = a; }
+    });
+    if(melhorSimAj && melhorScoreAj >= 0.5){
+      if(!confirm(`Já existe um ajudante cadastrado com nome parecido:\n\n"${melhorSimAj.nome}"${melhorSimAj.cpf?' — CPF '+melhorSimAj.cpf:''}\n\nTem certeza que "${nome}" é uma pessoa diferente?`)) return;
     }
 
     // Vinculação automática: se mesmo nome E CPF já existem em motoristas, herda dados
@@ -23524,6 +23558,16 @@ async function sincronizarRHComSistema(btn){
     const nomeMotMap = new Map((mots||[]).map(m=>[_normNomeMot(m.nome), m]));
     const nomeAjuMap = new Map((ajs||[]).map(a=>[_normNomeMot(a.nome), a]));
     let criadosMot=0, criadosAju=0, vinculadosMot=0, vinculadosAju=0, ignorados=0, falhas=0;
+    // Nomes parecidos com algum já cadastrado (mesma pessoa com CPF diferente
+    // no RH, ou typo de digitação lá) NÃO são criados como cadastro novo — isso
+    // foi exatamente o que gerou "WILIO LEITE DE ARAUHO" duplicado de "ARAUJO".
+    // Ficam pendentes de revisão manual em vez de virar cadastro fantasma.
+    const pendenciasNome = [];
+    const _melhorParecido = (nome, lista) => {
+      let melhor = null, score = 0;
+      lista.forEach(p=>{ const s = nomeParecido(nome, p.nome||''); if(s > score){ score = s; melhor = p; } });
+      return score >= 0.5 ? {pessoa:melhor, score} : null;
+    };
     // Cada escrita agora reporta sucesso/falha real — antes um POST/PATCH que
     // falhava (ex: CPF duplicado, RLS, rede) ainda contava como "criado/vinculado"
     // no toast final, mascarando cadastros que na verdade não foram gravados.
@@ -23549,7 +23593,10 @@ async function sincronizarRHComSistema(btn){
               existente.cpf = cpf; vinculadosMot++; cpfMotSet.add(cpf);
             }
           } else {
-            if(await _grava('motoristas',{method:'POST',body:JSON.stringify({
+            const parecido = _melhorParecido(nome, mots||[]);
+            if(parecido){
+              pendenciasNome.push(`${nome} (CPF RH ${cpf}) parece "${parecido.pessoa.nome}"`);
+            } else if(await _grava('motoristas',{method:'POST',body:JSON.stringify({
               nome, cpf, unidade, ativo:true, senha:'destak123', criado_em:new Date().toISOString()
             })})){
               criadosMot++; cpfMotSet.add(cpf);
@@ -23572,7 +23619,10 @@ async function sincronizarRHComSistema(btn){
               existente.cpf = cpf; vinculadosAju++; cpfAjuSet.add(cpf);
             }
           } else {
-            if(await _grava('ajudantes',{method:'POST',body:JSON.stringify({
+            const parecidoAj = _melhorParecido(nome, ajs||[]);
+            if(parecidoAj){
+              pendenciasNome.push(`${nome} (CPF RH ${cpf}) parece "${parecidoAj.pessoa.nome}"`);
+            } else if(await _grava('ajudantes',{method:'POST',body:JSON.stringify({
               nome, cpf, unidade: motVinc?.unidade||unidade,
               ativo:true, status:'aprovado', senha: motVinc?.senha||'destak123',
               criado_em:new Date().toISOString()
@@ -23585,7 +23635,8 @@ async function sincronizarRHComSistema(btn){
     }
 
     const _msgFalhas = falhas>0 ? ` — ⚠️ ${falhas} gravação(ões) falharam, veja o console` : '';
-    showToast(`${falhas>0?'⚠️':'✅'} RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados (${vinculadosMot+vinculadosAju} CPFs vinculados a cadastros existentes)${_msgFalhas}`, falhas>0?'warning':'success');
+    const _msgPendencias = pendenciasNome.length ? ` — ⚠️ ${pendenciasNome.length} nome(s) parecido(s) com cadastro existente NÃO foram criados, revise manualmente: ${pendenciasNome.join(' · ')}` : '';
+    showToast(`${(falhas>0||pendenciasNome.length)?'⚠️':'✅'} RH sincronizado: ${criadosMot} motoristas + ${criadosAju} ajudantes criados (${vinculadosMot+vinculadosAju} CPFs vinculados a cadastros existentes)${_msgFalhas}${_msgPendencias}`, (falhas>0||pendenciasNome.length)?'warning':'success');
     renderRH();
   }catch(e){
     showToast('⛔ Erro na sincronização: '+e.message,'warning');
