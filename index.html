@@ -8426,7 +8426,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.27.1';
+const APP_VERSION = '4.28.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -11042,7 +11042,12 @@ async function carregarPlanilha(file) {
           // Ler valor — suporta R$ 15.000,00 e 1500.00
           const _valorRaw = r[' Valor '] ?? r['Valor'] ?? r['VALOR'] ?? r['valor'] ?? 0;
           const valor = parseValorBR(_valorRaw);
-          const rota   = (safeStr(r['ROTA']) || safeStr(r['Rota']) || safeStr(r['rota']) || safeStr(r['Cidade']) || safeStr(r['cidade']) || '').toUpperCase();
+          // normalizarRota (maiúsculo + sem acento + apelidos conhecidos) em vez de
+          // só .toUpperCase() — planilha de origem não padroniza acento (ex: "Irecê"),
+          // e isso gravava rota divergente do cadastro (ex: "IRECE"), afetando bônus
+          // (getValorRota) e o painel "cargas em risco". Fase 2a da auditoria de
+          // rota, 2026-09-01 — normaliza na escrita em vez de precisar limpar depois.
+          const rota   = normalizarRota(safeStr(r['ROTA']) || safeStr(r['Rota']) || safeStr(r['rota']) || safeStr(r['Cidade']) || safeStr(r['cidade']) || '') || '';
           const placa  = safeStr(r['Placa']);
           // Tentar diferentes nomes de coluna para UND
           const undRaw    = (safeStr(r['unidade']) || safeStr(r['UND']) || safeStr(r['Und']) || safeStr(r['und']) || '').trim();
@@ -11246,9 +11251,11 @@ async function carregarCSV(file) {
           // Placa 111111111 e 111000000 são placas-fantasma (sem veículo real)
           if(placa==='111000000'||placa==='111111111') placa='';
           const cidade = iCidade>=0 ? cols[iCidade].trim() : '';
-          // Rota: coluna ROTA se existir, senão Cidade como fallback
-          const rota   = iRota>=0   ? cols[iRota].trim().toUpperCase()
-                       : cidade ? cidade.toUpperCase() : '';
+          // Rota: coluna ROTA se existir, senão Cidade como fallback — normalizarRota
+          // (maiúsculo + sem acento) em vez de só .toUpperCase(), mesmo motivo do
+          // import de planilha Excel logo acima (Fase 2a da auditoria de rota, 2026-09-01).
+          const rota   = iRota>=0   ? (normalizarRota(cols[iRota].trim())||cols[iRota].trim().toUpperCase())
+                       : cidade ? (normalizarRota(cidade)||cidade.toUpperCase()) : '';
           const peso_kg = iPeso>=0 ? parseValorBR(cols[iPeso]) : 0;
           const und    = iUnd>=0    ? cols[iUnd].trim()   : '';
           const rire   = iRire>=0   ? cols[iRire].trim()  : '';
@@ -13599,7 +13606,11 @@ function resetarConfig(){
 }
 
 function getValorRota(rota){
-  const r = (rota||'').toUpperCase();
+  // normalizarRota (maiúsculo + sem acento) em vez de só .toUpperCase() — rota
+  // acentuada (ex: "Irecê") não batia com o cadastro em CONFIG.rotas (sempre
+  // sem acento, ex: "IRECE") e caía no valor padrão genérico em vez do
+  // configurado pra rota. Achado em auditoria de código, 2026-09-01.
+  const r = normalizarRota(rota||'') || (rota||'').toUpperCase();
 
   // Buscar no CONFIG (carregado do banco via syncConfig)
   const cfgRota = CONFIG.rotas[r];
@@ -24850,11 +24861,16 @@ async function migrarRotasSupabase(){
   if(localStorage.getItem(KEY)) return;
   try{
     // 1. Atualizar lançamentos com nomes antigos
+    // Grava maiúsculo (forma canônica de normalizarRota()) — antes gravava
+    // "Petrolina"/"Juazeiro" em título, contradizendo o que normalizarRota()
+    // já produz pra PETRO/JUA, e semeando de volta a inconsistência de caixa
+    // toda vez que essa migração rodasse num navegador novo (é por-navegador,
+    // via localStorage). Achado em auditoria de código, 2026-09-01.
     const mapa = [
-      {old:'PETRO',    novo:'Petrolina'},
-      {old:'PETROLINA',novo:'Petrolina'},
-      {old:'JUA',      novo:'Juazeiro'},
-      {old:'JUAZEIRO', novo:'Juazeiro'},
+      {old:'PETRO',    novo:'PETROLINA'},
+      {old:'PETROLINA',novo:'PETROLINA'},
+      {old:'JUA',      novo:'JUAZEIRO'},
+      {old:'JUAZEIRO', novo:'JUAZEIRO'},
     ];
     for(const {old, novo} of mapa){
       await supaFetch(`lancamentos?rota=eq.${encodeURIComponent(old)}`,{
@@ -45016,13 +45032,17 @@ async function carregarTV(){
       const onTime  = tipoFiltro==='RI' ? otifStats.onTimeRI : otifStats.onTimeRE;
       const inFull  = tipoFiltro==='RI' ? otifStats.inFullRI : otifStats.inFullRE;
       // Em Risco: cargas em rota que se aproximam do prazo
+      // normalizarRota (maiúsculo + sem acento) em vez de só .toUpperCase() —
+      // prazoMap (vindo de _computeOtifStats) é construído com normalizarRota,
+      // então rota acentuada (ex: "Irecê") não batia com a chave (ex: "IRECE")
+      // e caía fora do "Em Risco" por engano. Achado em auditoria, 2026-09-01.
       const emTransito=(cargasEmRota||[]).filter(d=>{
-        const k=(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]!=null?prazoMap[k]:null;
+        const k=normalizarRota(d.rota||'')||(d.rota||'').toUpperCase(); const prazoH=prazoMap[k]!=null?prazoMap[k]:null;
         if(!prazoH||!d.ts_saiu) return false;
         if(tipoFiltro==='RI' && getRireFromRota(d.rota)!=='R.I.') return false;
         if(tipoFiltro==='RE' && getRireFromRota(d.rota)!=='R.E.') return false;
         return Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)>=70;
-      }).map(d=>{ const prazoH=(prazoMap[(d.rota||'').toUpperCase()]||24); return {carga:d.carga,rota:d.rota,prazoPct:Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)}; });
+      }).map(d=>{ const k=normalizarRota(d.rota||'')||(d.rota||'').toUpperCase(); const prazoH=(prazoMap[k]||24); return {carga:d.carga,rota:d.rota,prazoPct:Math.round((Date.now()-new Date(d.ts_saiu))/(prazoH*3600000)*100)}; });
       return {
         total, noPrazo,
         pct:      total>0 ? Math.round(noPrazo/total*100) : null,
