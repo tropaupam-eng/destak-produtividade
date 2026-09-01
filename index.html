@@ -2782,6 +2782,15 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
 
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
+    <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">O processo documentado × o que o sistema mede</h3>
+    <p style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">
+      As etapas do <b>PO-LO-006 — Expedição Interna/Externa</b> (REV 01, homologado), na ordem, com o número da rotina do ERP.
+      A coluna da direita diz se o Cronos tem carimbo daquela fronteira. <b>Etapa sem carimbo não é registro faltando</b>: é etapa que o sistema nunca viu acontecer.
+    </p>
+    <div id="mfv-pop" style="overflow-x:auto"></div>
+  </div>
+
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
     <h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">Linha do tempo</h3>
     <p style="font-size:.72rem;color:var(--text-muted);margin-bottom:14px">Degrau de cima = espera (não agrega valor). Degrau de baixo = processamento.</p>
     <div id="mfv-timeline" style="overflow-x:auto"></div>
@@ -27988,10 +27997,12 @@ async function carregarMFV(){
     [_mfvFila, , _mfvPed] = await Promise.all([
       _mfvCarregarFila(rire).catch(()=>null),
       _mfvCarregarCampos(),
-      _mfvCarregarPedidos(mes, rire).catch(()=>null)
+      _mfvCarregarPedidos(mes, rire).catch(()=>null),
+      _mfvCarregarCarga0().catch(()=>null)
     ]);
     renderMFV();
     renderMFVPedidos();
+    renderMFVPop();
   }catch(e){
     if(box) box.innerHTML = `<p style="color:var(--orange);font-size:.8rem">Erro ao carregar: ${escapeHtml(e.message)}</p>`;
   }
@@ -28004,12 +28015,114 @@ async function carregarMFV(){
 // janela igual ele some da conta e o lead sai inflado (medido: 13 d contra 11 d).
 let _mfvPed = null;
 
+// As fronteiras que o sistema consegue medir, rotuladas com o vocabulario do
+// PO-LO-006 (REV 01, homologado) e o numero da rotina do ERP. O campo `pop` diz
+// QUE ETAPAS DOCUMENTADAS cabem dentro de cada fronteira medida: e ai que se ve
+// que a primeira fronteira engole oito etapas do procedimento, e por isso ela
+// domina o lead sem que ninguem consiga dizer onde o tempo foi.
 const MFV_PED_ETAPAS = [
-  { k:'espera_conf', label:'Pedido → Conferência', va:false },
-  { k:'conf_carreg', label:'Conferência → Carregamento', va:true },
-  { k:'carreg_saiu', label:'Carregamento → Saída', va:false },
-  { k:'transito',    label:'Saída → Entrega', va:false, transporte:true }
+  { k:'espera_conf', label:'Pedido → Conferência', va:false,
+    pop:'R.368 importa · R.207 libera crédito · espera na Carga 0 · R.60 forma a carga · R.52 romaneio · separação · paletização · R.593' },
+  { k:'conf_carreg', label:'Conferência → Carregamento', va:true,
+    pop:'bipagem no coletor · consolidação da carga' },
+  { k:'carreg_saiu', label:'Carregamento → Saída', va:false,
+    pop:'R.594 manifesto · R.60 libera · R.62 nota fiscal · R.66 embarque · caixa libera o motorista' },
+  { k:'transito',    label:'Saída → Entrega', va:false, transporte:true,
+    pop:'trânsito até o cliente' }
 ];
+
+// As 13 etapas do PO-LO-006 na ordem, com o que o sistema realmente carimba.
+// 'nao' aqui NAO significa registro faltando: significa etapa que o Cronos nunca
+// viu acontecer. 'parcial' significa que existe carimbo, mas ele mede o clique
+// (ou so a data), nao a duracao do trabalho.
+const MFV_POP_ETAPAS = [
+  { n:1,  nome:'Recepção do pedido',             rot:'—',          mede:'parcial', obs:'só a data; a hora está vazia na base inteira' },
+  { n:2,  nome:'Importação e liberação',         rot:'R.368',      mede:'nao' },
+  { n:3,  nome:'Liberação do financeiro',        rot:'R.207',      mede:'nao', chave:true, obs:'portão de crédito: o pedido pode ficar parado aqui e ninguém vê' },
+  { n:4,  nome:'Espera na Carga 0',              rot:'—',          mede:'nao', chave:true, obs:'a fila do fluxo; ver o aviso abaixo' },
+  { n:5,  nome:'Formação e associação à carga',  rot:'R.60',       mede:'nao', chave:true, obs:'o gatilho do lote é o VALOR MÍNIMO da rota, não o horário' },
+  { n:6,  nome:'Romaneio de separação',          rot:'R.52',       mede:'nao', obs:'consolida os pedidos num lote único por produto' },
+  { n:7,  nome:'Separação',                      rot:'—',          mede:'nao', obs:'a coluna de início existe no banco e está vazia em 240 de 240' },
+  { n:8,  nome:'Paletização, desmancha o lote',  rot:'—',          mede:'nao', obs:'este trabalho existe só porque a etapa 6 agrupou' },
+  { n:9,  nome:'Controle de conferência',        rot:'R.593',      mede:'nao' },
+  { n:10, nome:'Conferência por bipagem',        rot:'coletor',    mede:'sim', obs:'primeiro carimbo confiável do fluxo inteiro' },
+  { n:11, nome:'Manifesto, baixa dos pedidos',   rot:'R.594',      mede:'parcial', obs:'o carimbo é o do clique' },
+  { n:12, nome:'Liberação, NF e embarque',       rot:'R.60/62/66', mede:'parcial', obs:'idem: 60% a 73% das transições duram menos de 1 min' },
+  { n:13, nome:'Entrega',                        rot:'—',          mede:'parcial', obs:'só a data, e chega por importação em lote' }
+];
+
+// Ponto cego da Carga 0. O POP diz que o pedido liberado espera na carga 0 ate a
+// rota fechar o valor minimo. Se a base nao tem NENHUM registro com carga 0, o
+// pedido so entra no Cronos DEPOIS que a carga se formou — ou seja, a maior
+// espera do fluxo acontece antes do primeiro dado existir. Conferido ao vivo em
+// vez de chumbado, senao o numero apodrece.
+let _mfvCarga0 = null;   // { zero, total }
+async function _mfvCarregarCarga0(){
+  if(_mfvCarga0) return _mfvCarga0;
+  const conta = async (q) => {
+    const r = await fetch(SUPA_URL+'/rest/v1/base_data?select=pedido'+q, {
+      headers:{ apikey:SUPA_KEY, Authorization:'Bearer '+SUPA_KEY, Prefer:'count=exact', Range:'0-0' }
+    });
+    const cr = r.headers.get('Content-Range');
+    return cr ? Number(cr.split('/')[1]) : null;
+  };
+  try{
+    const [zero, total] = await Promise.all([conta('&carga=eq.0'), conta('')]);
+    _mfvCarga0 = { zero, total };
+  }catch(e){ _mfvCarga0 = { zero:null, total:null }; }
+  return _mfvCarga0;
+}
+
+function renderMFVPop(){
+  const box = document.getElementById('mfv-pop');
+  if(!box) return;
+  const sel = { sim:['var(--green)','medido'], parcial:['var(--orange)','parcial'], nao:['var(--red)','não medido'] };
+  const conta = k => MFV_POP_ETAPAS.filter(e=>e.mede===k).length;
+  const th = (h,al)=>'<th style="text-align:'+al+';padding:6px 8px;font-size:.63rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700">'+h+'</th>';
+
+  const linhas = MFV_POP_ETAPAS.map(e=>{
+    const [cor,txt] = sel[e.mede];
+    return '<tr style="border-bottom:1px solid var(--border)'+(e.chave?';background:var(--bg-card2)':'')+'">'+
+      '<td style="padding:7px 8px;text-align:right;color:var(--text-muted);font-variant-numeric:tabular-nums;width:28px">'+e.n+'</td>'+
+      '<td style="padding:7px 8px;color:var(--text-primary);font-weight:600">'+escapeHtml(e.nome)+
+        (e.obs?'<div style="font-size:.63rem;color:var(--text-muted);font-weight:400;margin-top:2px;line-height:1.35">'+escapeHtml(e.obs)+'</div>':'')+'</td>'+
+      '<td style="padding:7px 8px;color:var(--text-secondary);white-space:nowrap;font-size:.74rem">'+escapeHtml(e.rot)+'</td>'+
+      '<td style="padding:7px 8px;text-align:right;white-space:nowrap">'+
+        '<span style="font-size:.66rem;font-weight:700;color:'+cor+';border:1px solid '+cor+';border-radius:4px;padding:1px 6px">'+txt+'</span></td>'+
+      '</tr>';
+  }).join('');
+
+  const c0 = _mfvCarga0;
+  let aviso;
+  if(!c0 || c0.zero===null){
+    aviso = 'Não foi possível conferir a Carga 0 agora (sem resposta do banco).';
+  } else if(c0.zero === 0){
+    aviso = '<b>Nenhum</b> dos <b>'+(c0.total||0).toLocaleString('pt-BR')+'</b> pedidos da base está na Carga 0. ' +
+            'O POP diz que o pedido liberado espera ali até a rota fechar o valor mínimo, então essa espera existe — ' +
+            'ela só não chega ao Cronos. <b>O pedido entra no sistema depois que a carga já se formou</b>, ' +
+            'ou seja, a maior espera do fluxo acontece antes do primeiro dado existir. ' +
+            'Isso não se conserta com relatório: só medindo no chão, ou puxando a R.207 e a R.60 do ERP.';
+  } else {
+    aviso = '<b>'+c0.zero.toLocaleString('pt-BR')+'</b> de '+(c0.total||0).toLocaleString('pt-BR')+' pedidos estão na Carga 0. ' +
+            'A fila de espera por valor mínimo da rota é visível: dá para acompanhá-la sem ir a campo.';
+  }
+
+  box.innerHTML =
+    '<table style="width:100%;min-width:560px;border-collapse:collapse;font-size:.8rem"><thead>'+
+    '<tr style="border-bottom:1.5px solid var(--border-med)">'+th('#','right')+th('Etapa do procedimento','left')+th('Rotina','left')+th('No Cronos','right')+'</tr>'+
+    '</thead><tbody>'+linhas+'</tbody></table>'+
+    '<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;font-size:.7rem;color:var(--text-secondary)">'+
+      '<span><b style="color:var(--green)">'+conta('sim')+'</b> medida</span><span>·</span>'+
+      '<span><b style="color:var(--orange)">'+conta('parcial')+'</b> parciais (carimbam o clique ou só a data)</span><span>·</span>'+
+      '<span><b style="color:var(--red)">'+conta('nao')+'</b> invisíveis</span>'+
+    '</div>'+
+    '<div style="margin-top:12px;border-left:3px solid var(--red);background:var(--bg-card2);border-radius:0 8px 8px 0;padding:10px 12px;font-size:.72rem;color:var(--text-secondary);line-height:1.55">'+
+      '<b style="color:var(--text-primary)">Ponto cego da Carga 0.</b> '+aviso+
+    '</div>'+
+    '<div style="margin-top:10px;font-size:.66rem;color:var(--text-muted);line-height:1.5">'+
+      'Fonte das etapas: PO-LO-006 REV 01 (homologado). O prazo de 8 dias úteis para rota externa vem do PO-LO-026, que está em REV 00 (não homologado) — citar como documento em revisão.'+
+    '</div>';
+}
 
 const _mfvPKey = v => (v===null||v===undefined) ? '' : (String(v).trim().replace(/^0+/,'') || '0');
 function _mfvTs(v){ if(!v) return null; const d=new Date(v); return isNaN(d)?null:d; }
@@ -28115,7 +28228,7 @@ function renderMFVPedidos(){
   const linhasEt = MFV_PED_ETAPAS.map(e=>{
     const v=P.comLead.map(l=>l.et[e.k]).filter(x=>x!==null);
     const raz=P.comLead.filter(l=>l.et[e.k]!==null && l.lead>0).map(l=>l.et[e.k]/l.lead);
-    return { k:e.k, label:e.label, va:e.va, n:v.length, med:_mfvMediana(v),
+    return { k:e.k, label:e.label, va:e.va, pop:e.pop, n:v.length, med:_mfvMediana(v),
              avg:v.length? v.reduce((a,b)=>a+b,0)/v.length : null, p90:_mfvQuantil(v,.9),
              pct: raz.length? _mfvMediana(raz)*100 : null, nRaz: raz.length };
   });
@@ -28124,12 +28237,13 @@ function renderMFVPedidos(){
   ebox.innerHTML='<table style="width:100%;min-width:600px;border-collapse:collapse;font-size:.8rem"><thead><tr style="border-bottom:1.5px solid var(--border-med)">'+
     th('Etapa','left')+th('','left')+th('Mediana','right')+th('Média','right')+th('P90','right')+th('% do lead','right')+th('n','right')+
     '</tr></thead><tbody>'+ linhasEt.map(e=>{
-      if(!e.n) return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:7px 8px;color:var(--text-muted)">'+e.label+
+      const subPop = e.pop ? '<div style="font-size:.63rem;color:var(--text-muted);font-weight:400;margin-top:2px;line-height:1.35">'+escapeHtml(e.pop)+'</div>' : '';
+      if(!e.n) return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:7px 8px;color:var(--text-muted)">'+e.label+subPop+
         '</td><td colspan="6" style="padding:7px 8px;color:var(--text-muted);font-style:italic">não instrumentado — medir em campo</td></tr>';
       const pct=e.pct;
       const cor = (pct!==null&&pct>=50) ? 'var(--red)' : (e.va?'var(--green)':'var(--orange)');
       return '<tr style="border-bottom:1px solid var(--border)">'+
-        '<td style="padding:7px 8px;font-weight:600;color:var(--text-primary)">'+e.label+'</td>'+
+        '<td style="padding:7px 8px;font-weight:600;color:var(--text-primary)">'+e.label+subPop+'</td>'+
         '<td style="padding:7px 8px;width:110px"><div style="height:9px;background:var(--bg-card2);border-radius:2px"><div style="height:100%;width:'+Math.min(100,(e.med/maxMed)*100)+'%;background:'+cor+';border-radius:2px"></div></div></td>'+
         '<td style="padding:7px 8px;text-align:right;font-weight:700">'+fmt(e.med)+'</td>'+
         '<td style="padding:7px 8px;text-align:right;color:var(--text-secondary)">'+fmt(e.avg)+'</td>'+
