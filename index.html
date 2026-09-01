@@ -2735,6 +2735,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <option value="RI">R.I. — Interna</option>
         <option value="RE">R.E. — Externa (fecha rota)</option>
       </select>
+      <select id="mfv-rota" onchange="carregarMFV()" title="Recorta o painel numa rota só. Rotas com prazos diferentes são famílias diferentes: para o mapa do MFV, use Petrolina + Juazeiro." style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
+        <option value="">Todas as rotas</option>
+      </select>
       <select id="mfv-estado" onchange="renderMFV()" title="Estado atual = medido. Estado futuro = com as metas que você definir nas caixas." style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
         <option value="atual">Estado atual</option>
         <option value="futuro">Estado futuro</option>
@@ -27820,17 +27823,70 @@ const MFV_ETAPAS_RE = [
 // demandas_rota, 2 em conferencia_pedidos). O banco só entrega o lead time
 // ponta a ponta (data_pedido -> data_entrega). As etapas abaixo existem na
 // operação mas não são instrumentadas — os tempos vêm de cronometragem em campo.
+// Ordem e nomes conferidos contra o PO-LO-006 REV 01 (homologado). Tres etapas
+// tinham ficado de fora, e sao justamente as que explicam o lead:
+//   ri_financeiro  R.207, o portao de credito. Espera pura, ninguem nunca mediu.
+//   ri_carga0      R.60, a fila ate a rota fechar o VALOR MINIMO. E o gatilho do lote.
+//   ri_reorg       desmancha o lote de volta em pedidos. Trabalho que so existe
+//                  porque a lista agrupou, entao NAO agrega valor: o cliente nao
+//                  paga por desfazer um agrupamento que a propria operacao criou.
+// Nenhuma delas e instrumentada. Existem aqui para ter caixa de dados, que e onde
+// a cronometragem de campo vai ser digitada.
 const MFV_ETAPAS_RI = [
-  { key:'ri_entrada',    label:'Entrada do pedido',      va:false },
-  { key:'ri_faturamento',label:'Conferência / NF',       va:true  },
-  { key:'ri_lista',      label:'Lista de separação',     va:false },
-  { key:'ri_separacao',  label:'Separação',              va:true  },
-  { key:'ri_confsaida',  label:'Conferência de saída',   va:true  },
-  { key:'ri_carreg',     label:'Carregamento',           va:true  },
-  { key:'ri_rota',       label:'Roteirização',           va:false },
-  { key:'ri_entrega',    label:'Entrega',                va:false, transporte:true },
+  { key:'ri_entrada',    label:'Entrada do pedido',        va:false, pop:'balcão ou MaxPedidos · R.368 importa para o ERP' },
+  { key:'ri_financeiro', label:'Liberação do financeiro',  va:false, pop:'R.207 · portão de crédito: só pedido liberado avança' },
+  { key:'ri_faturamento',label:'Conferência / NF',         va:true,  pop:'no fluxo de balcão a conferência vem cedo — CONFIRMAR EM CAMPO' },
+  { key:'ri_carga0',     label:'Espera na Carga 0',        va:false, pop:'R.60 · fila até a rota fechar o valor mínimo' },
+  { key:'ri_lista',      label:'Lista de separação',       va:false, pop:'R.52 · romaneio consolida os pedidos num lote por produto' },
+  { key:'ri_separacao',  label:'Separação',                va:true,  pop:'separa por produto, todos os pedidos da rota juntos' },
+  { key:'ri_reorg',      label:'Reorganização por pedido', va:false, pop:'desmancha o lote · existe só porque a lista agrupou' },
+  { key:'ri_confsaida',  label:'Conferência de saída',     va:true,  pop:'R.593/594 · bipagem no coletor' },
+  { key:'ri_carreg',     label:'Carregamento',             va:true,  pop:'por ordem de pedido, inversa à ordem de descarga' },
+  { key:'ri_rota',       label:'Roteirização',             va:false },
+  { key:'ri_entrega',    label:'Entrega',                  va:false, transporte:true },
 ];
 const MFV_ROTAS_RI = ['PETROLINA','JUAZEIRO','CEASA'];
+// A familia adotada no estudo de MFV: as duas rotas que dividem a MESMA promessa
+// (36 h no cadastro). CEASA tem 8760 h, que e promessa nenhuma, e RETIRA e o
+// cliente buscando na loja. Promessa diferente = demanda diferente = familia
+// diferente; junta-las no mesmo mapa muda o takt por um fator de 2,5.
+const MFV_FAMILIA = ['PETROLINA','JUAZEIRO'];
+let _mfvRotaSel = '';   // '' = todas da classe · 'FAMILIA' · ou uma rota especifica
+
+// Unico lugar que decide se uma linha entra na conta. Antes cada carregador
+// repetia o filtro de classe por conta propria, e foi assim que um filtro
+// sensivel a caixa passou despercebido em tres lugares ao mesmo tempo.
+function _mfvRotaPassa(rota, classe){
+  if(_mfvClasseRota(rota) !== classe) return false;
+  if(!_mfvRotaSel) return true;
+  const n = _mfvNormRota(rota);
+  return _mfvRotaSel === 'FAMILIA' ? MFV_FAMILIA.includes(n) : n === _mfvRotaSel;
+}
+
+// O select se monta do cadastro, nao de lista chumbada: rota nova aparece sozinha.
+function _mfvPopularSelectRota(){
+  const sel = document.getElementById('mfv-rota');
+  if(!sel) return;
+  const classe = document.getElementById('mfv-rire')?.value || 'RI';
+  const atual = sel.value;
+  const nomes = Object.keys(_mfvRotasCad||{})
+    .filter(n => (_mfvRotasCad[n].tipo||'').toUpperCase() === classe).sort();
+  let html = '<option value="">Todas as rotas ('+classe+')</option>';
+  if(classe === 'RI') html += '<option value="FAMILIA">Petrolina + Juazeiro · família do MFV</option>';
+  html += nomes.map(n=>{
+    const pz = _mfvPrazoRota(n);
+    return '<option value="'+escapeHtml(n)+'">'+escapeHtml(n)+(pz!=null?' · '+pz+' h':' · sem prazo')+'</option>';
+  }).join('');
+  sel.innerHTML = html;
+  sel.value = Array.prototype.some.call(sel.options, o=>o.value===atual) ? atual : '';
+  _mfvRotaSel = sel.value;
+}
+
+// Rotulo do recorte, para nao se ler numero filtrado como se fosse o total.
+function _mfvRotuloRecorte(){
+  if(!_mfvRotaSel) return '';
+  return _mfvRotaSel === 'FAMILIA' ? 'Petrolina + Juazeiro' : _mfvRotaSel;
+}
 // O cadastro de rota NAO e padronizado: existem PETROLINA e Petrolina, CEASA e
 // Ceasa, IRECE e IRECÊ como valores distintos. Filtrar por igualdade exata jogava
 // 275 pedidos internos de julho para dentro da externa. Normalizar antes de comparar.
@@ -27913,7 +27969,7 @@ async function _mfvCarregarFila(rire){
   // registrada fica dias atrás do calendário), então o "sem entrega" mediria o atraso
   // da importação, não a fila. A estimativa honesta é a Lei de Little sobre o que é
   // medido: fila média = demanda diária × lead médio.
-  const bd = await supaFetch(`base_data?data_pedido=gte.${dAtras(30)}&select=pedido,data_pedido,rota&limit=20000`).then(rs=>(rs||[]).filter(r=>_mfvClasseRota(r.rota)==='RI')).catch(()=>[]);
+  const bd = await supaFetch(`base_data?data_pedido=gte.${dAtras(30)}&select=pedido,data_pedido,rota&limit=20000`).then(rs=>(rs||[]).filter(r=>_mfvRotaPassa(r.rota,'RI'))).catch(()=>[]);
   return { little: true, demandaDia: porDiaOperacao(bd,'data_pedido'),
            diasOper: new Set((bd||[]).map(r=>String(r.data_pedido||'').slice(0,10)).filter(Boolean)).size };
 }
@@ -27963,7 +28019,7 @@ async function _mfvCarregarInterna(mes){
   })();
   const inMeses = `(${meses.join(',')})`;
   const [bd, ed] = await Promise.all([
-    supaFetch(`base_data?mes_ano=in.${inMeses}&data_pedido=not.is.null&select=carga,pedido,rota,data_pedido&limit=20000`).then(rs=>(rs||[]).filter(r=>_mfvClasseRota(r.rota)==='RI')).catch(()=>[]),
+    supaFetch(`base_data?mes_ano=in.${inMeses}&data_pedido=not.is.null&select=carga,pedido,rota,data_pedido&limit=20000`).then(rs=>(rs||[]).filter(r=>_mfvRotaPassa(r.rota,'RI'))).catch(()=>[]),
     supaFetch(`entrega_datas?mes_ano=in.${inMeses}&select=pedido,data_entrega&limit=20000`).catch(()=>[])
   ]);
   const entrega = {};
@@ -28028,6 +28084,7 @@ async function carregarMFV(){
       selMes.innerHTML = opts.join('');
     }
     await _mfvCarregarRotas();   // classificacao e prazo vem do cadastro
+    _mfvPopularSelectRota();     // define _mfvRotaSel ANTES de qualquer carga
     const mes  = selMes?.value || '';
     const rire = document.getElementById('mfv-rire')?.value || 'RI';
     MFV_ETAPAS = rire === 'RI' ? MFV_ETAPAS_RI : MFV_ETAPAS_RE;
@@ -28192,7 +28249,7 @@ async function _mfvCarregarPedidos(mes, rire){
 
 
   const [bd, cf, ed] = await Promise.all([
-    supaFetch('base_data?data_pedido=gte.'+ini+'&data_pedido=lt.'+fim+'&data_pedido=not.is.null&select=pedido,carga,rota,data_pedido,valor&limit=20000').then(rs=>(rs||[]).filter(r=>_mfvClasseRota(r.rota)===rire)).catch(()=>[]),
+    supaFetch('base_data?data_pedido=gte.'+ini+'&data_pedido=lt.'+fim+'&data_pedido=not.is.null&select=pedido,carga,rota,data_pedido,valor&limit=20000').then(rs=>(rs||[]).filter(r=>_mfvRotaPassa(r.rota,rire))).catch(()=>[]),
     supaFetch('conferencia_pedidos?conferido_em=gte.'+evIni+'&conferido_em=lt.'+evFim+'&select=pedido,conferido_em&limit=20000').catch(()=>[]),
     supaFetch('entrega_datas?mes_ano=in.('+mesesEnt.join(',')+')&select=pedido,data_entrega&limit=30000').catch(()=>[])
   ]);
@@ -28343,7 +28400,9 @@ function mfvExportarPedidos(){
   const csv='﻿'+[cab.join(';')].concat(linhas).join('\n');
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
-  a.download='mfv_pedidos_'+P.rire+'_'+P.mes+'.csv';
+  // o recorte entra no nome: CSV filtrado com nome generico e o jeito mais facil
+  // de alguem tratar 413 pedidos como se fossem os 1.085 da interna inteira.
+  a.download='mfv_pedidos_'+P.rire+(_mfvRotaSel?'_'+_mfvRotaSel:'')+'_'+P.mes+'.csv';
   document.body.appendChild(a); a.click(); a.remove();
   showToast(P.comLead.length+' pedidos exportados','success');
 }
@@ -28470,6 +28529,7 @@ function renderMFV(){
     return `
       <div style="background:var(--bg-card2);border:1px solid var(--border);border-top:3px solid ${cor};border-radius:10px;padding:12px">
         <div style="font-weight:800;font-size:.8rem;color:var(--text-primary);margin-bottom:2px">${e.label}</div>
+        ${e.pop?`<div style="font-size:.62rem;color:var(--text-muted);line-height:1.35;margin-bottom:5px">${escapeHtml(e.pop)}</div>`:''}
         <div style="font-size:.66rem;color:${cor};font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${ehVA?'agrega valor':'não agrega'}</div>
         <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--text-primary);font-weight:700;padding-bottom:6px;border-bottom:1px dashed var(--border)">
           <span>${e.semMedicao?'Espera':'Espera medida'}</span>
