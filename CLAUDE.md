@@ -1,5 +1,13 @@
 # Regras do Projeto — Destak Produtividade
 
+> 🟡 **PERGUNTA ABERTA, AGUARDANDO RESPOSTA DO DANIEL:** [`PERGUNTAS-RAFAEL-MFV.md`](PERGUNTAS-RAFAEL-MFV.md)
+> São 7 perguntas de verificação, feitas pelo Rafael (colaborador). **Nenhuma delas pede
+> para implementar nada** — pedem conferência no código e uma resposta escrita no próprio
+> arquivo. A nº 1 é a que trava as outras: descobrir se alguma coisa LÊ
+> `atribuicoes_armazem.inicio_separacao` ou `conferencia_pedidos.separador_vinculado_em`,
+> e se algum lugar trata `NULL` nessas colunas como estado. Se ler, a proposta cai.
+> Respondido tudo, apague este aviso.
+
 > ⚠️ **LEIA ANTES DE MEXER EM SEGURANÇA/BANCO/INDICADORES/DEPLOY:** [`AUDITORIA-SEGURANCA-2026-08-20.md`](AUDITORIA-SEGURANCA-2026-08-20.md)
 > Auditoria de 5 agentes (feita pelo Claude, a pedido do Rafael, colaborador deste repo). **Parte 1 (Segurança):** o app não tem controle de acesso server-side — sem RLS, sem Supabase Auth, senha em texto puro, chave do ERP hardcoded. **NÃO marque "Enable RLS" sem antes migrar a autenticação** — derruba o app inteiro (todo request usa a mesma `anon`; não há identidade para a policy avaliar). **Parte 2 (Corretude/Dados/Perf/Deploy):** bugs de dinheiro (carga devolvida paga integral, pagamento duplicado, R.E. paga R$0), o indicador "Carregamento no Prazo" pode estar medindo um `limit=5000` e não o armazém, bug de fuso sistêmico (71 lugares em UTC), e o deploy **não tem verificação** (já derrubou a produção uma vez, commit `7005a8f`). `arquivo:linha`, o que é código × o que é banco, e a ordem de conserto estão no arquivo.
 
