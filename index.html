@@ -3326,13 +3326,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Cargas da Expedição que ainda não saíram (separação, carregamento, aguardando NF/manifesto) — valor parado no armazém até a viagem começar</p>
     </div>
     <div style="display:flex;gap:8px">
-      <button onclick="toggleCargPendModo()" id="cargpend-btn-modo" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">📊 Ver % da Meta</button>
+      <button onclick="toggleCargPendModo()" id="cargpend-btn-modo" style="display:none;background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">📊 Ver % da Meta</button>
       <button onclick="carregarCargasPendentesComercial()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
     <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Cargas Pendentes</div><div class="kpi-value" id="cargpend-kpi-qtd">—</div></div>
-    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Valor Total Pendente</div><div class="kpi-value" id="cargpend-kpi-valor" style="font-size:1.3rem">—</div></div>
+    <div class="kpi-card" id="cargpend-kpi-valor-card" style="display:none;border-top-color:#f59e0b"><div class="kpi-label">Valor Total Pendente</div><div class="kpi-value" id="cargpend-kpi-valor" style="font-size:1.3rem">—</div></div>
     <div class="kpi-card" style="border-top-color:var(--green)"><div class="kpi-label">Pedidos nas Cargas Pendentes</div><div class="kpi-value" id="cargpend-kpi-pedidos">—</div></div>
   </div>
   <div id="cargpend-container">
@@ -8384,7 +8384,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.33.0';
+const APP_VERSION = '4.34.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -41816,9 +41816,16 @@ const _STATUS_CARGPEND_CFG = {
 };
 
 let _cargPendCache = null; // {cargas, rotasValorMeta} — evita refetch ao só trocar o modo de exibição
-let _cargPendModo   = 'valor'; // 'valor' | 'pct'
+// Valor em R$ (KPI e modo "Ver Valor") fica restrito a admin — o perfil
+// "comercial" (única outra role com acesso a esta página) só vê % da meta,
+// não o valor total pendente da empresa. Não é controle de acesso real (o
+// app não tem RLS/Auth server-side, ver CLAUDE.md), só evita expor o número
+// na UI padrão pra quem não devia estar vendo.
+const _cargPendPodeVerValor = () => USUARIO_LOGADO?.perfil === 'admin';
+let _cargPendModo = _cargPendPodeVerValor() ? 'valor' : 'pct'; // 'valor' | 'pct'
 
 function toggleCargPendModo(){
+  if(!_cargPendPodeVerValor()) return;
   _cargPendModo = _cargPendModo === 'valor' ? 'pct' : 'valor';
   const btn = document.getElementById('cargpend-btn-modo');
   if(btn) btn.textContent = _cargPendModo === 'valor' ? '📊 Ver % da Meta' : '💰 Ver Valor';
@@ -41829,6 +41836,11 @@ async function carregarCargasPendentesComercial(){
   const container = document.getElementById('cargpend-container');
   if(!container) return;
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+  const podeVerValor = _cargPendPodeVerValor();
+  const btnModo = document.getElementById('cargpend-btn-modo');
+  if(btnModo) btnModo.style.display = podeVerValor ? '' : 'none';
+  const kpiValorCard = document.getElementById('cargpend-kpi-valor-card');
+  if(kpiValorCard) kpiValorCard.style.display = podeVerValor ? '' : 'none';
 
   try{
     // Só cargas que ainda não saíram do armazém — "saiu"/"fim_viagem" já partiram
@@ -41910,7 +41922,8 @@ function _renderCargasPendentesComercial(){
     const abaixoMeta = meta > 0 && val < meta;
 
     let metricaHtml;
-    if(_cargPendModo === 'pct'){
+    const modoEfetivo = _cargPendPodeVerValor() ? _cargPendModo : 'pct';
+    if(modoEfetivo === 'pct'){
       if(meta > 0){
         // % já atingido da meta (não o que falta), travado em 100% quando bate ou passa
         const pct = Math.min(100, Math.round((val/meta)*100));
