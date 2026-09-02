@@ -8384,7 +8384,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.36.0';
+const APP_VERSION = '4.37.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -21003,11 +21003,28 @@ async function carregarPortalMotorista(mesCustom = null){
           `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&fonte=eq.motorista_b&rota=eq.&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
         ).catch(()=>[]) || [];
         if(!_lhRes.length){
-          // Sem auto-registro pendente — mantém o critério original (lançamento
-          // oficial de hoje, feito pela aba Lançamento/operador).
-          _lhRes = await supaFetch(
-            `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&ts=gte.${_hojeStr}T00:00:00-03:00&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=1`
+          // Sem auto-registro pendente — lançamento oficial (aba Lançamento/
+          // operador). Restrito a "hoje" durante muito tempo: um lançamento
+          // feito ontem que a Expedição ainda não tinha processado sumia do
+          // portal no dia seguinte, sem nenhum aviso pro motorista — o mesmo
+          // bug que o auto-registro logo acima já foi corrigido pra não ter.
+          // Corrigido do mesmo jeito: sem limite de data, mas só mostra se a
+          // carga realmente nunca entrou na Expedição (demandas_rota) — se já
+          // tem QUALQUER registro lá (mesmo concluído/cancelado), a busca de
+          // "demanda ativa" no topo desta função já reflete o estado real, e
+          // mostrar de novo aqui ressuscitaria carga já finalizada há semanas.
+          const _lhCandidatos = await supaFetch(
+            `lancamentos?motorista=eq.${encodeURIComponent(_nomeDbLanc)}&select=id,carga,rota,veiculo,ts,rire&order=ts.desc&limit=5`
           ).catch(()=>[]) || [];
+          if(_lhCandidatos.length){
+            const _cargasCand = [...new Set(_lhCandidatos.map(c=>c.carga).filter(Boolean))];
+            const _demsCand = _cargasCand.length
+              ? await supaFetch(`demandas_rota?carga=in.(${_cargasCand.join(',')})&select=carga`).catch(()=>[]) || []
+              : [];
+            const _cargasComDemanda = new Set(_demsCand.map(d=>d.carga));
+            const _cand = _lhCandidatos.find(c=>!_cargasComDemanda.has(c.carga));
+            if(_cand) _lhRes = [_cand];
+          }
         }
         if(_lhRes.length && elCargaAtual){
           const _lh = _lhRes[0];
