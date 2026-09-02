@@ -8384,7 +8384,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.34.0';
+const APP_VERSION = '4.35.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -36205,6 +36205,20 @@ async function carregarPortalConferente(){
       (lancsRota||[]).forEach(l=>{ rotaPorCarga[String(l.carga)] = normalizarRota(l.rota||'')||l.rota||''; });
     }
 
+    // ── Selo de separação por pedido (aba Separação) — só leitura aqui,
+    // não muda o mecanismo de conferência ok/nok ──────────────────────
+    const separacaoPorPedido = {};
+    const cargasMinha = [...new Set((atribsMinha||[]).map(a=>a.carga).filter(Boolean))];
+    if(cargasMinha.length){
+      const sepRows = await supaFetch(`separacao_itens?carga=in.(${cargasMinha.join(',')})&select=carga,pedido,quantidade_separada`).catch(()=>[]);
+      (sepRows||[]).forEach(r=>{
+        const k = r.carga+'_'+r.pedido;
+        if(!separacaoPorPedido[k]) separacaoPorPedido[k] = {total:0, separados:0};
+        separacaoPorPedido[k].total++;
+        if(r.quantidade_separada!=null) separacaoPorPedido[k].separados++;
+      });
+    }
+
     // ── KPIs do mês ─────────────────────────────────────────────
     const pedsMes     = (confMes||[]).length;
     const bonusEstMes = (confMes||[]).reduce((sum,p)=>{
@@ -36403,10 +36417,15 @@ async function carregarPortalConferente(){
             const pedData = pedidos.find(r=>r.pedido===ped)||{};
             const conf = confMap[ped];
             const st = conf?.status||'pendente';
+            const sep = separacaoPorPedido[atr.carga+'_'+ped];
+            const sepHtml = sep && sep.total>0
+              ? `<div style="font-size:.7rem;color:${sep.separados===sep.total?'#34d399':'#f59e0b'};margin-top:2px">📦 ${sep.separados===sep.total?'Separado':'Separando'} — ${sep.separados}/${sep.total} ${sep.total===1?'item':'itens'}</div>`
+              : '';
             return `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:9px;margin-bottom:5px;background:${st==='ok'?'rgba(5,150,105,.08)':st==='nok'?'rgba(239,68,68,.08)':'var(--bg-card2)'}">
               <div>
                 <div style="font-size:.85rem;font-weight:700;color:var(--text-primary)">Pedido ${ped}</div>
                 <div style="font-size:.72rem;color:var(--text-muted)">${pedData.rota||dem.rota||'—'}</div>
+                ${sepHtml}
                 ${conf?.observacao?`<div style="font-size:.7rem;color:#ef4444;margin-top:2px">⚠️ ${escapeHtml(conf.observacao)}</div>`:''}
               </div>
               <div style="display:flex;gap:6px;align-items:center">
@@ -36428,6 +36447,183 @@ async function carregarPortalConferente(){
     container.innerHTML = htmlTotal;
 
   }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; }
+}
+
+// ── Aba Separação — mercadoria por romaneio, dentro do Portal do Conferente ──
+let _confSeparacaoCarregada = false;
+
+function mudarAbaConferente(aba){
+  const btnC = document.getElementById('conf-tab-btn-cargas');
+  const btnS = document.getElementById('conf-tab-btn-separacao');
+  const viewC = document.getElementById('conf-view-cargas');
+  const viewS = document.getElementById('conf-view-separacao');
+  if(!btnC||!btnS||!viewC||!viewS) return;
+  const sepAtiva = aba==='separacao';
+  btnC.style.background = sepAtiva?'transparent':'#2563eb';
+  btnC.style.color      = sepAtiva?'var(--text-secondary)':'#fff';
+  btnS.style.background = sepAtiva?'#2563eb':'transparent';
+  btnS.style.color      = sepAtiva?'#fff':'var(--text-secondary)';
+  viewC.style.display = sepAtiva?'none':'';
+  viewS.style.display = sepAtiva?'':'none';
+  if(sepAtiva && !_confSeparacaoCarregada){
+    _confSeparacaoCarregada = true;
+    carregarSeparacaoConferente();
+  }
+}
+
+function toggleSeparacaoPedido(carga, pedido){
+  const el = document.getElementById(`sep-body-${carga}-${pedido}`);
+  if(el) el.style.display = el.style.display==='none' ? '' : 'none';
+}
+
+function _renderItensSeparacao(carga, pedido, itens, separadosMap){
+  const rows = itens.map((it,i)=>{
+    const s = separadosMap[carga+'_'+pedido+'_'+it.mercadoria];
+    const esperado = Number(it.quantidade_atual)||0;
+    const valorAtual = s && s.quantidade_separada!=null ? s.quantidade_separada : '';
+    const divergente = valorAtual!=='' && Number(valorAtual)!==esperado;
+    let bg='var(--bg-input)', bd='var(--border-med)', txt='var(--text-primary)';
+    if(divergente){ bg='rgba(239,68,68,.12)'; bd='#ef4444'; txt='#fca5a5'; }
+    else if(valorAtual!==''){ bg='rgba(5,150,105,.12)'; bd='#059669'; txt='#34d399'; }
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.82rem;font-weight:700;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.descricao||it.mercadoria||'—')}</div>
+        <div style="font-size:.68rem;color:${divergente?'#ef4444':'var(--text-muted)'}">${escapeHtml(it.referencia||'')} · esperado: ${esperado}${divergente?' — divergente':''}</div>
+      </div>
+      <input type="number" id="sep-qtd-${carga}-${pedido}-${i}" data-mercadoria="${escapeHtml(it.mercadoria)}" data-esperado="${esperado}" value="${valorAtual}" placeholder="—"
+        style="width:64px;text-align:center;border-radius:8px;padding:7px 4px;font-size:.88rem;font-weight:700;outline:none;border:1.5px solid ${bd};background:${bg};color:${txt}">
+    </div>`;
+  }).join('');
+  return `<div style="padding:4px 14px 12px">
+    ${rows}
+    <button onclick="salvarSeparacaoPedido(${carga},${pedido},${itens.length})" style="width:100%;margin-top:12px;background:#2563eb;color:#fff;border:none;border-radius:9px;padding:10px;font-size:.82rem;font-weight:700;cursor:pointer">💾 Salvar Separação do Pedido</button>
+  </div>`;
+}
+
+async function carregarSeparacaoConferente(){
+  const container = document.getElementById('conf-separacao-container');
+  if(!container || !USUARIO_LOGADO) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+  try{
+    const myId = USUARIO_LOGADO.id;
+    const atribs = await supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`) || [];
+    if(!atribs.length){
+      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga atribuída no momento.</p>';
+      return;
+    }
+    const cargas = [...new Set(atribs.map(a=>a.carga))];
+    const [demandas, baseRows] = await Promise.all([
+      supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&select=carga,rota&limit=500`).catch(()=>[]),
+      supaFetch(`base_data?carga=in.(${cargas.join(',')})&select=carga,pedido&order=carga.asc,pedido.asc&limit=5000`).catch(()=>[])
+    ]);
+    const rotaPorCarga = {};
+    (demandas||[]).forEach(d=>{ if(d.carga) rotaPorCarga[d.carga] = d.rota||''; });
+
+    // Pedidos por atribuição, respeitando a fatia pedido_inicio/pedido_fim —
+    // mesma lógica de carregarPortalConferente, pra bater com a outra aba.
+    const pedidosPorCarga = {};
+    (baseRows||[]).forEach(r=>{ if(!pedidosPorCarga[r.carga]) pedidosPorCarga[r.carga]=[]; pedidosPorCarga[r.carga].push(r.pedido); });
+
+    const pedidosTotais = new Set();
+    const atribPedidos = {};
+    atribs.forEach(atr=>{
+      let peds = [...new Set(pedidosPorCarga[atr.carga]||[])].sort((a,b)=>a-b);
+      if(atr.pedido_inicio!=null) peds = peds.filter(p=>p>=atr.pedido_inicio && (atr.pedido_fim==null || p<=atr.pedido_fim));
+      atribPedidos[atr.id] = peds;
+      peds.forEach(p=>pedidosTotais.add(p));
+    });
+
+    const pedidosArr = [...pedidosTotais];
+    if(!pedidosArr.length){
+      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhum pedido encontrado pra essas cargas — a planilha pode não ter sido importada ainda.</p>';
+      return;
+    }
+
+    const [itensErp, jaSeparados] = await Promise.all([
+      supaFetch(`pedidos_itens_erp?pedido=in.(${pedidosArr.join(',')})&status=eq.ativo&select=pedido,mercadoria,descricao,referencia,quantidade_atual&order=pedido.asc`).catch(()=>[]),
+      supaFetch(`separacao_itens?carga=in.(${cargas.join(',')})&select=*`).catch(()=>[])
+    ]);
+
+    const itensPorPedido = {};
+    (itensErp||[]).forEach(it=>{ if(!itensPorPedido[it.pedido]) itensPorPedido[it.pedido]=[]; itensPorPedido[it.pedido].push(it); });
+
+    const separadosMap = {};
+    (jaSeparados||[]).forEach(r=>{ separadosMap[r.carga+'_'+r.pedido+'_'+r.mercadoria] = r; });
+
+    const html = atribs.map(atr=>{
+      const peds = atribPedidos[atr.id]||[];
+      if(!peds.length) return '';
+      const pedsComItens = peds.filter(p=>(itensPorPedido[p]||[]).length);
+      const pedidosSeparadosCount = pedsComItens.filter(p=>{
+        const itens = itensPorPedido[p]||[];
+        return itens.length && itens.every(it=>separadosMap[atr.carga+'_'+p+'_'+it.mercadoria]?.quantidade_separada!=null);
+      }).length;
+      const pctCarga = pedsComItens.length ? Math.round(pedidosSeparadosCount/pedsComItens.length*100) : 0;
+
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #2563eb;border-radius:14px;margin-bottom:16px;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(37,99,235,.05)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <div>
+              <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">🚛 Carga ${atr.carga}</span>
+              <span style="margin-left:8px;font-size:.8rem;color:var(--text-secondary)">${rotaPorCarga[atr.carga]||'—'}</span>
+            </div>
+            <span style="font-size:.8rem;color:var(--text-secondary)">${pedidosSeparadosCount}/${pedsComItens.length} pedidos separados</span>
+          </div>
+          <div style="margin-top:8px;background:rgba(255,255,255,.07);border-radius:3px;height:4px;overflow:hidden">
+            <div style="height:100%;background:#2563eb;width:${pctCarga}%;transition:width .4s"></div>
+          </div>
+        </div>
+        <div style="padding:6px 18px 14px">
+          ${peds.map(p=>{
+            const itens = itensPorPedido[p]||[];
+            if(!itens.length) return `<div style="padding:10px 12px;color:var(--text-muted);font-size:.8rem">Pedido ${p} — itens não encontrados (planilha do ERP pode não ter chegado ainda)</div>`;
+            const feitos = itens.filter(it=>separadosMap[atr.carga+'_'+p+'_'+it.mercadoria]?.quantidade_separada!=null).length;
+            const todosProntos = feitos===itens.length;
+            return `<div style="border-radius:12px;margin-top:10px;background:${todosProntos?'rgba(5,150,105,.07)':'var(--bg-card2)'};${todosProntos?'border:1px solid rgba(5,150,105,.2)':''};overflow:hidden">
+              <div style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSeparacaoPedido(${atr.carga},${p})">
+                <span style="font-size:.85rem;font-weight:700;color:var(--text-primary)">Pedido ${p}</span>
+                <span style="font-size:.75rem;font-weight:700;color:${todosProntos?'#34d399':'var(--text-muted)'}">${todosProntos?'✅ ':''}${feitos}/${itens.length} itens</span>
+              </div>
+              <div id="sep-body-${atr.carga}-${p}" style="display:none">${_renderItensSeparacao(atr.carga,p,itens,separadosMap)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('');
+
+    container.innerHTML = html || '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga com pedidos pra separar no momento.</p>';
+  }catch(e){
+    container.innerHTML = '<p style="text-align:center;padding:30px;color:#ef4444">Erro: '+e.message+'</p>';
+  }
+}
+
+async function salvarSeparacaoPedido(carga, pedido, totalItens){
+  const rows = [];
+  for(let i=0;i<totalItens;i++){
+    const inp = document.getElementById(`sep-qtd-${carga}-${pedido}-${i}`);
+    if(!inp) continue;
+    const v = inp.value.trim();
+    if(v==='') continue; // só grava o que foi preenchido — item deixado em branco fica pendente
+    rows.push({
+      carga: Number(carga), pedido: Number(pedido),
+      mercadoria: inp.dataset.mercadoria,
+      quantidade_esperada: inp.dataset.esperado!==''?Number(inp.dataset.esperado):null,
+      quantidade_separada: Number(v),
+      conferente_id: USUARIO_LOGADO?.id||null,
+      conferente_nome: USUARIO_LOGADO?.nome||null,
+      separado_em: new Date().toISOString()
+    });
+  }
+  if(!rows.length){ showToast('Preencha ao menos uma quantidade','warning'); return; }
+  try{
+    await supaFetch('separacao_itens?on_conflict=carga,pedido,mercadoria',{
+      method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify(rows)
+    });
+    showToast('✅ Separação salva!','success');
+    _confSeparacaoCarregada = false;
+    await carregarSeparacaoConferente();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 async function buscarCargaConferente(){
@@ -46465,7 +46661,15 @@ function _cftvRenderTable(data){
     </div>
   </div>
 
-  <div style="max-width:960px;margin:0 auto;padding:20px 16px 40px">
+  <div style="max-width:960px;margin:0 auto;padding:16px 16px 0">
+    <!-- Abas: Minhas Cargas (conferência, como sempre foi) / Separação (novo — mercadoria por romaneio) -->
+    <div style="display:flex;gap:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:6px">
+      <button id="conf-tab-btn-cargas" onclick="mudarAbaConferente('cargas')" style="flex:1;text-align:center;padding:9px 0;border-radius:8px;border:none;cursor:pointer;background:#2563eb;color:#fff;font-size:.82rem;font-weight:700">📦 Minhas Cargas</button>
+      <button id="conf-tab-btn-separacao" onclick="mudarAbaConferente('separacao')" style="flex:1;text-align:center;padding:9px 0;border-radius:8px;border:none;cursor:pointer;background:transparent;color:var(--text-secondary);font-size:.82rem;font-weight:700">📋 Separação</button>
+    </div>
+  </div>
+
+  <div id="conf-view-cargas" style="max-width:960px;margin:0 auto;padding:4px 16px 40px">
 
     <!-- KPIs: 3+3 -->
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px">
@@ -46537,6 +46741,14 @@ function _cftvRenderTable(data){
       </div>
     </div>
 
+  </div>
+
+  <!-- Aba Separação — mercadoria por romaneio, mesmas cargas da aba Minhas Cargas -->
+  <div id="conf-view-separacao" style="display:none;max-width:960px;margin:0 auto;padding:4px 16px 40px">
+    <p style="font-size:.78rem;color:var(--text-muted);margin:0 0 16px;line-height:1.5">Mesmas cargas da aba Minhas Cargas — aqui você separa a mercadoria de cada pedido e registra a quantidade real.</p>
+    <div id="conf-separacao-container">
+      <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
+    </div>
   </div>
 </div>
 
