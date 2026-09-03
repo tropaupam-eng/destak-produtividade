@@ -8434,7 +8434,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.43.1';
+const APP_VERSION = '4.44.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -42419,13 +42419,30 @@ async function abrirVendedoresRota(rota, carga){
   const countCli = document.getElementById('vr-count-cli');
   if(listaClientes){
     try{
-      const [todosPedidos, pedidosCarga, vendedoresCad] = await Promise.all([
+      const [todosPedidos, pedidosCarga, vendedoresCad, codigosErp] = await Promise.all([
         supaFetch('base_data?select=cliente,rota,data_pedido,vendedor_cod&cliente=not.is.null&cliente=neq.&rota=not.is.null&rota=neq.&limit=20000').catch(()=>[]),
         carga ? supaFetch(`base_data?carga=eq.${encodeURIComponent(carga)}&select=cliente`).catch(()=>[]) : Promise.resolve([]),
         supaFetch('usuarios?perfil=eq.vendedor&select=nome,codigo_vendedor').catch(()=>[]),
+        // base_data.cliente não tem coluna de código — só o texto. O código
+        // real vem do ERP (pedidos_info_erp.codigo_cliente), casado pelo
+        // nome do cliente (maiúsculo/trim) já que não há FK entre as tabelas.
+        supaFetch('pedidos_info_erp?select=cliente,codigo_cliente&codigo_cliente=not.is.null&limit=31000').catch(()=>[]),
       ]);
       const nomePorCodVendedor = {};
       (vendedoresCad||[]).forEach(u=>{ if(u.codigo_vendedor!=null) nomePorCodVendedor[u.codigo_vendedor] = u.nome; });
+
+      const codigoPorCliente = {};
+      (codigosErp||[]).forEach(p=>{
+        if(p.cliente && p.codigo_cliente) codigoPorCliente[p.cliente.trim().toUpperCase()] = p.codigo_cliente;
+      });
+      // Alguns registros antigos (planilha) já vêm com "1234 - NOME" dentro
+      // do próprio texto do cliente — nesse caso o código embutido tem
+      // prioridade sobre o lookup do ERP.
+      const codigoENome = (clienteRaw)=>{
+        const m = clienteRaw.match(/^(\d+)\s*[-–]\s*(.+)$/);
+        if(m) return { codigo: m[1], nome: m[2].trim() };
+        return { codigo: codigoPorCliente[clienteRaw.trim().toUpperCase()] || null, nome: clienteRaw };
+      };
 
       const clientesDaRota = new Set();
       const ultimaCompraPorCliente = {};
@@ -42455,9 +42472,10 @@ async function abrirVendedoresRota(rota, carga){
           const ultimaFmt = ultima ? ultima.slice(0,10).split('-').reverse().join('/').slice(0,5) : '—';
           const codVend = ultimoVendedorPorCliente[c];
           const nomeVend = codVend!=null ? (nomePorCodVendedor[codVend] || `cód. ${codVend}`) : null;
+          const { codigo, nome } = codigoENome(c);
           return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
-            <div style="font-size:.75rem;font-weight:600;color:var(--text-secondary)">${escapeHtml(c)}</div>
-            <div style="font-size:.68rem;color:var(--text-muted)">últ. compra ${ultimaFmt}${nomeVend?' · '+escapeHtml(nomeVend):''}</div>
+            <div style="font-size:.75rem;font-weight:700;color:var(--text-primary)">${escapeHtml(nome)}</div>
+            <div style="font-size:.69rem;color:var(--text-secondary);margin-top:1px">${codigo?`cód. ${escapeHtml(String(codigo))} · `:''}últ. compra ${ultimaFmt}${nomeVend?' · '+escapeHtml(nomeVend):''}</div>
           </div>`;
         }).join('');
       }
