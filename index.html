@@ -2090,7 +2090,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <p style="font-size:.75rem;color:var(--text-muted);margin:3px 0 0">Rota Interna (R.I.) — unidade definida pelo seu perfil</p>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr 160px;gap:14px;align-items:end">
+    <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr 1fr 160px;gap:14px;align-items:end">
 
       <div>
         <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Nº da Carga *</label>
@@ -2118,6 +2118,13 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <div>
         <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Rota *</label>
         <select id="l-rota-input" style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.85rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
+          <option value="">Carregando...</option>
+        </select>
+      </div>
+
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:5px">Conferente</label>
+        <select id="l-conferente" style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.85rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
           <option value="">Carregando...</option>
         </select>
       </div>
@@ -8436,7 +8443,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.47.0';
+const APP_VERSION = '4.48.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -12401,6 +12408,12 @@ async function lancar(){
     salvarLanc();
   }
 
+  // Conferente selecionado no lançamento — grava o vínculo em
+  // atribuicoes_armazem se ainda não existir pra essa carga (pedido do
+  // usuário, 2026-09-04: além de mostrar quem já conferiu, dá pra lançar
+  // o conferente aqui mesmo). Fire-and-forget: não trava o lançamento.
+  _lancarConferenteSelecionado(carga).catch(()=>{});
+
   // Presença automática: motorista lançado = presente no absenteísmo
   if(mot && !ehVeiculoFrete(veiculo)){
     const diaLanc = tsLanc.slice(0,10);
@@ -12414,6 +12427,8 @@ async function lancar(){
   const _lVeicSel = document.getElementById('l-veiculo');
   _lVeicSel.value=''; _lVeicSel.dispatchEvent(new Event('change'));
   document.getElementById('l-rota-input').value='';
+  const _lConfSel = document.getElementById('l-conferente');
+  if(_lConfSel) _lConfSel.value='';
   // Limpa select de unidade (admin) mas mantém hidden para usuário com unidade fixa
   const _undSel2 = document.getElementById('l-und-select');
   if(_undSel2 && _undSel2.style.display!=='none'){ _undSel2.value=''; document.getElementById('l-und').value=''; }
@@ -24771,6 +24786,10 @@ function popularFormLancamento(){
     veicSel.onchange = onVeiculoChangeLanc;
     aplicarSelectBuscavel('l-veiculo');
   }
+  // Conferente — pedido do usuário: dá pra lançar/registrar o conferente
+  // junto com a carga, não só ver o que já foi vinculado no armazém. Mesmo
+  // padrão de popular-por-unidade já usado no form de Abastecimento.
+  popularConferentesLanc();
   // Rotas internas (RI)
   const rotaSel = document.getElementById('l-rota-input');
   if(rotaSel){
@@ -24934,12 +24953,22 @@ async function previewCargaLanc(val){
   // de select manual (pedido do usuário, 2026-09-04).
   let conferentes = [];
   try{
-    const rowsConf = await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_nome=not.is.null&select=conferente_nome`);
-    conferentes = [...new Set((rowsConf||[]).map(r=>r.conferente_nome).filter(Boolean))];
+    const rowsConf = await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_nome=not.is.null&select=conferente_id,conferente_nome`);
+    const vistos = new Set();
+    (rowsConf||[]).forEach(r=>{ if(r.conferente_nome && !vistos.has(r.conferente_nome)){ vistos.add(r.conferente_nome); conferentes.push(r); } });
+    // Só 1 conferente já vinculado → pré-seleciona no campo do lançamento,
+    // pra confirmar em vez de precisar escolher de novo. Com mais de 1
+    // (pedidos separados por gente diferente) deixa em branco pra não
+    // escolher errado por conta própria.
+    const selConf = document.getElementById('l-conferente');
+    if(selConf && conferentes.length === 1 && !selConf.value){
+      const opt = [...selConf.options].find(o=>o.value===String(conferentes[0].conferente_id));
+      if(opt) selConf.value = opt.value;
+    }
   }catch(e){}
 
   const inputAtual = parseInt(document.getElementById('l-carga')?.value);
-  if(inputAtual === carga) _renderPreviewCargaLanc(carga, linhas, lancExist||null, conferentes);
+  if(inputAtual === carga) _renderPreviewCargaLanc(carga, linhas, lancExist||null, conferentes.map(c=>c.conferente_nome));
 }
 
 async function popularAjudantesLanc(){
@@ -24952,6 +24981,37 @@ async function popularAjudantesLanc(){
       (ajudantes||[]).map(a=>`<option value="${escapeHtml(a.nome)}">${escapeHtml(a.nome)}</option>`).join('');
     sel.value = cur;
   }catch(e){}
+}
+
+async function popularConferentesLanc(){
+  const sel = document.getElementById('l-conferente');
+  if(!sel) return;
+  try{
+    const undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+    let confs = await supaFetch('conferentes?ativo=eq.true&order=nome.asc&select=id,nome,unidade').catch(()=>[]);
+    if(undUsr) confs = (confs||[]).filter(c=>(c.unidade||'').trim()===undUsr);
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Sem conferente</option>' +
+      (confs||[]).map(c=>`<option value="${c.id}" data-nome="${escapeHtml(c.nome)}">${escapeHtml(c.nome)}</option>`).join('');
+    sel.value = cur;
+  }catch(e){}
+}
+
+// Grava o vínculo carga↔conferente escolhido no form de Lançamento — mesma
+// tabela (atribuicoes_armazem) usada pelo armazém, só que sem exigir que a
+// carga já tenha uma demanda_rota (nem sempre existe pra Rota Interna).
+async function _lancarConferenteSelecionado(carga){
+  const sel = document.getElementById('l-conferente');
+  const confId = sel?.value;
+  if(!confId) return;
+  const confNome = sel.options[sel.selectedIndex]?.dataset.nome || '';
+  if(!confNome) return;
+  const jaVinculado = await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${confId}&select=id&limit=1`).catch(()=>[]);
+  if(jaVinculado && jaVinculado.length) return;
+  await supaFetch('atribuicoes_armazem',{
+    method:'POST',
+    body:JSON.stringify({ carga, conferente_id:confId, conferente_nome:confNome, status:'pendente', criado_em:new Date().toISOString() })
+  });
 }
 
 function popularMotoristas() {
