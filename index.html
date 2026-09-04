@@ -8436,7 +8436,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.46.0';
+const APP_VERSION = '4.47.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -24816,7 +24816,7 @@ function popularFormLancamento(){
   }
 }
 
-function _renderPreviewCargaLanc(carga, linhas, lancExist){
+function _renderPreviewCargaLanc(carga, linhas, lancExist, conferentes){
   const prev    = document.getElementById('carga-preview');
   const title   = document.getElementById('preview-title');
   const grid    = document.getElementById('preview-grid');
@@ -24854,11 +24854,21 @@ function _renderPreviewCargaLanc(carga, linhas, lancExist){
   const rotaLabel = rotaLanc
     ? `<span>🗺️ Rota: <b style="color:#059669">${rotaLanc}</b></span>`
     : (rotaBase ? `<span>🗺️ Rota: <b>${rotaBase}</b></span>` : '');
+  // Conferente vem de atribuicoes_armazem — uma carga pode ter mais de um
+  // (pedidos separados por conferentes diferentes), por isso é lista, não
+  // nome único. undefined = ainda buscando (1ª renderização síncrona antes
+  // do fetch); [] = já buscou e não achou vínculo nenhum.
+  const conferenteLabel = conferentes===undefined
+    ? `<span style="color:var(--text-muted)">🧑‍🔧 Conferente: carregando...</span>`
+    : conferentes.length
+      ? `<span>🧑‍🔧 Conferente: <b>${conferentes.map(escapeHtml).join(', ')}</b></span>`
+      : `<span style="color:var(--text-muted)">🧑‍🔧 Sem conferente vinculado</span>`;
   if(grid) grid.innerHTML = [
     `<span>📦 <b>${pedidos.length}</b> pedidos</span>`,
     valor>0?`<span>💰 <b>R$ ${Number(valor).toLocaleString('pt-BR',{minimumFractionDigits:2})}</b></span>`:'',
     rotaLabel,
     condutor?`<span>🚗 Condutor: <b>${condutor}</b></span>`:'',
+    conferenteLabel,
     dataLancLabel?`<span>📅 Lançado em: <b>${dataLancLabel}</b></span>`:'',
     semMotoristaReal?`<button onclick="_focarMotoristaLanc()" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:.76rem;font-weight:700;cursor:pointer">✏️ Editar / definir motorista</button>`:'',
   ].filter(Boolean).join('');
@@ -24904,8 +24914,9 @@ async function previewCargaLanc(val){
   // 1ª tentativa: array em memória (rápido, cobre 2000 lançamentos mais recentes)
   let lancExist = (lancamentos||[]).find(l=>Math.round(Number(l.carga))===carga);
 
-  // Renderiza imediatamente com o que temos (evita delay perceptível)
-  _renderPreviewCargaLanc(carga, linhas, lancExist||null);
+  // Renderiza imediatamente com o que temos (evita delay perceptível) —
+  // conferentes ainda undefined = mostra "carregando..." até o fetch abaixo voltar
+  _renderPreviewCargaLanc(carga, linhas, lancExist||null, undefined);
 
   // 2ª tentativa: se não encontrado em memória, consulta Supabase diretamente
   // (carga pode ser anterior aos 2000 do cache, ou o sync ainda não terminou)
@@ -24914,12 +24925,21 @@ async function previewCargaLanc(val){
       const res = await supaFetch(`lancamentos?carga=eq.${carga}&select=carga,motorista,rota,rire,und,ts&limit=1`);
       if(res && res.length > 0){
         lancExist = res[0];
-        // Re-renderiza com dados reais do banco
-        const inputAtual = parseInt(document.getElementById('l-carga')?.value);
-        if(inputAtual === carga) _renderPreviewCargaLanc(carga, linhas, lancExist);
       }
     }catch(e){}
   }
+
+  // Conferente(s) vinculado(s) à carga no armazém — a separação acontece
+  // antes do lançamento, então já dá pra mostrar quem conferiu sem precisar
+  // de select manual (pedido do usuário, 2026-09-04).
+  let conferentes = [];
+  try{
+    const rowsConf = await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_nome=not.is.null&select=conferente_nome`);
+    conferentes = [...new Set((rowsConf||[]).map(r=>r.conferente_nome).filter(Boolean))];
+  }catch(e){}
+
+  const inputAtual = parseInt(document.getElementById('l-carga')?.value);
+  if(inputAtual === carga) _renderPreviewCargaLanc(carga, linhas, lancExist||null, conferentes);
 }
 
 async function popularAjudantesLanc(){
