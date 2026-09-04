@@ -2260,6 +2260,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         </select>
       </div>
       <div>
+        <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Produto</label>
+        <input id="l-ocorr-produto" type="text" placeholder="Ex: Maçã Peruana" list="l-ocorr-produto-list"
+          style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
+        <datalist id="l-ocorr-produto-list"></datalist>
+      </div>
+      <div>
         <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Rota <span id="l-ocorr-rota-hint" style="color:#2563eb;font-weight:600"></span></label>
         <select id="l-ocorr-rota"
           style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);cursor:pointer">
@@ -6082,6 +6088,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           </select>
         </div>
         <div>
+          <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Produto</label>
+          <input id="ocorr-produto" type="text" placeholder="Ex: Maçã Peruana" list="ocorr-produto-list"
+            style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
+          <datalist id="ocorr-produto-list"></datalist>
+        </div>
+        <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Rota <span id="ocorr-rota-hint" style="color:#2563eb;font-weight:600"></span></label>
           <input id="ocorr-rota" type="text" placeholder="Ex: PIRACANJUBA"
             style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box;text-transform:uppercase">
@@ -8432,7 +8444,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.48.2';
+const APP_VERSION = '4.49.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -16067,6 +16079,8 @@ let _filtroStatus    = '';
 let _filtroTipoRota  = '';
 let _ocorrenciasDistribCache = [];
 let _ocorrFiltro = 'pendente'; // '' | 'RI' | 'RE'
+let _ocorrValorPorPedido = {};
+let _ocorrConferentePorCarga = {};
 
 // Helper: retorna tipo da rota (RI/RE) a partir do ROTAS_CACHE
 function getTipoRota(nomeRota){
@@ -16470,6 +16484,31 @@ async function carregarOcorrenciasDistrib(){
   try{
     const data = await supaFetch('ocorrencias_distribuicao?order=criado_em.desc&limit=500') || [];
     _ocorrenciasDistribCache = data;
+
+    // Valor (base_data) e conferente (atribuicoes_armazem) não são colunas da
+    // própria ocorrência — busca em lote por pedido/carga distintos em vez de
+    // uma consulta por card (pedido do usuário, 2026-09-04).
+    _ocorrValorPorPedido = {};
+    _ocorrConferentePorCarga = {};
+    const pedidos = [...new Set(data.map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p)))];
+    const cargas  = [...new Set(data.map(o=>o.carga).filter(c=>Number.isInteger(c)))];
+    try{
+      if(pedidos.length){
+        const rows = await supaFetch(`base_data?pedido=in.(${pedidos.join(',')})&select=pedido,valor`) || [];
+        rows.forEach(r=>{ if(r.pedido!=null) _ocorrValorPorPedido[r.pedido] = Number(r.valor)||0; });
+      }
+    }catch(e){}
+    try{
+      if(cargas.length){
+        const rows = await supaFetch(`atribuicoes_armazem?carga=in.(${cargas.join(',')})&conferente_nome=not.is.null&select=carga,conferente_nome`) || [];
+        rows.forEach(r=>{
+          if(r.carga==null || !r.conferente_nome) return;
+          if(!_ocorrConferentePorCarga[r.carga]) _ocorrConferentePorCarga[r.carga] = new Set();
+          _ocorrConferentePorCarga[r.carga].add(r.conferente_nome);
+        });
+      }
+    }catch(e){}
+
     _atualizarBadgeOcorr();
     renderOcorrenciasDistrib();
   }catch(e){
@@ -16535,15 +16574,29 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
   el.innerHTML = dados.map(o=>{
     const tc = tipoCfg[o.tipo] || tipoCfg.outro;
     const isPend = o.status === 'pendente';
+    // Valor e conferente não são colunas da ocorrência — vêm dos lookups em
+    // lote montados em carregarOcorrenciasDistrib() (base_data e
+    // atribuicoes_armazem, por pedido/carga). Podem não existir ainda pra
+    // ocorrências antigas, ou se o pedido/carga não bateu em nenhuma tabela.
+    const valor = o.pedido!=null ? _ocorrValorPorPedido[String(o.pedido).trim()] : undefined;
+    const confSet = o.carga!=null ? _ocorrConferentePorCarga[o.carga] : null;
+    const conferentes = confSet ? [...confSet].join(', ') : '';
+    const detalhes = [
+      o.produto ? `📦 ${escapeHtml(o.produto)}` : '',
+      valor!=null ? `💰 ${valor.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}` : '',
+      conferentes ? `🧑‍🔧 ${escapeHtml(conferentes)}` : '',
+    ].filter(Boolean).join(' · ');
     return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${isPend?'#dc2626':'#059669'};border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
           <span style="font-weight:800;font-size:.95rem;color:var(--text-primary)">Pedido #${o.pedido}</span>
           <span style="font-size:.72rem;font-weight:700;background:${tc.bg};color:${tc.color};padding:2px 8px;border-radius:10px">${tc.label}</span>
           ${o.rota?`<span style="font-size:.72rem;font-weight:600;background:var(--bg-card2);color:var(--text-secondary);padding:2px 8px;border-radius:10px">${o.rota}</span>`:''}
+          ${o.carga?`<span style="font-size:.72rem;font-weight:600;background:var(--bg-card2);color:var(--text-secondary);padding:2px 8px;border-radius:10px">Carga #${o.carga}</span>`:''}
           ${isPend?`<span style="font-size:.72rem;font-weight:700;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px">Pendente</span>`:`<span style="font-size:.72rem;font-weight:700;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:10px">Resolvida</span>`}
         </div>
         ${o.descricao?`<div style="font-size:.8rem;color:var(--text-secondary);margin-bottom:4px">${o.descricao}</div>`:''}
+        ${detalhes?`<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">${detalhes}</div>`:''}
         <div style="font-size:.72rem;color:var(--text-muted)">
           Registrado em ${fmtDt(o.criado_em)}${o.criado_por?' por '+o.criado_por:''}
           ${o.resolvido_em?` · Resolvido em ${fmtDt(o.resolvido_em)}${o.resolvido_por?' por '+o.resolvido_por:''}` : ''}
@@ -16575,10 +16628,24 @@ function renderOcorrenciasDistrib(){
   });
 }
 
+// Preenche o <datalist> de produto com os itens do pedido (pedidos_itens_erp)
+// — pedido pode ter dezenas de itens, então é autocomplete, não select fixo.
+async function _ocorrPopularProdutos(pedido, datalistId){
+  const dl = document.getElementById(datalistId);
+  if(!dl) return;
+  if(!pedido || !/^\d+$/.test(pedido)){ dl.innerHTML=''; return; }
+  try{
+    const itens = await supaFetch(`pedidos_itens_erp?pedido=eq.${encodeURIComponent(pedido)}&select=mercadoria&limit=200`) || [];
+    const nomes = [...new Set(itens.map(i=>i.mercadoria).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+    dl.innerHTML = nomes.map(n=>`<option value="${escapeHtml(n)}">`).join('');
+  }catch(e){}
+}
+
 async function ocorrAutoRota(){
   const pedido = (document.getElementById('ocorr-pedido')?.value||'').trim();
   const rotaEl = document.getElementById('ocorr-rota');
   const hint   = document.getElementById('ocorr-rota-hint');
+  _ocorrPopularProdutos(pedido, 'ocorr-produto-list');
   if(!pedido || pedido.length < 4) return;
   try{
     const rows = await supaFetch(`base_data?pedido=eq.${encodeURIComponent(pedido)}&select=rota,carga&limit=1`) || [];
@@ -16590,9 +16657,10 @@ async function ocorrAutoRota(){
 }
 
 async function salvarOcorrenciaDistrib(){
-  const pedido = (document.getElementById('ocorr-pedido')?.value||'').trim();
-  const tipo   = document.getElementById('ocorr-tipo')?.value||'';
-  const desc   = (document.getElementById('ocorr-descricao')?.value||'').trim();
+  const pedido  = (document.getElementById('ocorr-pedido')?.value||'').trim();
+  const tipo    = document.getElementById('ocorr-tipo')?.value||'';
+  const produto = (document.getElementById('ocorr-produto')?.value||'').trim();
+  const desc    = (document.getElementById('ocorr-descricao')?.value||'').trim();
   if(!pedido){ showToast('Informe o número do pedido','warning'); return; }
   if(!tipo)  { showToast('Selecione o tipo de ocorrência','warning'); return; }
 
@@ -16613,10 +16681,10 @@ async function salvarOcorrenciaDistrib(){
   try{
     await supaFetch('ocorrencias_distribuicao',{
       method:'POST',
-      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
+      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, produto:produto||null, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
     });
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
-    ['ocorr-pedido','ocorr-rota','ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+    ['ocorr-pedido','ocorr-rota','ocorr-produto','ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
     const tipoEl=document.getElementById('ocorr-tipo'); if(tipoEl) tipoEl.value='';
     const hint=document.getElementById('ocorr-rota-hint'); if(hint) hint.textContent='';
     await carregarOcorrenciasDistrib();
@@ -16696,6 +16764,7 @@ async function ocorrAutoRotaLanc(){
   const pedido = (document.getElementById('l-ocorr-pedido')?.value||'').trim();
   const rotaEl = document.getElementById('l-ocorr-rota');
   const hint   = document.getElementById('l-ocorr-rota-hint');
+  _ocorrPopularProdutos(pedido, 'l-ocorr-produto-list');
   if(!pedido) { if(hint) hint.textContent=''; return; }
   try{
     const rows = await supaFetch(`base_data?pedido=eq.${encodeURIComponent(pedido)}&select=rota,carga&limit=1`) || [];
@@ -16709,9 +16778,10 @@ async function ocorrAutoRotaLanc(){
 }
 
 async function salvarOcorrenciaLanc(){
-  const pedido = (document.getElementById('l-ocorr-pedido')?.value||'').trim();
-  const tipo   = document.getElementById('l-ocorr-tipo')?.value||'';
-  const desc   = (document.getElementById('l-ocorr-descricao')?.value||'').trim();
+  const pedido  = (document.getElementById('l-ocorr-pedido')?.value||'').trim();
+  const tipo    = document.getElementById('l-ocorr-tipo')?.value||'';
+  const produto = (document.getElementById('l-ocorr-produto')?.value||'').trim();
+  const desc    = (document.getElementById('l-ocorr-descricao')?.value||'').trim();
   if(!pedido){ showToast('Informe o número do pedido','warning'); return; }
   if(!tipo)  { showToast('Selecione o tipo de ocorrência','warning'); return; }
   const usuario = USUARIO_LOGADO?.nome || USUARIO_LOGADO?.email || null;
@@ -16727,10 +16797,10 @@ async function salvarOcorrenciaLanc(){
   try{
     await supaFetch('ocorrencias_distribuicao',{
       method:'POST',
-      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
+      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, produto:produto||null, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
     });
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
-    ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+    ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-produto','l-ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
     const tipoEl=document.getElementById('l-ocorr-tipo'); if(tipoEl) tipoEl.value='';
     const hint=document.getElementById('l-ocorr-rota-hint'); if(hint) hint.textContent='';
     await carregarOcorrenciasDistrib();
