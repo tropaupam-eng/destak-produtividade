@@ -2261,9 +2261,15 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       </div>
       <div>
         <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Produto</label>
-        <input id="l-ocorr-produto" type="text" placeholder="Ex: Maçã Peruana" list="l-ocorr-produto-list"
+        <select id="l-ocorr-produto"
+          style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);cursor:pointer">
+          <option value="">Informe o pedido...</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Quantidade</label>
+        <input id="l-ocorr-quantidade" type="number" min="0" step="1" placeholder="Ex: 2"
           style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
-        <datalist id="l-ocorr-produto-list"></datalist>
       </div>
       <div>
         <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Rota <span id="l-ocorr-rota-hint" style="color:#2563eb;font-weight:600"></span></label>
@@ -6089,9 +6095,15 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         </div>
         <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Produto</label>
-          <input id="ocorr-produto" type="text" placeholder="Ex: Maçã Peruana" list="ocorr-produto-list"
+          <select id="ocorr-produto"
+            style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);cursor:pointer">
+            <option value="">Informe o pedido...</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Quantidade</label>
+          <input id="ocorr-quantidade" type="number" min="0" step="1" placeholder="Ex: 2"
             style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
-          <datalist id="ocorr-produto-list"></datalist>
         </div>
         <div>
           <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Rota <span id="ocorr-rota-hint" style="color:#2563eb;font-weight:600"></span></label>
@@ -8444,7 +8456,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.49.0';
+const APP_VERSION = '4.50.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -16081,6 +16093,8 @@ let _ocorrenciasDistribCache = [];
 let _ocorrFiltro = 'pendente'; // '' | 'RI' | 'RE'
 let _ocorrValorPorPedido = {};
 let _ocorrConferentePorCarga = {};
+let _ocorrConferentePorPedido = {};
+let _ocorrVeiculoPorCarga = {};
 
 // Helper: retorna tipo da rota (RI/RE) a partir do ROTAS_CACHE
 function getTipoRota(nomeRota){
@@ -16485,17 +16499,29 @@ async function carregarOcorrenciasDistrib(){
     const data = await supaFetch('ocorrencias_distribuicao?order=criado_em.desc&limit=500') || [];
     _ocorrenciasDistribCache = data;
 
-    // Valor (base_data) e conferente (atribuicoes_armazem) não são colunas da
-    // própria ocorrência — busca em lote por pedido/carga distintos em vez de
-    // uma consulta por card (pedido do usuário, 2026-09-04).
+    // Valor, conferente e veículo não são colunas da própria ocorrência —
+    // busca em lote por pedido/carga distintos em vez de uma consulta por
+    // card (pedido do usuário, 2026-09-04). Conferente tem duas fontes:
+    // conferencia_pedidos é por PEDIDO (quem de fato conferiu aquele pedido
+    // específico — a mais precisa) e atribuicoes_armazem é por CARGA (quem
+    // foi designado pra faixa de pedidos daquela carga) — usada só quando a
+    // primeira não tem registro pra esse pedido.
     _ocorrValorPorPedido = {};
     _ocorrConferentePorCarga = {};
+    _ocorrConferentePorPedido = {};
+    _ocorrVeiculoPorCarga = {};
     const pedidos = [...new Set(data.map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p)))];
     const cargas  = [...new Set(data.map(o=>o.carga).filter(c=>Number.isInteger(c)))];
     try{
       if(pedidos.length){
         const rows = await supaFetch(`base_data?pedido=in.(${pedidos.join(',')})&select=pedido,valor`) || [];
         rows.forEach(r=>{ if(r.pedido!=null) _ocorrValorPorPedido[r.pedido] = Number(r.valor)||0; });
+      }
+    }catch(e){}
+    try{
+      if(pedidos.length){
+        const rows = await supaFetch(`conferencia_pedidos?pedido=in.(${pedidos.join(',')})&conferente_nome=not.is.null&select=pedido,conferente_nome`) || [];
+        rows.forEach(r=>{ if(r.pedido!=null && r.conferente_nome) _ocorrConferentePorPedido[r.pedido] = r.conferente_nome; });
       }
     }catch(e){}
     try{
@@ -16506,6 +16532,12 @@ async function carregarOcorrenciasDistrib(){
           if(!_ocorrConferentePorCarga[r.carga]) _ocorrConferentePorCarga[r.carga] = new Set();
           _ocorrConferentePorCarga[r.carga].add(r.conferente_nome);
         });
+      }
+    }catch(e){}
+    try{
+      if(cargas.length){
+        const rows = await supaFetch(`lancamentos?carga=in.(${cargas.join(',')})&select=carga,veiculo`) || [];
+        rows.forEach(r=>{ if(r.carga!=null && r.veiculo) _ocorrVeiculoPorCarga[r.carga] = r.veiculo; });
       }
     }catch(e){}
 
@@ -16574,17 +16606,22 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
   el.innerHTML = dados.map(o=>{
     const tc = tipoCfg[o.tipo] || tipoCfg.outro;
     const isPend = o.status === 'pendente';
-    // Valor e conferente não são colunas da ocorrência — vêm dos lookups em
-    // lote montados em carregarOcorrenciasDistrib() (base_data e
-    // atribuicoes_armazem, por pedido/carga). Podem não existir ainda pra
-    // ocorrências antigas, ou se o pedido/carga não bateu em nenhuma tabela.
+    // Valor, conferente e veículo não são colunas da ocorrência — vêm dos
+    // lookups em lote montados em carregarOcorrenciasDistrib(). Conferente
+    // prioriza conferencia_pedidos (por pedido, quem de fato conferiu) e só
+    // cai pra atribuicoes_armazem (por carga) se não achar — quando nenhuma
+    // das duas tem registro, mostra "sem conferente" em vez de sumir o
+    // campo, pra ficar claro que foi checado e realmente não tem dado.
     const valor = o.pedido!=null ? _ocorrValorPorPedido[String(o.pedido).trim()] : undefined;
+    const confPedido = o.pedido!=null ? _ocorrConferentePorPedido[String(o.pedido).trim()] : null;
     const confSet = o.carga!=null ? _ocorrConferentePorCarga[o.carga] : null;
-    const conferentes = confSet ? [...confSet].join(', ') : '';
+    const conferentes = confPedido || (confSet ? [...confSet].join(', ') : '');
+    const veiculo = o.carga!=null ? _ocorrVeiculoPorCarga[o.carga] : null;
     const detalhes = [
-      o.produto ? `📦 ${escapeHtml(o.produto)}` : '',
+      o.produto ? `📦 ${o.quantidade!=null?o.quantidade+'x ':''}${escapeHtml(o.produto)}` : '',
       valor!=null ? `💰 ${valor.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}` : '',
-      conferentes ? `🧑‍🔧 ${escapeHtml(conferentes)}` : '',
+      veiculo ? `🚛 ${escapeHtml(veiculo)}` : '',
+      conferentes ? `🧑‍🔧 ${escapeHtml(conferentes)}` : '🧑‍🔧 sem conferente registrado',
     ].filter(Boolean).join(' · ');
     return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${isPend?'#dc2626':'#059669'};border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
@@ -16628,24 +16665,30 @@ function renderOcorrenciasDistrib(){
   });
 }
 
-// Preenche o <datalist> de produto com os itens do pedido (pedidos_itens_erp)
-// — pedido pode ter dezenas de itens, então é autocomplete, não select fixo.
-async function _ocorrPopularProdutos(pedido, datalistId){
-  const dl = document.getElementById(datalistId);
-  if(!dl) return;
-  if(!pedido || !/^\d+$/.test(pedido)){ dl.innerHTML=''; return; }
+// Preenche o <select> de produto com os itens do pedido (pedidos_itens_erp)
+// — o produto tem que vir do sistema, não texto livre digitado (pedido do
+// usuário, 2026-09-04). Um pedido pode ter dezenas de itens.
+async function _ocorrPopularProdutos(pedido, selectId){
+  const sel = document.getElementById(selectId);
+  if(!sel) return;
+  if(!pedido || !/^\d+$/.test(pedido)){ sel.innerHTML = '<option value="">Informe o pedido...</option>'; return; }
+  sel.innerHTML = '<option value="">Carregando...</option>';
   try{
     const itens = await supaFetch(`pedidos_itens_erp?pedido=eq.${encodeURIComponent(pedido)}&select=mercadoria&limit=200`) || [];
     const nomes = [...new Set(itens.map(i=>i.mercadoria).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
-    dl.innerHTML = nomes.map(n=>`<option value="${escapeHtml(n)}">`).join('');
-  }catch(e){}
+    sel.innerHTML = nomes.length
+      ? '<option value="">Selecione...</option>' + nomes.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
+      : '<option value="">Nenhum item encontrado pro pedido</option>';
+  }catch(e){
+    sel.innerHTML = '<option value="">Erro ao buscar itens</option>';
+  }
 }
 
 async function ocorrAutoRota(){
   const pedido = (document.getElementById('ocorr-pedido')?.value||'').trim();
   const rotaEl = document.getElementById('ocorr-rota');
   const hint   = document.getElementById('ocorr-rota-hint');
-  _ocorrPopularProdutos(pedido, 'ocorr-produto-list');
+  _ocorrPopularProdutos(pedido, 'ocorr-produto');
   if(!pedido || pedido.length < 4) return;
   try{
     const rows = await supaFetch(`base_data?pedido=eq.${encodeURIComponent(pedido)}&select=rota,carga&limit=1`) || [];
@@ -16657,10 +16700,11 @@ async function ocorrAutoRota(){
 }
 
 async function salvarOcorrenciaDistrib(){
-  const pedido  = (document.getElementById('ocorr-pedido')?.value||'').trim();
-  const tipo    = document.getElementById('ocorr-tipo')?.value||'';
-  const produto = (document.getElementById('ocorr-produto')?.value||'').trim();
-  const desc    = (document.getElementById('ocorr-descricao')?.value||'').trim();
+  const pedido     = (document.getElementById('ocorr-pedido')?.value||'').trim();
+  const tipo       = document.getElementById('ocorr-tipo')?.value||'';
+  const produto    = (document.getElementById('ocorr-produto')?.value||'').trim();
+  const quantidade = document.getElementById('ocorr-quantidade')?.value;
+  const desc       = (document.getElementById('ocorr-descricao')?.value||'').trim();
   if(!pedido){ showToast('Informe o número do pedido','warning'); return; }
   if(!tipo)  { showToast('Selecione o tipo de ocorrência','warning'); return; }
 
@@ -16681,10 +16725,10 @@ async function salvarOcorrenciaDistrib(){
   try{
     await supaFetch('ocorrencias_distribuicao',{
       method:'POST',
-      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, produto:produto||null, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
+      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, produto:produto||null, quantidade:quantidade!==''&&quantidade!=null?Number(quantidade):null, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
     });
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
-    ['ocorr-pedido','ocorr-rota','ocorr-produto','ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+    ['ocorr-pedido','ocorr-rota','ocorr-produto','ocorr-quantidade','ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
     const tipoEl=document.getElementById('ocorr-tipo'); if(tipoEl) tipoEl.value='';
     const hint=document.getElementById('ocorr-rota-hint'); if(hint) hint.textContent='';
     await carregarOcorrenciasDistrib();
@@ -16764,7 +16808,7 @@ async function ocorrAutoRotaLanc(){
   const pedido = (document.getElementById('l-ocorr-pedido')?.value||'').trim();
   const rotaEl = document.getElementById('l-ocorr-rota');
   const hint   = document.getElementById('l-ocorr-rota-hint');
-  _ocorrPopularProdutos(pedido, 'l-ocorr-produto-list');
+  _ocorrPopularProdutos(pedido, 'l-ocorr-produto');
   if(!pedido) { if(hint) hint.textContent=''; return; }
   try{
     const rows = await supaFetch(`base_data?pedido=eq.${encodeURIComponent(pedido)}&select=rota,carga&limit=1`) || [];
@@ -16778,10 +16822,11 @@ async function ocorrAutoRotaLanc(){
 }
 
 async function salvarOcorrenciaLanc(){
-  const pedido  = (document.getElementById('l-ocorr-pedido')?.value||'').trim();
-  const tipo    = document.getElementById('l-ocorr-tipo')?.value||'';
-  const produto = (document.getElementById('l-ocorr-produto')?.value||'').trim();
-  const desc    = (document.getElementById('l-ocorr-descricao')?.value||'').trim();
+  const pedido     = (document.getElementById('l-ocorr-pedido')?.value||'').trim();
+  const tipo       = document.getElementById('l-ocorr-tipo')?.value||'';
+  const produto    = (document.getElementById('l-ocorr-produto')?.value||'').trim();
+  const quantidade = document.getElementById('l-ocorr-quantidade')?.value;
+  const desc       = (document.getElementById('l-ocorr-descricao')?.value||'').trim();
   if(!pedido){ showToast('Informe o número do pedido','warning'); return; }
   if(!tipo)  { showToast('Selecione o tipo de ocorrência','warning'); return; }
   const usuario = USUARIO_LOGADO?.nome || USUARIO_LOGADO?.email || null;
@@ -16797,10 +16842,10 @@ async function salvarOcorrenciaLanc(){
   try{
     await supaFetch('ocorrencias_distribuicao',{
       method:'POST',
-      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, produto:produto||null, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
+      body:JSON.stringify({ pedido, carga, rota:rotaFinal, tipo, produto:produto||null, quantidade:quantidade!==''&&quantidade!=null?Number(quantidade):null, descricao:desc||null, status:'pendente', criado_em:new Date().toISOString(), criado_por:usuario })
     });
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
-    ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-produto','l-ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+    ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-produto','l-ocorr-quantidade','l-ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
     const tipoEl=document.getElementById('l-ocorr-tipo'); if(tipoEl) tipoEl.value='';
     const hint=document.getElementById('l-ocorr-rota-hint'); if(hint) hint.textContent='';
     await carregarOcorrenciasDistrib();
@@ -27207,7 +27252,11 @@ function _dlogRenderOtifSecao(c){
 
   const tipoLbl = {inversao:'Inversão', falta:'Falta de mercadoria', sobra:'Sobra (quantidade a mais)', corte:'Corte (falta de estoque)', avaria:'Avaria', erro_pedido:'Erro do Vendedor', outro:'Outro'};
   const causas = {};
-  c.ocorrF.forEach(o=>{ const t=tipoLbl[o.tipo]||o.tipo||'Não informado'; causas[t]=(causas[t]||0)+1; });
+  // Sobra (mandou a mais) não prejudica o OTIF/In Full — é o oposto de
+  // faltar mercadoria, o pedido chega completo (ou mais que completo).
+  // Continua contando normalmente no painel de Ocorrências e no Erro
+  // Conferente, só não entra como "causa que prejudicou o OTIF" aqui.
+  c.ocorrF.filter(o=>o.tipo!=='sobra').forEach(o=>{ const t=tipoLbl[o.tipo]||o.tipo||'Não informado'; causas[t]=(causas[t]||0)+1; });
   // Corte de quantidade também penaliza o In Full (desde 2026-08-17) — sem
   // isso aqui, esse painel mostrava "nenhuma ocorrência" mesmo quando corte
   // era a causa real do In Full cair. Conta por PEDIDO (não por item — um
