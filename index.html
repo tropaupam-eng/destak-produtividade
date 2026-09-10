@@ -3488,7 +3488,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <option value="vermelho">🔴 Mais de 30 dias sem pedir</option>
       <option value="cinza">⚪ Sem pedido localizado</option>
     </select>
+    <select id="commapa-filtro-vendedor" onchange="filtrarMapaClientes()"
+      style="flex:1;min-width:220px;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 14px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary);outline:none;box-sizing:border-box">
+      <option value="">Todos os vendedores</option>
+    </select>
   </div>
+  <p style="font-size:.76rem;color:var(--text-muted);margin:-8px 0 14px 2px">O tamanho do ponto acompanha o ticket médio do cliente — quanto maior, mais peso ele tem na carteira (útil pra priorizar quem resgatar primeiro)</p>
   <div id="commapa-mapa" style="width:100%;height:600px;border-radius:12px;border:1px solid var(--border);background:var(--bg-card2)"></div>
 </div></div>
 
@@ -8723,7 +8728,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.56.0';
+const APP_VERSION = '4.57.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -43400,13 +43405,27 @@ let _commapaClusterObj = null;
 // vermelho = mais de 30 dias sem pedir, cinza = nome não bateu com nenhum
 // pedido em base_data (não dá pra saber a recência).
 const _COMMAPA_CORES = { verde:'#22c55e', amarelo:'#f59e0b', vermelho:'#ef4444', cinza:'#94a3b8' };
-function _commapaIcon(status){
+// Tamanho do ponto acompanha o ticket médio (log10, pra não deixar um
+// atacadista gigante dominar visualmente o mapa) — assim um cliente de
+// R$5.000/pedido some atrasado chama mais atenção que um de R$50, mesma cor.
+function _commapaTamanho(valorMedio){
+  if(!valorMedio || valorMedio<=0) return 10;
+  const px = 8 + Math.log10(valorMedio+1)*7;
+  return Math.max(10, Math.min(30, px));
+}
+function _commapaIcon(status, valorMedio){
   const cor = _COMMAPA_CORES[status]||_COMMAPA_CORES.cinza;
+  const px = _commapaTamanho(valorMedio);
   return L.divIcon({
     className: '',
-    html: `<div style="width:14px;height:14px;border-radius:50%;background:${cor};border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>`,
-    iconSize:[14,14], iconAnchor:[7,7]
+    html: `<div style="width:${px}px;height:${px}px;border-radius:50%;background:${cor};border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>`,
+    iconSize:[px,px], iconAnchor:[px/2,px/2]
   });
+}
+function _commapaModa(obj){
+  let melhor=null, max=0;
+  Object.entries(obj).forEach(([k,v])=>{ if(v>max){ max=v; melhor=k; } });
+  return melhor;
 }
 
 async function carregarMapaClientes(){
@@ -43419,11 +43438,15 @@ async function carregarMapaClientes(){
   }
   mapaEl.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando mapa...</p>';
   try{
-    const [geoRows, rotasClienteRows, pedidosRows] = await Promise.all([
+    const [geoRows, rotasClienteRows, pedidosRows, vendedoresRows] = await Promise.all([
       supaFetch('geolocalizacao_clientes?select=codigo_cliente,nome_cliente,latitude,longitude&limit=5000').catch(()=>[]),
       supaFetch('rotas_clientes?select=rota,cliente&limit=10000').catch(()=>[]),
-      supaFetch('base_data?select=cliente,data_pedido&cliente=not.is.null&cliente=neq.&data_pedido=not.is.null&limit=20000').catch(()=>[]),
+      supaFetch('base_data?select=cliente,data_pedido,vendedor_cod,valor&cliente=not.is.null&cliente=neq.&limit=20000').catch(()=>[]),
+      supaFetch('usuarios?perfil=eq.vendedor&select=nome,codigo_vendedor').catch(()=>[]),
     ]);
+    const vendNomePorCod = {};
+    (vendedoresRows||[]).forEach(v=>{ if(v.codigo_vendedor!=null) vendNomePorCod[v.codigo_vendedor] = v.nome; });
+
     const rotaPorCliente = {};
     (rotasClienteRows||[]).forEach(r=>{
       const k = (r.cliente||'').trim().toUpperCase();
@@ -43431,11 +43454,16 @@ async function carregarMapaClientes(){
       if(!rotaPorCliente[k]) rotaPorCliente[k] = new Set();
       rotaPorCliente[k].add(r.rota);
     });
-    const ultimaCompraPorCliente = {};
+    // Agregado por cliente: última compra, vendedor mais frequente (moda) e ticket médio
+    const agregPorCliente = {};
     (pedidosRows||[]).forEach(r=>{
       const k = (r.cliente||'').trim().toUpperCase();
-      if(!k || !r.data_pedido) return;
-      if(!ultimaCompraPorCliente[k] || r.data_pedido > ultimaCompraPorCliente[k]) ultimaCompraPorCliente[k] = r.data_pedido;
+      if(!k) return;
+      if(!agregPorCliente[k]) agregPorCliente[k] = { ultima:null, vendedores:{}, valorSoma:0, valorN:0 };
+      const a = agregPorCliente[k];
+      if(r.data_pedido && (!a.ultima || r.data_pedido > a.ultima)) a.ultima = r.data_pedido;
+      if(r.vendedor_cod!=null) a.vendedores[r.vendedor_cod] = (a.vendedores[r.vendedor_cod]||0)+1;
+      if(r.valor!=null && Number.isFinite(Number(r.valor))){ a.valorSoma += Number(r.valor); a.valorN++; }
     });
     const hoje = hojeDataBRT();
     const hojeMs = new Date(hoje+'T00:00:00').getTime();
@@ -43443,13 +43471,17 @@ async function carregarMapaClientes(){
     const clientes = (geoRows||[]).filter(r=>r.latitude!=null && r.longitude!=null).map(r=>{
       const k = (r.nome_cliente||'').trim().toUpperCase();
       const rotas = rotaPorCliente[k] ? [...rotaPorCliente[k]] : [];
-      const ultima = ultimaCompraPorCliente[k] || null;
+      const ag = agregPorCliente[k];
+      const ultima = ag?.ultima || null;
       let status = 'cinza', dias = null;
       if(ultima){
         dias = Math.floor((hojeMs - new Date(ultima+'T00:00:00').getTime())/86400000);
         status = dias < 15 ? 'verde' : (dias < 30 ? 'amarelo' : 'vermelho');
       }
-      return { codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)', lat: Number(r.latitude), lon: Number(r.longitude), rotas, ultima, dias, status };
+      const vendCod = ag ? _commapaModa(ag.vendedores) : null;
+      const vendNome = vendCod!=null ? (vendNomePorCod[vendCod]||`Código ${vendCod}`) : null;
+      const valorMedio = ag && ag.valorN ? ag.valorSoma/ag.valorN : null;
+      return { codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)', lat: Number(r.latitude), lon: Number(r.longitude), rotas, ultima, dias, status, vendCod, vendNome, valorMedio };
     }).filter(c=>Number.isFinite(c.lat) && Number.isFinite(c.lon));
     _commapaCache = clientes;
 
@@ -43459,6 +43491,12 @@ async function carregarMapaClientes(){
       clientes.forEach(c=>c.rotas.forEach(r=>rotasSet.add(r)));
       const rotasOrd = [...rotasSet].sort((a,b)=>a.localeCompare(b,'pt-BR'));
       selRota.innerHTML = '<option value="">Todas as rotas</option>' + rotasOrd.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('');
+    }
+    const selVend = document.getElementById('commapa-filtro-vendedor');
+    if(selVend){
+      const vendOpts = [...new Map(clientes.filter(c=>c.vendCod!=null).map(c=>[String(c.vendCod), c.vendNome])).entries()]
+        .sort((a,b)=>a[1].localeCompare(b[1],'pt-BR'));
+      selVend.innerHTML = '<option value="">Todos os vendedores</option>' + vendOpts.map(([cod,nome])=>`<option value="${escapeHtml(cod)}">${escapeHtml(nome)}</option>`).join('');
     }
 
     const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
@@ -43488,18 +43526,23 @@ function filtrarMapaClientes(){
   const q = (document.getElementById('commapa-busca')?.value||'').trim().toUpperCase();
   const rota = document.getElementById('commapa-filtro-rota')?.value||'';
   const status = document.getElementById('commapa-filtro-status')?.value||'';
+  const vendCod = document.getElementById('commapa-filtro-vendedor')?.value||'';
   let filtrado = _commapaCache;
   if(rota) filtrado = filtrado.filter(c=>c.rotas.includes(rota));
   if(status) filtrado = filtrado.filter(c=>c.status===status);
+  if(vendCod) filtrado = filtrado.filter(c=>String(c.vendCod)===vendCod);
   if(q) filtrado = filtrado.filter(c=> c.nome.toUpperCase().includes(q) || String(c.codigo).includes(q));
 
   const fmtD = d => { if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d; } };
+  const fmtR = v => v!=null ? v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}) : null;
   _commapaClusterObj.clearLayers();
   const markers = filtrado.map(c=>{
-    const m = L.marker([c.lat, c.lon], { icon: _commapaIcon(c.status) });
+    const m = L.marker([c.lat, c.lon], { icon: _commapaIcon(c.status, c.valorMedio) });
     const rotasTxt = c.rotas.length ? escapeHtml(c.rotas.join(', ')) : '<span style="color:#94a3b8">sem rota identificada</span>';
     const ultimaTxt = c.ultima ? `${fmtD(c.ultima)} (${c.dias} dia${c.dias===1?'':'s'} sem pedir)` : '<span style="color:#94a3b8">nenhum pedido localizado</span>';
-    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Rota(s): ${rotasTxt}<br>Última compra: ${ultimaTxt}`);
+    const vendTxt = c.vendNome ? escapeHtml(c.vendNome) : '<span style="color:#94a3b8">sem vendedor identificado</span>';
+    const valorTxt = c.valorMedio!=null ? escapeHtml(fmtR(c.valorMedio)) : '<span style="color:#94a3b8">—</span>';
+    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Rota(s): ${rotasTxt}<br>Vendedor: ${vendTxt}<br>Ticket médio: ${valorTxt}<br>Última compra: ${ultimaTxt}`);
     return m;
   });
   _commapaClusterObj.addLayers(markers);
