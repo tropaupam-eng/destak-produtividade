@@ -1,5 +1,9 @@
 # Regras do Projeto — Destak Produtividade
 
+> 📓 **O que o Rafael mexeu aqui e por quê:** [`MUDANCAS-DO-RAFAEL.md`](MUDANCAS-DO-RAFAEL.md)
+> Registro das mudanças feitas pelo lado dele (colaborador), com o commit de cada uma e o que
+> ficou pendente do lado de vocês. Toda mudança nova entra lá no mesmo commit.
+
 > 🟡 **PERGUNTA ABERTA, AGUARDANDO RESPOSTA DO DANIEL:** [`PERGUNTAS-RAFAEL-MFV.md`](PERGUNTAS-RAFAEL-MFV.md)
 > São 7 perguntas de verificação, feitas pelo Rafael (colaborador). **Nenhuma delas pede
 > para implementar nada** — pedem conferência no código e uma resposta escrita no próprio
