@@ -3467,10 +3467,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
     <button onclick="_commapaCache=null;carregarMapaClientes()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
     <div class="kpi-card" style="border-top-color:#7c3aed"><div class="kpi-label">Clientes no Mapa</div><div class="kpi-value" id="commapa-kpi-total">—</div></div>
-    <div class="kpi-card" style="border-top-color:#2563eb"><div class="kpi-label">Rotas Cobertas</div><div class="kpi-value" id="commapa-kpi-rotas">—</div></div>
-    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Sem Rota Identificada</div><div class="kpi-value" id="commapa-kpi-sem-rota">—</div></div>
+    <div class="kpi-card" style="border-top-color:#22c55e"><div class="kpi-label">🟢 Comprando (&lt;15 dias)</div><div class="kpi-value" id="commapa-kpi-verde">—</div></div>
+    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">🟡 15 a 30 dias sem pedir</div><div class="kpi-value" id="commapa-kpi-amarelo">—</div></div>
+    <div class="kpi-card" style="border-top-color:#ef4444"><div class="kpi-label">🔴 +30 dias sem pedir</div><div class="kpi-value" id="commapa-kpi-vermelho">—</div></div>
   </div>
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
     <input type="text" id="commapa-busca" placeholder="🔍 Buscar por cliente ou código..." oninput="filtrarMapaClientes()"
@@ -3478,6 +3479,14 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <select id="commapa-filtro-rota" onchange="filtrarMapaClientes()"
       style="flex:1;min-width:170px;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 14px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary);outline:none;box-sizing:border-box">
       <option value="">Todas as rotas</option>
+    </select>
+    <select id="commapa-filtro-status" onchange="filtrarMapaClientes()"
+      style="flex:1;min-width:190px;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 14px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary);outline:none;box-sizing:border-box">
+      <option value="">Todos os status</option>
+      <option value="verde">🟢 Comprando (menos de 15 dias)</option>
+      <option value="amarelo">🟡 15 a 30 dias sem pedir</option>
+      <option value="vermelho">🔴 Mais de 30 dias sem pedir</option>
+      <option value="cinza">⚪ Sem pedido localizado</option>
     </select>
   </div>
   <div id="commapa-mapa" style="width:100%;height:600px;border-radius:12px;border:1px solid var(--border);background:var(--bg-card2)"></div>
@@ -8714,7 +8723,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.55.0';
+const APP_VERSION = '4.56.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -43385,6 +43394,21 @@ let _commapaCache = null;
 let _commapaMapObj = null;
 let _commapaClusterObj = null;
 
+// Semáforo de recência de compra — mesma leitura usada pelo resto do
+// Comercial (última compra por cliente, moda/máximo de base_data.data_pedido):
+// verde = comprou há menos de 15 dias, amarelo = 15 a 30 dias sem pedir,
+// vermelho = mais de 30 dias sem pedir, cinza = nome não bateu com nenhum
+// pedido em base_data (não dá pra saber a recência).
+const _COMMAPA_CORES = { verde:'#22c55e', amarelo:'#f59e0b', vermelho:'#ef4444', cinza:'#94a3b8' };
+function _commapaIcon(status){
+  const cor = _COMMAPA_CORES[status]||_COMMAPA_CORES.cinza;
+  return L.divIcon({
+    className: '',
+    html: `<div style="width:14px;height:14px;border-radius:50%;background:${cor};border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>`,
+    iconSize:[14,14], iconAnchor:[7,7]
+  });
+}
+
 async function carregarMapaClientes(){
   const mapaEl = document.getElementById('commapa-mapa');
   if(!mapaEl) return;
@@ -43395,9 +43419,10 @@ async function carregarMapaClientes(){
   }
   mapaEl.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando mapa...</p>';
   try{
-    const [geoRows, rotasClienteRows] = await Promise.all([
+    const [geoRows, rotasClienteRows, pedidosRows] = await Promise.all([
       supaFetch('geolocalizacao_clientes?select=codigo_cliente,nome_cliente,latitude,longitude&limit=5000').catch(()=>[]),
       supaFetch('rotas_clientes?select=rota,cliente&limit=10000').catch(()=>[]),
+      supaFetch('base_data?select=cliente,data_pedido&cliente=not.is.null&cliente=neq.&data_pedido=not.is.null&limit=20000').catch(()=>[]),
     ]);
     const rotaPorCliente = {};
     (rotasClienteRows||[]).forEach(r=>{
@@ -43406,10 +43431,25 @@ async function carregarMapaClientes(){
       if(!rotaPorCliente[k]) rotaPorCliente[k] = new Set();
       rotaPorCliente[k].add(r.rota);
     });
+    const ultimaCompraPorCliente = {};
+    (pedidosRows||[]).forEach(r=>{
+      const k = (r.cliente||'').trim().toUpperCase();
+      if(!k || !r.data_pedido) return;
+      if(!ultimaCompraPorCliente[k] || r.data_pedido > ultimaCompraPorCliente[k]) ultimaCompraPorCliente[k] = r.data_pedido;
+    });
+    const hoje = hojeDataBRT();
+    const hojeMs = new Date(hoje+'T00:00:00').getTime();
+
     const clientes = (geoRows||[]).filter(r=>r.latitude!=null && r.longitude!=null).map(r=>{
       const k = (r.nome_cliente||'').trim().toUpperCase();
       const rotas = rotaPorCliente[k] ? [...rotaPorCliente[k]] : [];
-      return { codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)', lat: Number(r.latitude), lon: Number(r.longitude), rotas };
+      const ultima = ultimaCompraPorCliente[k] || null;
+      let status = 'cinza', dias = null;
+      if(ultima){
+        dias = Math.floor((hojeMs - new Date(ultima+'T00:00:00').getTime())/86400000);
+        status = dias < 15 ? 'verde' : (dias < 30 ? 'amarelo' : 'vermelho');
+      }
+      return { codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)', lat: Number(r.latitude), lon: Number(r.longitude), rotas, ultima, dias, status };
     }).filter(c=>Number.isFinite(c.lat) && Number.isFinite(c.lon));
     _commapaCache = clientes;
 
@@ -43423,8 +43463,9 @@ async function carregarMapaClientes(){
 
     const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
     set('commapa-kpi-total', clientes.length);
-    set('commapa-kpi-rotas', new Set(clientes.flatMap(c=>c.rotas)).size);
-    set('commapa-kpi-sem-rota', clientes.filter(c=>!c.rotas.length).length);
+    set('commapa-kpi-verde', clientes.filter(c=>c.status==='verde').length);
+    set('commapa-kpi-amarelo', clientes.filter(c=>c.status==='amarelo').length);
+    set('commapa-kpi-vermelho', clientes.filter(c=>c.status==='vermelho').length);
 
     if(!_commapaMapObj){
       mapaEl.innerHTML = '';
@@ -43446,15 +43487,19 @@ function filtrarMapaClientes(){
   if(!_commapaCache || !_commapaClusterObj) return;
   const q = (document.getElementById('commapa-busca')?.value||'').trim().toUpperCase();
   const rota = document.getElementById('commapa-filtro-rota')?.value||'';
+  const status = document.getElementById('commapa-filtro-status')?.value||'';
   let filtrado = _commapaCache;
   if(rota) filtrado = filtrado.filter(c=>c.rotas.includes(rota));
+  if(status) filtrado = filtrado.filter(c=>c.status===status);
   if(q) filtrado = filtrado.filter(c=> c.nome.toUpperCase().includes(q) || String(c.codigo).includes(q));
 
+  const fmtD = d => { if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d; } };
   _commapaClusterObj.clearLayers();
   const markers = filtrado.map(c=>{
-    const m = L.marker([c.lat, c.lon]);
+    const m = L.marker([c.lat, c.lon], { icon: _commapaIcon(c.status) });
     const rotasTxt = c.rotas.length ? escapeHtml(c.rotas.join(', ')) : '<span style="color:#94a3b8">sem rota identificada</span>';
-    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Rota(s): ${rotasTxt}`);
+    const ultimaTxt = c.ultima ? `${fmtD(c.ultima)} (${c.dias} dia${c.dias===1?'':'s'} sem pedir)` : '<span style="color:#94a3b8">nenhum pedido localizado</span>';
+    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Rota(s): ${rotasTxt}<br>Última compra: ${ultimaTxt}`);
     return m;
   });
   _commapaClusterObj.addLayers(markers);
