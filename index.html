@@ -8763,7 +8763,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.66.0';
+const APP_VERSION = '4.67.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -11371,6 +11371,18 @@ async function _absUpsertPresenca(nome, funcao, data, fonte='manual'){
 let CARGA_MAP   = {};
 let CARGAS_BASE = new Set();
 let UNIDADES_MAP = {};
+// true só depois que syncUnidades() confirma uma resposta de verdade do banco
+// (mesmo que vazia) — distingue "ainda não chegou" de "chegou e não tem
+// unidade cadastrada", pra não ficar re-registrando pra sempre nesse 2º caso.
+let _unidadesCarregadas = false;
+// Selects que tentaram popular ANTES de UNIDADES_MAP chegar — reprocessados
+// automaticamente assim que os dados carregam. Isso é o que faz qualquer
+// seletor de unidade, de qualquer tela atual ou futura, se autocorrigir sem
+// precisar entrar manualmente numa lista central (era exatamente essa lista
+// manual, em popularTodosSelectsUnidade(), que 3 telas diferentes ficaram de
+// fora dela e travaram em "Todas as Unidades" pro resto da sessão — achado
+// em 2026-09).
+let _selectsUnidadePendentes = [];
 
 // ══ POPULAR SELECTS DE UNIDADE DINAMICAMENTE ════════
 function getUnidadesList(){
@@ -11385,6 +11397,10 @@ function popularSelectUnidade(selectId, incluirTodas=true, valorAtual=''){
   const sel = document.getElementById(selectId);
   if(!sel) return;
   const unidades = getUnidadesList();
+  if(!unidades.length && !_unidadesCarregadas){
+    if(!_selectsUnidadePendentes.some(p=>p.selectId===selectId))
+      _selectsUnidadePendentes.push({selectId, incluirTodas, valorAtual});
+  }
   sel.innerHTML = '';
   if(incluirTodas){
     const opt = document.createElement('option');
@@ -27260,6 +27276,17 @@ const _otifCacheMap = new Map();
 const _otifPromiseMap = new Map();
 async function _carregarOtifMes(mes, und){
   const cacheKey = und ? `${mes}__${und}` : mes;
+  // Mês corrente nunca serve do cache — o dado muda o dia inteiro (pedido
+  // novo, entrega registrada etc). Antes cada tela que consumia OTIF tinha
+  // que lembrar de fazer esse delete manualmente ANTES de chamar essa
+  // função; toda tela nova que esquecia esse passo ficava mostrando um
+  // retrato desatualizado do mês em curso, divergindo silenciosamente das
+  // outras (achado real em 2026-09, Painel de Indicadores). Garantido aqui,
+  // uma vez só, pra qualquer consumidor atual ou futuro nunca mais esquecer.
+  if(mes === new Date().toISOString().slice(0,7)){
+    _otifCacheMap.delete(cacheKey);
+    _otifPromiseMap.delete(cacheKey);
+  }
   if(_otifCacheMap.has(cacheKey)) return _otifCacheMap.get(cacheKey);
   // Evita buscas duplicadas quando múltiplos callers disparam ao mesmo tempo para o mesmo mês
   if(_otifPromiseMap.has(cacheKey)) return _otifPromiseMap.get(cacheKey);
@@ -40567,7 +40594,17 @@ async function syncUnidades(){
     const data = await supaFetch('configuracoes?chave=eq.config_unidades&select=valor');
     if(data && data[0] && data[0].valor){
       UNIDADES_MAP = data[0].valor;
-      popularTodosSelectsUnidade();
+    }
+    _unidadesCarregadas = true;
+    popularTodosSelectsUnidade();
+    // Reprocessa qualquer select que tentou popular antes de UNIDADES_MAP
+    // chegar — pega automaticamente qualquer tela, mesmo uma não listada em
+    // popularTodosSelectsUnidade() (ver comentário na declaração de
+    // _selectsUnidadePendentes).
+    if(_selectsUnidadePendentes.length){
+      const pendentes = _selectsUnidadePendentes;
+      _selectsUnidadePendentes = [];
+      pendentes.forEach(p => popularSelectUnidade(p.selectId, p.incluirTodas, p.valorAtual));
     }
   }catch(e){ console.warn('syncUnidades erro:', e.message); }
 }
