@@ -8763,7 +8763,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.64.0';
+const APP_VERSION = '4.65.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -9373,9 +9373,19 @@ async function login(email, senha){
     if(!resultado) throw new Error('E-mail ou senha incorretos');
     USUARIO_LOGADO = resultado;
     localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
-    // Best-effort: se falhar, login continua funcionando normalmente (cai
-    // pra chave anon, igual sempre foi até aqui).
-    _obterSessaoAuth(email, senha).then(s => { _salvarSupaSession(s); if(s) _iniciarRefreshAutoSupaSession(); });
+    // ESPERA a sessão real antes de devolver o login — bug encontrado ao
+    // vivo em 2026-09-15: isso era ".then()" sem await, então quem chamava
+    // login() (fazerLogin -> iniciarApp) já começava a carregar a tela
+    // inteira ANTES da sessão chegar, ainda com a chave anon. Enquanto
+    // anon tinha acesso a tudo isso nunca aparecia; assim que RLS passou a
+    // bloquear anon, todo primeiro carregamento após logar vinha vazio.
+    // Timeout de 6s pra nunca travar o login se a função estiver fora do ar
+    // — nesse caso cai pra anon como já era o comportamento antes de tudo
+    // isso existir.
+    const _comTimeout = (p, ms) => Promise.race([p, new Promise(r=>setTimeout(()=>r(null), ms))]);
+    const sessao = await _comTimeout(_obterSessaoAuth(email, senha), 6000).catch(()=>null);
+    _salvarSupaSession(sessao);
+    if(sessao) _iniciarRefreshAutoSupaSession();
     // loadAgendamentosFromDB() já rodou 1x no DOMContentLoaded, antes do
     // login existir — se agendamentos_rotas exigir "authenticated", aquela
     // primeira tentativa falha (silenciosa) e o cache fica vazio pro resto
