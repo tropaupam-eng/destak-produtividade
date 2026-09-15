@@ -8763,7 +8763,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.58.0';
+const APP_VERSION = '4.59.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -21072,6 +21072,23 @@ async function vincularSoCarga(){
   if(btn){ btn.textContent='⏳ Vinculando...'; btn.disabled=true; }
 
   try{
+    // Mesma checagem de conflito de editarNumeroCarga: ignora cargas já
+    // canceladas (número livre pra reuso) e libera o número de quem estiver
+    // com ele cancelado, pra nunca sobrar duas linhas com a mesma carga.
+    const demAtual = _demandasCache.find(d=>d.id===demandaId);
+    const unidadeCheck = (demAtual?.unidade||USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
+    if(unidadeCheck){
+      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${carga}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}&status=neq.cancelado`).catch(()=>[]);
+      if(conflito && conflito.length){
+        if(btn){ btn.textContent='🔗 Vincular Carga'; btn.disabled=false; }
+        showToast(`⚠️ Carga ${carga} já existe na unidade ${unidadeCheck} (motorista: ${conflito[0].motorista||'—'})`,'warning');
+        return;
+      }
+      await supaFetch(`demandas_rota?carga=eq.${carga}&status=eq.cancelado&id=neq.${demandaId}`,{
+        method:'PATCH', body:JSON.stringify({carga:null}), prefer:'return=minimal'
+      }).catch(()=>{});
+    }
+
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
       method:'PATCH',
       body: JSON.stringify({carga})
@@ -31667,11 +31684,22 @@ async function editarNumeroCarga(demandaId, cargaAtual){
     const valorMetaDemanda  = demAtualRow?.[0]?.valor_meta;
     const unidadeCheck = unidadeExistente || (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
     if(unidadeCheck){
-      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}`).catch(()=>[]);
+      // Cargas canceladas não contam como conflito — o número está livre pra
+      // ser reaproveitado por uma pré-carga nova. Sem esse filtro, uma carga
+      // cancelada ficava "travando" o número pra sempre, mesmo já removida
+      // de toda a Expedição (o board só lista status=not.in(concluido,cancelado)).
+      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}&status=neq.cancelado`).catch(()=>[]);
       if(conflito && conflito.length){
         showToast(`⚠️ Carga ${numNovo} já existe na unidade ${unidadeCheck} (motorista: ${conflito[0].motorista||'—'})`,'warning');
         return;
       }
+      // Libera o número de qualquer demanda cancelada que ainda o segure —
+      // evita duas linhas com a mesma carga em demandas_rota, o que quebraria
+      // toda busca por carga=eq.X que espera no máximo uma linha (conferente,
+      // ajudante, lançamento etc. pegariam a linha errada sem isso).
+      await supaFetch(`demandas_rota?carga=eq.${numNovo}&status=eq.cancelado&id=neq.${demandaId}`,{
+        method:'PATCH', body:JSON.stringify({carga:null}), prefer:'return=minimal'
+      }).catch(()=>{});
     }
     // Só grava unidade se a demanda ainda não tinha uma (self-heal pra linhas antigas sem backfill)
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({carga:numNovo, unidade: unidadeExistente ? undefined : (unidadeCheck||undefined)})});
