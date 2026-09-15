@@ -8763,7 +8763,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.62.0';
+const APP_VERSION = '4.63.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -9309,6 +9309,41 @@ function _salvarSupaSession(session){
   }catch(e){}
 }
 
+// Usado pelos poucos pontos do código que montam a própria chamada fetch()
+// em vez de passar por supaFetch (uploads de storage à parte, que não usam
+// isso) — mesma regra: sessão real se válida, senão a chave anon de sempre.
+function _supaAuthToken(){
+  const valida = _SUPA_SESSION?.access_token &&
+    (!_SUPA_SESSION.expires_at || _SUPA_SESSION.expires_at*1000 > Date.now()+30000);
+  return valida ? _SUPA_SESSION.access_token : SUPA_KEY;
+}
+
+// Renovação automática — o access_token dura ~1h; sem isso, qualquer aba
+// aberta por mais tempo (ex: TV de painel) cairia de volta pra chave anon
+// silenciosamente depois de 1h e, quando uma tabela exigir "authenticated",
+// pararia de atualizar sem erro visível nenhum. Roda a cada 45min enquanto
+// a página estiver aberta.
+let _supaRefreshTimer = null;
+async function _refreshSupaSession(){
+  if(!_SUPA_SESSION?.refresh_token) return;
+  try{
+    const res = await fetch(SUPA_URL+'/auth/v1/token?grant_type=refresh_token', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SUPA_KEY},
+      body: JSON.stringify({refresh_token:_SUPA_SESSION.refresh_token})
+    });
+    if(!res.ok) return; // mantém a sessão antiga até expirar — supaFetch cai pra anon sozinho
+    const data = await res.json().catch(()=>null);
+    if(data?.access_token){
+      _salvarSupaSession({access_token:data.access_token, refresh_token:data.refresh_token, expires_at:data.expires_at});
+    }
+  }catch(e){ console.warn('[_refreshSupaSession] Falha ao renovar (não bloqueia o app):', e.message); }
+}
+function _iniciarRefreshAutoSupaSession(){
+  if(_supaRefreshTimer) clearInterval(_supaRefreshTimer);
+  _supaRefreshTimer = setInterval(_refreshSupaSession, 45*60*1000);
+}
+
 async function _obterSessaoAuth(email, senha){
   try{
     const res = await fetch(SUPA_URL+'/functions/v1/login-jwt', {
@@ -9340,7 +9375,7 @@ async function login(email, senha){
     localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
     // Best-effort: se falhar, login continua funcionando normalmente (cai
     // pra chave anon, igual sempre foi até aqui).
-    _obterSessaoAuth(email, senha).then(_salvarSupaSession);
+    _obterSessaoAuth(email, senha).then(s => { _salvarSupaSession(s); if(s) _iniciarRefreshAutoSupaSession(); });
     return USUARIO_LOGADO;
   }catch(e){
     if(e.message.includes('E-mail ou senha')) throw e;
@@ -9441,6 +9476,7 @@ function logout(){
   USUARIO_LOGADO = null;
   localStorage.removeItem('usuario_logado');
   _salvarSupaSession(null);
+  if(_supaRefreshTimer){ clearInterval(_supaRefreshTimer); _supaRefreshTimer=null; }
   if(window._confAutoRefresh){ clearInterval(window._confAutoRefresh); window._confAutoRefresh=null; }
   pararMonitorIntegracaoERP(); // para o loop de 5s do ERP (DELETE+INSERT) — sem isso seguia rodando sem sessão e apagava base_data sem repor
   // Esconder todos os portais
@@ -9454,7 +9490,7 @@ function logout(){
 function verificarLogin(){
   try{
     const savedSession = localStorage.getItem('supa_session');
-    if(savedSession) _SUPA_SESSION = JSON.parse(savedSession);
+    if(savedSession){ _SUPA_SESSION = JSON.parse(savedSession); if(_SUPA_SESSION) _iniciarRefreshAutoSupaSession(); }
   }catch(e){}
   try{
     const saved = localStorage.getItem('usuario_logado');
@@ -28998,7 +29034,7 @@ async function _mfvCarregarCarga0(){
   if(_mfvCarga0) return _mfvCarga0;
   const conta = async (q) => {
     const r = await fetch(SUPA_URL+'/rest/v1/base_data?select=pedido'+q, {
-      headers:{ apikey:SUPA_KEY, Authorization:'Bearer '+SUPA_KEY, Prefer:'count=exact', Range:'0-0' }
+      headers:{ apikey:SUPA_KEY, Authorization:'Bearer '+_supaAuthToken(), Prefer:'count=exact', Range:'0-0' }
     });
     const cr = r.headers.get('Content-Range');
     return cr ? Number(cr.split('/')[1]) : null;
@@ -36959,7 +36995,7 @@ async function removerConferente(atribuicaoId, demandaId, carga, confNome){
       method: 'DELETE',
       headers: {
         'apikey': SUPA_KEY,
-        'Authorization': 'Bearer ' + SUPA_KEY,
+        'Authorization': 'Bearer ' + _supaAuthToken(),
         'Content-Type': 'application/json',
         'Prefer': 'return=minimal'
       }
@@ -39091,7 +39127,7 @@ async function transferirConferenteCarga(atribId, demandaId, carga, selectId){
     if(atribId){
       await fetch(`${SUPA_URL}/rest/v1/atribuicoes_armazem?id=eq.${atribId}`,{
         method:'DELETE',
-        headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,'Content-Type':'application/json','Prefer':'return=minimal'}
+        headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+_supaAuthToken(),'Content-Type':'application/json','Prefer':'return=minimal'}
       });
     }
     await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
@@ -39113,7 +39149,7 @@ async function transferirEAvancar(atribId, demandaId, carga, selectId){
     if(atribId){
       await fetch(`${SUPA_URL}/rest/v1/atribuicoes_armazem?id=eq.${atribId}`,{
         method:'DELETE',
-        headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,'Content-Type':'application/json','Prefer':'return=minimal'}
+        headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+_supaAuthToken(),'Content-Type':'application/json','Prefer':'return=minimal'}
       });
     }
     await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
@@ -41402,7 +41438,7 @@ async function enviarCadastroSelf(){
 
   try{
     const savedSession = localStorage.getItem('supa_session');
-    if(savedSession) _SUPA_SESSION = JSON.parse(savedSession);
+    if(savedSession){ _SUPA_SESSION = JSON.parse(savedSession); if(_SUPA_SESSION) _iniciarRefreshAutoSupaSession(); }
   }catch(e){}
   try{
     const saved = localStorage.getItem('usuario_logado');
