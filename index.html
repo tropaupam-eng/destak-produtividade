@@ -8763,7 +8763,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.61.0';
+const APP_VERSION = '4.62.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -9292,6 +9292,39 @@ async function _checarAmbosConcluidosEAvancar(demandaId, carga){
 // ══ AUTH ══════════════════════════════════════════════
 let USUARIO_LOGADO = null;
 
+// Sessão real do Supabase Auth (JWT "authenticated" + refresh token), obtida
+// via a Edge Function login-jwt logo após o login normal. Guardada à parte
+// de USUARIO_LOGADO (que continua vindo de verificar_login, sem mudança).
+// Enquanto nenhuma tabela tiver RLS ligado, ela não muda NADA no que o app
+// consegue ler/escrever — supaFetch cai pra chave anon de sempre se ela
+// faltar ou expirar. É a base pra, mais adiante, ligar RLS tabela por
+// tabela sem trocar como as pessoas fazem login.
+let _SUPA_SESSION = null;
+
+function _salvarSupaSession(session){
+  _SUPA_SESSION = session||null;
+  try{
+    if(session) localStorage.setItem('supa_session', JSON.stringify(session));
+    else localStorage.removeItem('supa_session');
+  }catch(e){}
+}
+
+async function _obterSessaoAuth(email, senha){
+  try{
+    const res = await fetch(SUPA_URL+'/functions/v1/login-jwt', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SUPA_KEY},
+      body: JSON.stringify({email, senha})
+    });
+    if(!res.ok) return null;
+    const data = await res.json().catch(()=>null);
+    return data?.session||null;
+  }catch(e){
+    console.warn('[_obterSessaoAuth] Falha ao obter sessão Auth (não bloqueia o login):', e.message);
+    return null;
+  }
+}
+
 async function login(email, senha){
   try{
     // Verificação server-side via RPC — desde 2026-08-28 a senha nunca mais
@@ -9305,6 +9338,9 @@ async function login(email, senha){
     if(!resultado) throw new Error('E-mail ou senha incorretos');
     USUARIO_LOGADO = resultado;
     localStorage.setItem('usuario_logado', JSON.stringify(USUARIO_LOGADO));
+    // Best-effort: se falhar, login continua funcionando normalmente (cai
+    // pra chave anon, igual sempre foi até aqui).
+    _obterSessaoAuth(email, senha).then(_salvarSupaSession);
     return USUARIO_LOGADO;
   }catch(e){
     if(e.message.includes('E-mail ou senha')) throw e;
@@ -9404,6 +9440,7 @@ function aplicarTemaSalvo(){
 function logout(){
   USUARIO_LOGADO = null;
   localStorage.removeItem('usuario_logado');
+  _salvarSupaSession(null);
   if(window._confAutoRefresh){ clearInterval(window._confAutoRefresh); window._confAutoRefresh=null; }
   pararMonitorIntegracaoERP(); // para o loop de 5s do ERP (DELETE+INSERT) — sem isso seguia rodando sem sessão e apagava base_data sem repor
   // Esconder todos os portais
@@ -9415,6 +9452,10 @@ function logout(){
 }
 
 function verificarLogin(){
+  try{
+    const savedSession = localStorage.getItem('supa_session');
+    if(savedSession) _SUPA_SESSION = JSON.parse(savedSession);
+  }catch(e){}
   try{
     const saved = localStorage.getItem('usuario_logado');
     if(saved){
@@ -40643,11 +40684,21 @@ async function supaFetch(path, opts={}, _tentativa=1){
   const tid = setTimeout(()=>controller.abort(), TIMEOUT_MS);
   if(!_quiet && !_supaLoadingQuiet) _loadingShow();
   try{
+    // Usa o token de sessão real (role "authenticated") quando disponível e
+    // ainda válido — apikey continua sendo sempre a chave anon (é assim que
+    // o Supabase espera: apikey identifica o projeto, Authorization decide
+    // o papel/identidade de quem está falando). Sem sessão ou expirada, cai
+    // pra chave anon de sempre — hoje isso não muda NADA no que é permitido
+    // (RLS ainda desligado nas tabelas de negócio); é só a base já pronta
+    // pra quando cada tabela for migrada pra exigir "authenticated".
+    const sessaoValida = _SUPA_SESSION?.access_token &&
+      (!_SUPA_SESSION.expires_at || _SUPA_SESSION.expires_at*1000 > Date.now()+30000);
+    const authToken = sessaoValida ? _SUPA_SESSION.access_token : SUPA_KEY;
     const res = await fetch(SUPA_URL+'/rest/v1/'+path, {
       signal: controller.signal,
       headers: {
         'apikey': SUPA_KEY,
-        'Authorization': 'Bearer '+SUPA_KEY,
+        'Authorization': 'Bearer '+authToken,
         'Content-Type': 'application/json',
         'Prefer': prefer || 'return=representation',
         ...(extraHeaders||{})
@@ -41349,6 +41400,10 @@ async function enviarCadastroSelf(){
     }
   }, 20000);
 
+  try{
+    const savedSession = localStorage.getItem('supa_session');
+    if(savedSession) _SUPA_SESSION = JSON.parse(savedSession);
+  }catch(e){}
   try{
     const saved = localStorage.getItem('usuario_logado');
     if(saved){
