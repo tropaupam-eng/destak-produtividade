@@ -8765,7 +8765,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.70.0';
+const APP_VERSION = '4.71.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -35888,7 +35888,7 @@ async function carregarPortalVendedor(){
     const cargas = [...new Set(pedidos.map(p=>p.carga).filter(c=>c!=null))];
     let demandas = [];
     if(cargas.length){
-      demandas = await supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&select=carga,status,rota,ts_saiu`).catch(()=>[]) || [];
+      demandas = await supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&select=carga,status,rota,ts_saiu,data_saida`).catch(()=>[]) || [];
     }
     const demandaPorCarga = {};
     demandas.forEach(d=>{ demandaPorCarga[d.carga] = d; });
@@ -36188,47 +36188,91 @@ function filtrarMapaVendedor(){
   }).join('');
 }
 
-// Cargas em que este vendedor vendeu, com valor total e clientes dentro —
-// reaproveita window._vendPedidos (já carregado pra aba Pedidos), sem
-// consulta nova ao Supabase.
+// Status da carga mais recente de uma rota, a partir da demanda_rota
+// vinculada (p._demanda): ainda não saiu (em formação — mostra data_saida
+// se já tiver sido agendada), já saiu (em rota), entregue ou cancelada.
+// Mesmos status usados em _vendClassificar/VND_STATUS_LABEL.
+function _rotaStatusInfo(d){
+  const fmtDataCurta = v => { if(!v) return null; try{ return new Date(v+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}); }catch(e){ return v; } };
+  if(!d) return { chave:'formacao', label:'🕐 Em formação', cor:'#f59e0b', sub:null };
+  if(d.status==='cancelado') return { chave:'cancelado', label:'🔴 Cancelado', cor:'#ef4444', sub:null };
+  if(d.status==='concluido' || d.status==='fim_viagem') return { chave:'entregue', label:'✅ Entregue', cor:'#22c55e', sub: d.ts_saiu?('saiu às '+fmtHora(d.ts_saiu)):null };
+  if(d.status==='saiu') return { chave:'transito', label:'🚚 Já está em rota', cor:'#4a9eff', sub: d.ts_saiu?('saiu às '+fmtHora(d.ts_saiu)):null };
+  const sub = d.data_saida ? `📅 Agendada pra sair em ${fmtDataCurta(d.data_saida)}` : null;
+  return { chave:'formacao', label:'🕐 Em formação', cor:'#f59e0b', sub };
+}
+
+// Rotas em que este vendedor vendeu, uma carda por rota (a mais recente —
+// a "atual"), com status (em formação / agendada / já em rota / entregue) e
+// quanto já foi vendido nela; cargas mais antigas da mesma rota ficam
+// listadas por baixo, sem repetir o cartão. Reaproveita window._vendPedidos
+// (já carregado pra aba Pedidos), sem consulta nova ao Supabase.
 function renderCargasVendedor(){
   const cont = document.getElementById('vnd-mapa-cargas');
   if(!cont) return;
   const porCarga = {};
   (window._vendPedidos||[]).forEach(p=>{
     if(p.carga==null) return;
-    if(!porCarga[p.carga]) porCarga[p.carga] = { carga:p.carga, rota:p._rota||'', data:null, valor:0, clientes:[] };
+    if(!porCarga[p.carga]) porCarga[p.carga] = { carga:p.carga, rota:p._rota||'(sem rota)', data:null, valor:0, clientes:[], demanda:p._demanda||null };
     const c = porCarga[p.carga];
     c.valor += Number(p.valor)||0;
     c.clientes.push({ nome:p.cliente||'—', valor:Number(p.valor)||0 });
     if(p.data_pedido && (!c.data || p.data_pedido>c.data)) c.data = p.data_pedido;
   });
-  const cargas = Object.values(porCarga).sort((a,b)=>(b.carga||0)-(a.carga||0));
+  const cargas = Object.values(porCarga);
   window._vendCargasCache = cargas;
 
   if(!cargas.length){
     cont.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Nenhuma carga vendida ainda.</p>';
     return;
   }
+
+  const porRota = {};
+  cargas.forEach(c=>{ (porRota[c.rota] = porRota[c.rota]||[]).push(c); });
+  const PESO_STATUS = { formacao:0, transito:1, entregue:2, cancelado:3 };
+  const rotas = Object.entries(porRota).map(([rota, lista])=>{
+    lista.sort((a,b)=>(b.carga||0)-(a.carga||0));
+    const [atual, ...anteriores] = lista;
+    const info = _rotaStatusInfo(atual.demanda);
+    return { rota, atual, anteriores, info };
+  }).sort((a,b)=>(PESO_STATUS[a.info.chave]??9)-(PESO_STATUS[b.info.chave]??9) || (b.atual.carga-a.atual.carga));
+
   const fmtR = v => (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
   const fmtD = d => { if(!d) return '—'; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d; } };
-  cont.innerHTML = cargas.map(c=>`
+
+  cont.innerHTML = rotas.map(r=>{
+    const c = r.atual, info = r.info;
+    const historicoHtml = r.anteriores.length ? `
+      <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+        <div style="font-size:.64rem;color:var(--text-muted);font-weight:700;margin-bottom:6px;text-transform:uppercase">Cargas anteriores nesta rota</div>
+        ${r.anteriores.map(a=>`
+          <div style="display:flex;justify-content:space-between;padding:4px 9px;font-size:.72rem;color:var(--text-secondary)">
+            <span>Carga #${escapeHtml(String(a.carga))} · ${fmtD(a.data)}</span>
+            <span>${escapeHtml(fmtR(a.valor))}</span>
+          </div>`).join('')}
+      </div>` : '';
+    return `
     <div class="vnd-carga-bloco" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;cursor:pointer" onclick="vendToggleCarga(${c.carga})">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:1.05rem">🚚</span>
           <div>
-            <div style="font-size:.84rem;font-weight:800;color:var(--text-primary)">Carga #${escapeHtml(String(c.carga))}${c.rota?` <span style="color:var(--teal,#0d9488);font-weight:700">· ${escapeHtml(c.rota)}</span>`:''}</div>
-            <div style="font-size:.68rem;color:var(--text-muted)">${fmtD(c.data)} · ${c.clientes.length} cliente${c.clientes.length===1?'':'s'}</div>
+            <div style="font-size:.84rem;font-weight:800;color:var(--text-primary)">${escapeHtml(r.rota)} <span style="color:var(--text-muted);font-weight:600">· carga #${escapeHtml(String(c.carga))}</span></div>
+            <div style="font-size:.68rem;font-weight:700;color:${info.cor}">${info.label}${info.sub?` · ${escapeHtml(info.sub)}`:''}</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
-          <span style="font-size:.9rem;font-weight:800;color:#22c55e">${escapeHtml(fmtR(c.valor))}</span>
+          <div style="text-align:right">
+            <div style="font-size:.9rem;font-weight:800;color:#22c55e">${escapeHtml(fmtR(c.valor))}</div>
+            <div style="font-size:.64rem;color:var(--text-muted)">${c.clientes.length} cliente${c.clientes.length===1?'':'s'}</div>
+          </div>
           <span id="vnd-carga-seta-${c.carga}" style="color:var(--text-muted);font-size:.8rem">▾</span>
         </div>
       </div>
       <div id="vnd-carga-detalhe-${c.carga}" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)"></div>
-    </div>`).join('');
+      ${historicoHtml}
+    </div>`;
+  }).join('');
 }
 
 function vendToggleCarga(carga){
@@ -49204,8 +49248,8 @@ function _cftvRenderTable(data){
     </div>
 
     <div style="margin-bottom:12px">
-      <div style="font-size:1rem;font-weight:800;color:var(--text-primary)">📦 Cargas Vendidas</div>
-      <div style="font-size:.76rem;color:var(--text-secondary);margin-top:2px">Toque numa carga pra ver os clientes que você vendeu dentro dela</div>
+      <div style="font-size:1rem;font-weight:800;color:var(--text-primary)">🚚 Cargas por Rota</div>
+      <div style="font-size:.76rem;color:var(--text-secondary);margin-top:2px">Valor já vendido na carga atual de cada rota — 🕐 em formação, 🚚 já saiu ou ✅ entregue. Toque pra ver os clientes vendidos nela</div>
     </div>
     <div id="vnd-mapa-cargas" style="display:flex;flex-direction:column;gap:8px">
       <p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>
