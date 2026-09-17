@@ -353,6 +353,8 @@ svg.si-icon,.si-icon svg,[data-feather]{width:17px;height:17px;stroke-width:2;di
 }
 .chip.active{background:#0d9488;border-color:#0d9488;color:#fff}
 .pedido-card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:12px}
+.vnd-aba-link:hover{opacity:1}
+.vnd-carga-bloco:hover{border-color:var(--border-med)}
 .pedido-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
 .pedido-id{font-size:.72rem;font-weight:800;color:var(--text-muted);letter-spacing:.3px}
 .pedido-cliente{font-size:.95rem;font-weight:800;color:var(--text-primary);margin-top:1px}
@@ -8763,7 +8765,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.69.0';
+const APP_VERSION = '4.70.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -35983,6 +35985,277 @@ function _vendRenderLista(){
     </div>`).join('');
 }
 
+// ══════════════════════════════════════════
+// PORTAL VENDEDOR — MAPA DE CLIENTES POR ROTA
+// ══════════════════════════════════════════
+// Minha carteira = clientes cujo vendedor mais frequente (moda, no
+// histórico completo de base_data) é este vendedor — mesmo critério do
+// Mapa de Clientes do Comercial. "Já compraram" = status verde/amarelo
+// (comprou há menos de 30 dias); "Pendentes" = vermelho/cinza (parou de
+// comprar ou nunca comprou com este vendedor). "Pedido em aberto" olha só
+// os pedidos DESTE vendedor (window._vendPedidos) que ainda não chegaram
+// a entregue/cancelado — não conta pedido em aberto de outro vendedor.
+let _vendMapaCache = null;
+let _vendMapaMapObj = null;
+let _vendMapaClusterObj = null;
+window._vendMapaAba = 'compraram';
+window._vendCargasAberta = null;
+
+function vendMudarAba(aba, el){
+  const secP = document.getElementById('vnd-secao-pedidos');
+  const secM = document.getElementById('vnd-secao-mapa');
+  const abaP = document.getElementById('vnd-aba-pedidos');
+  const abaM = document.getElementById('vnd-aba-mapa');
+  const ativo = { opacity:'1', borderBottomColor:'#fff', fontWeight:'800' };
+  const inativo = { opacity:'.75', borderBottomColor:'transparent', fontWeight:'700' };
+  const aplicar = (el, est) => { if(!el) return; el.style.opacity=est.opacity; el.style.borderBottomColor=est.borderBottomColor; el.style.fontWeight=est.fontWeight; };
+  if(aba==='mapa'){
+    if(secP) secP.style.display = 'none';
+    if(secM) secM.style.display = 'block';
+    aplicar(abaP, inativo); aplicar(abaM, ativo);
+    carregarMapaVendedor();
+  } else {
+    if(secM) secM.style.display = 'none';
+    if(secP) secP.style.display = 'block';
+    aplicar(abaM, inativo); aplicar(abaP, ativo);
+  }
+}
+
+async function carregarMapaVendedor(){
+  const mapaEl = document.getElementById('vnd-mapa-mapa');
+  if(!mapaEl) return;
+  if(_vendMapaCache){
+    if(_vendMapaMapObj) _vendMapaMapObj.invalidateSize();
+    renderCargasVendedor();
+    filtrarMapaVendedor();
+    return;
+  }
+  const cod = USUARIO_LOGADO.codigo_vendedor;
+  if(cod==null){
+    mapaEl.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Seu usuário ainda não tem um código de vendedor cadastrado.</p>';
+    return;
+  }
+  mapaEl.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando mapa...</p>';
+  try{
+    const [geoRows, rotasClienteRows, pedidosRows] = await Promise.all([
+      supaFetch('geolocalizacao_clientes?select=codigo_cliente,nome_cliente,latitude,longitude&limit=5000').catch(()=>[]),
+      supaFetch('rotas_clientes?select=rota,cliente&limit=10000').catch(()=>[]),
+      supaFetch('base_data?select=cliente,data_pedido,vendedor_cod,valor&cliente=not.is.null&cliente=neq.&limit=20000').catch(()=>[]),
+    ]);
+
+    const rotaPorCliente = {};
+    (rotasClienteRows||[]).forEach(r=>{
+      const k = (r.cliente||'').trim().toUpperCase();
+      if(!k) return;
+      if(!rotaPorCliente[k]) rotaPorCliente[k] = new Set();
+      rotaPorCliente[k].add(r.rota);
+    });
+
+    const agregPorCliente = _clienteAgregados(pedidosRows);
+    const hoje = hojeDataBRT();
+    const hojeMs = new Date(hoje+'T00:00:00').getTime();
+
+    const abertoPorCliente = {};
+    (window._vendPedidos||[]).forEach(p=>{
+      if(!p._st || p._st.chave==='entregue' || p._st.chave==='cancelado') return;
+      const k = (p.cliente||'').trim().toUpperCase();
+      abertoPorCliente[k] = (abertoPorCliente[k]||0) + (Number(p.valor)||0);
+    });
+
+    const clientes = (geoRows||[]).filter(r=>r.latitude!=null && r.longitude!=null).map(r=>{
+      const k = (r.nome_cliente||'').trim().toUpperCase();
+      const ag = agregPorCliente[k];
+      const vendCod = ag ? _commapaModa(ag.vendedores) : null;
+      if(String(vendCod)!==String(cod)) return null;
+      const rotas = rotaPorCliente[k] ? [...rotaPorCliente[k]] : [];
+      const ultima = ag?.ultima || null;
+      const {status, dias} = _statusRecenciaCompra(ultima, hojeMs);
+      return {
+        codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)',
+        lat: Number(r.latitude), lon: Number(r.longitude), rotas,
+        ultima, dias, status, valorUltima: ag?.valorUltima ?? null,
+        aberto: abertoPorCliente[k] || 0,
+      };
+    }).filter(c=>c && Number.isFinite(c.lat) && Number.isFinite(c.lon));
+
+    _vendMapaCache = clientes;
+
+    const selRota = document.getElementById('vnd-mapa-rota');
+    if(selRota){
+      const rotasSet = new Set();
+      clientes.forEach(c=>c.rotas.forEach(r=>rotasSet.add(r)));
+      const rotasOrd = [...rotasSet].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+      selRota.innerHTML = '<option value="">Todas as rotas</option>' + rotasOrd.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('');
+    }
+
+    if(!_vendMapaMapObj){
+      mapaEl.innerHTML = '';
+      _vendMapaMapObj = L.map('vnd-mapa-mapa');
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:18, attribution:'© OpenStreetMap' }).addTo(_vendMapaMapObj);
+      _vendMapaClusterObj = L.markerClusterGroup();
+      _vendMapaMapObj.addLayer(_vendMapaClusterObj);
+    }
+
+    renderCargasVendedor();
+    filtrarMapaVendedor();
+  }catch(e){
+    mapaEl.innerHTML = `<p style="text-align:center;padding:30px;color:#ef4444">Erro ao carregar mapa: ${e.message}</p>`;
+  }
+}
+
+function vendMapaAba(aba){
+  window._vendMapaAba = aba;
+  const tC = document.getElementById('vnd-mapa-tab-compraram');
+  const tP = document.getElementById('vnd-mapa-tab-pendentes');
+  if(tC){ tC.style.color = aba==='compraram' ? '#22c55e' : 'var(--text-muted)'; tC.style.borderBottomColor = aba==='compraram' ? '#22c55e' : 'transparent'; tC.style.fontWeight = aba==='compraram' ? '800' : '700'; }
+  if(tP){ tP.style.color = aba==='pendentes' ? '#ef4444' : 'var(--text-muted)'; tP.style.borderBottomColor = aba==='pendentes' ? '#ef4444' : 'transparent'; tP.style.fontWeight = aba==='pendentes' ? '800' : '700'; }
+  filtrarMapaVendedor();
+}
+
+function filtrarMapaVendedor(){
+  if(!_vendMapaCache || !_vendMapaClusterObj) return;
+  const q = (document.getElementById('vnd-mapa-busca')?.value||'').trim().toUpperCase();
+  const rota = document.getElementById('vnd-mapa-rota')?.value||'';
+
+  let base = _vendMapaCache;
+  if(rota) base = base.filter(c=>c.rotas.includes(rota));
+  if(q) base = base.filter(c=>c.nome.toUpperCase().includes(q) || String(c.codigo).includes(q));
+
+  const jaCompraram = base.filter(c=>c.status==='verde'||c.status==='amarelo');
+  const pendentes = base.filter(c=>c.status==='vermelho'||c.status==='cinza');
+  const cobertura = base.length ? Math.round(jaCompraram.length/base.length*100) : 0;
+
+  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
+  set('vnd-mapa-kpi-total', base.length);
+  set('vnd-mapa-kpi-compraram', jaCompraram.length);
+  set('vnd-mapa-kpi-pendentes', pendentes.length);
+  const kpiCob = document.getElementById('vnd-mapa-kpi-cobertura');
+  if(kpiCob) kpiCob.textContent = cobertura+'%';
+
+  const tC = document.getElementById('vnd-mapa-tab-compraram');
+  const tP = document.getElementById('vnd-mapa-tab-pendentes');
+  if(tC) tC.textContent = `✅ Já compraram (${jaCompraram.length})`;
+  if(tP) tP.textContent = `⏳ Pendentes (${pendentes.length})`;
+
+  const fmtD = d => { if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d; } };
+  const fmtR = v => v!=null ? v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}) : null;
+
+  _vendMapaClusterObj.clearLayers();
+  const markers = base.map(c=>{
+    const m = L.marker([c.lat, c.lon], { icon: _commapaIcon(c.status, c.valorUltima) });
+    const ultimaTxt = c.ultima ? `${fmtD(c.ultima)} (${c.dias} dia${c.dias===1?'':'s'} sem pedir) · ${escapeHtml(fmtR(c.valorUltima))}` : '<span style="color:#94a3b8">nenhum pedido localizado</span>';
+    const abertoTxt = c.aberto>0 ? `<br><span style="color:#fb923c;font-weight:700">🟠 Pedido em aberto: ${escapeHtml(fmtR(c.aberto))}</span>` : '';
+    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Última compra: ${ultimaTxt}${abertoTxt}`);
+    return m;
+  });
+  _vendMapaClusterObj.addLayers(markers);
+  if(markers.length){
+    _vendMapaMapObj.fitBounds(L.featureGroup(markers).getBounds().pad(0.1));
+  } else if(_vendMapaCache.length){
+    _vendMapaMapObj.setView([-9.4, -40.5], 6);
+  }
+
+  const lista = window._vendMapaAba==='pendentes' ? pendentes : jaCompraram;
+  const cont = document.getElementById('vnd-mapa-lista');
+  if(!cont) return;
+  if(!lista.length){
+    cont.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Nenhum cliente aqui.</p>';
+    return;
+  }
+  const iniciais = nome => (nome||'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
+  const CORES = {verde:'#22c55e', amarelo:'#f59e0b', vermelho:'#ef4444', cinza:'#94a3b8'};
+  cont.innerHTML = lista.map(c=>{
+    const cor = CORES[c.status];
+    const ultimaTxt = c.ultima
+      ? `Últ. compra ${fmtD(c.ultima)} · há ${c.dias} dia${c.dias===1?'':'s'}${c.valorUltima!=null?' · '+fmtR(c.valorUltima):''}`
+      : 'nunca comprou com você';
+    const abertoHtml = c.aberto>0 ? `
+      <div style="display:flex;align-items:center;gap:5px;margin-left:37px;background:rgba(251,146,60,.12);border:1px solid rgba(251,146,60,.35);border-radius:6px;padding:3px 7px;width:fit-content;margin-top:4px">
+        <span style="font-size:.62rem">🟠</span><span style="font-size:.66rem;font-weight:700;color:var(--orange)">Pedido em aberto: ${escapeHtml(fmtR(c.aberto))}</span>
+      </div>` : '';
+    return `
+      <div style="display:flex;flex-direction:column;gap:0;padding:8px 9px;background:var(--bg-card2);border:1px solid var(--border);border-radius:9px">
+        <div style="display:flex;align-items:center;gap:9px">
+          <div style="width:28px;height:28px;border-radius:50%;background:color-mix(in srgb, ${cor} 18%, transparent);color:${cor};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.64rem;flex-shrink:0">${escapeHtml(iniciais(c.nome))}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.76rem;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.nome)}</div>
+            <div style="font-size:.65rem;color:${c.status==='vermelho'?cor:'var(--text-muted)'}">${ultimaTxt}</div>
+          </div>
+          <span style="width:8px;height:8px;border-radius:50%;background:${cor};flex-shrink:0"></span>
+        </div>
+        ${abertoHtml}
+      </div>`;
+  }).join('');
+}
+
+// Cargas em que este vendedor vendeu, com valor total e clientes dentro —
+// reaproveita window._vendPedidos (já carregado pra aba Pedidos), sem
+// consulta nova ao Supabase.
+function renderCargasVendedor(){
+  const cont = document.getElementById('vnd-mapa-cargas');
+  if(!cont) return;
+  const porCarga = {};
+  (window._vendPedidos||[]).forEach(p=>{
+    if(p.carga==null) return;
+    if(!porCarga[p.carga]) porCarga[p.carga] = { carga:p.carga, rota:p._rota||'', data:null, valor:0, clientes:[] };
+    const c = porCarga[p.carga];
+    c.valor += Number(p.valor)||0;
+    c.clientes.push({ nome:p.cliente||'—', valor:Number(p.valor)||0 });
+    if(p.data_pedido && (!c.data || p.data_pedido>c.data)) c.data = p.data_pedido;
+  });
+  const cargas = Object.values(porCarga).sort((a,b)=>(b.carga||0)-(a.carga||0));
+  window._vendCargasCache = cargas;
+
+  if(!cargas.length){
+    cont.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Nenhuma carga vendida ainda.</p>';
+    return;
+  }
+  const fmtR = v => (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  const fmtD = d => { if(!d) return '—'; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d; } };
+  cont.innerHTML = cargas.map(c=>`
+    <div class="vnd-carga-bloco" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;cursor:pointer" onclick="vendToggleCarga(${c.carga})">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:1.05rem">🚚</span>
+          <div>
+            <div style="font-size:.84rem;font-weight:800;color:var(--text-primary)">Carga #${escapeHtml(String(c.carga))}${c.rota?` <span style="color:var(--teal,#0d9488);font-weight:700">· ${escapeHtml(c.rota)}</span>`:''}</div>
+            <div style="font-size:.68rem;color:var(--text-muted)">${fmtD(c.data)} · ${c.clientes.length} cliente${c.clientes.length===1?'':'s'}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:.9rem;font-weight:800;color:#22c55e">${escapeHtml(fmtR(c.valor))}</span>
+          <span id="vnd-carga-seta-${c.carga}" style="color:var(--text-muted);font-size:.8rem">▾</span>
+        </div>
+      </div>
+      <div id="vnd-carga-detalhe-${c.carga}" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)"></div>
+    </div>`).join('');
+}
+
+function vendToggleCarga(carga){
+  const det = document.getElementById('vnd-carga-detalhe-'+carga);
+  const seta = document.getElementById('vnd-carga-seta-'+carga);
+  if(!det) return;
+  const abrir = det.style.display==='none';
+  if(abrir && window._vendCargasAberta!=null && window._vendCargasAberta!==carga){
+    const detAnt = document.getElementById('vnd-carga-detalhe-'+window._vendCargasAberta);
+    const setaAnt = document.getElementById('vnd-carga-seta-'+window._vendCargasAberta);
+    if(detAnt) detAnt.style.display = 'none';
+    if(setaAnt) setaAnt.textContent = '▾';
+  }
+  if(abrir){
+    const c = (window._vendCargasCache||[]).find(x=>x.carga===carga);
+    const fmtR = v => (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+    det.innerHTML = (c?.clientes||[]).map(cl=>`
+      <div style="display:flex;justify-content:space-between;padding:6px 9px;background:var(--bg-card2);border-radius:8px;margin-bottom:6px">
+        <span style="font-size:.76rem;color:var(--text-primary)">${escapeHtml(cl.nome)}</span>
+        <span style="font-size:.76rem;color:var(--text-secondary)">${escapeHtml(fmtR(cl.valor))}</span>
+      </div>`).join('');
+  }
+  det.style.display = abrir ? 'block' : 'none';
+  if(seta) seta.textContent = abrir ? '▴' : '▾';
+  window._vendCargasAberta = abrir ? carga : null;
+}
+
 async function carregarPortalSeguros(){
   const container = document.getElementById('seguros-cargas-container');
   if(!container) return;
@@ -43923,6 +44196,37 @@ function _commapaModa(obj){
   return melhor;
 }
 
+// Agregado por cliente (nome em maiúsculas) a partir de linhas de base_data:
+// última data de pedido (+ valor daquele pedido), vendedor mais frequente
+// (moda) e ticket médio. Reaproveitado pelo Mapa de Clientes (Comercial) e
+// pelo Mapa de Clientes do Portal Vendedor.
+function _clienteAgregados(pedidosRows){
+  const agreg = {};
+  (pedidosRows||[]).forEach(r=>{
+    const k = (r.cliente||'').trim().toUpperCase();
+    if(!k) return;
+    if(!agreg[k]) agreg[k] = { ultima:null, valorUltima:null, vendedores:{}, valorSoma:0, valorN:0 };
+    const a = agreg[k];
+    if(r.data_pedido && (!a.ultima || r.data_pedido >= a.ultima)){
+      a.ultima = r.data_pedido;
+      a.valorUltima = r.valor!=null ? Number(r.valor) : null;
+    }
+    if(r.vendedor_cod!=null) a.vendedores[r.vendedor_cod] = (a.vendedores[r.vendedor_cod]||0)+1;
+    if(r.valor!=null && Number.isFinite(Number(r.valor))){ a.valorSoma += Number(r.valor); a.valorN++; }
+  });
+  return agreg;
+}
+// Semáforo de recência (verde/amarelo/vermelho/cinza) a partir da data da
+// última compra — mesmo corte usado em toda a leitura comercial (commapa,
+// comercial-vendedor): <15 dias, 15-30, +30, sem pedido localizado.
+function _statusRecenciaCompra(ultima, hojeMs){
+  if(hojeMs==null){ const h=hojeDataBRT(); hojeMs=new Date(h+'T00:00:00').getTime(); }
+  if(!ultima) return { status:'cinza', dias:null };
+  const dias = Math.floor((hojeMs - new Date(ultima+'T00:00:00').getTime())/86400000);
+  const status = dias < 15 ? 'verde' : (dias < 30 ? 'amarelo' : 'vermelho');
+  return { status, dias };
+}
+
 async function carregarMapaClientes(){
   const mapaEl = document.getElementById('commapa-mapa');
   if(!mapaEl) return;
@@ -43950,16 +44254,7 @@ async function carregarMapaClientes(){
       rotaPorCliente[k].add(r.rota);
     });
     // Agregado por cliente: última compra, vendedor mais frequente (moda) e ticket médio
-    const agregPorCliente = {};
-    (pedidosRows||[]).forEach(r=>{
-      const k = (r.cliente||'').trim().toUpperCase();
-      if(!k) return;
-      if(!agregPorCliente[k]) agregPorCliente[k] = { ultima:null, vendedores:{}, valorSoma:0, valorN:0 };
-      const a = agregPorCliente[k];
-      if(r.data_pedido && (!a.ultima || r.data_pedido > a.ultima)) a.ultima = r.data_pedido;
-      if(r.vendedor_cod!=null) a.vendedores[r.vendedor_cod] = (a.vendedores[r.vendedor_cod]||0)+1;
-      if(r.valor!=null && Number.isFinite(Number(r.valor))){ a.valorSoma += Number(r.valor); a.valorN++; }
-    });
+    const agregPorCliente = _clienteAgregados(pedidosRows);
     const hoje = hojeDataBRT();
     const hojeMs = new Date(hoje+'T00:00:00').getTime();
 
@@ -43968,11 +44263,7 @@ async function carregarMapaClientes(){
       const rotas = rotaPorCliente[k] ? [...rotaPorCliente[k]] : [];
       const ag = agregPorCliente[k];
       const ultima = ag?.ultima || null;
-      let status = 'cinza', dias = null;
-      if(ultima){
-        dias = Math.floor((hojeMs - new Date(ultima+'T00:00:00').getTime())/86400000);
-        status = dias < 15 ? 'verde' : (dias < 30 ? 'amarelo' : 'vermelho');
-      }
+      const {status, dias} = _statusRecenciaCompra(ultima, hojeMs);
       const vendCod = ag ? _commapaModa(ag.vendedores) : null;
       const vendNome = vendCod!=null ? (vendNomePorCod[vendCod]||`Código ${vendCod}`) : null;
       const valorMedio = ag && ag.valorN ? ag.valorSoma/ag.valorN : null;
@@ -48820,9 +49111,13 @@ function _cftvRenderTable(data){
         </div>
       </div>
     </div>
-    <button onclick="logout()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:7px 16px;cursor:pointer;font-size:.83rem">Sair</button>
+    <div style="display:flex;align-items:center;gap:18px">
+      <span id="vnd-aba-pedidos" class="vnd-aba-link active" onclick="vendMudarAba('pedidos',this)" style="color:#fff;font-size:.82rem;font-weight:800;border-bottom:2px solid #fff;padding-bottom:2px;cursor:pointer">📋 Pedidos</span>
+      <span id="vnd-aba-mapa" class="vnd-aba-link" onclick="vendMudarAba('mapa',this)" style="color:#fff;font-size:.82rem;font-weight:700;opacity:.75;border-bottom:2px solid transparent;padding-bottom:2px;cursor:pointer">📍 Mapa de Clientes</span>
+      <button onclick="logout()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:7px 16px;cursor:pointer;font-size:.83rem">Sair</button>
+    </div>
   </div>
-  <div style="max-width:1100px;margin:0 auto;padding:24px 16px">
+  <div id="vnd-secao-pedidos" style="max-width:1100px;margin:0 auto;padding:24px 16px">
 
     <!-- KPIs -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:22px">
@@ -48868,6 +49163,54 @@ function _cftvRenderTable(data){
     <div id="vendedor-pedidos-container">
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
     </div>
+  </div>
+
+  <div id="vnd-secao-mapa" style="display:none;max-width:1300px;margin:0 auto;padding:24px 16px">
+
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.15rem;font-weight:800;color:var(--text-primary)">📍 Mapa de Clientes</div>
+        <div style="font-size:.78rem;color:var(--text-secondary);margin-top:2px">Localização de quem você já vendeu — escolha a rota pra ver quem já comprou e quem falta visitar</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <input type="text" id="vnd-mapa-busca" placeholder="🔍 Buscar cliente..." oninput="filtrarMapaVendedor()"
+          style="width:220px;box-sizing:border-box;border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.82rem;background:var(--bg-input);color:var(--text-primary);outline:none">
+        <select id="vnd-mapa-rota" onchange="filtrarMapaVendedor()"
+          style="width:200px;border:1.5px solid var(--teal);border-radius:8px;padding:9px 12px;font-size:.82rem;background:var(--bg-input);color:var(--text-primary);outline:none;font-weight:700">
+          <option value="">Todas as rotas</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px">
+      <div class="kpi-card" style="border-top-color:var(--blue)"><div class="kpi-label">Clientes na rota</div><div class="kpi-value" id="vnd-mapa-kpi-total">—</div></div>
+      <div class="kpi-card" style="border-top-color:#22c55e"><div class="kpi-label">✅ Já compraram</div><div class="kpi-value" id="vnd-mapa-kpi-compraram">—</div></div>
+      <div class="kpi-card" style="border-top-color:#ef4444"><div class="kpi-label">⏳ Pendentes</div><div class="kpi-value" id="vnd-mapa-kpi-pendentes">—</div></div>
+      <div class="kpi-card" style="border-top-color:#0d9488"><div class="kpi-label">Cobertura</div><div class="kpi-value" id="vnd-mapa-kpi-cobertura">—</div></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:26px">
+      <div id="vnd-mapa-mapa" style="width:100%;height:440px;border-radius:12px;border:1px solid var(--border);background:var(--bg-card2)"></div>
+
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;border-bottom:1px solid var(--border)">
+          <div id="vnd-mapa-tab-compraram" onclick="vendMapaAba('compraram')" style="flex:1;text-align:center;padding:12px 0;font-size:.78rem;font-weight:800;color:#22c55e;border-bottom:2px solid #22c55e;cursor:pointer">✅ Já compraram (—)</div>
+          <div id="vnd-mapa-tab-pendentes" onclick="vendMapaAba('pendentes')" style="flex:1;text-align:center;padding:12px 0;font-size:.78rem;font-weight:700;color:var(--text-muted);border-bottom:2px solid transparent;cursor:pointer">⏳ Pendentes (—)</div>
+        </div>
+        <div id="vnd-mapa-lista" style="padding:12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:400px">
+          <p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:12px">
+      <div style="font-size:1rem;font-weight:800;color:var(--text-primary)">📦 Cargas Vendidas</div>
+      <div style="font-size:.76rem;color:var(--text-secondary);margin-top:2px">Toque numa carga pra ver os clientes que você vendeu dentro dela</div>
+    </div>
+    <div id="vnd-mapa-cargas" style="display:flex;flex-direction:column;gap:8px">
+      <p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>
+    </div>
+
   </div>
 </div>
 
