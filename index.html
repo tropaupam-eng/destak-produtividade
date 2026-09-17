@@ -8763,7 +8763,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.67.0';
+const APP_VERSION = '4.68.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -10262,6 +10262,20 @@ async function erpTesteConsultar(){
   }
 }
 
+// Divide uma lista de ids em lotes e chama fn(lote) pra cada um, concatenando
+// o retorno quando fn devolve array — usado nos vários pontos que montam
+// pedido=in.(...) a partir de um lote do ERP de tamanho variável, que pode
+// estourar o limite de tamanho de URL quando o lote é grande (400 Bad
+// Request em base_data?pedido=in.(...), achado ao vivo em 2026-09-17).
+async function _emLotes(ids, tamanho, fn){
+  const resultados = [];
+  for(let i=0; i<ids.length; i+=tamanho){
+    const r = await fn(ids.slice(i, i+tamanho));
+    if(Array.isArray(r)) resultados.push(...r);
+  }
+  return resultados;
+}
+
 // ── Integração ERP: cancelamento — pedido que chega do ERP com status
 // "cancelado" (ou tem o status alterado pra cancelado num reenvio) NÃO é
 // promovido pra base_data (fica de fora da carga) e vira um registro em
@@ -10278,12 +10292,12 @@ async function erpProcessarPedidosCancelados(erpRowsCancelados, lancMapPorCarga)
   if(!pedidosCancel.length) return 0;
 
   try{
-    await supaFetch(`base_data?pedido=in.(${pedidosCancel.join(',')})`, { method:'DELETE' });
+    await _emLotes(pedidosCancel, 300, lote => supaFetch(`base_data?pedido=in.(${lote.join(',')})`, { method:'DELETE' }));
   }catch(_){}
 
   let jaRegistrados = new Set();
   try{
-    const existentes = await supaFetch(`pedidos_cancelados?pedido=in.(${pedidosCancel.join(',')})&select=carga,pedido`) || [];
+    const existentes = await _emLotes(pedidosCancel, 300, lote => supaFetch(`pedidos_cancelados?pedido=in.(${lote.join(',')})&select=carga,pedido`));
     jaRegistrados = new Set(existentes.map(e => `${e.carga}__${e.pedido}`));
   }catch(_){}
 
@@ -10333,7 +10347,7 @@ async function erpProcessarDatasEntrega(erpRowsComData){
 
   let existentes = [];
   try{
-    existentes = await supaFetch(`base_data?pedido=in.(${numeros.join(',')})&select=pedido,mes_ano,cliente`) || [];
+    existentes = await _emLotes(numeros, 300, lote => supaFetch(`base_data?pedido=in.(${lote.join(',')})&select=pedido,mes_ano,cliente`));
   }catch(_){ return; }
 
   const porPedido = {};
@@ -10477,9 +10491,13 @@ async function erpPromoverAutomaticamente(){
 
     const numerosErpUnicos = [...new Set(registros.map(r => r.pedido))];
     if(numerosErpUnicos.length > 0){
-      await supaFetch(`base_data?pedido=in.(${numerosErpUnicos.join(',')})`, {
+      // Em lotes — um DELETE só com todos os pedidos de uma vez gera uma URL
+      // longa demais quando o lote do ERP é grande (visto ao vivo: 400 Bad
+      // Request em base_data?pedido=in.(...) com centenas de números),
+      // travando a promoção automática do lote inteiro por causa disso.
+      await _emLotes(numerosErpUnicos, 300, lote => supaFetch(`base_data?pedido=in.(${lote.join(',')})`, {
         method: 'DELETE'
-      });
+      }));
     }
 
     await pushBaseData(registros);
@@ -10706,9 +10724,11 @@ async function erpPromoverParaProducao(){
     const numerosErpUnicos = [...new Set(registros.map(r => r.pedido))];
     if(numerosErpUnicos.length > 0){
       el.innerHTML = `⏳ Limpando registros antigos de ${numerosErpUnicos.length} pedidos...`;
-      await supaFetch(`base_data?pedido=in.(${numerosErpUnicos.join(',')})`, {
+      // Em lotes — mesma correção de erpPromoverAutomaticamente() (400 Bad
+      // Request com URL longa demais quando o lote do ERP é grande).
+      await _emLotes(numerosErpUnicos, 300, lote => supaFetch(`base_data?pedido=in.(${lote.join(',')})`, {
         method: 'DELETE'
-      });
+      }));
     }
 
     const semMesAno = registros.filter(r=>!r.mes_ano).length;
@@ -10845,7 +10865,9 @@ async function erpPromoverAutomatico(){
     // Deletar pedidos antigos
     const numerosErpUnicos = [...new Set(registros.map(r => r.pedido))];
     if(numerosErpUnicos.length > 0){
-      await supaFetch(`base_data?pedido=in.(${numerosErpUnicos.join(',')})`, { method: 'DELETE' });
+      // Em lotes — mesma correção de erpPromoverAutomaticamente() (400 Bad
+      // Request com URL longa demais quando o lote do ERP é grande).
+      await _emLotes(numerosErpUnicos, 300, lote => supaFetch(`base_data?pedido=in.(${lote.join(',')})`, { method: 'DELETE' }));
     }
 
     // Gravar em produção
