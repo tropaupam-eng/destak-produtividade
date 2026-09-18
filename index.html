@@ -21012,10 +21012,28 @@ async function processarPlanilhaExpedicao(file, demandaId, cargaForcada){
           const _valAntes  = _demAntes?.valor_total || 0;
           const _fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
 
+          // Não podemos ter duas linhas de demandas_rota com o mesmo número de
+          // carga (decisão do usuário em 2026-09-18, após achar a carga 14939
+          // duplicada — vazava exatamente aqui, que gravava o número sem checar
+          // nada). Mesma checagem/escopo (unidade, ignora cancelada) de
+          // editarNumeroCarga(). Se houver conflito, os pedidos/totais da
+          // planilha já foram gravados acima — só o número da carga fica de
+          // fora, pra não duplicar; o usuário resolve manualmente pelo botão
+          // de editar número (que já bloqueia duplicidade).
+          const _unidadeCheck = (_demAntes?.unidade || USUARIO_LOGADO?.unidade || USUARIO_LOGADO?.und || '').trim();
+          let _cargaConflitante = false;
+          if(_unidadeCheck){
+            const _conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${cargaNum}&unidade=eq.${encodeURIComponent(_unidadeCheck)}&id=neq.${demandaId}&status=neq.cancelado`).catch(()=>[]);
+            if(_conflito && _conflito.length){
+              _cargaConflitante = true;
+              showToast(`⚠️ Carga ${cargaNum} já existe na unidade ${_unidadeCheck} (motorista: ${_conflito[0].motorista||'—'}) — número NÃO foi gravado nesta demanda. Edite manualmente com um número livre.`,'warning',8000);
+            }
+          }
+
           await supaFetch(`demandas_rota?id=eq.${demandaId}`,{
             method:'PATCH',
             body: JSON.stringify({
-              carga: cargaNum,
+              ...(_cargaConflitante ? {} : {carga: cargaNum}),
               quantidade_pedidos: totalPedidos,
               valor_total: totalValor,
               mes_ano: novos[0]?.mes_ano || ''
