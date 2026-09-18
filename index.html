@@ -5890,6 +5890,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <h3>🔄 Atualizar Painel de Vendas</h3>
       <p style="font-size:.82rem;color:#6b7280;margin-bottom:14px">Traz pra dentro do sistema os pedidos mais recentes da planilha do Proton (unidades 1 e 3). Alguém precisa ter atualizado e salvo a planilha antes de clicar aqui.</p>
       <button class="cad-btn-add" onclick="solicitarPainelVendas()" id="btn-painel-vendas">🔄 Atualizar Painel de Vendas</button>
+      <div id="barra-painel-vendas-wrap" style="display:none;margin-top:10px;background:var(--bg-hover,#f1f5f9);border-radius:100px;height:20px;overflow:hidden;position:relative">
+        <div id="barra-painel-vendas" style="height:100%;width:0%;background:linear-gradient(90deg,#2563eb,#1d4ed8);transition:width .4s ease;border-radius:100px"></div>
+        <div id="barra-painel-vendas-texto" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;color:var(--text-primary,#1f2937)">0%</div>
+      </div>
       <div id="msg-painel-vendas" class="cad-msg" style="display:none"></div>
     </div>
     <div class="cad-list-box">
@@ -25069,10 +25073,21 @@ async function solicitarPainelVendas(){
   }
 }
 
+function _barraPainelVendas(pct, visivel, texto){
+  const wrap = document.getElementById('barra-painel-vendas-wrap');
+  const barra = document.getElementById('barra-painel-vendas');
+  const txt = document.getElementById('barra-painel-vendas-texto');
+  if(!wrap || !barra || !txt) return;
+  wrap.style.display = visivel ? 'block' : 'none';
+  if(!visivel) return;
+  barra.style.width = pct+'%';
+  txt.textContent = texto || (pct+'%');
+}
+
 async function _acompanharPainelVendas(id, btn, tentativa=1){
-  const LIMITE_TENTATIVAS = 40; // ~4 minutos (6s cada)
+  const LIMITE_TENTATIVAS = 400; // ~20 minutos (3s cada) — a primeira carga completa já levou uns 14 min
   try{
-    const linhas = await supaFetch('painel_vendas_execucoes?id=eq.'+id+'&select=status,resultado,erro');
+    const linhas = await supaFetch('painel_vendas_execucoes?id=eq.'+id+'&select=status,resultado,erro,progresso_pct,progresso_etapa,progresso_detalhe');
     const linha = linhas && linhas[0];
     if(!linha){ throw new Error('solicitação sumiu'); }
 
@@ -25082,10 +25097,20 @@ async function _acompanharPainelVendas(id, btn, tentativa=1){
         btn.disabled = false;
         return;
       }
-      showCadMsg('msg-painel-vendas', linha.status === 'processando' ? '⏳ Processando...' : '⏳ Na fila, aguardando o script local pegar...');
-      setTimeout(()=>_acompanharPainelVendas(id, btn, tentativa+1), 6000);
+      if(linha.status === 'processando'){
+        const pct = linha.progresso_pct || 0;
+        const etapaTexto = linha.progresso_etapa === 'itens' ? 'itens (corte/troca)' : linha.progresso_etapa === 'atualizacoes' ? 'pedidos' : '';
+        _barraPainelVendas(pct, true, pct+'%'+(etapaTexto ? ' — '+etapaTexto : ''));
+        showCadMsg('msg-painel-vendas', `⏳ Processando... ${pct}%${linha.progresso_detalhe ? ' ('+linha.progresso_detalhe+')' : ''}`);
+      } else {
+        _barraPainelVendas(0, true, 'na fila...');
+        showCadMsg('msg-painel-vendas', '⏳ Na fila, aguardando o script local pegar...');
+      }
+      setTimeout(()=>_acompanharPainelVendas(id, btn, tentativa+1), 3000);
       return;
     }
+
+    _barraPainelVendas(100, false);
 
     if(linha.status === 'concluido'){
       const r = linha.resultado || {};
