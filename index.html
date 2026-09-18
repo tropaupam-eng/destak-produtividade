@@ -7359,6 +7359,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           style="border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary);width:100%;box-sizing:border-box;text-transform:uppercase"
           oninput="this.value=this.value.toUpperCase()"/>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;font-weight:600;color:var(--text-secondary);cursor:pointer">
+        <input type="checkbox" id="edit-und-sync-painel" style="width:16px;height:16px;cursor:pointer"/>
+        🔄 Sincronizar no "Atualizar Painel de Vendas"
+      </label>
       <div id="msg-edit-und" style="display:none;padding:8px 12px;border-radius:8px;font-size:.82rem;font-weight:600"></div>
       <div style="display:flex;gap:10px;margin-top:4px">
         <button onclick="document.getElementById('modal-editar-unidade').style.display='none'"
@@ -11401,6 +11405,11 @@ async function _absUpsertPresenca(nome, funcao, data, fonte='manual'){
 let CARGA_MAP   = {};
 let CARGAS_BASE = new Set();
 let UNIDADES_MAP = {};
+// Quais unidades entram no botão "Atualizar Painel de Vendas" (aba
+// Unidades) — array de códigos (string). Carregado/salvo junto com
+// UNIDADES_MAP em syncUnidades()/pushUnidades(), mas em chave separada
+// (painel_vendas_unidades_ativas) pra não misturar com o cadastro nome/código.
+let PAINEL_VENDAS_UNIDADES_ATIVAS = ['1','3'];
 // true só depois que syncUnidades() confirma uma resposta de verdade do banco
 // (mesmo que vazia) — distingue "ainda não chegou" de "chegou e não tem
 // unidade cadastrada", pra não ficar re-registrando pra sempre nesse 2º caso.
@@ -25008,7 +25017,7 @@ function cadRenderUnidades(){
     <div class="cad-item">
       <div class="cad-item-info">
         <div class="cad-item-nome">🏭 ${cod} — ${nome}</div>
-        <div class="cad-item-sub">Código UN: ${cod}</div>
+        <div class="cad-item-sub">Código UN: ${cod}${PAINEL_VENDAS_UNIDADES_ATIVAS.includes(String(cod)) ? ' · 🔄 sincroniza Painel de Vendas' : ''}</div>
       </div>
       <div style="display:flex;gap:6px">
         <button class="cad-item-edit" onclick="cadEditarUnidade('${cod.replace(/'/g,"\\'")}')" title="Editar" style="background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd;border-radius:7px;padding:4px 10px;font-size:.8rem;cursor:pointer;font-weight:700">✏️</button>
@@ -25110,6 +25119,7 @@ function cadEditarUnidade(cod){
   document.getElementById('edit-und-cod-original').value = cod;
   document.getElementById('edit-und-codigo').value = cod;
   document.getElementById('edit-und-nome').value = nomeAtual;
+  document.getElementById('edit-und-sync-painel').checked = PAINEL_VENDAS_UNIDADES_ATIVAS.includes(String(cod));
   const msg = document.getElementById('msg-edit-und');
   if(msg) msg.style.display = 'none';
   modal.style.display = 'flex';
@@ -25137,6 +25147,12 @@ async function cadSalvarEdicaoUnidade(){
   if(codNovo !== codOriginal) delete UNIDADES_MAP[codOriginal];
   UNIDADES_MAP[codNovo] = nomeNovo;
   await pushUnidades();
+
+  const sincronizar = document.getElementById('edit-und-sync-painel').checked;
+  PAINEL_VENDAS_UNIDADES_ATIVAS = PAINEL_VENDAS_UNIDADES_ATIVAS.filter(c => c !== codOriginal && c !== codNovo);
+  if(sincronizar) PAINEL_VENDAS_UNIDADES_ATIVAS.push(codNovo);
+  await pushPainelVendasUnidadesAtivas();
+
   erMsg('✅ Unidade atualizada!');
   showToast('✅ Unidade '+codNovo+' — '+nomeNovo+' atualizada!','success');
   cadRenderUnidades();
@@ -41049,6 +41065,12 @@ async function syncUnidades(){
     if(data && data[0] && data[0].valor){
       UNIDADES_MAP = data[0].valor;
     }
+    try{
+      const dataPv = await supaFetch('configuracoes?chave=eq.painel_vendas_unidades_ativas&select=valor');
+      if(dataPv && dataPv[0] && Array.isArray(dataPv[0].valor)){
+        PAINEL_VENDAS_UNIDADES_ATIVAS = dataPv[0].valor.map(String);
+      }
+    }catch(_){}
     _unidadesCarregadas = true;
     popularTodosSelectsUnidade();
     // Reprocessa qualquer select que tentou popular antes de UNIDADES_MAP
@@ -41079,6 +41101,23 @@ async function pushUnidades(){
       });
     }
   }catch(e){ console.warn('pushUnidades erro:', e.message); }
+}
+
+async function pushPainelVendasUnidadesAtivas(){
+  try{
+    const check = await supaFetch('configuracoes?chave=eq.painel_vendas_unidades_ativas&select=chave');
+    if(check && check.length > 0){
+      await supaFetch('configuracoes?chave=eq.painel_vendas_unidades_ativas',{
+        method:'PATCH',
+        body: JSON.stringify({valor: PAINEL_VENDAS_UNIDADES_ATIVAS, atualizado_em: new Date().toISOString()})
+      });
+    } else {
+      await supaFetch('configuracoes',{
+        method:'POST',
+        body: JSON.stringify({chave:'painel_vendas_unidades_ativas', valor: PAINEL_VENDAS_UNIDADES_ATIVAS})
+      });
+    }
+  }catch(e){ console.warn('pushPainelVendasUnidadesAtivas erro:', e.message); }
 }
 
 
