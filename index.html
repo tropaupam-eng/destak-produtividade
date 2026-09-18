@@ -5886,6 +5886,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       </div>
       <div id="msg-cad-und" class="cad-msg" style="display:none"></div>
     </div>
+    <div class="cad-add-box" style="margin-top:16px">
+      <h3>🔄 Atualizar Painel de Vendas</h3>
+      <p style="font-size:.82rem;color:#6b7280;margin-bottom:14px">Traz pra dentro do sistema os pedidos mais recentes da planilha do Proton (unidades 1 e 3). Alguém precisa ter atualizado e salvo a planilha antes de clicar aqui.</p>
+      <button class="cad-btn-add" onclick="solicitarPainelVendas()" id="btn-painel-vendas">🔄 Atualizar Painel de Vendas</button>
+      <div id="msg-painel-vendas" class="cad-msg" style="display:none"></div>
+    </div>
     <div class="cad-list-box">
       <h3 style="margin-bottom:14px">Unidades Cadastradas <span id="badge-unidades" class="cad-badge">0</span></h3>
       <div id="lista-unidades" class="cad-grid"></div>
@@ -25026,6 +25032,67 @@ async function cadAdicionarUnidade(){
   showCadMsg('msg-cad-und','✅ '+cod+' — '+nome+' salvo!');
   showToast('✅ Unidade '+cod+' cadastrada!','success');
   cadRenderUnidades();
+}
+
+// Botão "Atualizar Painel de Vendas" (aba Unidades): não lê a planilha
+// daqui (o navegador não tem acesso ao arquivo local) — só grava um pedido
+// em painel_vendas_execucoes. Um script local (watch-painel-vendas.js),
+// rodando na máquina que tem a planilha, fica de olho nessa fila, processa
+// e grava o resultado de volta na mesma linha. Aqui só ficamos observando
+// até virar 'concluido'/'erro'.
+async function solicitarPainelVendas(){
+  const btn = document.getElementById('btn-painel-vendas');
+  const nomeUsuario = (USUARIO_LOGADO && USUARIO_LOGADO.nome) || 'admin';
+  btn.disabled = true;
+  showCadMsg('msg-painel-vendas', '⏳ Solicitação enviada, aguardando processamento...');
+  try{
+    const criado = await supaFetch('painel_vendas_execucoes', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=representation' },
+      body: JSON.stringify({ solicitado_por: nomeUsuario })
+    });
+    const id = criado && criado[0] && criado[0].id;
+    if(!id) throw new Error('Não recebi o id da solicitação.');
+    _acompanharPainelVendas(id, btn);
+  }catch(e){
+    showCadMsg('msg-painel-vendas', '❌ Erro ao solicitar: '+e.message, false);
+    btn.disabled = false;
+  }
+}
+
+async function _acompanharPainelVendas(id, btn, tentativa=1){
+  const LIMITE_TENTATIVAS = 40; // ~4 minutos (6s cada)
+  try{
+    const linhas = await supaFetch('painel_vendas_execucoes?id=eq.'+id+'&select=status,resultado,erro');
+    const linha = linhas && linhas[0];
+    if(!linha){ throw new Error('solicitação sumiu'); }
+
+    if(linha.status === 'pendente' || linha.status === 'processando'){
+      if(tentativa >= LIMITE_TENTATIVAS){
+        showCadMsg('msg-painel-vendas', '⏳ Ainda processando — pode demorar mais dependendo do tamanho da planilha. Confira de novo em alguns minutos.');
+        btn.disabled = false;
+        return;
+      }
+      showCadMsg('msg-painel-vendas', linha.status === 'processando' ? '⏳ Processando...' : '⏳ Na fila, aguardando o script local pegar...');
+      setTimeout(()=>_acompanharPainelVendas(id, btn, tentativa+1), 6000);
+      return;
+    }
+
+    if(linha.status === 'concluido'){
+      const r = linha.resultado || {};
+      showCadMsg('msg-painel-vendas', `✅ Concluído: ${r.pedidos ?? '?'} pedidos, ${r.itens ?? '?'} itens.`);
+      showToast('✅ Painel de Vendas atualizado!','success');
+      btn.disabled = false;
+      return;
+    }
+
+    // erro
+    showCadMsg('msg-painel-vendas', '❌ Erro no processamento: '+(linha.erro||'desconhecido'), false);
+    btn.disabled = false;
+  }catch(e){
+    showCadMsg('msg-painel-vendas', '❌ Erro ao acompanhar: '+e.message, false);
+    btn.disabled = false;
+  }
 }
 
 async function cadRemoverUnidade(cod){
