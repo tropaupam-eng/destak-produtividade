@@ -34,6 +34,13 @@ aponte**. É exatamente o tipo de coisa que a gente prefere descobrir agora.
 
 ---
 
+## Respostas já recebidas (WhatsApp, 21/09 11:52)
+
+- **Prazo da interna: 36 horas**, confirmado. "E vamos baixar a régua pra mais baixo agora."
+  O cadastro de rotas já diz 36 h para Petrolina e Juazeiro; nada a mudar no código.
+- **Pergunta 6:** respondida abaixo, com uma dúvida de leitura.
+- Continuam abertas: **1, 2, 3, 4 e 7**.
+
 ## 1. A pergunta que trava tudo: alguém lê estas duas colunas?
 
 ```
@@ -153,7 +160,12 @@ caminho e não passa pela expedição.
 
 **Pergunta:** é isso mesmo?
 
-**Resposta:**
+**Resposta (Daniel, WhatsApp, 21/09 11:52):** "Petrolina e Jua passa pelo Cronos."
+> Leitura do Rafael: os pedidos internos estão no Cronos (254 PET + 159 JUA em julho) e a
+> entrega é registrada. O que os números acima dizem é que a **expedição** (separação,
+> conferência, bipagem) quase não registra a interna. Pendente de confirmar com ele em que
+> ponto a interna passa: só carga + entrega, ou separação/conferência também. O dia de
+> campo responde isso pela câmera.
 
 ---
 
