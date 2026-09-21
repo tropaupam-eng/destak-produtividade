@@ -8250,9 +8250,18 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
-  <!-- Sala Comum: rotas por status, sem valores — só datas e % de entrega -->
-  <div id="tv-rotas-view" style="display:none;flex:1;overflow-y:auto;padding:16px 20px">
-    <div id="tv-rotas-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+  <!-- Sala Comum: pipeline (pendente/separação/carregamento) + indicadores
+       circulares de % de entrega (em trânsito) — sem nenhum valor. Layout C
+       escolhido pelo usuário entre 3 opções, 2026-09-21. -->
+  <div id="tv-rotas-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;padding:20px 40px 24px;min-height:0">
+    <div id="tv-rotas-pipeline" style="flex:0 0 44%;display:flex;align-items:stretch;gap:0;min-height:0;padding-bottom:14px"></div>
+    <div style="flex:1;display:flex;flex-direction:column;padding-top:14px;border-top:1px solid rgba(255,255,255,.08);min-height:0">
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0 14px;flex-shrink:0">
+        <span style="font-size:1.1rem">🚚</span>
+        <span style="font-size:1rem;font-weight:800;letter-spacing:.4px">EM TRÂNSITO — % DE ENTREGAS</span>
+      </div>
+      <div id="tv-rotas-gauges" style="flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:20px;overflow-y:auto;min-height:0;align-content:start"></div>
+    </div>
   </div>
 
   <!-- Main grid -->
@@ -8788,7 +8797,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.76.0';
+const APP_VERSION = '4.77.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -47881,53 +47890,79 @@ function tvMudarView(view){
   if(btnR){ btnR.style.background = painel ? 'transparent' : 'rgba(255,255,255,.18)'; btnR.style.color = painel ? 'rgba(255,255,255,.55)' : '#fff'; }
 }
 
-// Renderiza a view "Sala Comum": cards por rota, sem valores — só status,
-// data de saída (pendente/separação/carregamento) ou % de entregas já
-// concluídas (em trânsito), agrupando por rota quando há mais de uma carga.
+// Renderiza a view "Sala Comum" — Layout C (pipeline + indicadores
+// circulares), escolhido pelo usuário entre 3 opções em 2026-09-21:
+// topo = pipeline Pendente → Separação → Carregamento (com data de saída),
+// embaixo = anéis de % de entrega das rotas em trânsito. Sem nenhum valor.
+const _TV_ROTAS_STATUS_CFG = {
+  pendente:{label:'Pendente',icone:'⏳',cor:'#f59e0b'},
+  separacao:{label:'Separação',icone:'📦',cor:'#3b82f6'},
+  carregamento:{label:'Carregamento',icone:'🚛',cor:'#8b5cf6'},
+};
 function _tvRenderRotasView(pendSepCarRows, emTransitoRows, pctMap){
-  const el = document.getElementById('tv-rotas-grid');
-  if(!el) return;
-  const STATUS_CFG_TV = {
-    pendente:{label:'⏳ Pendente',cor:'#f59e0b'},
-    separacao:{label:'📦 Separação',cor:'#3b82f6'},
-    carregamento:{label:'🚛 Carregamento',cor:'#8b5cf6'},
-  };
+  const pipelineEl = document.getElementById('tv-rotas-pipeline');
+  const gaugesEl = document.getElementById('tv-rotas-gauges');
+  if(!pipelineEl || !gaugesEl) return;
   const fmtD = d => { if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}); }catch(e){ return null; } };
 
-  const cardsFormacao = (pendSepCarRows||[]).map(d=>{
-    const cfg = STATUS_CFG_TV[d.status] || {label:d.status,cor:'#94a3b8'};
-    const dataTxt = fmtD(d.data_saida);
-    return `<div style="background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-left:4px solid ${cfg.cor};border-radius:12px;padding:14px 16px">
-      <div style="font-size:1rem;font-weight:800;color:#fff;margin-bottom:6px">${_escapeHtml(d.rota||'—')}</div>
-      <span style="display:inline-block;background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">${cfg.label}</span>
-      <div style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:8px">${dataTxt?`📅 Saída: ${dataTxt}`:'📅 Sem data de saída definida'}</div>
+  // ── Pipeline: uma coluna por status, com seta entre elas ──
+  const porStatus = { pendente:[], separacao:[], carregamento:[] };
+  (pendSepCarRows||[]).forEach(d=>{ if(porStatus[d.status]) porStatus[d.status].push(d); });
+  const statusKeys = Object.keys(_TV_ROTAS_STATUS_CFG);
+  pipelineEl.innerHTML = statusKeys.map((key,idx)=>{
+    const cfg = _TV_ROTAS_STATUS_CFG[key];
+    const rows = porStatus[key];
+    const chips = rows.length
+      ? rows.map(d=>{
+          const dataTxt = fmtD(d.data_saida);
+          return `<div style="background:${cfg.cor}14;border:1px solid ${cfg.cor}40;border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <span style="font-size:.92rem;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_escapeHtml(d.rota||'—')}</span>
+            <span style="font-size:.74rem;color:${cfg.cor};font-weight:700;white-space:nowrap">${dataTxt?`📅 ${dataTxt}`:'—'}</span>
+          </div>`;
+        }).join('')
+      : `<div style="text-align:center;padding:14px;color:rgba(255,255,255,.25);font-size:.76rem">Nenhuma rota</div>`;
+    const col = `<div style="flex:1;display:flex;flex-direction:column;gap:10px;min-width:0">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:.95rem">${cfg.icone}</span>
+        <span style="font-size:.86rem;font-weight:800;letter-spacing:.4px;color:${cfg.cor}">${cfg.label.toUpperCase()}</span>
+        <span style="margin-left:auto;background:${cfg.cor}22;color:${cfg.cor};font-size:.78rem;font-weight:900;padding:1px 10px;border-radius:20px">${rows.length}</span>
+      </div>
+      <div style="height:4px;background:${cfg.cor};border-radius:3px;margin-bottom:2px"></div>
+      <div style="display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:0">${chips}</div>
     </div>`;
+    const arrow = idx < statusKeys.length-1
+      ? `<div style="width:50px;flex-shrink:0;display:flex;align-items:center;justify-content:center"><span style="font-size:1.6rem;color:rgba(255,255,255,.18)">→</span></div>`
+      : '';
+    return col + arrow;
   }).join('');
 
+  // ── Em trânsito: anéis de % de entrega, agrupados por rota ──
   const porRotaTransito = {};
   (emTransitoRows||[]).forEach(d=>{
     const key = d.rota||'—';
     if(!porRotaTransito[key]) porRotaTransito[key] = { rota:key, cargas:[] };
     porRotaTransito[key].cargas.push(d.carga);
   });
-  const cardsTransito = Object.values(porRotaTransito).map(r=>{
+  const rotasTransito = Object.values(porRotaTransito);
+  if(!rotasTransito.length){
+    gaugesEl.innerHTML = '<p style="grid-column:1/-1;text-align:center;padding:20px;color:rgba(255,255,255,.25);font-size:.85rem">Nenhuma rota em trânsito no momento.</p>';
+    return;
+  }
+  gaugesEl.innerHTML = rotasTransito.map(r=>{
     let entregues=0, total=0;
     r.cargas.forEach(c=>{ const info = (pctMap||{})[c]; if(info){ entregues+=info.entregues; total+=info.total; } });
     const pct = total>0 ? Math.round((entregues/total)*100) : null;
     const cor = pct==null ? '#64748b' : pct>=100 ? '#34d399' : pct>=50 ? '#60a5fa' : '#f59e0b';
-    return `<div style="background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-left:4px solid ${cor};border-radius:12px;padding:14px 16px">
-      <div style="font-size:1rem;font-weight:800;color:#fff;margin-bottom:6px">${_escapeHtml(r.rota)}</div>
-      <span style="display:inline-block;background:${cor}22;color:${cor};font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">🚚 Em trânsito</span>
-      <div style="margin-top:10px">
-        <div style="height:7px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden">
-          <div style="height:100%;width:${pct??0}%;background:${cor}"></div>
+    const deg = Math.round((pct||0)*3.6);
+    return `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:14px 8px">
+      <div style="width:112px;height:112px;border-radius:50%;background:conic-gradient(${cor} ${deg}deg,rgba(255,255,255,.08) ${deg}deg);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <div style="width:86px;height:86px;border-radius:50%;background:#0b0f22;display:flex;align-items:center;justify-content:center">
+          <span style="font-size:1.3rem;font-weight:900;color:${cor}">${pct!=null?pct+'%':'—'}</span>
         </div>
-        <div style="font-size:.78rem;color:rgba(255,255,255,.55);margin-top:6px">${pct!=null?`${pct}% das entregas concluídas`:'Sem pedidos vinculados ainda'}</div>
       </div>
+      <span style="font-size:.86rem;font-weight:800;color:#fff;text-align:center;line-height:1.2">${_escapeHtml(r.rota)}</span>
     </div>`;
   }).join('');
-
-  el.innerHTML = (cardsFormacao + cardsTransito) || '<p style="grid-column:1/-1;text-align:center;padding:30px;color:rgba(255,255,255,.3);font-size:.85rem">Nenhuma rota pendente, em separação/carregamento ou em trânsito no momento.</p>';
 }
 
 // Unidade do Painel de TV — cada TV física fica com um computador logado e a
