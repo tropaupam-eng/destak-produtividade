@@ -8798,7 +8798,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.80.0';
+const APP_VERSION = '4.81.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -38075,6 +38075,24 @@ async function vincularSeparacaoRomaneio(atribId){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
+// Self-service: conferente pega uma carga pendente que ainda não tem
+// ninguém atribuído, direto na lista de "disponíveis" — cria a atribuição
+// (mesmo formato que o admin cria manualmente no painel Armazém). Depois
+// disso ela entra no fluxo normal (ainda precisa vincular a separação em
+// si pra abrir os itens). Pedido explícito do usuário, 2026-09-21.
+async function pegarCargaParaSeparar(demandaId, carga){
+  if(!USUARIO_LOGADO) return;
+  try{
+    await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
+      demanda_id: demandaId, carga: Number(carga),
+      conferente_id: USUARIO_LOGADO.id, conferente_nome: USUARIO_LOGADO.nome||null,
+      status:'pendente', criado_em:new Date().toISOString()
+    })});
+    showToast('✅ Carga '+carga+' atribuída a você!','success');
+    await carregarSeparacaoConferente();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
 // Separação por ROMANEIO: o conferente separa a mercadoria da carga
 // inteira de uma vez (não pedido por pedido) — o mesmo código de produto
 // costuma aparecer espalhado em vários pedidos do mesmo romaneio (comum:
@@ -38141,9 +38159,37 @@ async function carregarSeparacaoConferente(){
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
   try{
     const myId = USUARIO_LOGADO.id;
-    let atribs = await supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`) || [];
+    const [atribsRaw, pendentesRaw] = await Promise.all([
+      supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=eq.pendente&carga=not.is.null&select=id,carga,rota&order=carga.desc&limit=100`).catch(()=>[])
+    ]);
+    let atribs = atribsRaw || [];
+
+    // Cargas pendentes sem NENHUM conferente atribuído ainda aparecem como
+    // "disponíveis" pra qualquer conferente pegar direto aqui — sem esperar
+    // o admin atribuir manualmente uma por uma. Pedido explícito do
+    // usuário, 2026-09-21: o fluxo real é "carga fica pendente → conferente
+    // pega pra separar", e toda carga pendente tem que aparecer.
+    let cargasDisponiveis = [];
+    if((pendentesRaw||[]).length){
+      const cargasPend = pendentesRaw.map(d=>d.carga);
+      const jaAtrib = await supaFetch(`atribuicoes_armazem?carga=in.(${cargasPend.join(',')})&select=carga`).catch(()=>[]);
+      const comAtrib = new Set((jaAtrib||[]).map(a=>a.carga));
+      cargasDisponiveis = pendentesRaw.filter(d=>!comAtrib.has(d.carga));
+    }
+    const htmlDisponiveis = cargasDisponiveis.map(d=>`
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #f59e0b;border-radius:14px;margin-bottom:16px;padding:16px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">⏳ Carga ${d.carga}</span>
+          <span style="margin-left:8px;font-size:.8rem;color:var(--text-secondary)">${escapeHtml(d.rota||'—')}</span>
+          <div style="font-size:.76rem;color:var(--text-muted);margin-top:2px">Pendente — ainda sem conferente atribuído</div>
+        </div>
+        <button onclick="pegarCargaParaSeparar('${d.id}',${d.carga})" style="background:#f59e0b;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap">🙋 Pegar para Separar</button>
+      </div>`).join('');
+    const finalizar = corpoHtml => { container.innerHTML = htmlDisponiveis + corpoHtml; };
+
     if(!atribs.length){
-      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga atribuída no momento.</p>';
+      finalizar(htmlDisponiveis ? '' : '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga atribuída no momento.</p>');
       return;
     }
     const cargas = [...new Set(atribs.map(a=>a.carga))];
@@ -38165,7 +38211,7 @@ async function carregarSeparacaoConferente(){
     const ATIVAS_ARMAZEM = ['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
     atribs = atribs.filter(a=>ATIVAS_ARMAZEM.includes(statusPorCarga[a.carga]));
     if(!atribs.length){
-      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga atribuída no momento.</p>';
+      finalizar(htmlDisponiveis ? '' : '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga atribuída no momento.</p>');
       return;
     }
 
@@ -38185,7 +38231,7 @@ async function carregarSeparacaoConferente(){
 
     const pedidosArr = [...pedidosTotais];
     if(!pedidosArr.length){
-      container.innerHTML = '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhum pedido encontrado pra essas cargas — a planilha pode não ter sido importada ainda.</p>';
+      finalizar('<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhum pedido encontrado pra essas cargas — a planilha pode não ter sido importada ainda.</p>');
       return;
     }
 
@@ -38242,7 +38288,7 @@ async function carregarSeparacaoConferente(){
       </div>`;
     }).join('');
 
-    container.innerHTML = html || '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga com pedidos pra separar no momento.</p>';
+    finalizar(html || (htmlDisponiveis ? '' : '<p style="text-align:center;padding:48px;color:var(--text-muted)">Nenhuma carga com pedidos pra separar no momento.</p>'));
   }catch(e){
     container.innerHTML = '<p style="text-align:center;padding:30px;color:#ef4444">Erro: '+e.message+'</p>';
   }
