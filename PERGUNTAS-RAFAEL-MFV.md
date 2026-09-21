@@ -39,7 +39,16 @@ aponte**. É exatamente o tipo de coisa que a gente prefere descobrir agora.
 - **Prazo da interna: 36 horas**, confirmado. "E vamos baixar a régua pra mais baixo agora."
   O cadastro de rotas já diz 36 h para Petrolina e Juazeiro; nada a mudar no código.
 - **Pergunta 6:** respondida abaixo, com uma dúvida de leitura.
-- Continuam abertas: **1, 2, 3, 4 e 7**.
+- **Pergunta 2 (ligar `marcarInicioSeparacao`): Daniel disse "pode" em 21/09. Decidimos NÃO ligar.**
+  Motivo, verificado no código e no banco: o próprio Daniel já fez a versão self-service em
+  02/09 (`0a1a743`, #362): o botão "Vincular Separação a Mim" na aba Separação do conferente
+  grava `inicio_separacao` e `separador_nome`. `marcarInicioSeparacao` é a versão antiga de
+  admin, cujo input `sep-nome-` não existe mais; ligar seria duplicar. O achado que fica:
+  **0 das 292 atribuições têm `inicio_separacao`, 0 das 51 criadas depois do botão existir**,
+  e as 51 seguem com `status = pendente`. O mecanismo existe e ninguém usa. E todas as 51
+  são de rota EXTERNA: `atribuicoes_armazem` é o fluxo do romaneio; a interna (separada por
+  pedido, sem romaneio) não passa por aqui de qualquer jeito.
+- Continuam abertas: **1, 3, 4 e 7**.
 
 ## 1. A pergunta que trava tudo: alguém lê estas duas colunas?
 
