@@ -8238,12 +8238,21 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
     <div id="tv-clock" style="font-size:1.5rem;font-weight:900;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:1px"></div>
     <div style="display:flex;align-items:center;gap:10px">
+      <div id="tv-view-toggle" style="display:flex;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:2px;gap:2px">
+        <button id="tv-view-btn-painel" onclick="tvMudarView('painel')" style="background:rgba(255,255,255,.18);border:none;color:#fff;border-radius:6px;padding:5px 12px;font-size:.7rem;font-weight:700;cursor:pointer">📊 Painel</button>
+        <button id="tv-view-btn-rotas" onclick="tvMudarView('rotas')" style="background:transparent;border:none;color:rgba(255,255,255,.55);border-radius:6px;padding:5px 12px;font-size:.7rem;font-weight:700;cursor:pointer">🏢 Sala Comum</button>
+      </div>
       <select id="tv-und-sel" onchange="mudarUnidadeTV(this.value)" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;padding:5px 10px;font-size:.75rem;font-weight:600;cursor:pointer">
         <option value="">Todas as Unidades</option>
       </select>
       <span id="tv-refresh-badge" style="font-size:.68rem;color:rgba(255,255,255,.4);padding:3px 10px;border:1px solid rgba(255,255,255,.12);border-radius:20px">🔄 <span id="tv-countdown">60</span>s</span>
       <button onclick="sairTV()" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;padding:5px 14px;font-size:.75rem;cursor:pointer;font-weight:600">✕ Sair</button>
     </div>
+  </div>
+
+  <!-- Sala Comum: rotas por status, sem valores — só datas e % de entrega -->
+  <div id="tv-rotas-view" style="display:none;flex:1;overflow-y:auto;padding:16px 20px">
+    <div id="tv-rotas-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
   </div>
 
   <!-- Main grid -->
@@ -8779,7 +8788,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.75.0';
+const APP_VERSION = '4.76.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -16913,6 +16922,35 @@ async function apagarDemanda(id){
     renderDemandasCards();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
+// % de mercadoria já entregue por carga, a partir dos pedidos (base_data)
+// vs. quais já têm data de entrega registrada (entrega_datas). Usada pelo
+// card de carga na Expedição e pela view "Sala Comum" do Painel de TV —
+// mesma conta, dois lugares, sem duplicar a busca no Supabase.
+async function _calcPctEntregaPorCarga(cargasIn){
+  const cargas = [...new Set((cargasIn||[]).filter(c=>c!=null))];
+  if(!cargas.length) return {};
+  const pedidos = await _emLotes(cargas, 300, lote => supaFetch(`base_data?carga=in.(${lote.join(',')})&select=pedido,carga`).catch(()=>[]));
+  const pedidoList = [...new Set(pedidos.map(p=>String(p.pedido)).filter(Boolean))];
+  const entregueSet = new Set();
+  await _emLotes(pedidoList, 400, async lote => {
+    const rows = await supaFetch(`entrega_datas?pedido=in.(${lote.join(',')})&data_entrega=not.is.null&select=pedido`,{_quiet:true}).catch(()=>[]) || [];
+    rows.forEach(r=>entregueSet.add(String(r.pedido)));
+    return [];
+  });
+  const porCarga = {};
+  pedidos.forEach(p=>{
+    if(p.carga==null) return;
+    if(!porCarga[p.carga]) porCarga[p.carga] = {total:0, entregues:0};
+    porCarga[p.carga].total++;
+    if(entregueSet.has(String(p.pedido))) porCarga[p.carga].entregues++;
+  });
+  return porCarga;
+}
+window._expPctEntrega = {};
+async function _carregarPctEntregaExpedicao(demandas){
+  const cargas = (demandas||[]).map(d=>d.carga);
+  window._expPctEntrega = await _calcPctEntregaPorCarga(cargas);
+}
 async function carregarDemandas(){
   const container = document.getElementById('exp-cards-container');
   if(!container) return;
@@ -16926,8 +16964,8 @@ async function carregarDemandas(){
     }
     // Carregar comercial_rotas do Supabase para badge na expedição
     supaFetch('comercial_rotas?status=neq.resolvido&select=rota,data,motivo,status').then(cr=>{ window._comRotasCache = cr||[]; }).catch(()=>{});
-    // Carregar retornos de veículos agendados
-    await carregarRetornosVeiculos();
+    // Carregar retornos de veículos agendados e % de mercadoria já entregue por carga
+    await Promise.all([ carregarRetornosVeiculos(), _carregarPctEntregaExpedicao(_demandasCache) ]);
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderPipelineBar();
@@ -20242,6 +20280,19 @@ function renderDemandasCards(){
           <span class="exp-meta-value" style="color:${meta>0&&real<meta?'#ef4444':'#059669'};font-size:.85rem">${real>0?fmtVal(real):'—'}</span>
         </div>
       </div>
+
+      ${(()=>{
+        const info = temCarga ? (window._expPctEntrega||{})[d.carga] : null;
+        if(!info || !info.total) return '';
+        const pctEnt = Math.round((info.entregues/info.total)*100);
+        const corEnt = pctEnt>=100 ? '#22c55e' : '#3b82f6';
+        return `<div style="padding:0 12px 10px;display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:6px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+            <div style="height:100%;width:${pctEnt}%;background:${corEnt}"></div>
+          </div>
+          <span style="font-size:.72rem;font-weight:700;color:${corEnt};white-space:nowrap"><span data-feather="package-check" style="width:11px;height:11px"></span>${pctEnt}% entregue (${info.entregues}/${info.total})</span>
+        </div>`;
+      })()}
 
       <div class="exp-card-details">
         <div class="exp-card-motorista" style="${d.motorista==='A DEFINIR MOTORISTA'?'color:#f59e0b;font-weight:800':''}"><span data-feather="user"></span>${d.motorista||'—'}</div>
@@ -36001,7 +36052,7 @@ async function carregarPortalVendedor(){
     // busca falha, e no Mapa de Clientes toda carga antiga passa a contar
     // como "em formação" por engano.
     const demandas = cargas.length
-      ? await _emLotes(cargas, 300, lote => supaFetch(`demandas_rota?carga=in.(${lote.join(',')})&select=carga,status,rota,ts_saiu,data_saida`).catch(()=>[]))
+      ? await _emLotes(cargas, 300, lote => supaFetch(`demandas_rota?carga=in.(${lote.join(',')})&select=carga,status,rota,ts_saiu,data_saida,ts_fim_viagem,ts_concluido`).catch(()=>[]))
       : [];
     const demandaPorCarga = {};
     demandas.forEach(d=>{ demandaPorCarga[d.carga] = d; });
@@ -36346,6 +36397,7 @@ function renderCargasVendedor(){
 
   _renderCargasPendentesVendedor(cargas);
   _renderHistoricoRotaVendedor(cargas.filter(c=>_cargaVendAtiva(c.demanda)));
+  _renderCargasAndamentoVendedor(cargas.filter(c=>!_cargaVendAtiva(c.demanda)));
 }
 
 function _renderCargasPendentesVendedor(cargas){
@@ -36429,6 +36481,44 @@ function _renderHistoricoRotaVendedor(cargas){
         <span style="font-size:.9rem;font-weight:800;color:#22c55e">${escapeHtml(fmtR(r.valor))}</span>
       </span>
     </div>`).join('');
+}
+
+// Cargas que já saíram da formação — separação, carregamento, aguardando
+// NF/manifesto, pronto p/ viagem, em rota e já entregues — com a data que
+// saiu e se a rota já foi finalizada. Pedido do usuário, 2026-09-21.
+function _renderCargasAndamentoVendedor(cargas){
+  const cont = document.getElementById('vnd-mapa-andamento');
+  if(!cont) return;
+  if(!cargas.length){
+    cont.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Nenhuma carga em andamento no momento.</p>';
+    return;
+  }
+  const emAndamento = cargas.slice().sort((a,b)=>(b.carga||0)-(a.carga||0));
+  const fmtR = v => (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  const fmtDH = ts => { if(!ts) return null; try{ return new Date(ts).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){ return null; } };
+
+  cont.innerHTML = emAndamento.map(c=>{
+    const d = c.demanda;
+    const cfg = _cargaVendStatusInfo(d);
+    const saidaTxt = fmtDH(d?.ts_saiu);
+    const finalizada = d && (d.status==='concluido' || d.status==='fim_viagem');
+    const finalTxt = fmtDH(d?.ts_concluido || d?.ts_fim_viagem);
+    return `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${cfg.cor};border-radius:10px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;gap:4px;min-width:160px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:.9rem;font-weight:800;color:var(--text-primary)">${escapeHtml(c.rota)}</span>
+          <span style="font-size:.68rem;font-weight:700;color:var(--text-muted)">#${escapeHtml(String(c.carga))}</span>
+        </div>
+        <span style="align-self:flex-start;background:${cfg.cor}22;color:${cfg.cor};font-size:.7rem;font-weight:700;padding:2px 9px;border-radius:20px;white-space:nowrap">${cfg.label}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:.74rem;color:var(--text-secondary)">
+        <span style="font-size:.9rem;font-weight:800;color:#22c55e">${escapeHtml(fmtR(c.valor))}</span>
+        ${saidaTxt ? `<span>🚚 Saiu: ${saidaTxt}</span>` : ''}
+        ${finalizada ? `<span style="color:#22c55e;font-weight:700">✅ Rota finalizada${finalTxt?` · ${finalTxt}`:''}</span>` : '<span style="color:var(--text-muted)">⏳ Rota em andamento</span>'}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function vendToggleCarga(carga){
@@ -47733,6 +47823,8 @@ function iniciarTV(){
   _tvStopAll();
   _tvClock();
   _tvClockTimer = setInterval(_tvClock, 1000);
+  const viewSalva = (()=>{ try{ return localStorage.getItem('tv_view_sel')||'painel'; }catch(e){ return 'painel'; } })();
+  tvMudarView(viewSalva);
   carregarTV();
   _tvRefreshTimer = setInterval(()=>{
     _tvCountdown--;
@@ -47767,6 +47859,77 @@ function _tvClock(){
   el.textContent = d.charAt(0).toUpperCase()+d.slice(1)+' — '+t;
 }
 
+// Alterna entre o painel padrão (carrossel + KPIs) e a view "Sala Comum" —
+// pedido do usuário, 2026-09-21: uma TV numa área comum mostrando só rotas
+// pendentes/separação/carregamento (com data de saída) e em trânsito (com %
+// de entregas), sem nenhum valor em dinheiro. Os dados já vêm no mesmo ciclo
+// de 60s do carregarTV(), então trocar de view é instantâneo.
+function tvMudarView(view){
+  try{ localStorage.setItem('tv_view_sel', view); }catch(e){}
+  const painel = view!=='rotas';
+  const main   = document.getElementById('tv-main');
+  const ticker = document.getElementById('tv-ticker-zone');
+  const avisos = document.getElementById('tv-avisos-zone');
+  const rotas  = document.getElementById('tv-rotas-view');
+  if(main)   main.style.display   = painel ? '' : 'none';
+  if(ticker) ticker.style.display = painel ? '' : 'none';
+  if(avisos) avisos.style.display = painel ? '' : 'none';
+  if(rotas)  rotas.style.display  = painel ? 'none' : 'flex';
+  const btnP = document.getElementById('tv-view-btn-painel');
+  const btnR = document.getElementById('tv-view-btn-rotas');
+  if(btnP){ btnP.style.background = painel ? 'rgba(255,255,255,.18)' : 'transparent'; btnP.style.color = painel ? '#fff' : 'rgba(255,255,255,.55)'; }
+  if(btnR){ btnR.style.background = painel ? 'transparent' : 'rgba(255,255,255,.18)'; btnR.style.color = painel ? 'rgba(255,255,255,.55)' : '#fff'; }
+}
+
+// Renderiza a view "Sala Comum": cards por rota, sem valores — só status,
+// data de saída (pendente/separação/carregamento) ou % de entregas já
+// concluídas (em trânsito), agrupando por rota quando há mais de uma carga.
+function _tvRenderRotasView(pendSepCarRows, emTransitoRows, pctMap){
+  const el = document.getElementById('tv-rotas-grid');
+  if(!el) return;
+  const STATUS_CFG_TV = {
+    pendente:{label:'⏳ Pendente',cor:'#f59e0b'},
+    separacao:{label:'📦 Separação',cor:'#3b82f6'},
+    carregamento:{label:'🚛 Carregamento',cor:'#8b5cf6'},
+  };
+  const fmtD = d => { if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}); }catch(e){ return null; } };
+
+  const cardsFormacao = (pendSepCarRows||[]).map(d=>{
+    const cfg = STATUS_CFG_TV[d.status] || {label:d.status,cor:'#94a3b8'};
+    const dataTxt = fmtD(d.data_saida);
+    return `<div style="background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-left:4px solid ${cfg.cor};border-radius:12px;padding:14px 16px">
+      <div style="font-size:1rem;font-weight:800;color:#fff;margin-bottom:6px">${_escapeHtml(d.rota||'—')}</div>
+      <span style="display:inline-block;background:${cfg.cor}22;color:${cfg.cor};font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">${cfg.label}</span>
+      <div style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:8px">${dataTxt?`📅 Saída: ${dataTxt}`:'📅 Sem data de saída definida'}</div>
+    </div>`;
+  }).join('');
+
+  const porRotaTransito = {};
+  (emTransitoRows||[]).forEach(d=>{
+    const key = d.rota||'—';
+    if(!porRotaTransito[key]) porRotaTransito[key] = { rota:key, cargas:[] };
+    porRotaTransito[key].cargas.push(d.carga);
+  });
+  const cardsTransito = Object.values(porRotaTransito).map(r=>{
+    let entregues=0, total=0;
+    r.cargas.forEach(c=>{ const info = (pctMap||{})[c]; if(info){ entregues+=info.entregues; total+=info.total; } });
+    const pct = total>0 ? Math.round((entregues/total)*100) : null;
+    const cor = pct==null ? '#64748b' : pct>=100 ? '#34d399' : pct>=50 ? '#60a5fa' : '#f59e0b';
+    return `<div style="background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-left:4px solid ${cor};border-radius:12px;padding:14px 16px">
+      <div style="font-size:1rem;font-weight:800;color:#fff;margin-bottom:6px">${_escapeHtml(r.rota)}</div>
+      <span style="display:inline-block;background:${cor}22;color:${cor};font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">🚚 Em trânsito</span>
+      <div style="margin-top:10px">
+        <div style="height:7px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${pct??0}%;background:${cor}"></div>
+        </div>
+        <div style="font-size:.78rem;color:rgba(255,255,255,.55);margin-top:6px">${pct!=null?`${pct}% das entregas concluídas`:'Sem pedidos vinculados ainda'}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = (cardsFormacao + cardsTransito) || '<p style="grid-column:1/-1;text-align:center;padding:30px;color:rgba(255,255,255,.3);font-size:.85rem">Nenhuma rota pendente, em separação/carregamento ou em trânsito no momento.</p>';
+}
+
 // Unidade do Painel de TV — cada TV física fica com um computador logado e a
 // tela aberta o tempo todo (não dá pra depender só do usuário logado), então
 // a escolha fica salva por navegador em localStorage e sobrevive a refresh.
@@ -47795,7 +47958,7 @@ async function carregarTV(){
     // 1ª fase: tudo exceto base_data (cargas do mês ainda desconhecidas)
     const [banners, demRota,
            veiculos, manuts, demArmazem, demHoje, notifs, cargasEmRota, rotasOtif, entRows,
-           lancRows, demSaida] = await Promise.all([
+           lancRows, demSaida, demPendSepCar] = await Promise.all([
       supaFetch(`notif_banners?ativo=eq.true&order=ordem.asc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.("pronto_viagem","saiu","fim_viagem")&select=carga,rota,motorista,veiculo,status,data_saida,quantidade_pedidos&order=data_saida.desc&limit=60${_undQTV}`).catch(()=>[]),
       supaFetch(`veiculos?ativo=eq.true&select=placa${_undQTVVeic}`).catch(()=>[]),
@@ -47808,6 +47971,7 @@ async function carregarTV(){
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_prox}-01T00:00:00-03:00&select=carga,ts${undSelTV?`&und=eq.${encodeURIComponent(undSelTV)}`:''}`).catch(()=>[]),
       supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_prox}-01T00:00:00-03:00&select=carga,ts_saiu${_undQTV}`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento")&select=carga,rota,status,data_saida&order=data_saida.asc&limit=100${_undQTV}`).catch(()=>[]),
     ]);
 
     // 2ª fase: base_data filtrado pelas cargas que saíram no mês
@@ -47917,6 +48081,11 @@ async function carregarTV(){
         }).join('');
       }
     }
+
+    // ── Sala Comum: rotas por status, sem valores ──
+    const emTransitoRows = (demRota||[]).filter(d=>d.status==='saiu'||d.status==='fim_viagem');
+    const _pctEntregaTV = await _calcPctEntregaPorCarga(emTransitoRows.map(d=>d.carga));
+    _tvRenderRotasView(demPendSepCar||[], emTransitoRows, _pctEntregaTV);
 
   }catch(e){ console.error('[TV]',e); }
 }
@@ -49439,6 +49608,14 @@ function _cftvRenderTable(data){
       <div style="font-size:.76rem;color:var(--text-secondary);margin-top:2px">Total que você já vendeu, agrupado por rota, só das cargas ainda em formação — some daqui quando a rota não tem mais carga em formação</div>
     </div>
     <div id="vnd-mapa-historico-rota" style="display:flex;flex-direction:column;gap:6px">
+      <p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>
+    </div>
+
+    <div style="margin:22px 0 12px">
+      <div style="font-size:1rem;font-weight:800;color:var(--text-primary)">🚚 Cargas em Andamento até a Entrega</div>
+      <div style="font-size:.76rem;color:var(--text-secondary);margin-top:2px">Cargas que já saíram da formação — separação, carregamento, em rota e entregues — com a data de saída e se já foi finalizada</div>
+    </div>
+    <div id="vnd-mapa-andamento" style="display:flex;flex-direction:column;gap:8px">
       <p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>
     </div>
 
