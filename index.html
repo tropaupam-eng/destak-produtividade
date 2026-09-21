@@ -8798,7 +8798,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.78.1';
+const APP_VERSION = '4.78.2';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -16939,12 +16939,19 @@ async function apagarDemanda(id){
 async function _calcPctEntregaPorCarga(cargasIn){
   const cargas = [...new Set((cargasIn||[]).filter(c=>c!=null))];
   if(!cargas.length) return {};
-  const pedidos = await _emLotes(cargas, 300, lote => supaFetch(`base_data?carga=in.(${lote.join(',')})&select=pedido,carga`).catch(()=>[]));
+  // A chave real de entrega_datas é (mes_ano, pedido), não "pedido" sozinho —
+  // o número de pedido SE REPETE entre meses (mesma numeração do ERP volta a
+  // circular). Casar só por pedido faz uma carga de setembro ainda pendente
+  // "herdar" a entrega de um pedido homônimo já entregue em junho/julho,
+  // mostrando % de entrega mesmo antes de a carga sair. Achado pelo usuário
+  // em 2026-09-21, confirmado no banco: pedidos de base_data.mes_ano='2026-09'
+  // batendo com entrega_datas.mes_ano='2026-06'/'2026-07'.
+  const pedidos = await _emLotes(cargas, 300, lote => supaFetch(`base_data?carga=in.(${lote.join(',')})&select=pedido,carga,mes_ano`).catch(()=>[]));
   const pedidoList = [...new Set(pedidos.map(p=>String(p.pedido)).filter(Boolean))];
-  const entregueSet = new Set();
+  const entregueChaves = new Set(); // "mes_ano|pedido"
   await _emLotes(pedidoList, 400, async lote => {
-    const rows = await supaFetch(`entrega_datas?pedido=in.(${lote.join(',')})&data_entrega=not.is.null&select=pedido`,{_quiet:true}).catch(()=>[]) || [];
-    rows.forEach(r=>entregueSet.add(String(r.pedido)));
+    const rows = await supaFetch(`entrega_datas?pedido=in.(${lote.join(',')})&data_entrega=not.is.null&select=pedido,mes_ano`,{_quiet:true}).catch(()=>[]) || [];
+    rows.forEach(r=>entregueChaves.add(r.mes_ano+'|'+String(r.pedido)));
     return [];
   });
   const porCarga = {};
@@ -16952,7 +16959,7 @@ async function _calcPctEntregaPorCarga(cargasIn){
     if(p.carga==null) return;
     if(!porCarga[p.carga]) porCarga[p.carga] = {total:0, entregues:0};
     porCarga[p.carga].total++;
-    if(entregueSet.has(String(p.pedido))) porCarga[p.carga].entregues++;
+    if(entregueChaves.has(p.mes_ano+'|'+String(p.pedido))) porCarga[p.carga].entregues++;
   });
   return porCarga;
 }
