@@ -8798,7 +8798,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.79.1';
+const APP_VERSION = '4.80.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -38059,11 +38059,6 @@ function mudarAbaConferente(aba){
   }
 }
 
-function toggleSeparacaoPedido(carga, pedido){
-  const el = document.getElementById(`sep-body-${carga}-${pedido}`);
-  if(el) el.style.display = el.style.display==='none' ? '' : 'none';
-}
-
 // Vincula o conferente logado como separador do romaneio inteiro (a carga em
 // atribuicoes_armazem) — self-service do que já existia como ação manual do
 // admin (marcarInicioSeparacao). A separação é do romaneio, não do pedido:
@@ -38080,32 +38075,63 @@ async function vincularSeparacaoRomaneio(atribId){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
-function _renderItensSeparacao(carga, pedido, itens, separadosMap){
-  const rows = itens.map((it,i)=>{
-    const s = separadosMap[carga+'_'+pedido+'_'+it.mercadoria];
-    const esperado = Number(it.quantidade_atual)||0;
-    const valorAtual = s && s.quantidade_separada!=null ? s.quantidade_separada : '';
-    const divergente = valorAtual!=='' && Number(valorAtual)!==esperado;
+// Separação por ROMANEIO: o conferente separa a mercadoria da carga
+// inteira de uma vez (não pedido por pedido) — o mesmo código de produto
+// costuma aparecer espalhado em vários pedidos do mesmo romaneio (comum:
+// 3 a 5 pedidos com o mesmo item numa carga grande), então pedir pra
+// contar/lançar separado por pedido faz o conferente repetir a mesma
+// contagem várias vezes. Agrega por mercadoria (soma quantidade_atual de
+// todas as ocorrências), mostra UMA linha por produto — código + descrição
+// — com UM campo de quantidade total contada pro romaneio inteiro. Pedido
+// explícito do usuário, 2026-09-21.
+function _agregarItensRomaneio(carga, peds, itensPorPedido, separadosMap){
+  const porMerc = {};
+  peds.forEach(p=>{
+    (itensPorPedido[p]||[]).forEach(it=>{
+      const key = it.mercadoria;
+      if(!porMerc[key]) porMerc[key] = { mercadoria:it.mercadoria, descricao:it.descricao, ocorrencias:[] };
+      const s = separadosMap[carga+'_'+p+'_'+it.mercadoria];
+      porMerc[key].ocorrencias.push({
+        pedido:p,
+        esperado: Number(it.quantidade_atual)||0,
+        separado: s && s.quantidade_separada!=null ? Number(s.quantidade_separada) : null
+      });
+    });
+  });
+  return Object.values(porMerc).map(m=>{
+    const totalEsperado = m.ocorrencias.reduce((a,o)=>a+o.esperado,0);
+    const todasPreenchidas = m.ocorrencias.every(o=>o.separado!=null);
+    const totalSeparado = todasPreenchidas ? m.ocorrencias.reduce((a,o)=>a+o.separado,0) : null;
+    return { ...m, totalEsperado, totalSeparado, todasPreenchidas };
+  });
+}
+
+window._sepRomaneioCache = {};
+
+function _renderItensRomaneio(carga, itensRomaneio){
+  window._sepRomaneioCache[carga] = itensRomaneio;
+  const rows = itensRomaneio.map((m,i)=>{
+    const valorAtual = m.totalSeparado!=null ? m.totalSeparado : '';
+    const divergente = valorAtual!=='' && Number(valorAtual)!==m.totalEsperado;
     let bg='var(--bg-input)', bd='var(--border-med)', txt='var(--text-primary)';
     if(divergente){ bg='rgba(239,68,68,.12)'; bd='#ef4444'; txt='#fca5a5'; }
     else if(valorAtual!==''){ bg='rgba(5,150,105,.12)'; bd='#059669'; txt='#34d399'; }
     // Contagem cega: só código da mercadoria + descrição aparecem — a
     // quantidade esperada NÃO é mostrada, pro conferente contar de verdade
     // em vez de só copiar o número esperado. Ela continua guardada
-    // (data-esperado) pra calcular divergência depois de salvo. Pedido
-    // explícito do usuário, 2026-09-21.
+    // (no cache, por ocorrência) pra calcular divergência depois de salvo.
     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
       <div style="flex:1;min-width:0">
-        <div style="font-size:.82rem;font-weight:700;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.descricao||'—')}</div>
-        <div style="font-size:.68rem;color:${divergente?'#ef4444':'var(--text-muted)'}">Cód. ${escapeHtml(it.mercadoria||'—')}${divergente?' — divergente':''}</div>
+        <div style="font-size:.82rem;font-weight:700;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.descricao||'—')}</div>
+        <div style="font-size:.68rem;color:${divergente?'#ef4444':'var(--text-muted)'}">Cód. ${escapeHtml(m.mercadoria||'—')}${divergente?' — divergente':''}</div>
       </div>
-      <input type="number" id="sep-qtd-${carga}-${pedido}-${i}" data-mercadoria="${escapeHtml(it.mercadoria)}" data-esperado="${esperado}" value="${valorAtual}" placeholder="—"
+      <input type="number" id="sep-qtd-${carga}-${i}" value="${valorAtual}" placeholder="—"
         style="width:64px;text-align:center;border-radius:8px;padding:7px 4px;font-size:.88rem;font-weight:700;outline:none;border:1.5px solid ${bd};background:${bg};color:${txt}">
     </div>`;
   }).join('');
   return `<div style="padding:4px 14px 12px">
     ${rows}
-    <button onclick="salvarSeparacaoPedido(${carga},${pedido},${itens.length})" style="width:100%;margin-top:12px;background:#2563eb;color:#fff;border:none;border-radius:9px;padding:10px;font-size:.82rem;font-weight:700;cursor:pointer">💾 Salvar Separação do Pedido</button>
+    <button onclick="salvarSeparacaoRomaneio(${carga},${itensRomaneio.length})" style="width:100%;margin-top:12px;background:#2563eb;color:#fff;border:none;border-radius:9px;padding:10px;font-size:.82rem;font-weight:700;cursor:pointer">💾 Salvar Separação</button>
   </div>`;
 }
 
@@ -38177,18 +38203,16 @@ async function carregarSeparacaoConferente(){
     const html = atribs.map(atr=>{
       const peds = atribPedidos[atr.id]||[];
       if(!peds.length) return '';
-      const pedsComItens = peds.filter(p=>(itensPorPedido[p]||[]).length);
-      const pedidosSeparadosCount = pedsComItens.filter(p=>{
-        const itens = itensPorPedido[p]||[];
-        return itens.length && itens.every(it=>separadosMap[atr.carga+'_'+p+'_'+it.mercadoria]?.quantidade_separada!=null);
-      }).length;
-      const pctCarga = pedsComItens.length ? Math.round(pedidosSeparadosCount/pedsComItens.length*100) : 0;
+      const itensRomaneio = _agregarItensRomaneio(atr.carga, peds, itensPorPedido, separadosMap);
+      if(!itensRomaneio.length) return '';
+      const itensProntos = itensRomaneio.filter(m=>m.todasPreenchidas).length;
+      const pctCarga = itensRomaneio.length ? Math.round(itensProntos/itensRomaneio.length*100) : 0;
       // A carga só some daqui quando o conferente TERMINA de separar (100%
-      // dos itens marcados) — não quando o status da carga avança sozinho
-      // (ex: admin empurra pra carregamento antes de terminar). Pedido
-      // explícito do usuário, 2026-09-21: "separação só some quando o
-      // conferente termina".
-      if(pedsComItens.length && pedidosSeparadosCount===pedsComItens.length) return '';
+      // dos produtos do romaneio contados) — não quando o status da carga
+      // avança sozinho (ex: admin empurra pra carregamento antes de
+      // terminar). Pedido explícito do usuário, 2026-09-21: "separação só
+      // some quando o conferente termina".
+      if(itensProntos===itensRomaneio.length) return '';
 
       const vinculado = !!atr.inicio_separacao;
       const horaInicio = vinculado ? new Date(atr.inicio_separacao).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
@@ -38200,7 +38224,7 @@ async function carregarSeparacaoConferente(){
               <span style="font-weight:800;color:var(--text-primary);font-size:.95rem">🚛 Carga ${atr.carga}</span>
               <span style="margin-left:8px;font-size:.8rem;color:var(--text-secondary)">${rotaPorCarga[atr.carga]||'—'}</span>
             </div>
-            ${vinculado?`<span style="font-size:.8rem;color:var(--text-secondary)">${pedidosSeparadosCount}/${pedsComItens.length} pedidos separados</span>`:''}
+            ${vinculado?`<span style="font-size:.8rem;color:var(--text-secondary)">${itensProntos}/${itensRomaneio.length} produtos separados</span>`:''}
           </div>
           ${vinculado?`<div style="margin-top:8px;background:rgba(255,255,255,.07);border-radius:3px;height:4px;overflow:hidden">
             <div style="height:100%;background:#2563eb;width:${pctCarga}%;transition:width .4s"></div>
@@ -38213,21 +38237,7 @@ async function carregarSeparacaoConferente(){
         </div>
         `:`
         <div style="padding:9px 18px;background:rgba(52,211,153,.08);border-bottom:1px solid var(--border);font-size:.76rem;color:#34d399">🔗 Separando: <strong>${escapeHtml(atr.separador_nome||'—')}</strong> — desde ${horaInicio}</div>
-        <div style="padding:6px 18px 14px">
-          ${peds.map(p=>{
-            const itens = itensPorPedido[p]||[];
-            if(!itens.length) return `<div style="padding:10px 12px;color:var(--text-muted);font-size:.8rem">Pedido ${p} — itens não encontrados (planilha do ERP pode não ter chegado ainda)</div>`;
-            const feitos = itens.filter(it=>separadosMap[atr.carga+'_'+p+'_'+it.mercadoria]?.quantidade_separada!=null).length;
-            const todosProntos = feitos===itens.length;
-            return `<div style="border-radius:12px;margin-top:10px;background:${todosProntos?'rgba(5,150,105,.07)':'var(--bg-card2)'};${todosProntos?'border:1px solid rgba(5,150,105,.2)':''};overflow:hidden">
-              <div style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSeparacaoPedido(${atr.carga},${p})">
-                <span style="font-size:.85rem;font-weight:700;color:var(--text-primary)">Pedido ${p}</span>
-                <span style="font-size:.75rem;font-weight:700;color:${todosProntos?'#34d399':'var(--text-muted)'}">${todosProntos?'✅ ':''}${feitos}/${itens.length} itens</span>
-              </div>
-              <div id="sep-body-${atr.carga}-${p}" style="display:none">${_renderItensSeparacao(atr.carga,p,itens,separadosMap)}</div>
-            </div>`;
-          }).join('')}
-        </div>
+        ${_renderItensRomaneio(atr.carga, itensRomaneio)}
         `}
       </div>`;
     }).join('');
@@ -38238,21 +38248,38 @@ async function carregarSeparacaoConferente(){
   }
 }
 
-async function salvarSeparacaoPedido(carga, pedido, totalItens){
+// Salva a contagem por romaneio: o conferente digitou UM total por produto
+// pra carga inteira, mas separacao_itens grava por (carga, pedido,
+// mercadoria) — mesma chave que já alimenta o selo por pedido na aba
+// "Minhas Cargas" e a divergência por item. Distribui o total contado
+// proporcionalmente à quantidade esperada de cada pedido que tem esse
+// produto (o último pedido da lista fica com o resto, pra fechar a soma
+// exatamente igual ao total digitado, sem sobra por arredondamento).
+async function salvarSeparacaoRomaneio(carga, totalItens){
+  const itensCarga = (window._sepRomaneioCache||{})[carga] || [];
   const rows = [];
   for(let i=0;i<totalItens;i++){
-    const inp = document.getElementById(`sep-qtd-${carga}-${pedido}-${i}`);
+    const inp = document.getElementById(`sep-qtd-${carga}-${i}`);
     if(!inp) continue;
     const v = inp.value.trim();
-    if(v==='') continue; // só grava o que foi preenchido — item deixado em branco fica pendente
-    rows.push({
-      carga: Number(carga), pedido: Number(pedido),
-      mercadoria: inp.dataset.mercadoria,
-      quantidade_esperada: inp.dataset.esperado!==''?Number(inp.dataset.esperado):null,
-      quantidade_separada: Number(v),
-      conferente_id: USUARIO_LOGADO?.id||null,
-      conferente_nome: USUARIO_LOGADO?.nome||null,
-      separado_em: new Date().toISOString()
+    if(v==='') continue; // só grava o que foi preenchido — produto deixado em branco fica pendente
+    const item = itensCarga[i];
+    if(!item) continue;
+    const totalContado = Number(v)||0;
+    const totalEsperado = item.totalEsperado||0;
+    let restante = totalContado;
+    item.ocorrencias.forEach((o,idx)=>{
+      const ehUltimo = idx===item.ocorrencias.length-1;
+      const parte = ehUltimo ? restante
+        : (totalEsperado>0 ? Math.round(totalContado*o.esperado/totalEsperado) : Math.round(totalContado/item.ocorrencias.length));
+      if(!ehUltimo) restante -= parte;
+      rows.push({
+        carga: Number(carga), pedido: Number(o.pedido), mercadoria: item.mercadoria,
+        quantidade_esperada: o.esperado, quantidade_separada: parte,
+        conferente_id: USUARIO_LOGADO?.id||null,
+        conferente_nome: USUARIO_LOGADO?.nome||null,
+        separado_em: new Date().toISOString()
+      });
     });
   }
   if(!rows.length){ showToast('Preencha ao menos uma quantidade','warning'); return; }
