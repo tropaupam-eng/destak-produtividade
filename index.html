@@ -29046,14 +29046,37 @@ function _mfvPrazoRota(r){
   return (cad && cad.prazoH != null) ? Number(cad.prazoH) : null;
 }
 let MFV_ETAPAS = MFV_ETAPAS_RI;
+// Os campos vêm da planilha de coleta (um pedido por linha, hora de cada evento):
+// tc e esp são o MENOR TEMPO REPETÍVEL da coluna, nunca média. `esp` preenchido
+// substitui a espera do banco naquela etapa; `fora` marca etapa que a família
+// não percorre (a interna é separada por pedido e não passa por romaneio, carga 0
+// nem reorganização) — ela sai da soma e aparece riscada no mapa, em vez de
+// entrar como zero.
 const MFV_CAMPOS = [
-  { k:'tc',    label:'T. ciclo (min)',   dica:'Tempo de toque medido no cronômetro' },
+  { k:'tc',    label:'T. ciclo (min)',   dica:'Menor tempo repetível da etapa (planilha de coleta)' },
+  { k:'esp',   label:'Espera antes (min)',dica:'Espera medida em campo ANTES desta etapa, menor repetível. Vazio = usa o banco' },
+  { k:'n',     label:'n (pedidos)',      dica:'Quantos pedidos entraram na medição desta etapa' },
   { k:'setup', label:'Prep./setup (min)',dica:'Preparação entre ondas ou rotas' },
   { k:'op',    label:'Operadores',       dica:'Pessoas dedicadas à etapa' },
-  { k:'disp',  label:'Disponib. (%)',    dica:'% do tempo em que o recurso está disponível' },
+  { k:'lote',  label:'Lote (pedidos)',   dica:'Pedidos processados juntos. 1 = fluxo unitário' },
+  { k:'ca',    label:'%C&A',             dica:'De cada 10 que chegam da etapa anterior, quantos vêm completos e certos, em %' },
   { k:'erro',  label:'Retrabalho (%)',   dica:'Equivalente ao refugo: divergência/erro que volta' },
   { k:'meta',  label:'Meta espera (h)',  dica:'Espera-alvo no estado futuro' },
+  { k:'fora',  label:'Não existe nesta família', tipo:'check', dica:'A família mapeada não passa por esta etapa: sai da soma e fica riscada' },
 ];
+// Espera de uma etapa: campo manda; sem campo, banco.
+function _mfvEsperaH(e){
+  const c = _mfvCampos[e.key] || {};
+  return c.esp != null ? Number(c.esp)/60 : e.esperaH;
+}
+function _mfvFora(e){ return !!((_mfvCampos[e.key]||{}).fora); }
+// Há ESPERA medida em campo em alguma etapa? Então o lead da interna passa a ser
+// a soma medida (espera + toque, etapa a etapa) em vez da mediana grossa do banco.
+// Só o tempo de ciclo não basta para virar a chave: tc sozinho daria um lead de
+// minutos, porque as esperas da interna no banco são zero (não instrumentadas).
+function _mfvTemCampo(){
+  return (_mfvDados?.etapas||[]).some(e=>{ const c=_mfvCampos[e.key]||{}; return !c.fora && c.esp!=null; });
+}
 let _mfvDados = null;          // resultado medido
 let _mfvCampos = {};           // {etapa: {tc, setup, op, disp, erro, meta}}
 let _mfvFila = null;           // estoque entre etapas (retrato do agora)
@@ -29539,8 +29562,12 @@ async function salvarMFVCampos(){
     MFV_CAMPOS.forEach(c=>{
       const el = document.getElementById(`mfv-${e.key}-${c.k}`);
       if(!el) return;
-      const v = el.value.trim();
       _mfvCampos[e.key] = _mfvCampos[e.key] || {};
+      if(c.tipo === 'check'){
+        if(el.checked) _mfvCampos[e.key][c.k] = true; else delete _mfvCampos[e.key][c.k];
+        return;
+      }
+      const v = el.value.trim();
       if(v==='') delete _mfvCampos[e.key][c.k];
       else _mfvCampos[e.key][c.k] = Number(v);
     });
@@ -29565,6 +29592,7 @@ function _mfvTotais(futuro, transporteVA){
   const D = _mfvDados;
   let processo = 0;
   for(const e of D.etapas){
+    if(_mfvFora(e)) continue;
     const c = _mfvCampos[e.key] || {};
     const ehVA = e.transporte ? transporteVA : e.va;
     if(e.transporte && !D.interna){
@@ -29580,11 +29608,16 @@ function _mfvTotais(futuro, transporteVA){
     // meta, mantém o que está medido hoje.
     let esp = 0;
     for(const e of D.etapas){
+      if(_mfvFora(e)) continue;
       const c = _mfvCampos[e.key] || {};
       if(e.transporte && !D.interna && transporteVA) continue; // já entrou como processamento
-      esp += c.meta != null ? Number(c.meta) : e.esperaH;
+      esp += c.meta != null ? Number(c.meta) : _mfvEsperaH(e);
     }
     lead = esp + processo;
+  } else if(D.interna && _mfvTemCampo()){
+    // Com campo, o lead da interna é a soma etapa a etapa do que foi medido
+    // (espera antes + toque), não mais a mediana em dias inteiros do banco.
+    lead = D.etapas.filter(e=>!_mfvFora(e)).reduce((s,e)=>s + _mfvEsperaH(e), 0) + processo;
   } else {
     lead = D.interna ? D.leadMedianaH : D.etapas.reduce((s,e)=>s + e.esperaH, 0);
   }
@@ -29622,7 +29655,7 @@ function renderMFV(){
         (D.semPrazo ? ` · ${D.semPrazo} sem prazo, fora da conta` : ''))
     : kpi('Base medida', D.cargas+' cargas', 'var(--purple)', D.totalTransicoes+' transições de status');
   document.getElementById('mfv-kpis').innerHTML =
-    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?`prazo por rota (cadastro) · mediana medida ${_mfvFmtH(D.leadMedianaH)}`:`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
+    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?(_mfvTemCampo()?`soma medida em campo, etapa a etapa · banco (dias inteiros): ${_mfvFmtH(D.leadMedianaH)}`:`prazo por rota (cadastro) · mediana medida ${_mfvFmtH(D.leadMedianaH)}`):`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
     kpi('Tempo que agrega valor', _mfvFmtH(alvo.processo), 'var(--green)', modo==='comparar'?`atual ${_mfvFmtH(atual.processo)} → futuro ${_mfvFmtH(futuro.processo)}`:'soma dos tempos de ciclo (campo)') +
     kpi('Razão de valor', (alvo.razao*100).toFixed(2)+'%', 'var(--red)', modo==='comparar'?`de ${(atual.razao*100).toFixed(2)}% para ${(futuro.razao*100).toFixed(2)}%`:'quanto do lead time é trabalho') +
     kpiBase;
@@ -29638,22 +29671,30 @@ function renderMFV(){
     const c = _mfvCampos[e.key] || {};
     const ehVA = e.transporte ? transporteVA : e.va;
     const cor = ehVA ? 'var(--green)' : 'var(--orange)';
-    const inputs = MFV_CAMPOS.map(f=>`
+    const fora = !!c.fora;
+    const inputs = MFV_CAMPOS.map(f=> f.tipo==='check' ? `
+      <label title="${f.dica}" style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:.7rem;color:var(--text-secondary);margin-top:7px">
+        ${f.label}
+        <input id="mfv-${e.key}-${f.k}" type="checkbox" ${c[f.k]?'checked':''}>
+      </label>` : `
       <label title="${f.dica}" style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:.7rem;color:var(--text-secondary);margin-top:5px">
         ${f.label}
         <input id="mfv-${e.key}-${f.k}" type="number" min="0" step="any" value="${c[f.k] != null ? c[f.k] : ''}"
           style="width:74px;text-align:right;border:1px solid var(--border-med);border-radius:6px;padding:3px 6px;font-size:.72rem;background:var(--bg-input);color:var(--text-primary)">
       </label>`).join('');
+    const espCampo = c.esp != null;
     return `
-      <div style="background:var(--bg-card2);border:1px solid var(--border);border-top:3px solid ${cor};border-radius:10px;padding:12px">
-        <div style="font-weight:800;font-size:.8rem;color:var(--text-primary);margin-bottom:2px">${e.label}</div>
+      <div style="background:var(--bg-card2);border:1px solid var(--border);border-top:3px solid ${fora?'var(--text-muted)':cor};border-radius:10px;padding:12px;${fora?'opacity:.55':''}">
+        <div style="font-weight:800;font-size:.8rem;color:var(--text-primary);margin-bottom:2px;${fora?'text-decoration:line-through':''}">${e.label}</div>
+        ${fora?`<div style="font-size:.66rem;color:var(--red);font-weight:700;margin-bottom:5px">a família não passa por esta etapa</div>`:''}
         ${e.pop?`<div style="font-size:.62rem;color:var(--text-muted);line-height:1.35;margin-bottom:5px">${escapeHtml(e.pop)}</div>`:''}
         <div style="font-size:.66rem;color:${cor};font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${ehVA?'agrega valor':'não agrega'}</div>
         <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--text-primary);font-weight:700;padding-bottom:6px;border-bottom:1px dashed var(--border)">
-          <span>${e.semMedicao?'Espera':'Espera medida'}</span>
-          <span${e.semMedicao?' style="color:var(--text-muted);font-weight:600"':''}>${e.semMedicao?'sem medição':_mfvFmtH(e.esperaH)}</span>
+          <span>${espCampo?'Espera (campo)':e.semMedicao?'Espera':'Espera medida'}</span>
+          <span${(!espCampo&&e.semMedicao)?' style="color:var(--text-muted);font-weight:600"':''}>${espCampo?_mfvFmtH(Number(c.esp)/60):e.semMedicao?'sem medição':_mfvFmtH(e.esperaH)}</span>
         </div>
         <div style="font-size:.63rem;color:var(--text-muted);margin-top:3px">${
+          espCampo || c.tc != null ? 'campo · n = '+(c.n!=null?c.n:'?')+' pedidos' :
           e.semMedicao ? 'etapa não instrumentada — medir em campo'
                        : e.amostras+' amostra(s)'+(e.transporte?' · ponta a ponta':'')}</div>
         ${inputs}
@@ -29698,24 +29739,32 @@ function renderMFV(){
 
   // ── Linha do tempo dupla ──
   const etapas = _mfvDados.etapas;
-  const maxH = Math.max(...etapas.map(e=>e.esperaH), 1);
+  const maxH = Math.max(...etapas.filter(e=>!_mfvFora(e)).map(e=>_mfvEsperaH(e)), 1);
   const larg = 108;
   const cells = etapas.map(e=>{
     const c = _mfvCampos[e.key] || {};
     const tcH = (Number(c.tc)||0)/60;
     const ehVA = e.transporte ? transporteVA : e.va;
-    const espAlt = Math.max(4, Math.round((e.esperaH/maxH)*54));
-    const procAlt = Math.max(3, Math.round(((e.transporte?e.esperaH:tcH)/maxH)*54));
+    if(_mfvFora(e)) return `
+      <div style="width:${larg}px;flex:0 0 ${larg}px;text-align:center;opacity:.45">
+        <div style="height:60px"></div>
+        <div style="font-size:.62rem;color:var(--text-muted);padding:3px 0;border-top:1px solid var(--border-med);border-bottom:1px solid var(--border-med);min-height:26px;display:flex;align-items:center;justify-content:center;text-decoration:line-through">${e.label}</div>
+        <div style="height:60px"></div>
+        <div style="font-size:.6rem;color:var(--red);font-weight:700">não passa</div>
+      </div>`;
+    const espH = _mfvEsperaH(e);
+    const espAlt = Math.max(4, Math.round((espH/maxH)*54));
+    const procAlt = Math.max(3, Math.round(((e.transporte?espH:tcH)/maxH)*54));
     return `
       <div style="width:${larg}px;flex:0 0 ${larg}px;text-align:center">
         <div style="height:60px;display:flex;align-items:flex-end;justify-content:center">
-          ${e.transporte&&ehVA ? '' : `<div title="espera ${_mfvFmtH(e.esperaH)}" style="width:100%;height:${espAlt}px;background:var(--orange);opacity:.75;border-radius:3px 3px 0 0"></div>`}
+          ${e.transporte&&ehVA ? '' : `<div title="espera ${_mfvFmtH(espH)}${c.esp!=null?' (campo)':''}" style="width:100%;height:${espAlt}px;background:var(--orange);opacity:.75;border-radius:3px 3px 0 0"></div>`}
         </div>
         <div style="font-size:.62rem;color:var(--text-muted);padding:3px 0;border-top:1px solid var(--border-med);border-bottom:1px solid var(--border-med);min-height:26px;display:flex;align-items:center;justify-content:center">${e.label}</div>
         <div style="height:60px;display:flex;align-items:flex-start;justify-content:center">
           ${ehVA ? `<div title="processamento" style="width:100%;height:${procAlt}px;background:var(--green);border-radius:0 0 3px 3px"></div>` : ''}
         </div>
-        <div style="font-size:.6rem;color:var(--text-secondary);font-weight:700">${_mfvFmtH(e.transporte?e.esperaH:(ehVA?tcH:e.esperaH))}</div>
+        <div style="font-size:.6rem;color:var(--text-secondary);font-weight:700">${_mfvFmtH(e.transporte?espH:(ehVA?tcH:espH))}</div>
       </div>`;
   }).join('');
   document.getElementById('mfv-timeline').innerHTML =
@@ -29740,8 +29789,9 @@ function renderMFV(){
     ).join(' &nbsp;·&nbsp; ')}.
     Rotas com prazos diferentes no mesmo mapa são <b>famílias diferentes</b>: vale decidir se todas ficam.
     <b>As etapas do meio não são instrumentadas</b> — a rota interna não passa pela máquina de
-    status da expedição nem pela conferência do armazém. Os tempos de ciclo vêm de cronometragem
-    em campo, e essa lacuna é, por si só, um achado do mapa do estado atual.`
+    status da expedição nem pela conferência do armazém. Os tempos de ciclo e as esperas por etapa
+    vêm da planilha de coleta (câmera + hora do ERP, um pedido por linha, menor tempo repetível), e essa
+    lacuna é, por si só, um achado do mapa do estado atual.`
   : `
     <b>Origem (rota externa):</b> espera e lead time medidos em <code>historico_status_carga</code>
     (${D.totalTransicoes} transições, ${D.cargas} cargas).
