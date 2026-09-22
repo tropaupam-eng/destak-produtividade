@@ -27302,6 +27302,26 @@ function _inicioPrazoRI(dataPedido, horaPedido, feriadosSet){
   return prox;
 }
 
+// Decisão do usuário em 2026-09-22: corte (parcial OU total) e troca de
+// mercadoria penalizam o In Full — mas só quando acontecem DEPOIS que o
+// pedido entra em Romaneio (RO). Edição normal do pedido pelo comercial,
+// antes de ir pro armazém, é normal e não deve contar; só o que muda
+// depois que o armazém já começou a separar. cortesRows precisa ter
+// status/atualizado_em/entrou_ro_em (ver montagem em carregarDadosOtifMes).
+// Usada tanto pelo cálculo principal (_computeOtifStats) quanto pelo
+// Painel de TV (mesmo critério, ver 'Corte de quantidade também penaliza').
+function _pedidosComCorteOuTrocaPosRo(cortesRows){
+  const set = new Set();
+  (cortesRows||[]).forEach(r=>{
+    if(!r.pedido || !r.entrou_ro_em || !r.atualizado_em) return; // sem RO registrado (pedido antigo sem histórico) -> não penaliza
+    if(r.atualizado_em < r.entrou_ro_em) return; // mudança foi ANTES de entrar em RO -> não penaliza
+    const corte = r.status==='ativo' && Number(r.quantidade_atual) < Number(r.quantidade_original);
+    const removidoTotal = r.status==='removido';
+    if(corte || removidoTotal) set.add(String(r.pedido));
+  });
+  return set;
+}
+
 function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hojeStr, mesFiltro, agendPedMap, feriadosSet, onPedido, cortesRows, pendenteTsMap){
   if(!hojeStr) hojeStr = hojeDataBRT();
   // prazoMap em horas: null = rota sem prazo (excluída do OTIF); undefined = não cadastrada (usa padrão)
@@ -27366,13 +27386,10 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   // sem isso, um pedido com avaria corrigida fica "fora do In Full" para sempre.
   const ocorrSet=new Set();
   (ocorrRows||[]).forEach(o=>{ if(o.pedido && o.status!=='resolvida') ocorrSet.add(String(o.pedido)); });
-  // Corte de quantidade (pedidos_itens_erp, comparado com a planilha de
-  // atualizações do ERP) também penaliza o In Full — decisão do usuário em
-  // 2026-08-17. Só corte (quantidade_atual < quantidade_original em item
-  // ativo) entra aqui; item "removido" ou "adicionado" (possível troca) fica
-  // de fora por enquanto, só no relatório de Cortes/Trocas ERP.
-  const cortesSet=new Set();
-  (cortesRows||[]).forEach(r=>{ if(r.pedido && Number(r.quantidade_atual) < Number(r.quantidade_original)) cortesSet.add(String(r.pedido)); });
+  // Corte (parcial ou total) e troca de mercadoria pós-RO também penalizam
+  // o In Full — decisão do usuário em 2026-08-17 (corte parcial) e
+  // 2026-09-22 (ampliado pra corte total/troca, restrito a pós-RO).
+  const cortesSet = _pedidosComCorteOuTrocaPosRo(cortesRows);
   const _semInFull = ped => ocorrSet.has(ped) || cortesSet.has(ped);
   let total=0,riTotal=0,reTotal=0;
   let entG=0,onTimeG=0,inFullG=0,otifG=0;
@@ -27593,18 +27610,30 @@ async function _carregarOtifMes(mes, und){
     // Busca mes atual E próximo mês para capturar entregas cross-month
     // (pedido de junho entregue em julho: planilha grava mes_ano='2026-07')
     // entregas_motorista: confirmações do portal do motorista (R.I.) — data_confirmacao como data_entrega
-    const [rEnt, rEntProx, rOcorr, rMotEnt, rAgendPed, rCortes] = await Promise.all([
+    const [rEnt, rEntProx, rOcorr, rMotEnt, rAgendPed, rCortes, rEntrouRo] = await Promise.all([
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${proximo}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00-03:00&criado_em=lt.${proximo}-01T00:00:00-03:00&select=pedido,tipo,status&limit=5000`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entregas_motorista?pedido=in.(${chunk.join(',')})&select=pedido,data_confirmacao&limit=5000`,{_quiet:true}).catch(()=>[]),
       supaFetch(`agendamentos_pedidos?pedido=in.(${chunk.join(',')})&select=pedido,data_entrega`,{_quiet:true}).catch(()=>[]),
-      supaFetch(`pedidos_itens_erp?pedido=in.(${chunk.join(',')})&status=eq.ativo&select=pedido,quantidade_atual,quantidade_original&limit=5000`,{_quiet:true}).catch(()=>[]),
+      // Sem status=eq.ativo aqui — precisamos também dos itens 'removido' (troca/corte
+      // total), não só corte parcial em item que continua ativo. Ver _pedidosComCorteOuTrocaPosRo.
+      supaFetch(`pedidos_itens_erp?pedido=in.(${chunk.join(',')})&select=pedido,status,quantidade_atual,quantidade_original,atualizado_em&limit=5000`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`pedidos_info_erp?pedido=in.(${chunk.join(',')})&select=pedido,entrou_ro_em`,{_quiet:true}).catch(()=>[]),
     ]);
     entRows      = entRows.concat(rEnt || [], rEntProx || []);
     (rMotEnt||[]).forEach(e=>{ if(e.pedido&&e.data_confirmacao) entRows.push({pedido:e.pedido,data_entrega:e.data_confirmacao}); });
     ocorrRows    = ocorrRows.concat(rOcorr || []);
     agendPedRows = agendPedRows.concat(rAgendPed || []);
+    // Anexa entrou_ro_em de cada pedido nas linhas de item correspondentes — decisão
+    // do usuário em 2026-09-22: corte (parcial ou total) ou troca de mercadoria só
+    // penaliza o In Full quando acontece DEPOIS que o pedido entra em Romaneio (RO).
+    // Edição normal do pedido pelo comercial, antes de ir pro armazém, não é falha
+    // operacional. Pedidos que já passaram por RO antes dessa coluna existir não têm
+    // entrou_ro_em (sem histórico pra reconstruir) — não são penalizados até passar
+    // por um novo ciclo de RO.
+    const roMapChunk = new Map((rEntrouRo||[]).map(r=>[String(r.pedido), r.entrou_ro_em]));
+    (rCortes||[]).forEach(r=>{ r.entrou_ro_em = roMapChunk.get(String(r.pedido)) || null; });
     cortesRows   = cortesRows.concat(rCortes || []);
   }
   const agendPedMap = new Map((agendPedRows||[]).map(r=>[String(r.pedido), r.data_entrega]));
@@ -28103,12 +28132,13 @@ function _dlogRenderOtifSecao(c){
   // Continua contando normalmente no painel de Ocorrências e no Erro
   // Conferente, só não entra como "causa que prejudicou o OTIF" aqui.
   c.ocorrF.filter(o=>o.tipo!=='sobra').forEach(o=>{ const t=tipoLbl[o.tipo]||o.tipo||'Não informado'; causas[t]=(causas[t]||0)+1; });
-  // Corte de quantidade também penaliza o In Full (desde 2026-08-17) — sem
-  // isso aqui, esse painel mostrava "nenhuma ocorrência" mesmo quando corte
-  // era a causa real do In Full cair. Conta por PEDIDO (não por item — um
-  // pedido com 2 itens cortados é 1 causa, não 2).
-  const pedidosComCorte = new Set((c.cortesF||[]).filter(r=>Number(r.quantidade_atual)<Number(r.quantidade_original)).map(r=>String(r.pedido)));
-  if(pedidosComCorte.size) causas['Corte de Quantidade'] = pedidosComCorte.size;
+  // Corte (parcial/total) e troca de mercadoria pós-RO também penalizam o In
+  // Full (desde 2026-08-17, ampliado 2026-09-22) — sem isso aqui, esse painel
+  // mostrava "nenhuma ocorrência" mesmo quando corte/troca era a causa real
+  // do In Full cair. Conta por PEDIDO (não por item — um pedido com 2 itens
+  // cortados é 1 causa, não 2). Mesmo critério de _pedidosComCorteOuTrocaPosRo.
+  const pedidosComCorte = _pedidosComCorteOuTrocaPosRo(c.cortesF);
+  if(pedidosComCorte.size) causas['Corte/Troca de Mercadoria'] = pedidosComCorte.size;
   const causasOrd = Object.entries(causas).sort((a,b)=>b[1]-a[1]);
 
   const linhaTabela = (nome, d, pct) => `<tr>
@@ -28665,9 +28695,9 @@ async function renderOtifDiario(){
       if(e.data_entrega&&(!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
     });
     const ocorrSet = new Set((ocorrRows||[]).filter(o=>o.status!=='resolvida').map(o=>String(o.pedido)).filter(Boolean));
-    // Corte de quantidade também penaliza o In Full (mesmo critério de _computeOtifStats, 2026-08-17)
+    // Corte (parcial/total) e troca pós-RO também penalizam o In Full (mesmo critério de _computeOtifStats)
     const cortesRowsHoje = dadosMes?.cortesRows||[];
-    const cortesSet = new Set(cortesRowsHoje.filter(r=>Number(r.quantidade_atual)<Number(r.quantidade_original)).map(r=>String(r.pedido)));
+    const cortesSet = _pedidosComCorteOuTrocaPosRo(cortesRowsHoje);
     // Mesmos ajustes de prazo do _computeOtifStats (agendamento pré-acordado + feriados na janela)
     const agendPedMap = dadosMes?.agendPedMap || new Map();
     const feriadosSet  = dadosMes?.feriadosSet || new Set();
