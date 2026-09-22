@@ -10436,8 +10436,14 @@ async function erpPromoverAutomaticamente(){
   if(!USUARIO_LOGADO || !['admin','operador'].includes(USUARIO_LOGADO.perfil)) return;
   _erpPromovendo = true;
   try{
-    const rows = await supaFetch('base_data_erp_teste?select=carga_erp&carga_erp=not.is.null&limit=1') || [];
-    if(!rows.length) return; // Sem dados com carga para promover
+    // promovido_em=is.null é o que impede reprocessar o MESMO lote a cada
+    // 5s pra sempre. Achado em 2026-09-22: sem esse filtro, um lote de teste
+    // de 2026-08-20 (nunca marcado como promovido) ficou sendo re-promovido
+    // em loop infinito toda vez que alguém abria a página Integração —
+    // sobrescrevendo base_data de produção a cada 5s e travando o "relógio"
+    // de carregamento global (nunca ficava ocioso o suficiente pra sumir).
+    const rows = await supaFetch('base_data_erp_teste?select=carga_erp&carga_erp=not.is.null&promovido_em=is.null&limit=1') || [];
+    if(!rows.length) return; // Sem dados NOVOS com carga para promover
 
     console.log('[ERP AUTO] Detectados registros com carga — promovendo automaticamente para produção...');
 
@@ -10445,12 +10451,12 @@ async function erpPromoverAutomaticamente(){
     const el = document.getElementById('erp-producao-resultado');
     if(el) el.innerHTML = '⏳ Promovendo automaticamente para produção...';
 
-    // Buscar pedidos validados (com carga)
+    // Buscar pedidos validados (com carga, ainda não promovidos)
     let erpRows = [];
     let offset = 0;
     const PAGINA = 1000;
     while(true){
-      const pagina = await supaFetch(`base_data_erp_teste?select=numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status,data_entrega,vendedor_cod&carga_erp=not.is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
+      const pagina = await supaFetch(`base_data_erp_teste?select=id,numero_pedido_erp,carga_erp,valor_liquido,peso_bruto,volumes,data_pedido,nome_destinatario,bairro,status,data_entrega,vendedor_cod&carga_erp=not.is.null&promovido_em=is.null&order=id.asc&limit=${PAGINA}&offset=${offset}`) || [];
       erpRows = erpRows.concat(pagina);
       if(pagina.length < PAGINA) break;
       offset += PAGINA;
@@ -10476,6 +10482,19 @@ async function erpPromoverAutomaticamente(){
     if(erpComDataEntrega.length){
       await erpProcessarDatasEntrega(erpComDataEntrega).catch(e=>console.warn('[ERP AUTO] Erro ao processar datas de entrega:', e.message));
     }
+
+    // Marca AGORA (não só depois do push em base_data) — cobre também
+    // cancelados/datas-de-entrega, que retornam antes de chegar no push lá
+    // embaixo. Sem isso o mesmo lote nunca sai de "pendente" e é reprocessado
+    // a cada 5s pra sempre (ver comentário no início da função).
+    const idsErpRows = erpRows.map(r => r.id).filter(id => id != null);
+    if(idsErpRows.length){
+      await _emLotes(idsErpRows, 300, lote => supaFetch(`base_data_erp_teste?id=in.(${lote.join(',')})`, {
+        method: 'PATCH',
+        body: JSON.stringify({ promovido_em: new Date().toISOString() })
+      })).catch(e => console.warn('[ERP AUTO] Erro ao marcar promovido_em:', e.message));
+    }
+
     if(!erpAtivos.length) return;
 
     // mes_ano/semana_mes calculados POR LINHA a partir de r.data_pedido (não da
