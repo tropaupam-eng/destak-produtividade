@@ -8798,7 +8798,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.81.0';
+const APP_VERSION = '4.82.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 // Preenche o rodapé da tela de login com a versão real — antes era um texto
 // fixo ("v4.1.0 — 2026-05-19") que nunca era atualizado junto com APP_VERSION.
@@ -36328,10 +36328,11 @@ async function carregarMapaVendedor(){
   }
   mapaEl.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando mapa...</p>';
   try{
-    const [geoRows, rotasClienteRows, pedidosRows] = await Promise.all([
+    const [geoRows, rotasClienteRows, pedidosRows, overridesRows] = await Promise.all([
       supaFetch('geolocalizacao_clientes?select=codigo_cliente,nome_cliente,latitude,longitude&limit=5000').catch(()=>[]),
       supaFetch('rotas_clientes?select=rota,cliente&limit=10000').catch(()=>[]),
       supaFetch('base_data?select=cliente,data_pedido,vendedor_cod,valor&cliente=not.is.null&cliente=neq.&limit=20000').catch(()=>[]),
+      supaFetch('clientes_atribuicao_manual?select=cliente,vendedor_cod,vendedor_nome').catch(()=>[]),
     ]);
 
     const rotaPorCliente = {};
@@ -36341,6 +36342,8 @@ async function carregarMapaVendedor(){
       if(!rotaPorCliente[k]) rotaPorCliente[k] = new Set();
       rotaPorCliente[k].add(r.rota);
     });
+    const overridesMap = {};
+    (overridesRows||[]).forEach(o=>{ if(o.cliente) overridesMap[o.cliente] = o; });
 
     const agregPorCliente = _clienteAgregados(pedidosRows);
     const hoje = hojeDataBRT();
@@ -36353,19 +36356,27 @@ async function carregarMapaVendedor(){
       abertoPorCliente[k] = (abertoPorCliente[k]||0) + (Number(p.valor)||0);
     });
 
+    // Quem aparece pro vendedor: os clientes que são DELE (último vendedor
+    // que vendeu, ou atribuição manual do admin) + qualquer cliente sem
+    // pedido há 90+ dias, mesmo que "pertença" a outro vendedor — fica
+    // liberado pra qualquer um abordar. Regras do usuário, 2026-09-23.
+    const DIAS_LIBERA_OUTROS = 90;
     const clientes = (geoRows||[]).filter(r=>r.latitude!=null && r.longitude!=null).map(r=>{
       const k = (r.nome_cliente||'').trim().toUpperCase();
       const ag = agregPorCliente[k];
-      const vendCod = ag ? _commapaModa(ag.vendedores) : null;
-      if(String(vendCod)!==String(cod)) return null;
-      const rotas = rotaPorCliente[k] ? [...rotaPorCliente[k]] : [];
+      const { vendCod, viaOverride } = _vendedorDonoCliente(k, ag, overridesMap);
       const ultima = ag?.ultima || null;
       const {status, dias} = _statusRecenciaCompra(ultima, hojeMs);
+      const meuCliente = String(vendCod)===String(cod);
+      const disponivel = !meuCliente && (dias==null || dias>=DIAS_LIBERA_OUTROS);
+      if(!meuCliente && !disponivel) return null;
+      const rotas = rotaPorCliente[k] ? [...rotaPorCliente[k]] : [];
       return {
         codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)',
         lat: Number(r.latitude), lon: Number(r.longitude), rotas,
         ultima, dias, status, valorUltima: ag?.valorUltima ?? null,
         aberto: abertoPorCliente[k] || 0,
+        meuCliente, disponivel, viaOverride,
       };
     }).filter(c=>c && Number.isFinite(c.lat) && Number.isFinite(c.lon));
 
@@ -36436,7 +36447,8 @@ function filtrarMapaVendedor(){
     const m = L.marker([c.lat, c.lon], { icon: _commapaIcon(c.status, c.valorUltima) });
     const ultimaTxt = c.ultima ? `${fmtD(c.ultima)} (${c.dias} dia${c.dias===1?'':'s'} sem pedir) · ${escapeHtml(fmtR(c.valorUltima))}` : '<span style="color:#94a3b8">nenhum pedido localizado</span>';
     const abertoTxt = c.aberto>0 ? `<br><span style="color:#fb923c;font-weight:700">🟠 Pedido em aberto: ${escapeHtml(fmtR(c.aberto))}</span>` : '';
-    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Última compra: ${ultimaTxt}${abertoTxt}`);
+    const disponivelTxt = c.disponivel ? `<br><span style="color:#0ea5e9;font-weight:700">🔓 Disponível — sem vendedor há ${c.dias==null?'muito tempo':c.dias+' dias'}</span>` : '';
+    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Última compra: ${ultimaTxt}${abertoTxt}${disponivelTxt}`);
     return m;
   });
   _vendMapaClusterObj.addLayers(markers);
@@ -36464,8 +36476,12 @@ function filtrarMapaVendedor(){
       <div style="display:flex;align-items:center;gap:5px;margin-left:37px;background:rgba(251,146,60,.12);border:1px solid rgba(251,146,60,.35);border-radius:6px;padding:3px 7px;width:fit-content;margin-top:4px">
         <span style="font-size:.62rem">🟠</span><span style="font-size:.66rem;font-weight:700;color:var(--orange)">Pedido em aberto: ${escapeHtml(fmtR(c.aberto))}</span>
       </div>` : '';
+    const disponivelHtml = c.disponivel ? `
+      <div style="display:flex;align-items:center;gap:5px;margin-left:37px;background:rgba(14,165,233,.12);border:1px solid rgba(14,165,233,.35);border-radius:6px;padding:3px 7px;width:fit-content;margin-top:4px">
+        <span style="font-size:.62rem">🔓</span><span style="font-size:.66rem;font-weight:700;color:#0ea5e9">Disponível — sem vendedor há ${c.dias==null?'muito tempo':c.dias+' dias'}</span>
+      </div>` : '';
     return `
-      <div style="display:flex;flex-direction:column;gap:0;padding:8px 9px;background:var(--bg-card2);border:1px solid var(--border);border-radius:9px">
+      <div onclick="abrirDetalheClienteVendedor('${escapeHtml(String(c.codigo))}')" style="display:flex;flex-direction:column;gap:0;padding:8px 9px;background:var(--bg-card2);border:1px solid var(--border);border-radius:9px;cursor:pointer">
         <div style="display:flex;align-items:center;gap:9px">
           <div style="width:28px;height:28px;border-radius:50%;background:color-mix(in srgb, ${cor} 18%, transparent);color:${cor};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.64rem;flex-shrink:0">${escapeHtml(iniciais(c.nome))}</div>
           <div style="flex:1;min-width:0">
@@ -36475,8 +36491,63 @@ function filtrarMapaVendedor(){
           <span style="width:8px;height:8px;border-radius:50%;background:${cor};flex-shrink:0"></span>
         </div>
         ${abertoHtml}
+        ${disponivelHtml}
       </div>`;
   }).join('');
+}
+
+// Detalhe do cliente, aberto ao clicar num card da lista do Mapa de
+// Clientes: mostra o ÚLTIMO pedido feito (não importa de qual vendedor)
+// com os produtos daquele pedido. Busca sob demanda — não dá pra confiar
+// só em window._vendPedidos porque um cliente "disponível" (90+ dias sem
+// comprar) pode ter o último pedido de OUTRO vendedor. Pedido explícito
+// do usuário, 2026-09-23.
+async function abrirDetalheClienteVendedor(codigo){
+  const modal = document.getElementById('modal-vnd-cliente-detalhe');
+  const corpo = document.getElementById('vnd-cliente-detalhe-corpo');
+  const titulo = document.getElementById('vnd-cliente-detalhe-titulo');
+  if(!modal || !corpo) return;
+  const c = (_vendMapaCache||[]).find(x=>String(x.codigo)===String(codigo));
+  if(titulo) titulo.textContent = c?.nome || 'Cliente';
+  corpo.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>';
+  modal.style.display = 'flex';
+  try{
+    const nome = c?.nome || '';
+    const ultimoPedidoRows = nome
+      ? await supaFetch(`base_data?cliente=eq.${encodeURIComponent(nome)}&select=pedido,data_pedido,valor,rota&order=data_pedido.desc&limit=1`).catch(()=>[])
+      : [];
+    const ped = (ultimoPedidoRows||[])[0];
+    if(!ped){
+      corpo.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Nenhum pedido encontrado pra esse cliente.</p>';
+      return;
+    }
+    const itens = await supaFetch(`pedidos_itens_erp?pedido=eq.${ped.pedido}&status=eq.ativo&select=mercadoria,descricao,quantidade_atual&order=descricao.asc`).catch(()=>[]);
+    const fmtD = d => { try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR'); }catch(e){ return d||'—'; } };
+    const fmtR = v => v!=null ? Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}) : '—';
+    const itensHtml = (itens||[]).length
+      ? itens.map(it=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="min-width:0"><div style="font-size:.82rem;font-weight:700;color:var(--text-primary)">${escapeHtml(it.descricao||'—')}</div><div style="font-size:.68rem;color:var(--text-muted)">Cód. ${escapeHtml(it.mercadoria||'—')}</div></div>
+          <div style="font-size:.82rem;font-weight:800;color:var(--text-primary);white-space:nowrap">${escapeHtml(String(it.quantidade_atual ?? '—'))}</div>
+        </div>`).join('')
+      : '<p style="text-align:center;padding:14px;color:var(--text-muted);font-size:.78rem">Itens não disponíveis pra esse pedido (planilha do ERP pode não cobrir essa data).</p>';
+    corpo.innerHTML = `
+      <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <span style="font-size:.8rem;color:var(--text-secondary)">Pedido ${escapeHtml(String(ped.pedido))} · ${escapeHtml(ped.rota||'—')}</span>
+          <span style="font-size:.8rem;font-weight:700;color:var(--text-primary)">${fmtD(ped.data_pedido)}</span>
+        </div>
+        <div style="font-size:1.05rem;font-weight:800;color:#22c55e;margin-top:6px">${fmtR(ped.valor)}</div>
+      </div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Produtos do último pedido</div>
+      ${itensHtml}
+    `;
+  }catch(e){
+    corpo.innerHTML = '<p style="text-align:center;padding:20px;color:#ef4444;font-size:.82rem">Erro: '+e.message+'</p>';
+  }
+}
+function fecharDetalheClienteVendedor(){
+  const modal = document.getElementById('modal-vnd-cliente-detalhe');
+  if(modal) modal.style.display = 'none';
 }
 
 // Status de uma carga (a partir da demanda_rota vinculada, p._demanda),
@@ -44729,31 +44800,40 @@ function _commapaIcon(status, valorMedio){
     iconSize:[px,px], iconAnchor:[px/2,px/2]
   });
 }
-function _commapaModa(obj){
-  let melhor=null, max=0;
-  Object.entries(obj).forEach(([k,v])=>{ if(v>max){ max=v; melhor=k; } });
-  return melhor;
-}
-
 // Agregado por cliente (nome em maiúsculas) a partir de linhas de base_data:
-// última data de pedido (+ valor daquele pedido), vendedor mais frequente
-// (moda) e ticket médio. Reaproveitado pelo Mapa de Clientes (Comercial) e
-// pelo Mapa de Clientes do Portal Vendedor.
+// última data de pedido (+ valor e vendedor daquele pedido) e ticket médio.
+// Reaproveitado pelo Mapa de Clientes (Comercial) e pelo Mapa de Clientes
+// do Portal Vendedor. `vendedorUltimo` = vendedor do pedido mais recente —
+// é essa coluna (não mais a moda histórica) que decide de quem é o
+// cliente, regra do usuário em 2026-09-23: "o último vendedor que vendeu
+// fica com o cliente". `vendedores` (histograma) fica só como histórico
+// auxiliar, sem uso pra atribuição.
 function _clienteAgregados(pedidosRows){
   const agreg = {};
   (pedidosRows||[]).forEach(r=>{
     const k = (r.cliente||'').trim().toUpperCase();
     if(!k) return;
-    if(!agreg[k]) agreg[k] = { ultima:null, valorUltima:null, vendedores:{}, valorSoma:0, valorN:0 };
+    if(!agreg[k]) agreg[k] = { ultima:null, valorUltima:null, vendedorUltimo:null, vendedores:{}, valorSoma:0, valorN:0 };
     const a = agreg[k];
     if(r.data_pedido && (!a.ultima || r.data_pedido >= a.ultima)){
       a.ultima = r.data_pedido;
       a.valorUltima = r.valor!=null ? Number(r.valor) : null;
+      a.vendedorUltimo = r.vendedor_cod ?? null;
     }
     if(r.vendedor_cod!=null) a.vendedores[r.vendedor_cod] = (a.vendedores[r.vendedor_cod]||0)+1;
     if(r.valor!=null && Number.isFinite(Number(r.valor))){ a.valorSoma += Number(r.valor); a.valorN++; }
   });
   return agreg;
+}
+
+// Vendedor "dono" do cliente: prioriza a atribuição manual do admin
+// (clientes_atribuicao_manual) — se existir, ela manda; senão usa o
+// vendedor do pedido mais recente (vendedorUltimo). Compartilhado entre
+// Comercial e Portal Vendedor pra manter a mesma regra nos dois lugares.
+function _vendedorDonoCliente(clienteKey, ag, overridesMap){
+  const ov = overridesMap ? overridesMap[clienteKey] : null;
+  if(ov) return { vendCod: ov.vendedor_cod, vendNomeOverride: ov.vendedor_nome||null, viaOverride: true };
+  return { vendCod: ag ? ag.vendedorUltimo : null, vendNomeOverride: null, viaOverride: false };
 }
 // Semáforo de recência (verde/amarelo/vermelho/cinza) a partir da data da
 // última compra — mesmo corte usado em toda a leitura comercial (commapa,
@@ -44776,14 +44856,18 @@ async function carregarMapaClientes(){
   }
   mapaEl.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">⏳ Carregando mapa...</p>';
   try{
-    const [geoRows, rotasClienteRows, pedidosRows, vendedoresRows] = await Promise.all([
+    const [geoRows, rotasClienteRows, pedidosRows, vendedoresRows, overridesRows] = await Promise.all([
       supaFetch('geolocalizacao_clientes?select=codigo_cliente,nome_cliente,latitude,longitude&limit=5000').catch(()=>[]),
       supaFetch('rotas_clientes?select=rota,cliente&limit=10000').catch(()=>[]),
       supaFetch('base_data?select=cliente,data_pedido,vendedor_cod,valor&cliente=not.is.null&cliente=neq.&limit=20000').catch(()=>[]),
       supaFetch('usuarios?perfil=eq.vendedor&select=nome,codigo_vendedor').catch(()=>[]),
+      supaFetch('clientes_atribuicao_manual?select=cliente,vendedor_cod,vendedor_nome').catch(()=>[]),
     ]);
     const vendNomePorCod = {};
     (vendedoresRows||[]).forEach(v=>{ if(v.codigo_vendedor!=null) vendNomePorCod[v.codigo_vendedor] = v.nome; });
+    window._commapaVendedoresOpts = (vendedoresRows||[]).filter(v=>v.codigo_vendedor!=null).sort((a,b)=>(a.nome||'').localeCompare(b.nome||'','pt-BR'));
+    const overridesMap = {};
+    (overridesRows||[]).forEach(o=>{ if(o.cliente) overridesMap[o.cliente] = o; });
 
     const rotaPorCliente = {};
     (rotasClienteRows||[]).forEach(r=>{
@@ -44792,7 +44876,7 @@ async function carregarMapaClientes(){
       if(!rotaPorCliente[k]) rotaPorCliente[k] = new Set();
       rotaPorCliente[k].add(r.rota);
     });
-    // Agregado por cliente: última compra, vendedor mais frequente (moda) e ticket médio
+    // Agregado por cliente: última compra (+ vendedor daquele pedido) e ticket médio
     const agregPorCliente = _clienteAgregados(pedidosRows);
     const hoje = hojeDataBRT();
     const hojeMs = new Date(hoje+'T00:00:00').getTime();
@@ -44803,10 +44887,10 @@ async function carregarMapaClientes(){
       const ag = agregPorCliente[k];
       const ultima = ag?.ultima || null;
       const {status, dias} = _statusRecenciaCompra(ultima, hojeMs);
-      const vendCod = ag ? _commapaModa(ag.vendedores) : null;
+      const { vendCod, viaOverride } = _vendedorDonoCliente(k, ag, overridesMap);
       const vendNome = vendCod!=null ? (vendNomePorCod[vendCod]||`Código ${vendCod}`) : null;
       const valorMedio = ag && ag.valorN ? ag.valorSoma/ag.valorN : null;
-      return { codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)', lat: Number(r.latitude), lon: Number(r.longitude), rotas, ultima, dias, status, vendCod, vendNome, valorMedio };
+      return { codigo: r.codigo_cliente, nome: r.nome_cliente||'(sem nome)', chave:k, lat: Number(r.latitude), lon: Number(r.longitude), rotas, ultima, dias, status, vendCod, vendNome, viaOverride, valorMedio };
     }).filter(c=>Number.isFinite(c.lat) && Number.isFinite(c.lon));
     _commapaCache = clientes;
 
@@ -44865,9 +44949,17 @@ function filtrarMapaClientes(){
     const m = L.marker([c.lat, c.lon], { icon: _commapaIcon(c.status, c.valorMedio) });
     const rotasTxt = c.rotas.length ? escapeHtml(c.rotas.join(', ')) : '<span style="color:#94a3b8">sem rota identificada</span>';
     const ultimaTxt = c.ultima ? `${fmtD(c.ultima)} (${c.dias} dia${c.dias===1?'':'s'} sem pedir)` : '<span style="color:#94a3b8">nenhum pedido localizado</span>';
-    const vendTxt = c.vendNome ? escapeHtml(c.vendNome) : '<span style="color:#94a3b8">sem vendedor identificado</span>';
+    const vendTxt = c.vendNome ? escapeHtml(c.vendNome)+(c.viaOverride?' <span style="color:#7c3aed;font-weight:700">(atribuído manualmente)</span>':'') : '<span style="color:#94a3b8">sem vendedor identificado</span>';
     const valorTxt = c.valorMedio!=null ? escapeHtml(fmtR(c.valorMedio)) : '<span style="color:#94a3b8">—</span>';
-    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Rota(s): ${rotasTxt}<br>Vendedor: ${vendTxt}<br>Ticket médio: ${valorTxt}<br>Última compra: ${ultimaTxt}`);
+    const vendOptsHtml = (window._commapaVendedoresOpts||[]).map(v=>`<option value="${v.codigo_vendedor}" ${String(v.codigo_vendedor)===String(c.vendCod)?'selected':''}>${escapeHtml(v.nome)}</option>`).join('');
+    m.bindPopup(`<strong>${escapeHtml(c.nome)}</strong><br>Código: ${escapeHtml(String(c.codigo))}<br>Rota(s): ${rotasTxt}<br>Vendedor: ${vendTxt}<br>Ticket médio: ${valorTxt}<br>Última compra: ${ultimaTxt}
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;gap:5px;align-items:center">
+        <select id="commapa-atrib-sel-${escapeHtml(String(c.codigo))}" style="flex:1;font-size:.75rem;padding:3px 4px;border-radius:5px;border:1px solid #d1d5db">
+          <option value="">Atribuir vendedor...</option>
+          ${vendOptsHtml}
+        </select>
+        <button onclick="atribuirVendedorCliente('${escapeHtml(c.chave)}','${escapeHtml(String(c.codigo))}')" style="background:#7c3aed;color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:.72rem;font-weight:700;cursor:pointer">Salvar</button>
+      </div>`);
     return m;
   });
   _commapaClusterObj.addLayers(markers);
@@ -44877,6 +44969,31 @@ function filtrarMapaClientes(){
   } else if(_commapaCache.length){
     _commapaMapObj.setView([-9.4, -40.5], 6);
   }
+}
+
+// Atribuição manual do admin — regra do usuário, 2026-09-23: o vendedor da
+// última venda fica com o cliente automaticamente, A MENOS que o admin
+// entre aqui e atribua manualmente pra outro. Grava em
+// clientes_atribuicao_manual, que passa a mandar em vez do "último
+// vendedor" (ver _vendedorDonoCliente).
+async function atribuirVendedorCliente(clienteChave, codigo){
+  const sel = document.getElementById('commapa-atrib-sel-'+codigo);
+  if(!sel || !sel.value){ showToast('Selecione um vendedor','warning'); return; }
+  const vendCod = sel.value;
+  const opt = (window._commapaVendedoresOpts||[]).find(v=>String(v.codigo_vendedor)===String(vendCod));
+  try{
+    await supaFetch('clientes_atribuicao_manual?on_conflict=cliente',{
+      method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({
+        cliente: clienteChave, vendedor_cod: Number(vendCod), vendedor_nome: opt?.nome||null,
+        atribuido_por: USUARIO_LOGADO?.nome||USUARIO_LOGADO?.email||null,
+        atribuido_em: new Date().toISOString()
+      })
+    });
+    showToast('✅ Cliente atribuído a '+(opt?.nome||'vendedor')+'!','success');
+    _commapaCache = null;
+    await carregarMapaClientes();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 // Cruza ocorrências (base_data/pedido) com quem conferiu aquele pedido
@@ -49871,6 +49988,17 @@ function _cftvRenderTable(data){
       <p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p>
     </div>
 
+  </div>
+</div>
+
+<!-- Detalhe do cliente (Portal Vendedor) — último pedido feito + produtos -->
+<div id="modal-vnd-cliente-detalhe" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:800;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)fecharDetalheClienteVendedor()">
+  <div style="background:var(--bg-card);border-radius:16px;max-width:440px;width:100%;max-height:82vh;overflow-y:auto;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div id="vnd-cliente-detalhe-titulo" style="font-size:1rem;font-weight:800;color:var(--text-primary)">Cliente</div>
+      <button onclick="fecharDetalheClienteVendedor()" style="background:var(--bg-hover);border:1px solid var(--border);border-radius:8px;padding:4px 10px;cursor:pointer;color:var(--text-secondary);font-size:.9rem">✕</button>
+    </div>
+    <div id="vnd-cliente-detalhe-corpo"><p style="text-align:center;padding:20px;color:var(--text-muted);font-size:.82rem">Carregando...</p></div>
   </div>
 </div>
 
