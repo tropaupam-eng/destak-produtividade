@@ -26614,6 +26614,27 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
     if(l.rota      && !cargaRota[c])       cargaRota[c]      = normalizarRota((l.rota||'').trim()) || (l.rota||'').toUpperCase().trim();
   });
 
+  // Cargas que REALMENTE saíram nesse período (demandas_rota) mas nunca
+  // tiveram lançamento nenhum — ficavam 100% invisíveis em todo indicador
+  // que usa esta função (Pedidos & Rotas, Acompanhamento, etc.), mesmo
+  // tendo pedido/valor reais em base_data. Achado + confirmado pelo
+  // usuário em 2026-09-28 (3 cargas de setembro, R$1,05M, saíram de
+  // verdade e nunca foram lançadas). demandas_rota não tem campo de
+  // unidade — quando há filtro de unidade, confirma depois via base_data.und.
+  const drSaiu = await supaFetch(
+    `demandas_rota?ts_saiu=gte.${iniMes}T00:00:00-03:00&ts_saiu=lte.${fimMes}T23:59:59-03:00&status=in.(saiu,fim_viagem,concluido)&select=carga`
+  ).catch(()=>[]) || [];
+  let cargasOrfas = [...new Set(drSaiu.map(r=>String(r.carga)).filter(Boolean))]
+    .filter(c => !cargasUndLanc.has(c));
+  if(cargasOrfas.length && undFiltro){
+    const orfasCheck = await supaFetch(`base_data?carga=in.(${cargasOrfas.join(',')})&select=carga,und`).catch(()=>[]) || [];
+    const cargasDaUnidade = new Set(
+      orfasCheck.filter(r=>(r.und||'').trim()===undFiltro).map(r=>String(Math.round(Number(r.carga))))
+    );
+    cargasOrfas = cargasOrfas.filter(c => cargasDaUnidade.has(c));
+  }
+  cargasOrfas.forEach(c => cargasUndLanc.add(c));
+
   // Buscar base_data pelas cargas que saíram no mês (não por mes_ano do pedido)
   // Motivo: pedido criado no mês anterior mas entregue neste mês deve contar aqui
   const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,hora_pedido,mes_ano,semana_mes,valor,ocorrencia';
