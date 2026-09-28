@@ -17,6 +17,8 @@
 
 > **Correção da própria doc:** este app **não** é "único arquivo `index.html` ~21.000 linhas". São **44.756 linhas** no `index.html` + o painel `gerot.html` (iframe). E ~43 tabelas em uso não estão na tabela abaixo (ela cobre ~metade do sistema).
 
+> 🔴 **`lancamentos` ≠ `demandas_rota` — NUNCA criar uma a partir da outra:** achado em auditoria 2026-09-28, depois de duas tentativas erradas (Claude criou 31 cards fantasma na Expedição — CEASA/PETROLINA/RETIRA/JUAZEIRO — tentando "auto-criar" `demandas_rota` a partir de `lancamentos`, primeiro sem checar `vinculado`, depois checando `vinculado=true`; nenhuma das duas bastava). `lancamentos` = registro de motorista/veículo pra produtividade/pagamento; `demandas_rota` = board de Expedição, criado **SOMENTE** por ação humana explícita (botão "Adicionar à Pré-Carga" em `acaoRotaUnificada('lancar',...)`, ou o formulário manual de lançamento). Uma carga pode ter `lancamentos` (até com `vinculado=true`) sem nunca ter passado pela Expedição — isso é normal, não é bug. `sincronizarDemandasRota()` em `_shared/erp-comum.ts` (Edge Functions do ERP) faz **só UPDATE, nunca INSERT** — não mexer nisso sem confirmar com o usuário antes. Há um trigger (`trg_log_criacao_demandas_rota` → tabela `demandas_rota_log_criacao`) que registra automaticamente toda criação de linha com o `role` de quem criou (`service_role` = veio de automação/Edge Function, suspeito; `anon`/`authenticated` = veio de clique real de usuário) — consultar essa tabela antes de mexer em qualquer coisa relacionada a criação de carga.
+
 ## Banco de Dados (Supabase) — REGRA OBRIGATÓRIA
 
 **Todo dado de negócio DEVE ir para o Supabase. Ponto final.**
