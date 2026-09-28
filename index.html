@@ -2905,6 +2905,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando indicador de pedidos e rotas...</p>
     </div>
     <div id="painel-ind-pedidos-rotas-container-ano" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+    <div id="painel-ind-acompanhamento-mes-container" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+    <div id="painel-ind-acompanhamento-container" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
   <!-- ABA 7: Custo Armazém — a página standalone (Armazém > Custo Armazém) foi removida por ser redundante com esta aba; renderCustoArmazem() continua servindo só o prefixo "pica-" (Painel Indicadores Custo Armazém). Sem filtro próprio: usa o Mês/Unidade globais do topo da tela, igual toda outra aba daqui. -->
@@ -29040,7 +29042,7 @@ function mudarAbaIndicadores(aba){
   else if(aba === 'disponibilidade') { carregarPainelDisponibilidade(); carregarPainelDisponibilidadeAno(); }
   else if(aba === 'conferencia-prazo') { carregarPainelConferenciaPrazo(); carregarPainelConferenciaPrazoAno(); }
   else if(aba === 'carregamento-prazo') { carregarPainelCarregamentoPrazo(); carregarPainelCarregamentoPrazoAno(); }
-  else if(aba === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); }
+  else if(aba === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); carregarPainelAcompanhamentoMes(); carregarPainelAcompanhamentoAnual(); }
   else if(aba === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
   else if(aba === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
   else if(aba === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
@@ -30015,7 +30017,7 @@ function _recarregarAbaAtivaPainelIndicadores(){
   else if(abaAtiva === 'disponibilidade') { carregarPainelDisponibilidade(); carregarPainelDisponibilidadeAno(); }
   else if(abaAtiva === 'conferencia-prazo') { carregarPainelConferenciaPrazo(); carregarPainelConferenciaPrazoAno(); }
   else if(abaAtiva === 'carregamento-prazo') { carregarPainelCarregamentoPrazo(); carregarPainelCarregamentoPrazoAno(); }
-  else if(abaAtiva === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); }
+  else if(abaAtiva === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); carregarPainelAcompanhamentoMes(); carregarPainelAcompanhamentoAnual(); }
   else if(abaAtiva === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
   else if(abaAtiva === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
   // "Prazo Formação→Entrega" não tinha filtro de unidade nenhum (nem o
@@ -31939,6 +31941,259 @@ function _renderGraficoPainelRotasAno(rotaCalc){
       }
     }
   });
+}
+
+// Acompanhamento do Mês — mesmos 3 indicadores (Rotas/Pedidos/Faturamento),
+// mas por SEMANA dentro do mês selecionado (filtro global de Mês do Painel
+// de Indicadores) — mesma quebra de semana usada em Custo/Receita Armazém
+// (_calcSemanas). Fica em cima do card anual, igual ao padrão já usado nas
+// outras abas (mês em cima, ano embaixo). Traz também a Tendência de
+// Fechamento do mês corrente, que só faz sentido aqui (mês em andamento).
+async function carregarPainelAcompanhamentoMes(){
+  const container = document.getElementById('painel-ind-acompanhamento-mes-container');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+  try {
+    const mesSel = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const undSel = window._painelIndUndSel || '';
+    const rireSel = window._painelIndRireSel || '';
+
+    const { bd } = await _calcularBaseFiltrada(mesSel, rireSel, undSel).catch(()=>({bd:[]}));
+    const semanas = _calcSemanas(mesSel);
+    const bRotasSets = semanas.map(()=>new Set());
+    const bPed = Array(semanas.length).fill(0);
+    const bFat = Array(semanas.length).fill(0);
+
+    const vistoPed = new Set();
+    bd.forEach(p=>{
+      const key = String(p.carga)+'_'+String(p.pedido);
+      if(vistoPed.has(key)) return;
+      vistoPed.add(key);
+      const dt = new Date((p.data_pedido||'')+'T00:00:00');
+      const idx = semanas.findIndex(s=>dt>=s.ini && dt<=s.fim);
+      if(idx<0) return;
+      bPed[idx]++;
+      bFat[idx] += Number(p.valor)||0;
+      if(p.carga!=null) bRotasSets[idx].add(String(p.carga));
+    });
+    const bRotas = bRotasSets.map(s=>s.size);
+
+    container.innerHTML = _renderCardAcompanhamentoMes({ mesSel, rireSel, semanas, bRotas, bPed, bFat });
+    _renderGraficosAcompanhamentoMes({ semanas, bRotas, bPed, bFat });
+  } catch(e){
+    console.error('Erro ao carregar Acompanhamento do Mês:', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
+  }
+}
+
+function _renderCardAcompanhamentoMes({mesSel, rireSel, semanas, bRotas, bPed, bFat}){
+  const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rireLabel = rireSel==='RI' ? ' · R.I. (INTERNA)' : rireSel==='RE' ? ' · R.E. (EXTERNA)' : ' · R.I. + R.E.';
+  const totRotas = bRotas.reduce((a,b)=>a+b,0);
+  const totPed   = bPed.reduce((a,b)=>a+b,0);
+  const totFat   = bFat.reduce((a,b)=>a+b,0);
+
+  const [anoP, mesP] = mesSel.split('-').map(Number);
+  const ultimoDiaP = new Date(anoP, mesP, 0).getDate();
+  const periodoTxt = `01/${String(mesP).padStart(2,'0')} A ${String(ultimoDiaP).padStart(2,'0')}/${String(mesP).padStart(2,'0')}`;
+
+  const hoje = new Date();
+  const hojeStr = hoje.toISOString().slice(0,10);
+  const ehMesAtual = mesSel === hoje.toISOString().slice(0,7);
+  let tendenciaHtml = '';
+  if(ehMesAtual){
+    const diaAtual  = hoje.getDate();
+    const idxSemanaAtual = semanas.findIndex(s=>new Date(hojeStr+'T00:00:00')>=s.ini && new Date(hojeStr+'T00:00:00')<=s.fim);
+    const fatAteHoje = bFat.slice(0, idxSemanaAtual+1).reduce((a,b)=>a+b,0);
+    const projecao   = diaAtual>0 ? (fatAteHoje/diaAtual)*ultimoDiaP : 0;
+    tendenciaHtml = `
+      <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #1a1a1a;margin-top:14px">
+        <div style="font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:12px">TENDÊNCIA DE FECHAMENTO — DIA ${diaAtual} DE ${ultimoDiaP}</div>
+        <div style="display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap">
+          <div><div style="font-size:.64rem;color:#8a8a8a;font-weight:700">FATURADO ATÉ HOJE</div><div style="font-size:1.2rem;font-weight:700;margin-top:2px">${fmtVal(fatAteHoje)}</div></div>
+          <div style="font-size:1.2rem;color:#c2c2c2">→</div>
+          <div><div style="font-size:.64rem;color:#8a8a8a;font-weight:700">PROJEÇÃO DE FECHAMENTO</div><div style="font-size:1.2rem;font-weight:700;margin-top:2px">${fmtVal(projecao)}</div></div>
+          <div style="font-size:.7rem;color:#6b6b6b;padding-bottom:4px">média diária × dias do mês</div>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:#fff;border:1px solid #d8d8d8;border-radius:8px;padding:7px 12px;font-size:.74rem;font-weight:700;color:#1a1a1a;cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">📷 Baixar Imagem</button>
+      <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">INDICADOR 09 · ACOMPANHAMENTO · ${periodoTxt}${rireLabel}</div>
+      <h2 style="font-size:2.4rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Rotas, Pedidos e Faturamento — Acompanhamento do Mês</h2>
+      <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 28px"></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #1a1a1a">
+          <div style="display:flex;justify-content:space-between;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:10px"><span>ROTAS POR SEMANA</span><span style="color:#1a1a1a">${totRotas.toLocaleString('pt-BR')} no mês</span></div>
+          <div style="position:relative;height:160px"><canvas id="chart-acomp-mes-rotas"></canvas></div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #4d4d4d">
+          <div style="display:flex;justify-content:space-between;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:10px"><span>PEDIDOS POR SEMANA</span><span style="color:#1a1a1a">${totPed.toLocaleString('pt-BR')} no mês</span></div>
+          <div style="position:relative;height:160px"><canvas id="chart-acomp-mes-pedidos"></canvas></div>
+        </div>
+      </div>
+
+      <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #8a8a8a">
+        <div style="display:flex;justify-content:space-between;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:10px"><span>FATURAMENTO POR SEMANA</span><span style="color:#1a1a1a">${fmtVal(totFat)} no mês</span></div>
+        <div style="position:relative;height:180px"><canvas id="chart-acomp-mes-faturamento"></canvas></div>
+      </div>
+
+      ${tendenciaHtml}
+
+      <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid #e0e0e0;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
+        <span>PAINEL DE METAS · ACOMPANHAMENTO MENSAL</span>
+        <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
+      </div>
+    </div>
+  `;
+}
+
+let _cAcompMesRotas = null, _cAcompMesPedidos = null, _cAcompMesFaturamento = null;
+function _renderGraficosAcompanhamentoMes({semanas, bRotas, bPed, bFat}){
+  if(typeof Chart === 'undefined') return;
+  if(_cAcompMesRotas)       { _cAcompMesRotas.destroy();       _cAcompMesRotas = null; }
+  if(_cAcompMesPedidos)     { _cAcompMesPedidos.destroy();     _cAcompMesPedidos = null; }
+  if(_cAcompMesFaturamento) { _cAcompMesFaturamento.destroy(); _cAcompMesFaturamento = null; }
+
+  const labels = semanas.map((s,i)=>'S'+(i+1));
+  const mk = (id, data, color, tickFmt) => {
+    const ctx = document.getElementById(id);
+    if(!ctx) return null;
+    return new Chart(ctx, {
+      type:'bar',
+      data:{ labels, datasets:[{ data, backgroundColor: color, borderRadius:3, maxBarThickness:36 }] },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: c=>' '+tickFmt(c.raw) } } },
+        scales:{
+          x:{ grid:{display:false}, ticks:{ color:'#6b6b6b', font:{size:10,weight:'700'} } },
+          y:{ grid:{color:'#eee'}, ticks:{ color:'#8a8a8a', font:{size:9}, callback: tickFmt } }
+        }
+      }
+    });
+  };
+  const fmtFat = v => v>=1e6 ? (v/1e6).toFixed(1)+'M' : v>=1e3 ? (v/1e3).toFixed(0)+'k' : v;
+  _cAcompMesRotas       = mk('chart-acomp-mes-rotas', bRotas, '#1a1a1a', v=>v);
+  _cAcompMesPedidos     = mk('chart-acomp-mes-pedidos', bPed, '#4d4d4d', v=>v);
+  _cAcompMesFaturamento = mk('chart-acomp-mes-faturamento', bFat, '#8a8a8a', fmtFat);
+}
+
+// Acompanhamento Anual — Rotas (cargas distintas), Pedidos e Faturamento por
+// mês, cada um no seu próprio gráfico/régua (opção 2 aprovada pelo usuário
+// em 2026-09-28, ao lado do card "Visão Anual" já existente). "Rotas" aqui é
+// quantidade de CARGAS distintas que saíram no mês (viagens), não nomes de
+// rota — decisão do usuário. Respeita o filtro global R.I./R.E./Todos do
+// Painel de Indicadores, igual todo o resto da aba.
+async function carregarPainelAcompanhamentoAnual(){
+  const container = document.getElementById('painel-ind-acompanhamento-container');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+  try {
+    const anoSel = _anoSelPainelIndicadores();
+    const undSel = window._painelIndUndSel || '';
+    const rireSel = window._painelIndRireSel || '';
+    const mesAtualStr = new Date().toISOString().slice(0,7);
+
+    const bRotas = Array(12).fill(0);
+    const bPed = Array(12).fill(0);
+    const bFat = Array(12).fill(0);
+
+    for(let m=1;m<=12;m++){
+      const mesStr = anoSel+'-'+String(m).padStart(2,'0');
+      if(mesStr > mesAtualStr) break;
+      const { bd } = await _calcularBaseFiltrada(mesStr, rireSel, undSel).catch(()=>({bd:[]}));
+      const cargasDistintas = new Set();
+      const pedidosVistos = new Set();
+      let soma = 0;
+      bd.forEach(p=>{
+        const key = String(p.carga)+'_'+String(p.pedido);
+        if(pedidosVistos.has(key)) return;
+        pedidosVistos.add(key);
+        if(p.carga!=null) cargasDistintas.add(String(p.carga));
+        soma += Number(p.valor)||0;
+      });
+      bRotas[m-1] = cargasDistintas.size;
+      bPed[m-1] = pedidosVistos.size;
+      bFat[m-1] = soma;
+    }
+
+    container.innerHTML = _renderCardAcompanhamentoAnual({ anoSel, rireSel, bRotas, bPed, bFat });
+    _renderGraficosAcompanhamentoAnual({ bRotas, bPed, bFat });
+  } catch(e){
+    console.error('Erro ao carregar Acompanhamento Anual:', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
+  }
+}
+
+function _renderCardAcompanhamentoAnual({anoSel, rireSel, bRotas, bPed, bFat}){
+  const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rireLabel = rireSel==='RI' ? ' · R.I. (INTERNA)' : rireSel==='RE' ? ' · R.E. (EXTERNA)' : ' · R.I. + R.E.';
+  const totRotas = bRotas.reduce((a,b)=>a+b,0);
+  const totPed   = bPed.reduce((a,b)=>a+b,0);
+  const totFat   = bFat.reduce((a,b)=>a+b,0);
+
+  return `
+    <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:#fff;border:1px solid #d8d8d8;border-radius:8px;padding:7px 12px;font-size:.74rem;font-weight:700;color:#1a1a1a;cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">📷 Baixar Imagem</button>
+      <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">INDICADOR 09 · ACOMPANHAMENTO · ANO ${anoSel}${rireLabel}</div>
+      <h2 style="font-size:2.4rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Rotas, Pedidos e Faturamento — Acompanhamento Anual</h2>
+      <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 28px"></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #1a1a1a">
+          <div style="display:flex;justify-content:space-between;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:10px"><span>ROTAS POR MÊS</span><span style="color:#1a1a1a">${totRotas.toLocaleString('pt-BR')} no ano</span></div>
+          <div style="position:relative;height:160px"><canvas id="chart-acomp-rotas"></canvas></div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #4d4d4d">
+          <div style="display:flex;justify-content:space-between;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:10px"><span>PEDIDOS POR MÊS</span><span style="color:#1a1a1a">${totPed.toLocaleString('pt-BR')} no ano</span></div>
+          <div style="position:relative;height:160px"><canvas id="chart-acomp-pedidos"></canvas></div>
+        </div>
+      </div>
+
+      <div style="background:#fff;border-radius:10px;padding:18px 20px;border-top:3px solid #8a8a8a">
+        <div style="display:flex;justify-content:space-between;font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-bottom:10px"><span>FATURAMENTO POR MÊS</span><span style="color:#1a1a1a">${fmtVal(totFat)} no ano</span></div>
+        <div style="position:relative;height:180px"><canvas id="chart-acomp-faturamento"></canvas></div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid #e0e0e0;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
+        <span>PAINEL DE METAS · ACOMPANHAMENTO ANUAL</span>
+        <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
+      </div>
+    </div>
+  `;
+}
+
+let _cAcompRotas = null, _cAcompPedidos = null, _cAcompFaturamento = null;
+function _renderGraficosAcompanhamentoAnual({bRotas, bPed, bFat}){
+  const NOMES_MES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  if(typeof Chart === 'undefined') return;
+  if(_cAcompRotas)       { _cAcompRotas.destroy();       _cAcompRotas = null; }
+  if(_cAcompPedidos)     { _cAcompPedidos.destroy();     _cAcompPedidos = null; }
+  if(_cAcompFaturamento) { _cAcompFaturamento.destroy(); _cAcompFaturamento = null; }
+
+  const mk = (id, data, color, tickFmt) => {
+    const ctx = document.getElementById(id);
+    if(!ctx) return null;
+    return new Chart(ctx, {
+      type:'bar',
+      data:{ labels: NOMES_MES, datasets:[{ data, backgroundColor: color, borderRadius:3, maxBarThickness:26 }] },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: c=>' '+tickFmt(c.raw) } } },
+        scales:{
+          x:{ grid:{display:false}, ticks:{ color:'#6b6b6b', font:{size:10,weight:'700'} } },
+          y:{ grid:{color:'#eee'}, ticks:{ color:'#8a8a8a', font:{size:9}, callback: tickFmt } }
+        }
+      }
+    });
+  };
+  const fmtFat = v => v>=1e6 ? (v/1e6).toFixed(1)+'M' : v>=1e3 ? (v/1e3).toFixed(0)+'k' : v;
+  _cAcompRotas       = mk('chart-acomp-rotas', bRotas, '#1a1a1a', v=>v);
+  _cAcompPedidos     = mk('chart-acomp-pedidos', bPed, '#4d4d4d', v=>v);
+  _cAcompFaturamento = mk('chart-acomp-faturamento', bFat, '#8a8a8a', fmtFat);
 }
 
 async function renderDashboard(){
