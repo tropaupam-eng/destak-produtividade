@@ -16997,6 +16997,41 @@ async function _carregarPctEntregaExpedicao(demandas){
   const cargas = (demandas||[]).map(d=>d.carga);
   window._expPctEntrega = await _calcPctEntregaPorCarga(cargas);
 }
+
+// % de pedidos já conferidos por carga (conferencia_pedidos.status='ok'),
+// pra mostrar progresso durante Separação/Carregamento — antes da carga
+// sair, "% entregue" não faz sentido nenhum (sempre 0%, ela nem saiu
+// ainda). Achado pelo usuário em 2026-09-28: o card mostrava "0% entregue"
+// pra carga ainda "Em Formação". Mesmo padrão de _calcPctEntregaPorCarga,
+// trocando entrega_datas por conferencia_pedidos.
+async function _calcPctConferidoPorCarga(cargasIn){
+  const cargas = [...new Set((cargasIn||[]).filter(c=>c!=null))];
+  if(!cargas.length) return {};
+  const pedidos = await _emLotes(cargas, 300, lote => supaFetch(`base_data?carga=in.(${lote.join(',')})&select=pedido,carga`).catch(()=>[]));
+  const porCarga = {};
+  pedidos.forEach(p=>{
+    if(p.carga==null) return;
+    if(!porCarga[p.carga]) porCarga[p.carga] = {total:0, conferidos:0};
+    porCarga[p.carga].total++;
+  });
+  const cargasComPedidos = Object.keys(porCarga).map(Number);
+  const conf = cargasComPedidos.length
+    ? await _emLotes(cargasComPedidos, 300, lote => supaFetch(`conferencia_pedidos?carga=in.(${lote.join(',')})&status=eq.ok&select=carga,pedido`).catch(()=>[]))
+    : [];
+  const vistos = new Set(); // uma carga+pedido só conta uma vez, mesmo com mais de uma linha 'ok'
+  conf.forEach(c=>{
+    const chave = c.carga+'|'+c.pedido;
+    if(vistos.has(chave)) return;
+    vistos.add(chave);
+    if(porCarga[c.carga]) porCarga[c.carga].conferidos++;
+  });
+  return porCarga;
+}
+window._expPctConferido = {};
+async function _carregarPctConferidoExpedicao(demandas){
+  const cargas = (demandas||[]).filter(d=>d.status==='separacao'||d.status==='carregamento').map(d=>d.carga);
+  window._expPctConferido = await _calcPctConferidoPorCarga(cargas);
+}
 async function carregarDemandas(){
   const container = document.getElementById('exp-cards-container');
   if(!container) return;
@@ -17010,8 +17045,8 @@ async function carregarDemandas(){
     }
     // Carregar comercial_rotas do Supabase para badge na expedição
     supaFetch('comercial_rotas?status=neq.resolvido&select=rota,data,motivo,status').then(cr=>{ window._comRotasCache = cr||[]; }).catch(()=>{});
-    // Carregar retornos de veículos agendados e % de mercadoria já entregue por carga
-    await Promise.all([ carregarRetornosVeiculos(), _carregarPctEntregaExpedicao(_demandasCache) ]);
+    // Carregar retornos de veículos agendados, % de mercadoria já entregue e % já conferido por carga
+    await Promise.all([ carregarRetornosVeiculos(), _carregarPctEntregaExpedicao(_demandasCache), _carregarPctConferidoExpedicao(_demandasCache) ]);
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderPipelineBar();
@@ -20328,16 +20363,41 @@ function renderDemandasCards(){
       </div>
 
       ${(()=>{
-        const info = temCarga ? (window._expPctEntrega||{})[d.carga] : null;
-        if(!info || !info.total) return '';
-        const pctEnt = Math.round((info.entregues/info.total)*100);
-        const corEnt = pctEnt>=100 ? '#22c55e' : '#3b82f6';
-        return `<div style="padding:0 12px 10px;display:flex;align-items:center;gap:8px">
-          <div style="flex:1;height:6px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
-            <div style="height:100%;width:${pctEnt}%;background:${corEnt}"></div>
-          </div>
-          <span style="font-size:.72rem;font-weight:700;color:${corEnt};white-space:nowrap"><span data-feather="check-circle" style="width:11px;height:11px"></span>${pctEnt}% entregue (${info.entregues}/${info.total})</span>
-        </div>`;
+        // "% entregue" só faz sentido depois que a carga realmente saiu —
+        // antes disso é sempre 0%, sem informar nada (achado pelo usuário
+        // em 2026-09-28). Enquanto ainda não saiu, mostra o progresso da
+        // etapa atual: conferência (separação/carregamento) quando aplicável.
+        const JA_SAIU = d.status==='saiu' || d.status==='fim_viagem' || d.status==='concluido';
+        const EM_CONFERENCIA = d.status==='separacao' || d.status==='carregamento';
+
+        if(temCarga && JA_SAIU){
+          const info = (window._expPctEntrega||{})[d.carga];
+          if(!info || !info.total) return '';
+          const pctEnt = Math.round((info.entregues/info.total)*100);
+          const corEnt = pctEnt>=100 ? '#22c55e' : '#3b82f6';
+          return `<div style="padding:0 12px 10px;display:flex;align-items:center;gap:8px">
+            <div style="flex:1;height:6px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+              <div style="height:100%;width:${pctEnt}%;background:${corEnt}"></div>
+            </div>
+            <span style="font-size:.72rem;font-weight:700;color:${corEnt};white-space:nowrap"><span data-feather="check-circle" style="width:11px;height:11px"></span>${pctEnt}% entregue (${info.entregues}/${info.total})</span>
+          </div>`;
+        }
+
+        if(temCarga && EM_CONFERENCIA){
+          const info = (window._expPctConferido||{})[d.carga];
+          if(!info || !info.total) return '';
+          const pctConf = Math.round((info.conferidos/info.total)*100);
+          const corConf = pctConf>=100 ? '#22c55e' : '#8b5cf6';
+          const etapaLabel = d.status==='separacao' ? 'separação' : 'carregamento';
+          return `<div style="padding:0 12px 10px;display:flex;align-items:center;gap:8px">
+            <div style="flex:1;height:6px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+              <div style="height:100%;width:${pctConf}%;background:${corConf}"></div>
+            </div>
+            <span style="font-size:.72rem;font-weight:700;color:${corConf};white-space:nowrap"><span data-feather="clipboard-check" style="width:11px;height:11px"></span>${pctConf}% conferido — ${etapaLabel} (${info.conferidos}/${info.total})</span>
+          </div>`;
+        }
+
+        return '';
       })()}
 
       <div class="exp-card-details">
