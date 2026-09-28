@@ -44,8 +44,10 @@ aponte**. É exatamente o tipo de coisa que a gente prefere descobrir agora.
   02/09 (`0a1a743`, #362): o botão "Vincular Separação a Mim" na aba Separação do conferente
   grava `inicio_separacao` e `separador_nome`. `marcarInicioSeparacao` é a versão antiga de
   admin, cujo input `sep-nome-` não existe mais; ligar seria duplicar. O achado que fica:
-  **0 das 292 atribuições têm `inicio_separacao`, 0 das 51 criadas depois do botão existir**,
-  e as 51 seguem com `status = pendente`. O mecanismo existe e ninguém usa. E todas as 51
+  em 21/09, **0 das 292 atribuições** tinham `inicio_separacao`. **Conferido de novo em 28/09:
+  2 de 324** — a primeira em 21/09 19h38 e outra em 23/09 11h42, as duas com o separador
+  preenchido. Ou seja, o botão começou a ser usado, mas em 0,6% das atribuições, e as duas
+  cargas seguem com `status = pendente`. O mecanismo existe e quase ninguém alimenta. E todas as 51
   são de rota EXTERNA: `atribuicoes_armazem` é o fluxo do romaneio; a interna (separada por
   pedido, sem romaneio) não passa por aqui de qualquer jeito.
 - Continuam abertas: **1, 3, 4 e 7**.
