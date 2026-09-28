@@ -15118,6 +15118,11 @@ async function carregarPortalAjudante(){
   if(!AJUDANTE) return;
   const myId     = AJUDANTE.id;
   const myNomeUP = (AJUDANTE.nome||'').toUpperCase().trim();
+  // Sem isso, um cadastro com nome vazio/nulo "casaria" com qualquer carga
+  // que também tiver lancamentos.ajudante/base_data.ajudante em branco (a
+  // comparação '' !== '' é falsa) e passaria a mostrar aquele trabalho como
+  // dele. Achado em revisão adversarial de código, 2026-09-28.
+  if(!myNomeUP) return;
   const mesStr   = new Date().toISOString().slice(0,7);
 
   // Sem isso, o cálculo do bônus roda com o CONFIG que já estiver em memória
@@ -15145,9 +15150,33 @@ async function carregarPortalAjudante(){
     // duas telas podiam divergir em dezenas de reais pra mesma pessoa no
     // mesmo mês. Achado em auditoria, 2026-09-28: essa reescrita garante que
     // o valor daqui é sempre EXATAMENTE o que vai constar no fechamento.
-    const [lancMes, demsStatus, bdMes] = await Promise.all([
+    const [lancMes, demsStatus] = await Promise.all([
       supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,motorista,ajudante,rota&limit=2000`).catch(()=>[]),
-      supaFetch('demandas_rota?select=carga,status').catch(()=>[]),
+      supaFetch('demandas_rota?select=carga,status').catch(()=>[])
+    ]);
+
+    // base_data NÃO pode ser filtrado por mes_ano aqui: gerarPagamentos() (a
+    // fonte que estamos espelhando) usa o BASE_DATA inteiro sem filtro de mês
+    // — quem decide o mês de uma carga é o `ts` do lançamento, não a tag
+    // mes_ano de cada linha de pedido. Uma carga lançada/entregue em setembro
+    // pode ter pedidos com mes_ano='2026-08' na planilha (import atrasado);
+    // filtrar por mes_ano=eq. igual à query original fazia o Portal "perder"
+    // esses pedidos e subestimar o valor — achado em validação cruzada por 2
+    // agentes independentes, 2026-09-28 (R$117,50 subcontados em 7 ajudantes
+    // no mesmo mês). Busca por número de carga (igual _calcularBaseFiltrada
+    // já faz) resolve: pega TODOS os pedidos da carga, seja qual for o
+    // mes_ano de cada linha. O segundo fetch (por mes_ano) continua existindo
+    // só pra achar cargas SEM lançamento nenhum (2º passo abaixo, mesma regra
+    // de gerarPagamentos pra esse caso específico).
+    const cargasRelevantes = [...new Set([
+      ...(lancMes||[]).map(l=>Math.round(Number(l.carga))),
+      ...ajCargas.map(c=>Number(c.carga))
+    ].filter(Boolean))];
+
+    const [bdCargas, bdMes] = await Promise.all([
+      cargasRelevantes.length
+        ? supaFetch(`base_data?carga=in.(${cargasRelevantes.join(',')})&select=carga,pedido,ocorrencia,rota,condutor,ajudante&limit=20000`).catch(()=>[])
+        : Promise.resolve([]),
       supaFetch(`base_data?mes_ano=eq.${mesStr}&select=carga,pedido,ocorrencia,rota,condutor,ajudante&limit=20000`).catch(()=>[])
     ]);
 
@@ -15160,7 +15189,7 @@ async function carregarPortalAjudante(){
     const cargaAindaEmAndamento = c => _cargasComDemanda.has(c) && !_cargasFinalizadas.has(c);
 
     const cargaBd = {};
-    (bdMes||[]).forEach(r=>{
+    [...(bdCargas||[]), ...(bdMes||[])].forEach(r=>{
       if(!r.pedido||!r.carga) return;
       const c = Math.round(Number(r.carga));
       if(!cargaBd[c]) cargaBd[c] = {pedidosSemOcorr:new Set(), rota:'', condutor:'', ajudante:''};
@@ -15169,6 +15198,11 @@ async function carregarPortalAjudante(){
       if(!cargaBd[c].condutor  && r.condutor)  cargaBd[c].condutor  = r.condutor;
       if(!cargaBd[c].ajudante  && r.ajudante)  cargaBd[c].ajudante  = r.ajudante;
     });
+
+    // Sem "|| 0.50": getValorRota já cobre rota não cadastrada com fallback próprio
+    // e sempre retorna número (nunca undefined) — o "||" antigo tratava um bônus
+    // intencionalmente zerado (ex: RETIRA) como "sem valor" e pagava 0,50 à toa.
+    function getBonusAj(rota){ return getValorRota(rota).ajud; }
 
     const cargasComLanc = new Set();
     const lancPorCarga  = {};
@@ -15184,6 +15218,10 @@ async function carregarPortalAjudante(){
       if(qtd===0) return;
       const rota = (l.rota||bd?.rota||'').trim();
       if(!rota) return;
+      // Igual ao "if(ajudante && bonus.ajud>0)" de gerarPagamentos() — rota
+      // com bônus de ajudante zerado de propósito (ex: RETIRA) não deve virar
+      // "carga paga R$0,00" no Portal; simplesmente não conta pra ele.
+      if(getBonusAj(rota) <= 0) return;
       oficiais.set(c, {rota, motorista:l.motorista||'', qtd});
     });
     Object.entries(cargaBd).forEach(([cStr,bd])=>{
@@ -15195,13 +15233,9 @@ async function carregarPortalAjudante(){
       if(qtd===0) return;
       const rota = (bd.rota||'').trim();
       if(!rota) return;
+      if(getBonusAj(rota) <= 0) return;
       oficiais.set(c, {rota, motorista:bd.condutor||'', qtd});
     });
-
-    // Sem "|| 0.50": getValorRota já cobre rota não cadastrada com fallback próprio
-    // e sempre retorna número (nunca undefined) — o "||" antigo tratava um bônus
-    // intencionalmente zerado (ex: RETIRA) como "sem valor" e pagava 0,50 à toa.
-    function getBonusAj(rota){ return getValorRota(rota).ajud; }
 
     let totalPed=0, totalValor=0;
     oficiais.forEach(o=>{ totalPed += o.qtd; totalValor += o.qtd * getBonusAj(o.rota); });
