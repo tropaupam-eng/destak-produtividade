@@ -20,6 +20,16 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-09-29 — painel MFV: botão "Ver dia simulado (teste)"
+
+Só na aba Fluxo do Pedido (MFV). O botão carrega nas caixas de dados um dia GERADO por script
+(14 pedidos, calibrado pelos agregados de julho/2026) para testar o modelo do mapa. Fica em
+memória: **não grava nada no banco** (`salvarMFVCampos` recusa enquanto a simulação está ligada)
+e um aviso vermelho diz que não é medição. Desligado, o painel é o mesmo de antes. Nenhuma
+outra tela foi tocada.
+
+---
+
 ## 2026-08-31 e 2026-09-01 — painel MFV (Mapeamento do Fluxo de Valor)
 
 `7fc604f` `8441e0f` `70acf5d` `771580d` `b7c4072` `a54ce82` `a375515` `da21836` `8182303` `a7b85fe`

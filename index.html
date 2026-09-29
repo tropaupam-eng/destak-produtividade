@@ -2752,6 +2752,14 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </div>
   </div>
 
+  <div id="mfv-sim-aviso" style="display:none;background:rgba(233,45,59,.10);border:1px solid var(--red);border-left:4px solid var(--red);border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:.78rem;color:var(--text-primary);line-height:1.55">
+    <b style="color:var(--red)">DIA SIMULADO: ISTO NÃO É MEDIÇÃO.</b>
+    14 pedidos gerados por script (Petrolina + Juazeiro, 2 separadores, 3 viagens), calibrados pelos agregados reais de julho/2026.
+    Escopo: armazém, do início da separação à saída do veículo. Lead time, tempo que agrega valor e razão de valor abaixo são do simulado;
+    o card de prazo e a fila continuam vindo do banco.
+    No simulado: pedido pronto espera o caminhão 14,24 h em média (70% fora da jornada); dentro do prazo de 36 h, 42,9% contando como o sistema conta hoje (sem hora do pedido)
+    e 78,6% com a hora medida. Nada daqui é gravado.
+  </div>
   <div id="mfv-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:20px"></div>
 
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px">
@@ -2770,6 +2778,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <input type="checkbox" id="mfv-transporte-va" onchange="renderMFV()" style="cursor:pointer">
           Transporte agrega valor
         </label>
+        <button class="btn btn-sm" id="mfv-sim-btn" onclick="mfvAlternarSimulado()" title="Carrega nas caixas um dia GERADO por script para testar o modelo. Não é medição e não é gravado." style="font-size:.72rem">Ver dia simulado (teste)</button>
         <button class="btn btn-sm" onclick="salvarMFVCampos()" style="font-size:.72rem">Salvar tempos</button>
       </div>
     </div>
@@ -29375,6 +29384,31 @@ function _mfvFora(e){ return !!((_mfvCampos[e.key]||{}).fora); }
 function _mfvTemCampo(){
   return (_mfvDados?.etapas||[]).some(e=>{ const c=_mfvCampos[e.key]||{}; return !c.fora && c.esp!=null; });
 }
+// DIA SIMULADO (teste do modelo, NÃO é medição). Agregados de 14 pedidos GERADOS por
+// script (semente 20260926, dia 23/09), calibrados pelos agregados reais de julho/2026.
+// Escopo do estudo: armazém, do início da separação (E1) à saída do veículo (E6).
+// A espera é o RESÍDUO (lead médio 933,4 min − trabalho do pedido típico 34,8 min):
+// 14,24 h do pedido pronto esperando o caminhão + o que a separação real passou do típico.
+// Só entra na tela pelo botão e nunca é gravado: salvarMFVCampos recusa enquanto ativo.
+const _MFV_SIM_FORA = { fora:true };
+const MFV_SIMULADO = {
+  ri_entrada:_MFV_SIM_FORA, ri_financeiro:_MFV_SIM_FORA, ri_faturamento:_MFV_SIM_FORA,
+  ri_carga0:_MFV_SIM_FORA, ri_lista:_MFV_SIM_FORA, ri_reorg:_MFV_SIM_FORA,
+  ri_confsaida:_MFV_SIM_FORA, ri_rota:_MFV_SIM_FORA, ri_entrega:_MFV_SIM_FORA,
+  ri_separacao:{ tc:29.4, esp:0,     n:14, op:2, lote:1 },
+  ri_carreg:   { tc:5.4,  esp:898.6, n:14, lote:4.7 },
+};
+let _mfvCamposReais = null;    // não-nulo = dia simulado na tela (guarda os campos de verdade)
+async function mfvAlternarSimulado(){
+  if(_mfvCamposReais){ _mfvCampos = _mfvCamposReais; _mfvCamposReais = null; }
+  else {
+    const sel = document.getElementById('mfv-rire');
+    if(sel && sel.value !== 'RI'){ sel.value = 'RI'; await carregarMFV(); }
+    if(!_mfvDados) return;
+    _mfvCamposReais = _mfvCampos; _mfvCampos = MFV_SIMULADO;
+  }
+  renderMFV();
+}
 let _mfvDados = null;          // resultado medido
 let _mfvCampos = {};           // {etapa: {tc, setup, op, disp, erro, meta}}
 let _mfvFila = null;           // estoque entre etapas (retrato do agora)
@@ -29855,6 +29889,7 @@ async function _mfvCarregarCampos(){
 }
 
 async function salvarMFVCampos(){
+  if(_mfvCamposReais){ showToast('Dia simulado na tela: nada é gravado. Desligue a simulação para salvar.','warning'); return; }
   // Lê os inputs da tela para o objeto antes de gravar
   MFV_ETAPAS.forEach(e=>{
     MFV_CAMPOS.forEach(c=>{
@@ -29947,14 +29982,19 @@ function renderMFV(){
   const cmp = modo==='comparar'
     ? `<span style="color:var(--green)">→ ${_mfvFmtH(futuro.lead)}</span>` : '';
   const D = _mfvDados;
+  const sim = !!_mfvCamposReais;
+  const avisoSim = document.getElementById('mfv-sim-aviso');
+  if(avisoSim) avisoSim.style.display = sim ? 'block' : 'none';
+  const btnSim = document.getElementById('mfv-sim-btn');
+  if(btnSim) btnSim.textContent = sim ? 'Desligar dia simulado' : 'Ver dia simulado (teste)';
   const kpiBase = D.interna
     ? kpi('Dentro do prazo cadastrado', D.pctNoPrazo.toFixed(1)+'%', D.pctNoPrazo>=90?'var(--green)':'var(--orange)',
         `${D.pctMesmoDia.toFixed(0)}% no mesmo dia · ${D.pctAtrasado.toFixed(1)}% estoura` +
         (D.semPrazo ? ` · ${D.semPrazo} sem prazo, fora da conta` : ''))
     : kpi('Base medida', D.cargas+' cargas', 'var(--purple)', D.totalTransicoes+' transições de status');
   document.getElementById('mfv-kpis').innerHTML =
-    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?(_mfvTemCampo()?`soma medida em campo, etapa a etapa · banco (dias inteiros): ${_mfvFmtH(D.leadMedianaH)}`:`prazo por rota (cadastro) · mediana medida ${_mfvFmtH(D.leadMedianaH)}`):`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
-    kpi('Tempo que agrega valor', _mfvFmtH(alvo.processo), 'var(--green)', modo==='comparar'?`atual ${_mfvFmtH(atual.processo)} → futuro ${_mfvFmtH(futuro.processo)}`:'soma dos tempos de ciclo (campo)') +
+    kpi('Lead time total', _mfvFmtH(alvo.lead), 'var(--blue)', cmp || (D.interna?(_mfvTemCampo()?`${sim?'soma SIMULADA':'soma medida em campo'}, etapa a etapa · banco (dias inteiros): ${_mfvFmtH(D.leadMedianaH)}`:`prazo por rota (cadastro) · mediana medida ${_mfvFmtH(D.leadMedianaH)}`):`mediana medida: ${_mfvFmtH(D.leadMedianaH)}`)) +
+    kpi('Tempo que agrega valor', _mfvFmtH(alvo.processo), 'var(--green)', modo==='comparar'?`atual ${_mfvFmtH(atual.processo)} → futuro ${_mfvFmtH(futuro.processo)}`:`soma dos tempos de ciclo (${sim?'SIMULADO':'campo'})`) +
     kpi('Razão de valor', (alvo.razao*100).toFixed(2)+'%', 'var(--red)', modo==='comparar'?`de ${(atual.razao*100).toFixed(2)}% para ${(futuro.razao*100).toFixed(2)}%`:'quanto do lead time é trabalho') +
     kpiBase;
 
@@ -29988,11 +30028,11 @@ function renderMFV(){
         ${e.pop?`<div style="font-size:.62rem;color:var(--text-muted);line-height:1.35;margin-bottom:5px">${escapeHtml(e.pop)}</div>`:''}
         <div style="font-size:.66rem;color:${cor};font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">${ehVA?'agrega valor':'não agrega'}</div>
         <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--text-primary);font-weight:700;padding-bottom:6px;border-bottom:1px dashed var(--border)">
-          <span>${espCampo?'Espera (campo)':e.semMedicao?'Espera':'Espera medida'}</span>
+          <span>${espCampo?(_mfvCamposReais?'Espera (SIMULADA)':'Espera (campo)'):e.semMedicao?'Espera':'Espera medida'}</span>
           <span${(!espCampo&&e.semMedicao)?' style="color:var(--text-muted);font-weight:600"':''}>${espCampo?_mfvFmtH(Number(c.esp)/60):e.semMedicao?'sem medição':_mfvFmtH(e.esperaH)}</span>
         </div>
         <div style="font-size:.63rem;color:var(--text-muted);margin-top:3px">${
-          espCampo || c.tc != null ? 'campo · n = '+(c.n!=null?c.n:'?')+' pedidos' :
+          espCampo || c.tc != null ? (_mfvCamposReais?'SIMULADO':'campo')+' · n = '+(c.n!=null?c.n:'?')+' pedidos' :
           e.semMedicao ? 'etapa não instrumentada — medir em campo'
                        : e.amostras+' amostra(s)'+(e.transporte?' · ponta a ponta':'')}</div>
         ${inputs}
