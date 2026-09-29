@@ -8800,7 +8800,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.84.0';
+const APP_VERSION = '4.85.0';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -15116,8 +15116,14 @@ async function iniciarPortalAjudante(){
 
 async function carregarPortalAjudante(){
   if(!AJUDANTE) return;
-  const myId   = AJUDANTE.id;
-  const mesStr = new Date().toISOString().slice(0,7);
+  const myId     = AJUDANTE.id;
+  const myNomeUP = (AJUDANTE.nome||'').toUpperCase().trim();
+  // Sem isso, um cadastro com nome vazio/nulo "casaria" com qualquer carga
+  // que também tiver lancamentos.ajudante/base_data.ajudante em branco (a
+  // comparação '' !== '' é falsa) e passaria a mostrar aquele trabalho como
+  // dele. Achado em revisão adversarial de código, 2026-09-28.
+  if(!myNomeUP) return;
+  const mesStr   = new Date().toISOString().slice(0,7);
 
   // Sem isso, o cálculo do bônus roda com o CONFIG que já estiver em memória
   // (localStorage antigo, ou o CONFIG_DEFAULT hardcoded que só cobre 5 rotas) —
@@ -15126,93 +15132,185 @@ async function carregarPortalAjudante(){
   await syncConfig().catch(()=>{});
 
   try{
-    const ajCargas = await supaFetch(`ajudante_cargas?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&ativo=eq.true&select=*&order=ts.desc`);
+    const ajCargas = await supaFetch(`ajudante_cargas?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&ativo=eq.true&select=*&order=ts.desc`) || [];
 
     // Corrige pedidos que ficaram "presos" numa cópia antiga (tirada antes da
-    // planilha trazer todos os pedidos da carga) antes de contar o que mostrar
-    await ressincronizarAjudantePedidos((ajCargas||[]).map(c=>c.carga)).catch(()=>{});
+    // planilha trazer todos os pedidos da carga) — mantido por efeito colateral
+    // (outras telas leem ajudante_pedidos), mesmo não sendo mais usado aqui
+    // pro cálculo de KPI/tabela abaixo.
+    ressincronizarAjudantePedidos(ajCargas.map(c=>c.carga)).catch(()=>{});
 
-    const ajPedidos = await supaFetch(`ajudante_pedidos?ajudante_id=eq.${myId}&mes_ano=eq.${mesStr}&select=carga,pedido`);
+    // ── Fonte oficial — MESMA lógica/prioridade de gerarPagamentos() (aba
+    // Produtividade), só que restrita a este ajudante: lancamentos.ajudante
+    // manda; sem lançamento, cai pro base_data.ajudante; qtd = pedidos SEM
+    // ocorrência; carga "ainda em andamento" na Expedição não conta ainda.
+    // Antes o Portal calculava por conta própria (autoatendimento em
+    // ajudante_cargas/ajudante_pedidos, sem excluir ocorrência, sem checar
+    // se o lançamento oficial credita OUTRO ajudante pra mesma carga) — as
+    // duas telas podiam divergir em dezenas de reais pra mesma pessoa no
+    // mesmo mês. Achado em auditoria, 2026-09-28: essa reescrita garante que
+    // o valor daqui é sempre EXATAMENTE o que vai constar no fechamento.
+    const [lancMes, demsStatus] = await Promise.all([
+      supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,motorista,ajudante,rota&limit=2000`).catch(()=>[]),
+      supaFetch('demandas_rota?select=carga,status').catch(()=>[])
+    ]);
 
-    const pedCount = {};
-    (ajPedidos||[]).forEach(p=>{ const c=String(p.carga); pedCount[c]=(pedCount[c]||0)+1; });
+    // base_data NÃO pode ser filtrado por mes_ano aqui: gerarPagamentos() (a
+    // fonte que estamos espelhando) usa o BASE_DATA inteiro sem filtro de mês
+    // — quem decide o mês de uma carga é o `ts` do lançamento, não a tag
+    // mes_ano de cada linha de pedido. Uma carga lançada/entregue em setembro
+    // pode ter pedidos com mes_ano='2026-08' na planilha (import atrasado);
+    // filtrar por mes_ano=eq. igual à query original fazia o Portal "perder"
+    // esses pedidos e subestimar o valor — achado em validação cruzada por 2
+    // agentes independentes, 2026-09-28 (R$117,50 subcontados em 7 ajudantes
+    // no mesmo mês). Busca por número de carga (igual _calcularBaseFiltrada
+    // já faz) resolve: pega TODOS os pedidos da carga, seja qual for o
+    // mes_ano de cada linha. O segundo fetch (por mes_ano) continua existindo
+    // só pra achar cargas SEM lançamento nenhum (2º passo abaixo, mesma regra
+    // de gerarPagamentos pra esse caso específico).
+    const cargasRelevantes = [...new Set([
+      ...(lancMes||[]).map(l=>Math.round(Number(l.carga))),
+      ...ajCargas.map(c=>Number(c.carga))
+    ].filter(Boolean))];
 
-    // Quantidade/valor só são liberados quando a carga tiver lançamento oficial
-    // (lancamentos) ou já estiver na expedição (demandas_rota). Até lá, fica pendente.
-    const cargasNums = [...new Set((ajCargas||[]).map(c=>Number(c.carga)))];
-    const liberadas  = new Set();
-    // Rota ATUAL por carga (fonte: lançamento) — ajudante_cargas.rota é só a foto
-    // tirada no momento em que o ajudante vinculou a carga; se a rota for corrigida
-    // depois (planilha reprocessada, erro de digitação ajustado), o vínculo antigo
-    // ficava com a rota velha e o bônus previsto saía calculado na faixa errada.
-    const rotaAtualPorCarga = {};
-    if(cargasNums.length){
-      const listaIn = cargasNums.join(',');
-      const [lancsLib, demsLib] = await Promise.all([
-        supaFetch(`lancamentos?carga=in.(${listaIn})&select=carga,rota`).catch(()=>[]),
-        supaFetch(`demandas_rota?carga=in.(${listaIn})&select=carga`).catch(()=>[])
-      ]);
-      (lancsLib||[]).forEach(l=>{
-        liberadas.add(Number(l.carga));
-        if(l.rota) rotaAtualPorCarga[Number(l.carga)] = l.rota;
-      });
-      (demsLib||[]).forEach(d=>liberadas.add(Number(d.carga)));
-    }
+    const [bdCargas, bdMes] = await Promise.all([
+      cargasRelevantes.length
+        ? supaFetch(`base_data?carga=in.(${cargasRelevantes.join(',')})&select=carga,pedido,ocorrencia,rota,condutor,ajudante&limit=20000`).catch(()=>[])
+        : Promise.resolve([]),
+      supaFetch(`base_data?mes_ano=eq.${mesStr}&select=carga,pedido,ocorrencia,rota,condutor,ajudante&limit=20000`).catch(()=>[])
+    ]);
 
-    function rotaEfetiva(c){ return rotaAtualPorCarga[Number(c.carga)] || c.rota; }
+    const _cargasComDemanda = new Set(), _cargasFinalizadas = new Set();
+    (demsStatus||[]).forEach(d=>{
+      const c = Math.round(Number(d.carga)); if(!c) return;
+      _cargasComDemanda.add(c);
+      if(d.status==='concluido'||d.status==='fim_viagem') _cargasFinalizadas.add(c);
+    });
+    const cargaAindaEmAndamento = c => _cargasComDemanda.has(c) && !_cargasFinalizadas.has(c);
+
+    const cargaBd = {};
+    [...(bdCargas||[]), ...(bdMes||[])].forEach(r=>{
+      if(!r.pedido||!r.carga) return;
+      const c = Math.round(Number(r.carga));
+      if(!cargaBd[c]) cargaBd[c] = {pedidosSemOcorr:new Set(), rota:'', condutor:'', ajudante:''};
+      if(Number(r.ocorrencia||0)!==1) cargaBd[c].pedidosSemOcorr.add(String(r.pedido));
+      if(!cargaBd[c].rota      && r.rota)      cargaBd[c].rota      = r.rota;
+      if(!cargaBd[c].condutor  && r.condutor)  cargaBd[c].condutor  = r.condutor;
+      if(!cargaBd[c].ajudante  && r.ajudante)  cargaBd[c].ajudante  = r.ajudante;
+    });
+
     // Sem "|| 0.50": getValorRota já cobre rota não cadastrada com fallback próprio
     // e sempre retorna número (nunca undefined) — o "||" antigo tratava um bônus
     // intencionalmente zerado (ex: RETIRA) como "sem valor" e pagava 0,50 à toa.
     function getBonusAj(rota){ return getValorRota(rota).ajud; }
 
-    let totalPed=0, totalCargas=0, totalValor=0;
-    (ajCargas||[]).forEach(c=>{
-      totalCargas++;
-      if(!liberadas.has(Number(c.carga))) return;
-      const cnt = pedCount[String(c.carga)]||0;
-      totalPed   += cnt;
-      totalValor += cnt * getBonusAj(rotaEfetiva(c));
+    const cargasComLanc = new Set();
+    const lancPorCarga  = {};
+    const oficiais      = new Map(); // carga -> {rota, motorista, qtd} — cargas onde ESTE ajudante é o oficial
+    (lancMes||[]).forEach(l=>{
+      const c = Math.round(Number(l.carga)); if(!c) return;
+      cargasComLanc.add(c);
+      lancPorCarga[c] = l;
+      if((l.ajudante||'').toUpperCase().trim() !== myNomeUP) return;
+      if(cargaAindaEmAndamento(c)) return;
+      const bd  = cargaBd[c];
+      const qtd = bd ? bd.pedidosSemOcorr.size : 0;
+      if(qtd===0) return;
+      const rota = (l.rota||bd?.rota||'').trim();
+      if(!rota) return;
+      // Igual ao "if(ajudante && bonus.ajud>0)" de gerarPagamentos() — rota
+      // com bônus de ajudante zerado de propósito (ex: RETIRA) não deve virar
+      // "carga paga R$0,00" no Portal; simplesmente não conta pra ele.
+      if(getBonusAj(rota) <= 0) return;
+      oficiais.set(c, {rota, motorista:l.motorista||'', qtd});
     });
+    Object.entries(cargaBd).forEach(([cStr,bd])=>{
+      const c = Number(cStr);
+      if(cargasComLanc.has(c)) return; // já resolvido acima (lançamento manda)
+      if((bd.ajudante||'').toUpperCase().trim() !== myNomeUP) return;
+      if(cargaAindaEmAndamento(c)) return;
+      const qtd = bd.pedidosSemOcorr.size;
+      if(qtd===0) return;
+      const rota = (bd.rota||'').trim();
+      if(!rota) return;
+      if(getBonusAj(rota) <= 0) return;
+      oficiais.set(c, {rota, motorista:bd.condutor||'', qtd});
+    });
+
+    let totalPed=0, totalValor=0;
+    oficiais.forEach(o=>{ totalPed += o.qtd; totalValor += o.qtd * getBonusAj(o.rota); });
+
+    // Linhas da tabela: união de "cargas que eu declarei" (autoatendimento,
+    // ajudante_cargas) com "cargas onde sou o oficial mas nunca declarei" —
+    // sem essa união, dinheiro que o ajudante já tem a receber (porque o
+    // motorista/planilha já cita o nome dele) ficava invisível no Portal só
+    // por ele nunca ter clicado em "vincular".
+    const linhasMap = new Map();
+    ajCargas.forEach(c=>{
+      const cn = Number(c.carga);
+      linhasMap.set(cn, {carga:cn, motorista:c.motorista, rotaDeclarada:c.rota, ts:c.ts, id:c.id});
+    });
+    oficiais.forEach((o,cn)=>{
+      if(!linhasMap.has(cn)) linhasMap.set(cn, {carga:cn, motorista:o.motorista, rotaDeclarada:o.rota, ts:null, id:null});
+    });
+    const linhas = [...linhasMap.values()].sort((a,b)=>(b.ts||'').localeCompare(a.ts||''));
 
     const setEl = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
     setEl('aj-kpi-pedidos', totalPed);
-    setEl('aj-kpi-cargas',  totalCargas);
+    setEl('aj-kpi-cargas',  linhas.length);
     setEl('aj-kpi-valor',   'R$ '+totalValor.toFixed(2).replace('.',','));
 
     const tbody = document.getElementById('aj-tbody-historico');
     if(!tbody) return;
 
-    if(!ajCargas||!ajCargas.length){
+    if(!linhas.length){
       tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:28px;color:#475569">Nenhuma carga vinculada neste mês</td></tr>';
       return;
     }
 
-    tbody.innerHTML = ajCargas.map(c=>{
-      const lib        = liberadas.has(Number(c.carga));
-      const numInvalido = Number(c.carga) > 30000;
-      const cnt  = pedCount[String(c.carga)]||0;
-      const taxa = getBonusAj(rotaEfetiva(c));
-      const val  = cnt * taxa;
-      const dt   = new Date(c.ts).toLocaleDateString('pt-BR');
-      const colQtd = lib
-        ? `<td style="padding:10px 14px;text-align:center;font-weight:800;color:#e2e8f0">${cnt}</td>`
-        : numInvalido
-          ? `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#ef4444;font-size:.72rem" title="Este número parece ser de pedido, não de carga">❌ Nº inválido</td>`
-          : `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
-      const colVal = lib
-        ? `<td style="padding:10px 14px">
+    tbody.innerHTML = linhas.map(c=>{
+      const cn = c.carga;
+      const oficial      = oficiais.get(cn);
+      const numInvalido  = cn > 30000;
+      const lancDaCarga  = lancPorCarga[cn];
+      const ajOficialCarga = lancDaCarga ? (lancDaCarga.ajudante||'').trim() : (cargaBd[cn]?.ajudante||'').trim();
+      const outroDono    = !oficial && ajOficialCarga && ajOficialCarga.toUpperCase()!==myNomeUP;
+
+      let colQtd, colVal;
+      if(oficial){
+        const taxa = getBonusAj(oficial.rota);
+        const val  = oficial.qtd * taxa;
+        colQtd = `<td style="padding:10px 14px;text-align:center;font-weight:800;color:#e2e8f0">${oficial.qtd}</td>`;
+        colVal = `<td style="padding:10px 14px">
           <div style="color:#34d399;font-weight:700">R$ ${val.toFixed(2).replace('.',',')}</div>
-          <div style="font-size:.68rem;color:#475569">${cnt} × R$${taxa.toFixed(2)}</div>
-        </td>`
-        : `<td style="padding:10px 14px;color:#64748b;font-size:.78rem">—</td>`;
+          <div style="font-size:.68rem;color:#475569">${oficial.qtd} × R$${taxa.toFixed(2)}</div>
+        </td>`;
+      } else if(outroDono){
+        colQtd = `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#f87171;font-size:.72rem" title="Lançamento oficial credita ${escapeHtml(ajOficialCarga)}">❌ Outro ajudante</td>`;
+        colVal = `<td style="padding:10px 14px;color:#64748b;font-size:.78rem">—</td>`;
+      } else if(numInvalido){
+        colQtd = `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#ef4444;font-size:.72rem" title="Este número parece ser de pedido, não de carga">❌ Nº inválido</td>`;
+        colVal = `<td style="padding:10px 14px;color:#64748b;font-size:.78rem">—</td>`;
+      } else {
+        colQtd = `<td style="padding:10px 14px;text-align:center;font-weight:700;color:#fbbf24;font-size:.72rem">⏳ Aguardando</td>`;
+        colVal = `<td style="padding:10px 14px;color:#64748b;font-size:.78rem">—</td>`;
+      }
+
+      const rotaMostrar = (oficial&&oficial.rota) || c.rotaDeclarada || (lancDaCarga&&lancDaCarga.rota) || '—';
+      const motMostrar  = (oficial&&oficial.motorista) || c.motorista || (lancDaCarga&&lancDaCarga.motorista) || '—';
+      const dt = c.ts ? new Date(c.ts).toLocaleDateString('pt-BR') : '—';
+      const btnRemover = c.id
+        ? `<button onclick="desvinculArCargaAjudante('${c.id}',${cn})" title="Remover vínculo" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:3px 8px;font-size:.72rem;cursor:pointer">✕</button>`
+        : '';
+
       return `<tr style="border-bottom:1px solid rgba(255,255,255,.05)" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
-        <td style="padding:10px 14px;font-weight:800;color:#f8fafc">#${c.carga}</td>
-        <td style="padding:10px 14px;font-size:.8rem;color:#94a3b8">${c.motorista||'—'}</td>
-        <td style="padding:10px 14px"><span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${rotaEfetiva(c)||'—'}</span></td>
+        <td style="padding:10px 14px;font-weight:800;color:#f8fafc">#${cn}</td>
+        <td style="padding:10px 14px;font-size:.8rem;color:#94a3b8">${motMostrar}</td>
+        <td style="padding:10px 14px"><span style="background:rgba(37,99,235,.2);color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:700">${rotaMostrar}</span></td>
         ${colQtd}
         ${colVal}
         <td style="padding:10px 14px;color:#64748b;font-size:.78rem">${dt}</td>
-        <td style="padding:6px 8px;text-align:center"><button onclick="desvinculArCargaAjudante('${c.id}',${c.carga})" title="Remover vínculo" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:3px 8px;font-size:.72rem;cursor:pointer">✕</button></td>
+        <td style="padding:6px 8px;text-align:center">${btnRemover}</td>
       </tr>`;
     }).join('');
   }catch(e){
@@ -20917,6 +21015,14 @@ async function confirmarSaidaRota(){
               veiculo: dem.veiculo||null,
               fonte: 'motorista_a'
             })
+          }).then(()=>{
+            // Igual ao que pushLancamento() já faz pro fluxo normal de Lançamento —
+            // sem isso, um ajudante que se vinculou pelo Portal ANTES desse esqueleto
+            // existir fica pra sempre sem constar em lancamentos.ajudante (achado em
+            // auditoria, 2026-09-28: cargas 15313/15320, vínculo do Geovanny nunca
+            // propagado porque esse é o único dos 3 pontos de criação de lançamento
+            // que não chamava preencherAjudantesPendentes). Fire-and-forget.
+            preencherAjudantesPendentes(dem.carga, _motNorm, dem.rota||'', _mesAnoLocal(_tsLancA)).catch(()=>{});
           }).catch(e=>console.warn('Falha ao criar lançamento-esqueleto (motorista_a) da carga '+dem.carga+':', e.message));
         }
       }
@@ -41130,15 +41236,21 @@ async function gerarPagamentos(btn){
     // ainda — senão uma carga que só saiu hoje já aparece como entrega feita.
     // Se a MESMA carga tiver outro registro concluído (redespacho depois de
     // cancelamento), ela conta normalmente.
+    // "fim_viagem" também libera: o veículo já voltou fisicamente, a entrega
+    // já aconteceu — só falta o encerramento administrativo (status
+    // "concluido"), que pode demorar dias/nunca rolar. Antes disso, uma
+    // carga em fim_viagem ficava travada pra sempre fora da Produtividade,
+    // mesmo com o trabalho já feito (achado em auditoria, 2026-09-28: cargas
+    // 15534/15573, ~R$32 presos sem necessidade).
     const _cargasComDemanda   = new Set();
-    const _cargasConcluidas   = new Set();
+    const _cargasFinalizadas  = new Set();
     (_demsStatus||[]).forEach(d=>{
       const c = Math.round(Number(d.carga));
       if(!c) return;
       _cargasComDemanda.add(c);
-      if(d.status==='concluido') _cargasConcluidas.add(c);
+      if(d.status==='concluido' || d.status==='fim_viagem') _cargasFinalizadas.add(c);
     });
-    const cargaAindaEmAndamento = c => _cargasComDemanda.has(c) && !_cargasConcluidas.has(c);
+    const cargaAindaEmAndamento = c => _cargasComDemanda.has(c) && !_cargasFinalizadas.has(c);
 
     const pessoaMap = {};
     const vistas = new Set();
