@@ -188,6 +188,15 @@ var API = location.pathname;
 var chaveAdmin = null;
 
 function fmt(n){ return Number(n).toLocaleString('pt-BR'); }
+// Achado em auditoria de seguranca 2026-09-29: loja/codigo/descricao vao
+// direto pro innerHTML sem escape — se algum desses campos (vindo do
+// catalogo/planilha) contiver HTML, executa no navegador de quem abrir
+// este painel admin. Usado em todo lugar que concatena esses campos abaixo.
+function esc(s){
+  return String(s===null||s===undefined?'':s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
 function sinal(cls, txt){
   document.getElementById('ponto').className = 'ponto' + (cls === 'erro' ? ' erro' : '');
   document.getElementById('status').textContent = txt;
@@ -253,7 +262,7 @@ function desenhar(){
       var c = document.createElement('div');
       c.className = 'card';
       var ultima = l.ultima ? new Date(l.ultima).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '–';
-      c.innerHTML = '<h3>' + l.loja + ' <em>' + l.itens + ' itens</em></h3>' +
+      c.innerHTML = '<h3>' + esc(l.loja) + ' <em>' + fmt(l.itens) + ' itens</em></h3>' +
         '<div class="l"><span>Quantidade</span><b>' + fmt(l.quantidade) + '</b></div>' +
         '<div class="l"><span>Último lançamento</span><b>' + ultima + '</b></div>';
       var acoes = document.createElement('div');
@@ -277,7 +286,7 @@ function desenhar(){
   var cab = document.getElementById('cabecalho');
   cab.innerHTML = '<th style="width:70px">Código</th><th style="min-width:230px">Descrição</th>' +
     '<th style="width:44px">Undf</th><th style="width:76px;text-align:right">Contagem</th>' +
-    lojas.map(function(l){ return '<th class="loja">' + l + '</th>'; }).join('') +
+    lojas.map(function(l){ return '<th class="loja">' + esc(l) + '</th>'; }).join('') +
     '<th style="width:80px;text-align:right">Reservado</th><th style="width:76px;text-align:right">Saldo CD</th>';
 
   var busca = document.getElementById('busca').value.trim().toLowerCase();
@@ -297,8 +306,8 @@ function desenhar(){
       var q = qtd(it, l);
       return '<td class="cel">' + (q ? '<b>' + fmt(q) + '</b>' : '<span class="zero">–</span>') + '</td>';
     }).join('');
-    tr.innerHTML = '<td class="cod">' + it.codigo + '</td><td>' + it.descricao + selo + '</td>' +
-      '<td class="undf">' + it.undf + '</td><td class="num">' + fmt(it.contagem) + '</td>' + cels +
+    tr.innerHTML = '<td class="cod">' + esc(it.codigo) + '</td><td>' + esc(it.descricao) + selo + '</td>' +
+      '<td class="undf">' + esc(it.undf) + '</td><td class="num">' + fmt(it.contagem) + '</td>' + cels +
       '<td class="num">' + (it.reservado ? fmt(it.reservado) : '<span class="zero">–</span>') + '</td>' +
       '<td class="num">' + fmt(it.disponivel) + '</td>';
     corpo.appendChild(tr);
