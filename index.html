@@ -30931,6 +30931,18 @@ async function carregarPainelDisponibilidade(){
     const veiculosTodos = [...veiculosCadastro, ...veiculosExtra];
     const veiculos = tipoVeicSel ? veiculosTodos.filter(v=>v.uso===tipoVeicSel) : veiculosTodos;
 
+    // Veículo "vinculado" à unidade filtrada = cadastro (veiculos.unidade)
+    // bate com undSel. Um veículo compartilhado ou que só fez uma demanda
+    // avulsa aqui (cadastro é de outra unidade) PODE aparecer na lista, mas
+    // NÃO pode ser julgado pelos dias úteis da unidade inteira — ele não é
+    // fixo aqui, só "visitou". Pedido do usuário, 2026-09-29, com a carga
+    // RPB4D99 (cadastro "6 - PATOS") aparecendo em Petrolina: "se um
+    // veículo que não pertence à unidade vim fazer uma demanda... não pode
+    // contar os dias que ele não rodou... tem que ficar sempre 100%".
+    // Sem unidade selecionada (undSel==''), não tem "vinculado" nenhum pra
+    // comparar — todo mundo conta normal.
+    const ehVinculadoUnidade = v => !undSel || (v.unidade||'').trim() === undSel;
+
     // Buscar demandas em rota (snapshot ao vivo, pra "Disponível agora" / "Em uso agora")
     const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
     const emRotaSet = new Set(emRota.map(d=>d.veiculo));
@@ -31049,7 +31061,12 @@ async function carregarPainelDisponibilidade(){
     // fora da média (não tem como avaliar aproveitamento de quem não teve
     // nenhum dia disponível).
     const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
-    const pctDiasPorVeiculo = frotaFixa.map(v=>{
+    // Médias/distribuição da frota só consideram quem é DE VERDADE da
+    // unidade — veículo "visitante" (não vinculado) não pode puxar a média
+    // pra baixo por não ter rodado os dias inteiros de uma unidade que não
+    // é a dele.
+    const frotaFixaVinculada = frotaFixa.filter(ehVinculadoUnidade);
+    const pctDiasPorVeiculo = frotaFixaVinculada.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
       const nDias = diasSPorVeic[placa] || 0;
       const diasManut = diasManutPorVeic[placa]?.size || 0;
@@ -31060,7 +31077,7 @@ async function carregarPainelDisponibilidade(){
 
     // Utilização por carga (méd. da frota) — mesma base da tabela: cargas do
     // veículo no mês ÷ dias úteis do mês.
-    const pctCargaPorVeiculo = frotaFixa.map(v=>{
+    const pctCargaPorVeiculo = frotaFixaVinculada.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
       const nCargas = cargasPorVeic[placa]?.size || 0;
       return diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0;
@@ -31138,7 +31155,7 @@ async function carregarPainelDisponibilidade(){
               <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">RESULTADO</div>
               <div style="font-size:2.2rem;font-weight:700;margin-top:4px">${utilizacaoMedia.toFixed(0)}%</div>
               <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">UTILIZAÇÃO NO MÊS · ${dentroDaMetaUtil?'ACIMA DA META':'ABAIXO DA META'}</div>
-              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${pctDiasPorVeiculo.length} de ${frotaFixa.length} veículos de frota fixa entram na média (frete não entra; veículo sem nenhum dia disponível no período — só oficina — também fica de fora).</div>
+              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${pctDiasPorVeiculo.length} de ${frotaFixaVinculada.length} veículos de frota fixa entram na média (frete não entra; veículo sem nenhum dia disponível no período — só oficina — também fica de fora; veículo visitante de outra unidade não entra na média, só aparece na lista).</div>
             </div>
             <div style="margin-top:16px;border-top:1px solid #e5e5e5;padding-top:14px">
               <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">UTILIZAÇÃO POR CARGA</div>
@@ -31164,15 +31181,19 @@ async function carregarPainelDisponibilidade(){
           const placa = (v.placa||'').trim().toUpperCase();
           const nCargas = cargasPorVeic[placa]?.size || 0;
           const nDiasRodados = diasUteisSPorVeic[placa] || 0;
-          const pct = diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0;
-          return { placa: v.placa||'—', pct, nCargas, nDiasRodados };
+          const visitante = !ehVinculadoUnidade(v);
+          // Veículo visitante não é julgado pelos dias úteis da unidade
+          // inteira — fica sempre 100%, só os números reais de cargas/dias
+          // continuam mostrando o que ele de fato fez aqui.
+          const pct = visitante ? 100 : (diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0);
+          return { placa: v.placa||'—', pct, nCargas, nDiasRodados, visitante };
         }).sort((a,b)=>b.pct-a.pct).map((r,i)=>{
           const cor = r.pct>=70?'#059669':r.pct>=40?'#d97706':'#dc2626';
           const fundo = r.pct>=70?'rgba(5,150,105,.07)':r.pct>=40?'rgba(217,119,6,.08)':'rgba(220,38,38,.08)';
           return `
           <div style="position:relative;display:flex;justify-content:space-between;align-items:center;padding:9px 2px;border-bottom:1px solid var(--border);overflow:hidden">
             <div style="position:absolute;left:0;top:0;bottom:0;width:${Math.min(r.pct,100)}%;background:${fundo};z-index:0"></div>
-            <span style="position:relative;font-size:.78rem;font-weight:700;color:var(--text-primary);z-index:1">${String(i+1).padStart(2,'0')} · ${r.placa}</span>
+            <span style="position:relative;font-size:.78rem;font-weight:700;color:var(--text-primary);z-index:1">${String(i+1).padStart(2,'0')} · ${r.placa}${r.visitante?' <span title="Cadastro de outra unidade — não entra na média, fica sempre 100%" style="font-size:.62rem;font-weight:700;color:#8a8a8a;border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin-left:4px">VISITANTE</span>':''}</span>
             <span style="position:relative;font-size:.76rem;font-weight:600;color:var(--text-secondary);z-index:1">${r.nCargas} cargas · ${r.nDiasRodados}/${diasUteisMes} dias</span>
             <span style="position:relative;font-size:.82rem;font-weight:700;color:${cor};z-index:1" title="${r.nCargas} carga(s) ÷ ${diasUteisMes} dias úteis">${r.pct.toFixed(1)}%</span>
           </div>`;
@@ -31206,9 +31227,14 @@ async function carregarPainelDisponibilidade(){
               const nDias   = diasSPorVeic[placa] || 0;
               const diasManut = diasManutPorVeic[placa]?.size || 0;
               const diasDisp  = Math.max(diasDecorridosRef - diasManut, 0);
+              const visitante = !ehVinculadoUnidade(v);
               const pctCargas = totalCargasMes>0 ? (nCargas/totalCargasMes*100) : 0;
-              const pctUtilCarga = diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0;
-              const pctDias   = diasDisp>0 ? (nDias/diasDisp*100) : null;
+              // Visitante (cadastro de outra unidade) não é julgado pelos
+              // dias úteis/disponíveis da unidade inteira — fica sempre
+              // 100%, os números reais de cargas/dias continuam aparecendo
+              // nas colunas ao lado.
+              const pctUtilCarga = visitante ? 100 : (diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0);
+              const pctDias   = visitante ? 100 : (diasDisp>0 ? (nDias/diasDisp*100) : null);
               const emManut = emManutencaoAgoraSet.has(placa);
               const statusLabel = emManut ? '🔧 Manutenção' : (emRotaSet.has(v.placa) ? '🚗 Em Uso' : '✅ Disponível');
               const statusBg = emManut ? '#fee2e2' : (emRotaSet.has(v.placa) ? '#fcd34d' : '#d1fae5');
@@ -31218,7 +31244,7 @@ async function carregarPainelDisponibilidade(){
               const tipoCor = v.uso==='interno' ? '#1d4ed8' : v.uso==='externo' ? '#92400e' : 'var(--text-muted)';
               return `
               <tr style="border-bottom:1px solid var(--border)">
-                <td style="padding:8px;font-weight:600">${v.placa||'—'}</td>
+                <td style="padding:8px;font-weight:600">${v.placa||'—'}${visitante?' <span title="Cadastro de outra unidade — não entra na média, fica sempre 100%" style="font-size:.62rem;font-weight:700;color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:1px 6px">VISITANTE</span>':''}</td>
                 <td style="padding:8px;text-align:center">
                   <span style="background:${tipoBg};color:${tipoCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${tipoLabel}</span>
                 </td>
@@ -31315,7 +31341,7 @@ async function carregarPainelDisponibilidadeAno(){
     const mesAtualStr = new Date().toISOString().slice(0,7);
 
     const veiculosCadastro = await supaFetch(
-      `veiculos?select=placa,uso&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
+      `veiculos?select=placa,uso,unidade&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
     ) || [];
 
     // Filtro "Tipo de Veículo" (Interna/Externa, campo do cadastro) — mesmo
@@ -31354,13 +31380,19 @@ async function carregarPainelDisponibilidadeAno(){
     const placasFaltantes = [...placasLancNaUnidadeAno].filter(p=>p && !p.includes('FRETE') && !placasCadastroSet.has(p));
     let veiculosExtra = [];
     if(placasFaltantes.length){
-      veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=placa,uso`).catch(()=>[]) || [];
+      veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=placa,uso,unidade`).catch(()=>[]) || [];
     }
     const veiculosTodos = [...veiculosCadastro, ...veiculosExtra];
     const veiculos = tipoVeicSel ? veiculosTodos.filter(v=>v.uso===tipoVeicSel) : veiculosTodos;
     const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
 
-    const pctPorVeiculo = frotaFixa.map(v=>{
+    // Mesmo critério de carregarPainelDisponibilidade(): veículo visitante
+    // (cadastro de outra unidade) não entra na média anual, só aparece na
+    // tabela com 100% fixo — ele não é fixo dessa unidade, não pode ser
+    // julgado pelos dias úteis do ano inteiro dela.
+    const ehVinculadoUnidadeAno = v => !undSel || (v.unidade||'').trim() === undSel;
+    const frotaFixaVinculadaAno = frotaFixa.filter(ehVinculadoUnidadeAno);
+    const pctPorVeiculo = frotaFixaVinculadaAno.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
       const cargas = cargasAnoPorVeic[placa] || 0;
       return diasUteisAno>0 ? (cargas/diasUteisAno*100) : 0;
@@ -31371,8 +31403,9 @@ async function carregarPainelDisponibilidadeAno(){
     const linhasTabela = frotaFixa.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
       const cargas = cargasAnoPorVeic[placa] || 0;
-      const pct = diasUteisAno>0 ? (cargas/diasUteisAno*100) : 0;
-      return { placa: v.placa||'—', tipo: v.uso, cargas, pct };
+      const visitante = !ehVinculadoUnidadeAno(v);
+      const pct = visitante ? 100 : (diasUteisAno>0 ? (cargas/diasUteisAno*100) : 0);
+      return { placa: v.placa||'—', tipo: v.uso, cargas, pct, visitante };
     }).sort((a,b)=>b.cargas-a.cargas);
 
     const tabelaHtml = `
@@ -31396,7 +31429,7 @@ async function carregarPainelDisponibilidadeAno(){
               const tipoCor = r.tipo==='interno' ? '#1d4ed8' : r.tipo==='externo' ? '#92400e' : 'var(--text-muted)';
               const cor = r.pct>=70 ? '#059669' : r.pct>=40 ? '#d97706' : '#dc2626';
               return `<tr style="border-bottom:1px solid var(--border)">
-                <td style="padding:8px;font-weight:600">${r.placa}</td>
+                <td style="padding:8px;font-weight:600">${r.placa}${r.visitante?' <span title="Cadastro de outra unidade — não entra na média, fica sempre 100%" style="font-size:.62rem;font-weight:700;color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:1px 6px">VISITANTE</span>':''}</td>
                 <td style="padding:8px;text-align:center"><span style="background:${tipoBg};color:${tipoCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${tipoLabel}</span></td>
                 <td style="padding:8px;text-align:center;color:var(--text-secondary)">${r.cargas}</td>
                 <td style="padding:8px;text-align:center;color:var(--text-secondary)">${diasUteisAno}</td>
