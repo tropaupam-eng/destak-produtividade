@@ -327,13 +327,22 @@ function desenhar(){
     '<td class="num">' + fmt(totRes) + '</td><td class="num">' + fmt(totCont - totRes) + '</td>';
 }
 
+// Mesma classe de risco do CSV/Formula Injection já corrigida no export do
+// Painel de Indicadores (index.html) — um valor de texto livre (descrição
+// do catálogo, por exemplo) começando com =/+/-/@ vira fórmula ao abrir a
+// planilha no Excel. Achado em conferência, 2026-09-29 (mesmo arquivo do
+// R6, tinha ficado de fora do escopo original).
+function escCsv(v){
+  var s = String(v===null||v===undefined?'':v);
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
 function exportar(soLoja){
   var linhas = [['Loja','Codigo','Descricao','Undf','Quantidade']];
   var alvo = soLoja ? [soLoja] : lojas;
   alvo.forEach(function(l){
     estado.forEach(function(it){
       var q = qtd(it, l);
-      if(q > 0) linhas.push([l, it.codigo, it.descricao, it.undf, q]);
+      if(q > 0) linhas.push([escCsv(l), escCsv(it.codigo), escCsv(it.descricao), escCsv(it.undf), q]);
     });
   });
   if(linhas.length === 1){ alert('Nenhum pedido lançado.'); return; }

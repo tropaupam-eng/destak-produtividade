@@ -392,11 +392,19 @@ document.getElementById('btnEsgotados').onclick = function(e){
 };
 document.getElementById('btnAtualizar').onclick = function(){ carregar(); };
 document.getElementById('btnImprimir').onclick = function(){ window.print(); };
+// Mesma classe de risco do CSV/Formula Injection já corrigida no export do
+// Painel de Indicadores (index.html) e no painel admin deste mesmo par de
+// functions — descrição do catálogo começando com =/+/-/@ vira fórmula ao
+// abrir no Excel. Achado em conferência, 2026-09-29.
+function escCsv(v){
+  var s = String(v===null||v===undefined?'':v);
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
 document.getElementById('btnCSV').onclick = function(){
   var lista = meus();
   if(!lista.length){ alert('Nenhum item selecionado.'); return; }
   var linhas = [['Loja','Codigo','Descricao','Undf','Quantidade']];
-  lista.forEach(function(i){ linhas.push([minhaLoja, i.codigo, i.descricao, i.undf, minhaQtd(i)]); });
+  lista.forEach(function(i){ linhas.push([escCsv(minhaLoja), escCsv(i.codigo), escCsv(i.descricao), escCsv(i.undf), minhaQtd(i)]); });
   var csv = '﻿' + linhas.map(function(r){
     return r.map(function(c){ return '"' + String(c).replace(/"/g,'""') + '"'; }).join(';');
   }).join('\r\n');
