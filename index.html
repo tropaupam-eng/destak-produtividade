@@ -2898,6 +2898,14 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
   <!-- ABA 3: Disponibilidade Veículos -->
   <div id="aba-disponibilidade" class="painel-ind-aba" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <label style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Tipo de Veículo</label>
+      <select id="painel-ind-frota-tipo-sel" onchange="mudarTipoVeicPainelIndicadores(this.value)" title="Filtra pelo campo Tipo do cadastro do veículo (Interna/Externa) — não é o mesmo filtro de R.I./R.E. de rota" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
+        <option value="">Todos</option>
+        <option value="interno">Interna</option>
+        <option value="externo">Externa</option>
+      </select>
+    </div>
     <div id="painel-ind-disponibilidade-container">
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando indicadores de disponibilidade...</p>
     </div>
@@ -30148,6 +30156,15 @@ function mudarUndPainelIndicadores(und){
   _recarregarAbaAtivaPainelIndicadores();
 }
 
+// Filtro local da aba Utilização de Frotas — campo Tipo do CADASTRO do
+// veículo (Interna/Externa), diferente do filtro global R.I./R.E. (que é
+// por rota da carga, não pelo veículo). Pedido do usuário, 2026-09-29.
+function mudarTipoVeicPainelIndicadores(tipo){
+  window._painelIndFrotaTipoSel = tipo;
+  carregarPainelDisponibilidade();
+  carregarPainelDisponibilidadeAno();
+}
+
 // R.I./R.E. — aplicado a Liberação no Prazo, Carregamento no Prazo,
 // Pedidos & Rotas e Utilização de Frotas (indicadores de rota/veículo).
 // Absenteísmo é sobre pessoas, não rotas, e fica de fora.
@@ -30903,7 +30920,14 @@ async function carregarPainelDisponibilidade(){
     if(placasFaltantes.length){
       veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=*`).catch(()=>[]) || [];
     }
-    const veiculos = [...veiculosCadastro, ...veiculosExtra];
+    // Filtro "Tipo de Veículo" (Interna/Externa) — campo do CADASTRO do
+    // veículo (veiculos.uso), diferente do filtro global R.I./R.E. (que é
+    // por rota da carga). Pedido do usuário, 2026-09-29: "tem que ter um
+    // filtro com o veículo interno e externo... isso a gente coloca no
+    // cadastro do veículo" — aparecem só os veículos do tipo selecionado.
+    const tipoVeicSel = window._painelIndFrotaTipoSel || '';
+    const veiculosTodos = [...veiculosCadastro, ...veiculosExtra];
+    const veiculos = tipoVeicSel ? veiculosTodos.filter(v=>v.uso===tipoVeicSel) : veiculosTodos;
 
     // Buscar demandas em rota (snapshot ao vivo, pra "Disponível agora" / "Em uso agora")
     const emRota = await supaFetch(`demandas_rota?status=in.("saiu","carregando")&select=veiculo`) || [];
@@ -31275,6 +31299,14 @@ async function carregarPainelDisponibilidadeAno(){
       `veiculos?select=placa,uso&ativo=eq.true&order=placa.asc${undSel?`&or=(unidade.eq.${encodeURIComponent(undSel)},compartilhado.eq.true)`:''}`
     ) || [];
 
+    // Filtro "Tipo de Veículo" (Interna/Externa, campo do cadastro) — mesmo
+    // filtro da visão mensal, aplicado aqui também. Mapa placa->tipo
+    // montado ANTES do loop de meses pra já filtrar cargasMesFrota (barras
+    // Jan-Dez) certo, não só a tabela/média do fim.
+    const tipoVeicSel = window._painelIndFrotaTipoSel || '';
+    const placaTipoMap = {};
+    veiculosCadastro.forEach(v=>{ placaTipoMap[(v.placa||'').trim().toUpperCase()] = v.uso; });
+
     const bMes = Array(12).fill(null);
     const cargasAnoPorVeic = {}; // placa -> total de cargas distintas no ano
     const placasLancNaUnidadeAno = new Set();
@@ -31287,6 +31319,7 @@ async function carregarPainelDisponibilidadeAno(){
       diasUteisAno += r.diasUteisMes;
       let cargasMesFrota = 0;
       Object.entries(r.cargasPorVeic).forEach(([placa,set])=>{
+        if(tipoVeicSel && placaTipoMap[placa]!==tipoVeicSel) return;
         cargasAnoPorVeic[placa] = (cargasAnoPorVeic[placa]||0) + set.size;
         cargasMesFrota += set.size;
       });
@@ -31304,7 +31337,8 @@ async function carregarPainelDisponibilidadeAno(){
     if(placasFaltantes.length){
       veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=placa,uso`).catch(()=>[]) || [];
     }
-    const veiculos = [...veiculosCadastro, ...veiculosExtra];
+    const veiculosTodos = [...veiculosCadastro, ...veiculosExtra];
+    const veiculos = tipoVeicSel ? veiculosTodos.filter(v=>v.uso===tipoVeicSel) : veiculosTodos;
     const frotaFixa = veiculos.filter(v => !(v.placa||'').toUpperCase().includes('FRETE'));
 
     const pctPorVeiculo = frotaFixa.map(v=>{
