@@ -2818,7 +2818,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <option value="">Todas as unidades</option>
       </select>
       <span data-feather="repeat" style="width:15px;height:15px;color:var(--text-muted)"></span>
-      <select id="painel-ind-rire-sel" onchange="mudarRirePainelIndicadores(this.value)" title="Aplica-se a Liberação no Prazo, Carregamento no Prazo e Pedidos & Rotas" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
+      <select id="painel-ind-rire-sel" onchange="mudarRirePainelIndicadores(this.value)" title="Aplica-se a Liberação no Prazo, Carregamento no Prazo, Pedidos & Rotas e Utilização de Frotas" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary);font-weight:600;cursor:pointer">
         <option value="">R.I. + R.E.</option>
         <option value="RI" selected>R.I. (Interna)</option>
         <option value="RE">R.E. (Externa)</option>
@@ -30121,10 +30121,15 @@ function mudarUndPainelIndicadores(und){
   _recarregarAbaAtivaPainelIndicadores();
 }
 
-// R.I./R.E. — aplicado só em Liberação no Prazo, Carregamento no Prazo e
-// Pedidos & Rotas (indicadores de rota). Absenteísmo é sobre pessoas, não
-// rotas; Utilização de Frotas espelha renderFrotaDisp() de propósito e não
-// tem esse filtro pra continuar batendo com aquela tela.
+// R.I./R.E. — aplicado a Liberação no Prazo, Carregamento no Prazo,
+// Pedidos & Rotas e Utilização de Frotas (indicadores de rota/veículo).
+// Absenteísmo é sobre pessoas, não rotas, e fica de fora.
+// Utilização de Frotas ANTES espelhava renderFrotaDisp() de propósito, sem
+// esse filtro — mudado a pedido do usuário, 2026-09-29 ("coloquei filtro RE
+// e mesmo assim ainda não fiu só os veículos externos"). A partir de agora
+// essa aba deixa de bater 1:1 com a tela Frota → Disponibilidade quando o
+// filtro não está em "R.I. + R.E." — troca aceita explicitamente pelo
+// usuário.
 function mudarRirePainelIndicadores(rire){
   window._painelIndRireSel = rire;
   _recarregarAbaAtivaPainelIndicadores();
@@ -30746,6 +30751,13 @@ async function carregarPainelDisponibilidade(){
       `lancamentos?select=veiculo,carga,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
     ).catch(()=>[]) || [];
 
+    // Filtro R.I./R.E. global do Painel de Indicadores — usado só pra
+    // restringir CARGAS/DIAS contados (abaixo), nunca pra decidir quais
+    // veículos aparecem na lista (isso continua vindo do cadastro +
+    // lancamentosDispRef sem filtro, logo abaixo).
+    const rireSel = window._painelIndRireSel || '';
+    const lancamentosDispRefRire = lancamentosDispRef.filter(l => _passaFiltroRire(l.rota, rireSel));
+
     // Veículo que lançou carga de VERDADE nessa unidade (lancamentos.und) mas
     // cujo cadastro (veiculos.unidade) aponta pra outra unidade e não está
     // marcado "compartilhado" simplesmente sumia da tela, mesmo tendo rodado
@@ -30808,9 +30820,12 @@ async function carregarPainelDisponibilidade(){
     // demandas_rota e ignorava lançamentos, então rota R.I. lançada direto
     // pela aba Lançamento (sem passar pela Expedição) nunca contava aqui,
     // derrubando a % pra quase zero mesmo com o veículo rodando o mês inteiro.
-    const viagensMes = await supaFetch(
-      `demandas_rota?select=veiculo,carga,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
+    const viagensMesTodas = await supaFetch(
+      `demandas_rota?select=veiculo,carga,rota,data_saida,ts_fim_viagem,status&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
     ).catch(()=>[]) || [];
+    // Filtro R.I./R.E. — demandas_rota não tem unidade, só rota; aplicado
+    // aqui pra restringir cargas/dias contados sem afetar quem aparece.
+    const viagensMes = viagensMesTodas.filter(v => _passaFiltroRire(v.rota, rireSel));
     const abastecimentosRef = await supaFetch(
       `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,data_saida`
     ).catch(()=>[]) || [];
@@ -30821,6 +30836,7 @@ async function carregarPainelDisponibilidade(){
     // logo abaixo. Antes só lia demandas_rota, então carga lançada direto
     // pela aba Lançamento (sem passar pela Expedição) nunca contava aqui —
     // veículo aparecia com "0 cargas" mesmo tendo rodado o mês inteiro.
+    // Usa as versões já filtradas por R.I./R.E. (viagensMes, lancamentosDispRefRire).
     const cargasPorVeic = {};
     const _addCarga = (placaRaw, cargaRaw) => {
       const placa = (placaRaw||'').trim().toUpperCase();
@@ -30831,7 +30847,7 @@ async function carregarPainelDisponibilidade(){
       cargasPorVeic[placa].add(carga);
     };
     viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
-    lancamentosDispRef.forEach(l=>_addCarga(l.veiculo, l.carga));
+    lancamentosDispRefRire.forEach(l=>_addCarga(l.veiculo, l.carga));
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
 
     // Utilização por carga: mesma fórmula já usada na Visão Anual (cargas ÷
@@ -30845,7 +30861,7 @@ async function carregarPainelDisponibilidade(){
 
     const dispMapRef = _calcDispMapFrota({
       placas: veiculos.map(v=>v.placa),
-      demandas: viagensMes, lancamentosDisp: lancamentosDispRef, demandasC: null, abastecimentos: abastecimentosRef,
+      demandas: viagensMes, lancamentosDisp: lancamentosDispRefRire, demandasC: null, abastecimentos: abastecimentosRef,
       primeiraViagemMap: primeiraViagemMapRef,
       mesInicio: new Date(anoRef, numMesRef-1, 1), mesFim: new Date(anoRef, numMesRef-1, diasNoMesRef),
       ehMesAtual: ehMesAtualRef, hojeObj: new Date(), hojeD: hoje.slice(8,10)
@@ -31082,15 +31098,20 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
   const diaFimRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
   const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diaFimRef);
 
-  const viagensMes = await supaFetch(
-    `demandas_rota?select=veiculo,carga,data_saida&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
+  const viagensMesTodas = await supaFetch(
+    `demandas_rota?select=veiculo,carga,rota,data_saida&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
   ).catch(()=>[]) || [];
   // Filtrado por lancamentos.und (a unidade de verdade de quem lançou),
   // não pelo cadastro do veículo — mesmo motivo do fix em
   // carregarPainelDisponibilidade().
   const lancamentosDispRef = await supaFetch(
-    `lancamentos?select=veiculo,carga&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
+    `lancamentos?select=veiculo,carga,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
   ).catch(()=>[]) || [];
+
+  // Filtro R.I./R.E. global — mesmo critério de carregarPainelDisponibilidade().
+  const rireSel = window._painelIndRireSel || '';
+  const viagensMes = viagensMesTodas.filter(v => _passaFiltroRire(v.rota, rireSel));
+  const lancamentosDispRefRire = lancamentosDispRef.filter(l => _passaFiltroRire(l.rota, rireSel));
 
   const cargasPorVeic = {}; // placa -> Set de cargas distintas no mês
   const _addCarga = (placaRaw, cargaRaw) => {
@@ -31102,7 +31123,7 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
     cargasPorVeic[placa].add(carga);
   };
   viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
-  lancamentosDispRef.forEach(l=>_addCarga(l.veiculo, l.carga));
+  lancamentosDispRefRire.forEach(l=>_addCarga(l.veiculo, l.carga));
 
   // Placas que lançaram carga de verdade nessa unidade neste mês — usado
   // pelo caller pra completar a lista de veículos além do cadastro.
