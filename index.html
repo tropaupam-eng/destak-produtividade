@@ -30329,6 +30329,7 @@ async function carregarPainelAbsArmazem(){
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const r = await _calcularAbsenteismoArmazem(mesAtual, {unidade: window._painelIndUndSel||''});
     const semanas = _calcAbsSemanaArmazem(mesAtual, r.porFunc);
+    const diaMaisOcorr = _calcDiaSemanaMaisOcorrencias(mesAtual, r.porFunc);
 
     container.innerHTML = renderRelatorioAbsenteismo({
       titulo: 'Absenteísmo',
@@ -30346,7 +30347,8 @@ async function carregarPainelAbsArmazem(){
       },
       semanasPrecalc: semanas,
       semanaSelIdx: window._absArmSemanaSel ?? null,
-      onSemanaClick: '_toggleSemanaAbsArmInd'
+      onSemanaClick: '_toggleSemanaAbsArmInd',
+      diaMaisOcorr
     });
   } catch(e){
     console.error('Erro ao carregar absenteísmo armazém:', e);
@@ -30595,7 +30597,7 @@ async function baixarImagemVeiculos(btnEl){
   }
 }
 
-function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, semanasPrecalc, meta, semanaSelIdx, onSemanaClick}){
+function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, semanasPrecalc, meta, semanaSelIdx, onSemanaClick, diaMaisOcorr}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
@@ -30690,6 +30692,11 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
             <span style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">CONSOLIDADO DA ${periodoLabel}</span>
             <span style="font-size:.78rem;font-weight:600">${viewOcorrencias} ocorrências · ${dentroDaMeta?'Meta cumprida':'Meta não cumprida'}</span>
           </div>
+          ${diaMaisOcorr ? `
+          <div style="border-top:1px solid #e5e5e5;margin-top:14px;padding-top:14px">
+            <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">DIA COM MAIS OCORRÊNCIAS NO MÊS</div>
+            <div style="font-size:1.15rem;font-weight:700;margin-top:4px">${diaMaisOcorr.dia} <span style="color:#8a8a8a;font-weight:600;font-size:.85rem">— ${diaMaisOcorr.qtd} ocorrência${diaMaisOcorr.qtd===1?'':'s'} (${diaMaisOcorr.pct.toFixed(0)}% do total)</span></div>
+          </div>` : ''}
         </div>
 
         <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #8a8a8a">
@@ -30726,6 +30733,7 @@ async function carregarPainelAbsDistribuicao(){
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const r = await _calcularAbsenteismoDistribuicao(mesAtual, {unidade: window._painelIndUndSel||''});
     const semanas = _calcAbsSemanaDistribuicao(mesAtual, r.porFunc, r.feriadosNacionais);
+    const diaMaisOcorr = _calcDiaSemanaMaisOcorrencias(mesAtual, r.porFunc);
 
     container.innerHTML = renderRelatorioAbsenteismo({
       titulo: 'Absenteísmo',
@@ -30743,7 +30751,8 @@ async function carregarPainelAbsDistribuicao(){
       },
       semanasPrecalc: semanas,
       semanaSelIdx: window._absDistSemanaSel ?? null,
-      onSemanaClick: '_toggleSemanaAbsDistInd'
+      onSemanaClick: '_toggleSemanaAbsDistInd',
+      diaMaisOcorr
     });
   } catch(e){
     console.error('Erro ao carregar absenteísmo distribuição:', e);
@@ -33752,6 +33761,45 @@ function _renderAbsSemanaDist(filtMes, porFunc, feriadosNacionais, metaOverride)
       }
     }]
   });
+}
+
+const DIAS_SEMANA_PT = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+
+// Dia da semana (Seg-Sáb — domingo já não entra na conta de ocorrência,
+// mesmo critério do resto do card) que mais concentrou Faltas+Atestados no
+// mês inteiro. Pedido do usuário, 2026-09-29: observação nova na visão mês
+// de Absenteísmo Armazém/Distribuição, que SOMA ao card existente (não
+// substitui nada) — usa a mesma fonte porFunc[nome].dias[iso] já calculada
+// por _calcularAbsenteismoArmazem/Distribuicao, então não precisa de
+// query nova. Fica fixo pro mês inteiro, não muda com a semana selecionada
+// (o padrão por dia da semana só faz sentido olhando o mês todo).
+function _calcDiaSemanaMaisOcorrencias(mesRef, porFunc){
+  const feriadosNacionais = new Set([
+    '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
+    '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
+    '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
+    '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
+    '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
+    '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
+  ]);
+  const [ano, mes] = mesRef.split('-').map(Number);
+  const ultimoDia = new Date(ano, mes, 0).getDate();
+  const porDiaSemana = [0,0,0,0,0,0,0]; // 0=domingo ... 6=sábado
+  for(let dia=1; dia<=ultimoDia; dia++){
+    const d = new Date(ano, mes-1, dia);
+    const iso = _fmtISO(d);
+    if(d.getDay()===0 || feriadosNacionais.has(iso)) continue;
+    Object.values(porFunc).forEach(f=>{
+      const st = f.dias[iso];
+      if(st==='falta' || st==='atestado') porDiaSemana[d.getDay()]++;
+    });
+  }
+  const totalOcorrencias = porDiaSemana.reduce((a,b)=>a+b,0);
+  if(totalOcorrencias===0) return null;
+  let maxIdx=1, maxVal=porDiaSemana[1];
+  for(let i=2;i<=6;i++){ if(porDiaSemana[i]>maxVal){ maxVal=porDiaSemana[i]; maxIdx=i; } }
+  if(maxVal<=0) return null;
+  return { dia: DIAS_SEMANA_PT[maxIdx], qtd: maxVal, pct: totalOcorrencias>0 ? (maxVal/totalOcorrencias*100) : 0 };
 }
 
 // ── Absenteísmo por Semana — Armazém ──────────────────────────────────────────
