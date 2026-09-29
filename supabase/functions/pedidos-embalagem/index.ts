@@ -197,6 +197,15 @@ var API = location.pathname;
 var chaveAcesso = sessionStorage.getItem('emb_chave') || null;
 
 function fmt(n){ return Number(n).toLocaleString('pt-BR'); }
+// Achado em conferência, 2026-09-29: codigo/descricao/undf (catálogo) vão
+// direto pro innerHTML sem escape aqui — o mesmo bug já corrigido na função
+// irmã (pedidos-embalagem-admin) tinha ficado de fora desta, que é a que os
+// funcionários de loja abrem de verdade pra fazer pedido.
+function esc(s){
+  return String(s===null||s===undefined?'':s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
 function sinal(cls, txt){
   document.getElementById('ponto').className = 'ponto' + (cls === 'erro' ? ' erro' : '');
   document.getElementById('status').textContent = txt;
@@ -275,7 +284,7 @@ function desenhar(){
     h3.textContent = it.descricao;
     var meta = document.createElement('div');
     meta.className = 'meta';
-    meta.innerHTML = 'cód <b>' + it.codigo + '</b> · ' + it.undf + ' · contagem ' + fmt(it.contagem);
+    meta.innerHTML = 'cód <b>' + esc(it.codigo) + '</b> · ' + esc(it.undf) + ' · contagem ' + fmt(it.contagem);
     var sp = document.createElement('span');
     sp.className = 'selo ' + selo[0];
     sp.textContent = selo[1];
@@ -348,8 +357,8 @@ function resumo(){
   meta.textContent = minhaLoja + ' · ' + lista.length + ' itens · ' + fmt(total) + ' un';
   var corpo = '';
   lista.forEach(function(i, n){
-    corpo += '<tr><td class="num">' + (n+1) + '</td><td class="cod">' + i.codigo + '</td><td>' +
-      i.descricao + '</td><td class="undf">' + i.undf + '</td><td class="num">' + fmt(minhaQtd(i)) + '</td></tr>';
+    corpo += '<tr><td class="num">' + (n+1) + '</td><td class="cod">' + esc(i.codigo) + '</td><td>' +
+      esc(i.descricao) + '</td><td class="undf">' + esc(i.undf) + '</td><td class="num">' + fmt(minhaQtd(i)) + '</td></tr>';
   });
   area.innerHTML = '<table><thead><tr><th style="width:32px">#</th><th style="width:72px">Código</th>' +
     '<th>Descrição</th><th style="width:46px">Undf</th><th style="width:88px;text-align:right">Quantidade</th>' +
