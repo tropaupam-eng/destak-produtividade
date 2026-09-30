@@ -20,6 +20,17 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-09-30 — painel MFV: linha única no topo, resto recolhido
+
+Só na aba Fluxo do Pedido (MFV). O topo virou UMA linha: espera para separar, separação, bipagem,
+espera do caminhão, carregamento, rota total, e à direita agrega valor, não agrega e total. Os
+números são a MÉDIA DE 30 DIAS SIMULADOS (420 pedidos, Petrolina + Juazeiro), escritos direto no
+HTML, e a tela diz que é simulado. Todo o painel anterior (filtros, caixas de dados, fila, pedido a
+pedido, linha do tempo) continua igual, dentro de "Mapa completo", fechado por padrão. Nenhuma
+função JS mudou e nenhuma outra tela foi tocada.
+
+---
+
 ## 2026-09-29 — painel MFV: botão "Ver dia simulado (teste)"
 
 Só na aba Fluxo do Pedido (MFV). O botão carrega nas caixas de dados um dia GERADO por script
