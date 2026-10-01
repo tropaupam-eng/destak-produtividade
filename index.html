@@ -15281,8 +15281,14 @@ async function carregarPortalAjudante(){
     // duas telas podiam divergir em dezenas de reais pra mesma pessoa no
     // mesmo mês. Achado em auditoria, 2026-09-28: essa reescrita garante que
     // o valor daqui é sempre EXATAMENTE o que vai constar no fechamento.
+    // Filtra por ts (não por mes_ano=eq.) -- mesmo critério usado em
+    // gerarPagamentos()/Portal do Motorista. lancamentos.mes_ano diverge do
+    // mês real de ts em alguns registros (37 casos confirmados no banco em
+    // 2026-10-01, provável borda de fuso horário perto da meia-noite) --
+    // usar mes_ano=eq. deixava esses lançamentos invisíveis aqui mesmo
+    // contando em Produtividade/Portal do Motorista.
     const [lancMes, demsStatus] = await Promise.all([
-      supaFetch(`lancamentos?mes_ano=eq.${mesStr}&select=carga,motorista,ajudante,rota&limit=2000`).catch(()=>[]),
+      supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_proximoMes(mesStr)}-01T00:00:00-03:00&select=carga,motorista,ajudante,rota&limit=2000`).catch(()=>[]),
       supaFetch('demandas_rota?select=carga,status').catch(()=>[])
     ]);
 
@@ -22318,7 +22324,7 @@ async function carregarPortalMotorista(mesCustom = null){
         ? supaFetch(`km_cargas?motorista_id=eq.${motId}&mes_ano=eq.${mesStr}&select=carga,km_inicial,km_final,rire,rota`).catch(()=>[])
         : Promise.resolve([]),
       cargasDoMes.length > 0
-        ? supaFetch(`demandas_rota?carga=in.(${cargasDoMes.join(',')})&select=carga,rota`).catch(()=>[])
+        ? supaFetch(`demandas_rota?carga=in.(${cargasDoMes.join(',')})&select=carga,rota,status`).catch(()=>[])
         : Promise.resolve([]),
       cargasDoMes.length > 0
         ? supaFetch(`rotas_viagem?carga=in.(${cargasDoMes.join(',')})&select=carga,km_inicial,km_final&order=criado_em.desc`).catch(()=>[])
@@ -22354,10 +22360,24 @@ async function carregarPortalMotorista(mesCustom = null){
       });
     }
 
-    // Filtrar pedidos válidos (ocorrência != 1)
+    // Carga ainda em andamento na Expedição (não concluída/fim_viagem) não conta
+    // ainda — mesma regra de cargaAindaEmAndamento() usada em gerarPagamentos()
+    // (Produtividade, linha ~41746) e no Portal do Ajudante (linha ~15309).
+    // Achado em auditoria 2026-10-01: só o Portal do Motorista não tinha essa
+    // exclusão, deixando ele mostrar entregas/comissão antes da Produtividade
+    // e do portal do ajudante reconhecerem a mesma carga.
+    const _cargasComDemandaMot = new Set(), _cargasFinalizadasMot = new Set();
+    (demsMot||[]).forEach(d=>{
+      const c = Math.round(Number(d.carga));
+      _cargasComDemandaMot.add(c);
+      if(d.status==='concluido'||d.status==='fim_viagem') _cargasFinalizadasMot.add(c);
+    });
+    const cargaAindaEmAndamentoMot = c => _cargasComDemandaMot.has(c) && !_cargasFinalizadasMot.has(c);
+
+    // Filtrar pedidos válidos (ocorrência != 1, carga já concluída)
     const pedidosMes = bdMot.filter(r => {
       const ocorr = (r.ocorrencia===null||r.ocorrencia===undefined) ? 0 : Number(r.ocorrencia);
-      return ocorr !== 1 && r.pedido;
+      return ocorr !== 1 && r.pedido && !cargaAindaEmAndamentoMot(Math.round(Number(r.carga)));
     });
 
     // Mapa carga → isRI (usando rire do lancamento)
@@ -22381,7 +22401,13 @@ async function carregarPortalMotorista(mesCustom = null){
     const totalPedidos = pedidosRI.size + pedidosRE.size;
 
     // ── CALCULAR BÔNUS DO MOTORISTA ───────────────────
+    // totalBonusEntrega (R.I., por pedido) e totalKmRE/totalBonusKmRE (R.E., por
+    // KM) ficam separados de propósito — são naturezas diferentes de bônus,
+    // não devem ser somados num único número (pedido do usuário, 2026-10-01).
+    // totalVal continua existindo só como "entrega+km" combinado, pra eventual
+    // uso futuro, mas o card de Comissão não usa mais ele sozinho.
     let totalVal = 0;
+    let totalBonusEntrega = 0;
     const linhasTabela = [];
 
     // Agrupar pedidos por carga (filtrados por ocorrência != 1)
@@ -22409,6 +22435,7 @@ async function carregarPortalMotorista(mesCustom = null){
     let totalKmRE = 0;
     lancsDeduplic.forEach(l => {
       const c     = Math.round(Number(l.carga));
+      if(cargaAindaEmAndamentoMot(c)) return; // carga ainda em rota não entra na comissão
       const rire  = (l.rire||'').replace(/\./g,'').trim().toUpperCase();
       const isRE  = rire==='RE' || (!rire && !ROTAS_RI.has((l.rota||'').trim().toUpperCase()));
       const cfg         = getValorRota(l.rota||'');
@@ -22427,6 +22454,7 @@ async function carregarPortalMotorista(mesCustom = null){
       const kmBonusRE = kmRodado * (cfg.valorKm || 0.20);
       if(isRE) totalKmRE += kmRodado;
       totalVal += bonus + kmBonusRE;
+      totalBonusEntrega += bonus;
       linhasTabela.push({ carga:l.carga, rota:l.rota||'-', rire:l.rire||'', pedidos:nPed, bonus, kmBonusRE, kmRodado, ts:l.ts, isRE, ajudante:ajNome, taxa, motSem:cfg.motSem||0, motCom:cfg.motCom||0, temAj });
       // Backfill silencioso: se ajudante_cargas tem registro mas lancamentos.ajudante está vazio → atualizar
       if(ajNomeCargas && !ajNomeLanc){
@@ -22490,14 +22518,30 @@ async function carregarPortalMotorista(mesCustom = null){
 
       // Buscar pedidos de TODAS as cargas do mês em lotes
       const todasCargas = [...new Set(Object.values(cargasPorMot).flat())];
+
+      // Mesma exclusão de "carga ainda em andamento" usada acima e em
+      // gerarPagamentos()/Portal do Ajudante — ranking não pode adiantar
+      // carga que a Produtividade ainda não reconhece como concluída.
+      const _cargasComDemandaRank = new Set(), _cargasFinalizadasRank = new Set();
+      for(let i=0; i<todasCargas.length; i+=100){
+        const lote = todasCargas.slice(i,i+100);
+        const rows = await supaFetch(`demandas_rota?carga=in.(${lote.join(',')})&select=carga,status`).catch(()=>[]) || [];
+        rows.forEach(d=>{
+          const c = Math.round(Number(d.carga));
+          _cargasComDemandaRank.add(c);
+          if(d.status==='concluido'||d.status==='fim_viagem') _cargasFinalizadasRank.add(c);
+        });
+      }
+      const cargaAindaEmAndamentoRank = c => _cargasComDemandaRank.has(c) && !_cargasFinalizadasRank.has(c);
+
       const pedidosPorCarga = {}; // carga -> Set<pedido>
       for(let i=0; i<todasCargas.length; i+=100){
         const lote = todasCargas.slice(i,i+100);
         const rows = await supaFetch(`base_data?carga=in.(${lote.join(',')})&select=carga,pedido,ocorrencia&limit=20000`).catch(()=>[]) || [];
         rows.forEach(r=>{
           const ocorr=(r.ocorrencia===null||r.ocorrencia===undefined)?0:Number(r.ocorrencia);
-          if(ocorr===1||!r.pedido) return;
           const c=Math.round(Number(r.carga));
+          if(ocorr===1||!r.pedido||cargaAindaEmAndamentoRank(c)) return;
           if(!pedidosPorCarga[c]) pedidosPorCarga[c]=new Set();
           pedidosPorCarga[c].add(String(r.pedido));
         });
@@ -22525,20 +22569,31 @@ async function carregarPortalMotorista(mesCustom = null){
       setKpi('mot-kpi-pos-re',minhaPosRE > 0 ? minhaPosRE+'º' : '-');
 
       // Bônus ADM — lê da tabela bonus_adm (fonte oficial)
-      let bonusADM = null;
+      // CORRIGIDO 2026-10-01: antes, quando existia bonus_adm, o card de
+      // Comissão mostrava SÓ o valor do bonus_adm, descartando o bônus de
+      // entrega calculado (o motorista via R$100 de bônus extra em vez de
+      // R$500 de entrega + R$100 extra = R$600). Na Produtividade
+      // (gerarPagamentos, index.html:41944) bonus_adm sempre foi SOMADO ao
+      // total, nunca substituiu — o portal estava divergindo do valor real
+      // que a Produtividade/pagamento usa. Agora soma igual.
+      let bonusADM = 0;
       try{
         const admRows = await supaFetch(`bonus_adm?mes_ano=eq.${mesStr}&motorista_nome=eq.${encodeURIComponent(nomeDB)}&select=valor`).catch(()=>[]) || [];
         if(admRows[0]) bonusADM = Number(admRows[0].valor)||0;
       }catch(_){}
 
-      if(bonusADM !== null){
-        setKpi('mot-kpi-val', fmtVal(bonusADM));
-        const elStatus = document.getElementById('mot-kpi-bonus-status');
-        if(elStatus) elStatus.textContent = `✅ confirmado ADM · est: ${fmtVal(totalVal)}`;
-      } else {
-        setKpi('mot-kpi-val', fmtVal(totalVal));
-        const elStatus = document.getElementById('mot-kpi-bonus-status');
-        if(elStatus) elStatus.textContent = totalVal > 0 ? '📊 estimativa do sistema' : '⏳ sem entregas lançadas';
+      // Card "Comissão" = bônus de entrega (R.I., por pedido) + bônus ADM.
+      // Bônus de KM (R.E.) fica só no card dedicado (#mot-kpi-km-re) — são
+      // naturezas diferentes de pagamento, não devem aparecer somadas aqui.
+      const totalComissao = totalBonusEntrega + bonusADM;
+      setKpi('mot-kpi-val', fmtVal(totalComissao));
+      const elStatus = document.getElementById('mot-kpi-bonus-status');
+      if(elStatus){
+        if(bonusADM > 0){
+          elStatus.textContent = `Entrega: ${fmtVal(totalBonusEntrega)} + ADM: ${fmtVal(bonusADM)}`;
+        } else {
+          elStatus.textContent = totalBonusEntrega > 0 ? '📊 estimativa do sistema' : '⏳ sem entregas lançadas';
+        }
       }
 
       window._rankData = { ri: rankRI, re: rankRE };
@@ -22548,9 +22603,9 @@ async function carregarPortalMotorista(mesCustom = null){
 
     }catch(e){
       console.warn('Ranking erro:', e.message);
-      setKpi('mot-kpi-val', fmtVal(totalVal));
+      setKpi('mot-kpi-val', fmtVal(totalBonusEntrega));
       const elStatusFallback = document.getElementById('mot-kpi-bonus-status');
-      if(elStatusFallback) elStatusFallback.textContent = totalVal > 0 ? '📊 estimativa do sistema' : '⏳ sem entregas lançadas';
+      if(elStatusFallback) elStatusFallback.textContent = totalBonusEntrega > 0 ? '📊 estimativa do sistema' : '⏳ sem entregas lançadas';
       setKpi('mot-kpi-pos', '-');
       setKpi('mot-kpi-pos-re', '-');
     }
