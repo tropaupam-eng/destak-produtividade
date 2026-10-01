@@ -8858,7 +8858,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.87.2';
+const APP_VERSION = '4.87.3';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -9377,6 +9377,17 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
 
     const patch = {status: novoStatus, ...extra};
     if(tsField && !patch[tsField]) patch[tsField] = new Date().toISOString();
+    // Sincroniza data_saida com a saída real — sem isso, data_saida ficava
+    // congelada na data planejada na criação da carga e raramente batia com
+    // o dia real da saída (Dashboard Interna/Painel filtram "o que saiu" por
+    // data_saida). Achado do usuário, 2026-10-01: 74% das cargas de setembro
+    // saíram em dia diferente do planejado, até 10 dias de diferença, e 9
+    // cargas que saíram de verdade no mês ficavam invisíveis no dashboard do
+    // mês porque data_saida apontava pra fora dele. Respeita data_saida se
+    // o chamador já passou um valor explícito em extra.
+    if(novoStatus === 'saiu' && !('data_saida' in extra)){
+      patch.data_saida = dataLocalBRT(patch.ts_saiu);
+    }
 
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
     registrarHistoricoStatus(id, statusAtual, novoStatus, origem||'sistema');
@@ -21061,7 +21072,12 @@ async function confirmarSaidaRota(){
     }
     const tsSaiu = new Date().toISOString(); // horário real da confirmação
     const savedId = _demandaSaidaId;
-    const patchResult = await _patchStatusDemanda(savedId, 'saiu', 'modal_saida', {extra:{ts_saiu:tsSaiu}});
+    // data_saida vem do campo que o usuário preenche aqui no modal — é a
+    // data real de saída, que antes nunca era gravada em demandas_rota
+    // (só em rotas_viagem/entrega_datas), deixando o campo usado pelo
+    // Dashboard Interna/Painel congelado na data planejada na criação da
+    // carga. Achado do usuário, 2026-10-01.
+    const patchResult = await _patchStatusDemanda(savedId, 'saiu', 'modal_saida', {extra:{ts_saiu:tsSaiu, data_saida:data}});
     if(!patchResult.ok){ showToast('⛔ '+patchResult.msg,'warning'); return; }
     // rotas_viagem é a fonte do bônus KM do motorista — se essa gravação falhar
     // silenciosamente, o motorista fica sem o bônus daquela viagem sem ninguém notar.
@@ -21094,7 +21110,7 @@ async function confirmarSaidaRota(){
     document.getElementById('modal-saida-rota').style.display = 'none';
     _demandaSaidaId   = null;
     _demandaSaidaData = null;
-    if(dem && dem.status !== undefined){ dem.status='saiu'; dem.ts_saiu=tsSaiu; }
+    if(dem && dem.status !== undefined){ dem.status='saiu'; dem.ts_saiu=tsSaiu; dem.data_saida=data; }
     // Sincronizar mes_ano dos ajudantes pelo mês real de saída da carga
     if(dem?.carga){
       const mesRealSaida = tsSaiu.slice(0,7);
