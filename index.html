@@ -20889,6 +20889,35 @@ function _expCardTouchEnd(e){
   if(_expLongPressFired && e.cancelable) e.preventDefault();
 }
 
+// Sincroniza o motorista/veículo CONFIRMADOS da Expedição de volta pro
+// Lançamento da mesma carga, quando o Lançamento ainda estiver com o
+// placeholder ("A DEFINIR MOTORISTA"/"A DEFINIR VEÍCULO"). Sem isso, o
+// Lançamento fica preso pra sempre mesmo depois da Expedição confirmar quem
+// fez a entrega de verdade — achado em auditoria, 2026-10-01: 16 cargas
+// concluídas na Expedição com motorista real, mas o Lançamento (fonte usada
+// pela Produtividade/pagamento) continuava "A DEFINIR MOTORISTA" porque
+// nada sincronizava as duas tabelas depois da criação inicial. Nunca
+// sobrescreve um valor que já é real (só troca o que ainda é placeholder).
+async function _sincronizarMotoristaExpedicaoLancamento(carga, motorista, veiculo){
+  if(!carga) return;
+  const motReal = (motorista||'').trim();
+  if(!motReal || motReal.toUpperCase()==='A DEFINIR MOTORISTA') return;
+  try{
+    const lancs = await supaFetch(`lancamentos?carga=eq.${carga}&select=id,motorista,veiculo`).catch(()=>[]) || [];
+    for(const l of lancs){
+      const patch = {};
+      if((l.motorista||'').trim().toUpperCase()==='A DEFINIR MOTORISTA') patch.motorista = motReal;
+      const veicReal = (veiculo||'').trim();
+      if(veicReal && veicReal.toUpperCase()!=='A DEFINIR VEÍCULO' && (l.veiculo||'').trim().toUpperCase()==='A DEFINIR VEÍCULO'){
+        patch.veiculo = veicReal;
+      }
+      if(Object.keys(patch).length){
+        await supaFetch(`lancamentos?id=eq.${l.id}`,{method:'PATCH',body:JSON.stringify(patch)}).catch(()=>{});
+      }
+    }
+  }catch(e){ console.warn('Erro ao sincronizar motorista Expedição→Lançamento:', e.message); }
+}
+
 async function atualizarStatusDemanda(id, status){
   if(!status) return;
   const dem = (_demandasCache||[]).find(x=>x.id===id);
@@ -20966,6 +20995,12 @@ async function atualizarStatusDemanda(id, status){
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
     registrarHistoricoStatus(id, statusAtual, status, 'manual_expedicao');
     if(dem){ dem.status=status; if(tsField) dem[tsField]=patch[tsField]; if(patch.status_fiscal) dem.status_fiscal=patch.status_fiscal; }
+    // Motorista/veículo só ficam definitivos a partir de "saiu" (bloqueado
+    // mais acima se ainda fosse placeholder) — sincroniza com o Lançamento
+    // aqui e de novo em "concluido" como rede de segurança.
+    if((status==='saiu'||status==='concluido') && dem?.carga){
+      _sincronizarMotoristaExpedicaoLancamento(dem.carga, dem.motorista, dem.veiculo);
+    }
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderPipelineBar();
@@ -41717,12 +41752,14 @@ async function gerarPagamentos(btn){
     lancamentos.forEach(l=>{
       const mot   = (l.motorista||'').toUpperCase();
       const carga = Math.round(Number(l.carga));
-      if(mot==='A DEFINIR MOTORISTA'){ _pagamentosMotoristaPendente.push(carga); return; }
       if(mot==='LOJA'||mot==='RETIRA'||!l.carga) return;
       if(vistas.has(carga)) return;
       if(cargaAindaEmAndamento(carga)) return;
 
-      // Filtro de mês — pelo ts (mesma fonte do ranking)
+      // Filtro de mês — pelo ts (mesma fonte do ranking). O aviso de "carga
+      // sem motorista" só pode contar cargas DESTE mês — antes rodava sem
+      // esse filtro (achado do usuário, 2026-10-01: 41 cargas de maio-julho
+      // apareciam no aviso não importa qual mês estivesse sendo gerado).
       let mesAno = '';
       try{
         const d = new Date(l.ts);
@@ -41736,10 +41773,15 @@ async function gerarPagamentos(btn){
       if(!dados || dados.pedidos.size===0) return;
       vistas.add(carga);
 
-      // Lancamento é a fonte verdadeira de quem fez a entrega; condutor da planilha é fallback
-      const motEfetivo = mot || ((dados.condutor||'').toUpperCase().trim());
-      if(motEfetivo==='A DEFINIR MOTORISTA'){ _pagamentosMotoristaPendente.push(carga); return; }
-      if(!motEfetivo || motEfetivo==='LOJA' || motEfetivo==='RETIRA') return;
+      // Lancamento é a fonte verdadeira de quem fez a entrega; condutor da
+      // planilha é fallback — só quando o lançamento não tem motorista de
+      // verdade (vazio OU ainda "A DEFINIR MOTORISTA"). Antes "A DEFINIR
+      // MOTORISTA" era um valor truthy e `mot || condutor` nunca chegava a
+      // testar o condutor da planilha, mesmo quando ele tinha o nome real.
+      const motLancValido = mot && mot!=='A DEFINIR MOTORISTA';
+      const motEfetivo = motLancValido ? mot : ((dados.condutor||'').toUpperCase().trim());
+      if(!motEfetivo || motEfetivo==='A DEFINIR MOTORISTA'){ _pagamentosMotoristaPendente.push(carga); return; }
+      if(motEfetivo==='LOJA' || motEfetivo==='RETIRA') return;
 
       // Pedidos sem ocorrência = base do bônus. size 0 = carga inteira com ocorrência = paga zero (o if abaixo pula).
       const qtd = dados.pedidosSemOcorr.size;
