@@ -3938,6 +3938,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 #cftv-root .cftv-kpi.inversao .num{color:#D98E2A;}
 #cftv-root .cftv-kpi.avaria .num{color:#7C3AED;}
 #cftv-root .cftv-chart-row{display:grid;grid-template-columns:1.3fr 1fr;gap:16px;}
+#cftv-root .cftv-hint{font-size:12px;color:var(--text-secondary,#5C6B7A);margin:2px 0 12px;min-height:16px;}
+#cftv-root .cftv-hint.warn{color:#B45309;font-weight:600;}
+#cftv-root .cftv-hint.err{color:#C0392B;font-weight:600;}
 #cftv-root .cftv-chart-box{position:relative;height:260px;}
 #cftv-root .cftv-table-wrap{overflow-x:auto;max-height:420px;overflow-y:auto;border:1px solid var(--border,#DDE3EA);border-radius:8px;}
 #cftv-root table.cftv-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
@@ -3992,6 +3995,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 
       <div class="cftv-card">
         <h2>Ocorrência Auditada</h2>
+        <div class="cftv-grid" style="margin-bottom:4px;align-items:end;">
+          <div class="cftv-field"><label>Nº do Pedido (opcional — traz produtos e valores da nota)</label><input id="cftv_pedido" type="number" min="1" placeholder="Ex: 65119"></div>
+          <div class="cftv-field"><label>Produto do pedido</label><select id="cftv_item_sel" disabled><option value="">Busque um pedido primeiro</option></select></div>
+          <div class="cftv-field"><button class="cftv-ghost" id="cftv_btn_buscar" type="button">Buscar pedido</button></div>
+        </div>
+        <div class="cftv-hint" id="cftv_pedido_info"></div>
         <div class="cftv-grid g3p">
           <div class="cftv-field"><label>Data / Hora da Ocorrência</label><input id="cftv_data" type="datetime-local"></div>
           <div class="cftv-field"><label>Produto Auditado</label><input id="cftv_produto" placeholder="Ex: Perfume Importado 100ml"></div>
@@ -4048,6 +4057,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         </div>
       </div>
       <div class="cftv-card">
+        <div class="cftv-chart-row">
+          <div><h2>Valor por conferente</h2><div class="cftv-chart-box"><canvas id="cftv_chart_conf"></canvas></div></div>
+          <div><h2>Valor por unidade / loja</h2><div class="cftv-chart-box"><canvas id="cftv_chart_und"></canvas></div></div>
+        </div>
+      </div>
+      <div class="cftv-card">
         <h2>Produtos mais auditados</h2>
         <div class="cftv-chart-box" style="height:220px;"><canvas id="cftv_chart_produtos"></canvas></div>
       </div>
@@ -4059,12 +4074,12 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div class="cftv-table-wrap">
           <table class="cftv-tbl">
             <thead><tr>
-              <th>Data/Hora</th><th>Loja</th><th>Câmera/Setor</th><th>Produto</th><th>UNF</th>
+              <th>Data/Hora</th><th>Loja</th><th>Câmera/Setor</th><th>Pedido</th><th>Produto</th><th>UNF</th>
               <th>Falta</th><th>Sobra</th><th>Inversão</th><th>Avaria</th><th>Vlr Total</th>
               <th>Conferente</th><th>Rota</th><th>Motorista</th><th></th>
             </tr></thead>
             <tbody id="cftv_tbl_body">
-              <tr><td colspan="14" class="cftv-empty">Carregando…</td></tr>
+              <tr><td colspan="15" class="cftv-empty">Carregando…</td></tr>
             </tbody>
           </table>
         </div>
@@ -50693,7 +50708,7 @@ async function _ck_renderDashboard() {
 // PREVENÇÃO — CFTV
 // ══════════════════════════════════════════════════════════════
 let _cftvInited = false;
-let _cftv_chartRota = null, _cftv_chartTipos = null, _cftv_chartProdutos = null;
+let _cftv_chartRota = null, _cftv_chartTipos = null, _cftv_chartProdutos = null, _cftv_chartConf = null, _cftv_chartUnd = null;
 
 async function carregarPaginaCFTV(){
   if(!_cftvInited){ _cftvInited=true; _cftvInit(); }
@@ -50716,6 +50731,65 @@ function _cftvInit(){
     });
   });
 
+  // ── Busca por pedido: traz produtos, valor da nota, rota, conferente, motorista ──
+  let _itens=[], _ctx=null, _origem='manual', _itemSel=null;
+  const hint=(msg,cls)=>{ const e=$c('cftv_pedido_info'); e.textContent=msg||''; e.className='cftv-hint'+(cls?' '+cls:''); };
+  function cftvResetPedido(){
+    _itens=[]; _ctx=null; _origem='manual'; _itemSel=null;
+    const s=$c('cftv_item_sel'); s.innerHTML='<option value="">Busque um pedido primeiro</option>'; s.disabled=true; hint('');
+  }
+  function cftvAvisoQtd(soma){
+    if(!_itemSel) return;
+    if(soma>(+_itemSel.quantidade||0)) hint('Atenção: quantidade informada ('+soma+') maior que a do pedido ('+_itemSel.quantidade+').','warn');
+    else hint(_itemSel._msg||'', _itemSel.origem==='nota'?'':'warn');
+  }
+  function setSeVazio(id,v){ if(v && !$c(id).value.trim()) $c(id).value=v; }
+  const escOpt=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  async function cftvBuscarPedido(){
+    const n=parseInt($c('cftv_pedido').value,10);
+    if(!n){ hint('Informe o número do pedido.','err'); return; }
+    hint('Buscando pedido '+n+'…');
+    try{
+      const r=await supaFetch('rpc/prevencao_pedido_itens',{method:'POST',body:JSON.stringify({p_pedido:n})});
+      const itens=(r&&r.itens)||[]; const ped=(r&&r.pedido)||{};
+      if(!itens.length && !ped.cliente){ cftvResetPedido(); hint('Pedido '+n+' não encontrado.','err'); return; }
+      _itens=itens; _ctx=ped; _itemSel=null; _origem='manual';
+      const s=$c('cftv_item_sel');
+      s.innerHTML='<option value="">'+(itens.length?'Selecione o produto…':'Pedido sem itens detalhados')+'</option>'+
+        itens.map((it,i)=>'<option value="'+i+'">'+escOpt(it.descricao||it.mercadoria)+' — qtd '+escOpt(it.quantidade)+'</option>').join('');
+      s.disabled=!itens.length;
+      const rota=ped.rota_lanc||ped.rota||'', mot=ped.motorista_lanc||ped.condutor||'', und=ped.und_lanc||ped.und||'';
+      setSeVazio('cftv_rota',rota); setSeVazio('cftv_conferente',ped.conferente||''); setSeVazio('cftv_motorista',mot);
+      const nomeUnd=String(und).replace(/^\s*\d+\s*-\s*/,'').trim().toUpperCase();
+      if(!$c('cftv_loja').value && nomeUnd){
+        const op=[...$c('cftv_loja').options].find(o=>o.text.trim().toUpperCase()===nomeUnd);
+        if(op) $c('cftv_loja').value=op.value||op.text;
+      }
+      hint('Pedido '+n+' — '+(ped.cliente||'cliente não informado')+(ped.carga?' · Carga '+ped.carga:'')+(rota?' · Rota '+rota:'')+(und?' · '+und:'')+(mot?' · Motorista '+mot:'')+(ped.conferente?' · Conferente '+ped.conferente:'')+' · '+itens.length+' produto(s)');
+    }catch(e){ console.error(e); cftvResetPedido(); hint('Não foi possível buscar o pedido. Tente novamente.','err'); }
+  }
+  function cftvEscolherItem(){
+    const i=$c('cftv_item_sel').value;
+    if(i===''){ _itemSel=null; _origem='manual'; return; }
+    const it=_itens[+i]; _itemSel=it;
+    $c('cftv_produto').value=it.descricao||it.mercadoria||'';
+    const unf=String(it.unidade_medida||'').trim().toUpperCase();
+    const op=[...$c('cftv_unf').options].find(o=>o.text.trim().toUpperCase()===unf);
+    if(op) $c('cftv_unf').value=op.value||op.text;
+    const vu=+it.valor_unitario||0; $c('cftv_valor_unit').value=vu?String(vu):'0';
+    _origem=it.origem||'manual';
+    const vtxt='R$ '+vu.toFixed(2).replace('.',',');
+    it._msg = it.origem==='nota' ? 'Valor unitário da nota: '+vtxt+' · pedido tem '+it.quantidade+'.'
+      : it.origem==='referencia' ? 'Valor de REFERÊNCIA ('+vtxt+', último preço conhecido deste produto) — confira com a nota. Pedido tem '+it.quantidade+'.'
+      : 'Sem valor conhecido para este produto — informe o valor unitário. Pedido tem '+it.quantidade+'.';
+    hint(it._msg, it.origem==='nota'?'':'warn');
+    cftvRecalc();
+  }
+  $c('cftv_btn_buscar').addEventListener('click',cftvBuscarPedido);
+  $c('cftv_pedido').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); cftvBuscarPedido(); } });
+  $c('cftv_item_sel').addEventListener('change',cftvEscolherItem);
+  $c('cftv_valor_unit').addEventListener('input',()=>{ if(_itemSel) _origem='manual'; });
+
   // Auto-calc valor total
   function cftvRecalc(){
     // Valor Total = (Falta + Sobra + Inversão + Avaria) × Valor Unitário.
@@ -50723,6 +50797,7 @@ function _cftvInit(){
     const soma = ['cftv_falta','cftv_sobra','cftv_inversao','cftv_qtd'].reduce((a,id)=>a+(parseFloat($c(id).value)||0),0);
     const vu  = parseFloat($c('cftv_valor_unit').value)||0;
     $c('cftv_valor_total').value = (soma*vu).toFixed(2);
+    cftvAvisoQtd(soma);
   }
   ['cftv_falta','cftv_sobra','cftv_inversao','cftv_qtd','cftv_valor_unit'].forEach(id=>{ $c(id).addEventListener('input',cftvRecalc); });
 
@@ -50730,6 +50805,7 @@ function _cftvInit(){
   function cftvClear(){
     ['cftv_resp','cftv_camera','cftv_produto','cftv_conferente','cftv_rota','cftv_motorista'].forEach(id=>$c(id).value='');
     $c('cftv_loja').value=''; $c('cftv_unf').value=''; $c('cftv_data').value='';
+    $c('cftv_pedido').value=''; cftvResetPedido();
     ['cftv_falta','cftv_sobra','cftv_inversao','cftv_qtd','cftv_valor_unit','cftv_valor_total'].forEach(id=>$c(id).value='0');
   }
   $c('cftv_btn_clear').addEventListener('click',cftvClear);
@@ -50756,7 +50832,13 @@ function _cftvInit(){
       falta: parseFloat($c('cftv_falta').value)||0,
       sobra: parseFloat($c('cftv_sobra').value)||0,
       inversao: parseFloat($c('cftv_inversao').value)||0,
-      qtd: parseFloat($c('cftv_qtd').value)||0,
+      avaria: parseFloat($c('cftv_qtd').value)||0,
+      qtd: ['cftv_falta','cftv_sobra','cftv_inversao','cftv_qtd'].reduce((a,id)=>a+(parseFloat($c(id).value)||0),0),
+      pedido: parseInt($c('cftv_pedido').value,10)||null,
+      carga: _ctx&&_ctx.carga?Number(_ctx.carga):null,
+      mercadoria: _itemSel?String(_itemSel.mercadoria||''):null,
+      und: _ctx?String(_ctx.und_lanc||_ctx.und||''):null,
+      valor_origem: _itemSel?_origem:'manual',
       valor_unit: parseFloat($c('cftv_valor_unit').value)||0,
       valor_total: parseFloat($c('cftv_valor_total').value)||0,
       conferente: $c('cftv_conferente').value.trim(),
@@ -50780,7 +50862,7 @@ function _cftvInit(){
 async function _cftvLoadRecords(){
   const root=document.getElementById('cftv-root'); if(!root) return;
   const $c=id=>root.querySelector('#'+id);
-  $c('cftv_tbl_body').innerHTML='<tr><td colspan="14" class="cftv-empty">Carregando registros…</td></tr>';
+  $c('cftv_tbl_body').innerHTML='<tr><td colspan="15" class="cftv-empty">Carregando registros…</td></tr>';
   try{
     const data = await supaFetch('cftv_registros?select=*&order=created_at.desc&limit=500') || [];
     _cftvRenderKPIs(data);
@@ -50789,7 +50871,7 @@ async function _cftvLoadRecords(){
   }catch(e){
     console.error(e);
     const $c=id=>root.querySelector('#'+id);
-    $c('cftv_tbl_body').innerHTML='<tr><td colspan="14" class="cftv-empty">Erro ao carregar. Tente novamente.</td></tr>';
+    $c('cftv_tbl_body').innerHTML='<tr><td colspan="15" class="cftv-empty">Erro ao carregar. Tente novamente.</td></tr>';
     _cftvRenderKPIs([]); _cftvRenderCharts([]);
   }
 }
@@ -50803,7 +50885,7 @@ function _cftvRenderKPIs(data){
   $c('cftv_kpi_falta').textContent=data.reduce((a,r)=>a+(+r.falta||0),0);
   $c('cftv_kpi_sobra').textContent=data.reduce((a,r)=>a+(+r.sobra||0),0);
   $c('cftv_kpi_inversao').textContent=data.reduce((a,r)=>a+(+r.inversao||0),0);
-  $c('cftv_kpi_avaria').textContent=data.reduce((a,r)=>a+(+r.qtd||0),0);
+  $c('cftv_kpi_avaria').textContent=data.reduce((a,r)=>a+(+r.avaria||0),0);
 }
 
 function _cftvRenderCharts(data){
@@ -50814,6 +50896,8 @@ function _cftvRenderCharts(data){
   if(_cftv_chartRota){_cftv_chartRota.destroy();_cftv_chartRota=null;}
   if(_cftv_chartTipos){_cftv_chartTipos.destroy();_cftv_chartTipos=null;}
   if(_cftv_chartProdutos){_cftv_chartProdutos.destroy();_cftv_chartProdutos=null;}
+  if(_cftv_chartConf){_cftv_chartConf.destroy();_cftv_chartConf=null;}
+  if(_cftv_chartUnd){_cftv_chartUnd.destroy();_cftv_chartUnd=null;}
   if(!data.length) return;
 
   // Valor por rota
@@ -50826,11 +50910,18 @@ function _cftvRenderCharts(data){
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>money(ctx.raw)}}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'R$'+v}}}}
   });
 
+  // Valor por conferente e por unidade/loja
+  const somaPor=fn=>{ const m={}; data.forEach(r=>{ const k=fn(r)||'N/A'; m[k]=(m[k]||0)+(+r.valor_total||0); }); return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,10); };
+  const confE=somaPor(r=>(r.conferente||'').trim().toUpperCase()), undE=somaPor(r=>(r.loja||r.und||'').trim());
+  const barOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>money(ctx.raw)}}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'R$'+v}}}};
+  _cftv_chartConf=new Chart($c('cftv_chart_conf'),{type:'bar',data:{labels:confE.map(e=>e[0]),datasets:[{label:'Valor (R$)',data:confE.map(e=>e[1]),backgroundColor:'#7C3AED',borderRadius:5,maxBarThickness:48}]},options:barOpts});
+  _cftv_chartUnd=new Chart($c('cftv_chart_und'),{type:'bar',data:{labels:undE.map(e=>e[0]),datasets:[{label:'Valor (R$)',data:undE.map(e=>e[1]),backgroundColor:'#0F766E',borderRadius:5,maxBarThickness:48}]},options:barOpts});
+
   // Doughnut tipos
   const totF=data.reduce((a,r)=>a+(+r.falta||0),0);
   const totS=data.reduce((a,r)=>a+(+r.sobra||0),0);
   const totI=data.reduce((a,r)=>a+(+r.inversao||0),0);
-  const totA=data.reduce((a,r)=>a+(+r.qtd||0),0);
+  const totA=data.reduce((a,r)=>a+(+r.avaria||0),0);
   _cftv_chartTipos=new Chart($c('cftv_chart_tipos'),{
     type:'doughnut',
     data:{labels:['Falta','Sobra','Inversão','Avaria'],datasets:[{data:[totF,totS,totI,totA],backgroundColor:['#C0392B','#178A76','#D98E2A','#7C3AED'],borderWidth:0}]},
@@ -50855,14 +50946,14 @@ function _cftvRenderTable(data){
   const esc=s=>s?String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])):'';
   $c('cftv_tbl_count').textContent=data.length;
   if(!data.length){
-    $c('cftv_tbl_body').innerHTML='<tr><td colspan="14" class="cftv-empty">Nenhum registro ainda. Envie o primeiro pela aba "Novo Registro".</td></tr>';
+    $c('cftv_tbl_body').innerHTML='<tr><td colspan="15" class="cftv-empty">Nenhum registro ainda. Envie o primeiro pela aba "Novo Registro".</td></tr>';
     return;
   }
   $c('cftv_tbl_body').innerHTML=data.map(r=>{
     const dt=r.data_ocorrencia?new Date(r.data_ocorrencia).toLocaleString('pt-BR'):'—';
     return `<tr>
-      <td>${dt}</td><td>${esc(r.loja)||'—'}</td><td>${esc(r.camera)||'—'}</td><td>${esc(r.produto)}</td><td>${esc(r.unf)||'—'}</td>
-      <td>${r.falta||0}</td><td>${r.sobra||0}</td><td>${r.inversao||0}</td><td>${r.qtd||0}</td><td>${money(r.valor_total)}</td>
+      <td>${dt}</td><td>${esc(r.loja||r.und)||'—'}</td><td>${esc(r.camera)||'—'}</td><td>${r.pedido||'—'}</td><td>${esc(r.produto)}</td><td>${esc(r.unf)||'—'}</td>
+      <td>${r.falta||0}</td><td>${r.sobra||0}</td><td>${r.inversao||0}</td><td>${r.avaria||0}</td><td>${money(r.valor_total)}</td>
       <td>${esc(r.conferente)||'—'}</td><td>${esc(r.rota)||'—'}</td><td>${esc(r.motorista)||'—'}</td>
       <td><button class="cftv-del-btn" data-id="${r.id}" title="Excluir">✕</button></td>
     </tr>`;
