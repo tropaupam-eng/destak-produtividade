@@ -8857,7 +8857,34 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 <div class="container" style="max-width:960px;padding:16px 20px">
 
 <h2 style="margin:0 0 8px 0;font-size:1.4rem;font-weight:800;color:var(--text-primary)">Integração ERP</h2>
-<p style="margin:0 0 24px 0;font-size:.9rem;color:var(--text-secondary)">Importação de pedidos via JSON para ambiente de teste</p>
+<p style="margin:0 0 16px 0;font-size:.9rem;color:var(--text-secondary)">Importação de pedidos via JSON para ambiente de teste</p>
+
+<div id="integ-status-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:16px"></div>
+
+<!-- LOGS DA INTEGRAÇÃO -->
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div>
+      <h3 style="font-size:.9rem;font-weight:700;color:var(--text-primary);margin:0">📡 Últimas Atualizações Recebidas do ERP</h3>
+      <p style="font-size:.75rem;color:var(--text-muted);margin-top:3px">Alterações de item detectadas pelo ERP (cortes, remoções, adições) — tabela <code>pedidos_alteracoes_erp</code></p>
+    </div>
+    <button onclick="carregarLogsIntegracaoErp()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:.78rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
+  </div>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+      <thead>
+        <tr style="background:var(--bg-card2)">
+          <th style="padding:8px 10px;text-align:left;font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Horário</th>
+          <th style="padding:8px 10px;text-align:left;font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Pedido</th>
+          <th style="padding:8px 10px;text-align:left;font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Produto</th>
+          <th style="padding:8px 10px;text-align:center;font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Tipo</th>
+          <th style="padding:8px 10px;text-align:center;font-size:.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Qtd. Antes → Depois</th>
+        </tr>
+      </thead>
+      <tbody id="integ-logs-tbody"><tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</td></tr></tbody>
+    </table>
+  </div>
+</div>
 
 <!-- UPLOAD SECTION -->
 <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:16px">
@@ -8960,7 +8987,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.88.5';
+const APP_VERSION = '4.88.6';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -11326,15 +11353,25 @@ async function renderIntegracao(){
     </div>`;
 
   try{
-    const [entRegs, ultimaEnt] = await Promise.all([
+    const [entRegs, ultimaEnt, ultimoPedidoInfo, ultimaAlteracao, alteracoesHoje] = await Promise.all([
       supaFetch(`entrega_datas?mes_ano=eq.${mesAtual}&select=pedido&limit=10000`,{_quiet:true}).catch(()=>null),
       supaFetch(`entrega_datas?select=criado_em&order=criado_em.desc&limit=1`,{_quiet:true}).catch(()=>null),
+      supaFetch(`pedidos_info_erp?select=atualizado_em&order=atualizado_em.desc&limit=1`,{_quiet:true}).catch(()=>null),
+      supaFetch(`pedidos_alteracoes_erp?select=detectado_em&order=detectado_em.desc&limit=1`,{_quiet:true}).catch(()=>null),
+      supaFetch(`pedidos_alteracoes_erp?select=pedido&detectado_em=gte.${new Date().toISOString().slice(0,10)}&limit=5000`,{_quiet:true}).catch(()=>null),
     ]);
 
     const entCount = (entRegs||[]).length;
     const ultDt    = ultimaEnt?.[0]?.criado_em
       ? new Date(ultimaEnt[0].criado_em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})
       : '—';
+
+    // "Última atualização do ERP" = mais recente entre pedidos_info_erp e pedidos_alteracoes_erp
+    const tsInfo  = ultimoPedidoInfo?.[0]?.atualizado_em ? new Date(ultimoPedidoInfo[0].atualizado_em).getTime() : 0;
+    const tsAlt   = ultimaAlteracao?.[0]?.detectado_em ? new Date(ultimaAlteracao[0].detectado_em).getTime() : 0;
+    const tsErp   = Math.max(tsInfo, tsAlt);
+    const relErp  = tsErp ? _fmtUltimoAcesso(new Date(tsErp).toISOString()) : null;
+    const absErp  = tsErp ? new Date(tsErp).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
 
     cardsEl.innerHTML =
       mkCard('📅','Entregas importadas — '+fmtMes(mesAtual),
@@ -11345,9 +11382,46 @@ async function renderIntegracao(){
         (typeof BASE_DATA !== 'undefined' && BASE_DATA.length) ? BASE_DATA.length.toLocaleString('pt-BR')+' reg.' : '—',
         (typeof BASE_DATA !== 'undefined' && BASE_DATA.length) ? 'Em memória nesta sessão' : 'Carregue a planilha operacional',
         (typeof BASE_DATA !== 'undefined' && BASE_DATA.length) ? '#10b981' : '#94a3b8') +
-      mkCard('🔗','Integração ERP', 'Disponível', 'Ambiente de teste — base_data_erp_teste', '#f59e0b');
+      mkCard('📡','Última atualização do ERP',
+        relErp ? relErp.label : 'Sem registro',
+        tsErp ? `${absErp}` : 'Nenhuma atualização registrada ainda',
+        relErp ? relErp.cor : '#94a3b8') +
+      mkCard('🔀','Alterações de item — hoje',
+        (alteracoesHoje||[]).length.toLocaleString('pt-BR'),
+        'Cortes, remoções e adições detectados',
+        (alteracoesHoje||[]).length > 0 ? '#3b82f6' : '#94a3b8');
+
+    carregarLogsIntegracaoErp();
   }catch(e){
     cardsEl.innerHTML = '<div style="text-align:center;padding:24px;color:#ef4444;font-size:.82rem;grid-column:1/-1">Erro ao carregar status: '+e.message+'</div>';
+  }
+}
+
+async function carregarLogsIntegracaoErp(){
+  const tbody = document.getElementById('integ-logs-tbody');
+  if(!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-muted)">Carregando...</td></tr>';
+  try{
+    const alteracoes = await supaFetch('pedidos_alteracoes_erp?select=pedido,descricao,tipo,quantidade_antes,quantidade_depois,detectado_em&order=detectado_em.desc&limit=30') || [];
+    if(!alteracoes.length){
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-muted)">Nenhuma atualização registrada ainda</td></tr>';
+      return;
+    }
+    const tipoLabel = { adicionado:['➕ Adicionado','#059669'], removido:['➖ Removido','#dc2626'], corte:['✂️ Corte','#f59e0b'] };
+    tbody.innerHTML = alteracoes.map(a=>{
+      const [label, cor] = tipoLabel[a.tipo] || [escapeHtml(a.tipo||'—'), 'var(--text-secondary)'];
+      const hora = a.detectado_em ? new Date(a.detectado_em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+      const qtd  = (a.quantidade_antes ?? '—') + ' → ' + (a.quantidade_depois ?? '—');
+      return `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:7px 10px;color:var(--text-secondary);white-space:nowrap">${hora}</td>
+        <td style="padding:7px 10px;color:var(--text-primary);font-weight:600">${escapeHtml(String(a.pedido))}</td>
+        <td style="padding:7px 10px;color:var(--text-secondary)">${escapeHtml(a.descricao||'—')}</td>
+        <td style="padding:7px 10px;text-align:center;color:${cor};font-weight:700">${label}</td>
+        <td style="padding:7px 10px;text-align:center;color:var(--text-secondary)">${escapeHtml(qtd)}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#ef4444">Erro: '+escapeHtml(e.message)+'</td></tr>';
   }
 }
 
