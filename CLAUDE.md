@@ -68,6 +68,8 @@ localStorage.setItem('comercial_rotas', JSON.stringify(novaRota));
 | `atribuicoes_fiscal` | Atribuições de pedidos para o fiscal |
 | `notas_fiscais` | NFs e boletos enviados pelo fiscal |
 | `conferencia_pedidos` | Status de conferência de pedidos |
+| `motivos_devolucao` | Motivos de devolução cadastrados, vinculados a um setor (armazem/distribuicao/comercial) — usados ao registrar ocorrência em Ocorrências (Distribuição) |
+| `ocorrencias_distribuicao_itens` | Produtos devolvidos por ocorrência (tabela filha de `ocorrencias_distribuicao`, uma linha por produto+quantidade; devolução total grava todos os itens do pedido, parcial só os selecionados) |
 | `comercial_rotas` | Rotas com pendência comercial (valor mínimo) |
 | `agendamentos_rotas` | Agendamento mensal de rotas |
 | `divergencias_aceitas` | Divergências de condutor aceitas por usuário |
