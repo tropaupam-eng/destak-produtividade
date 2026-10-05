@@ -9071,7 +9071,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.7';
+const APP_VERSION = '4.89.8';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -31856,6 +31856,20 @@ async function carregarPainelDisponibilidade(){
       }).length;
     });
 
+    // Utilização por DIA: tudo em DIAS ÚTEIS (Seg-Sáb, sem feriados cadastrados) — numerador (dias
+    // com rota) e denominador (dias úteis do período − dias úteis em manutenção) na mesma base.
+    // Antes dividia os dias com atividade (domingo e feriado inclusos) por dias CORRIDOS do mês
+    // (30), dando ex. 58% onde o certo era 68,8%. Pedido do usuário, 2026-10-05.
+    const _ehDiaUtilRef = dia => {
+      const dow = new Date(anoRef, numMesRef-1, dia).getDay();
+      return dow>=1 && dow<=6 && !feriadosMesSet.has(mesRef+'-'+String(dia).padStart(2,'0'));
+    };
+    const diasUteisManutPorVeic = {};
+    Object.keys(diasManutPorVeic).forEach(p=>{
+      diasUteisManutPorVeic[p] = [...diasManutPorVeic[p]].filter(ds=>{ const d=Number(ds.slice(8,10)); return ds.slice(0,7)===mesRef && d<=diasDecorridosRef && _ehDiaUtilRef(d); }).length;
+    });
+    const diasUteisDispDe = placa => Math.max(diasUteisMes - (diasUteisManutPorVeic[placa]||0), 0);
+
     // ── Utilização no mês (headline) — média da "Aprov. por Dia" só da frota
     // fixa (exclui veículos de frete, que não são frota própria). Dias em
     // manutenção saem do denominador — veículo na oficina não estava
@@ -31871,10 +31885,9 @@ async function carregarPainelDisponibilidade(){
     const frotaFixaVinculada = frotaFixa.filter(ehVinculadoUnidade);
     const pctDiasPorVeiculo = frotaFixaVinculada.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
-      const nDias = diasSPorVeic[placa] || 0;
-      const diasManut = diasManutPorVeic[placa]?.size || 0;
-      const diasDisponiveis = Math.max(diasDecorridosRef - diasManut, 0);
-      return diasDisponiveis>0 ? (nDias/diasDisponiveis*100) : null;
+      const nDias = diasUteisSPorVeic[placa] || 0;
+      const diasDisponiveis = diasUteisDispDe(placa);
+      return diasDisponiveis>0 ? Math.min(100, nDias/diasDisponiveis*100) : null;
     }).filter(p=>p!==null);
     const utilizacaoMedia = pctDiasPorVeiculo.length ? pctDiasPorVeiculo.reduce((a,b)=>a+b,0)/pctDiasPorVeiculo.length : 0;
 
@@ -31995,9 +32008,9 @@ async function carregarPainelDisponibilidade(){
             <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px">VEÍCULOS POR FAIXA DE UTILIZAÇÃO</div>
             <div style="margin-top:14px">
               ${[
-                {label:'ALTA', desc:'≥ 70% dos dias com rota', n:altaUtil, cor:'#1a1a1a'},
-                {label:'MÉDIA', desc:'40% a 69% dos dias com rota', n:mediaUtil, cor:'#6b6b6b'},
-                {label:'BAIXA', desc:'< 40% dos dias com rota', n:baixaUtil, cor:'#b13b3b'}
+                {label:'ALTA', desc:'≥ 70% dos dias úteis com rota', n:altaUtil, cor:'#1a1a1a'},
+                {label:'MÉDIA', desc:'40% a 69% dos dias úteis com rota', n:mediaUtil, cor:'#6b6b6b'},
+                {label:'BAIXA', desc:'< 40% dos dias úteis com rota', n:baixaUtil, cor:'#b13b3b'}
               ].map(f=>`
                 <div style="padding:14px 0;border-bottom:1px solid #e5e5e5;display:flex;justify-content:space-between;align-items:baseline">
                   <div>
@@ -32041,7 +32054,7 @@ async function carregarPainelDisponibilidade(){
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Cargas no Mês</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Aprov. por Carga</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Utilização por Carga</th>
-              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Dias Ativo</th>
+              <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Dias Úteis Ativos</th>
               <th style="padding:8px;text-align:center;color:var(--text-muted);font-weight:600">Aprov. por Dia</th>
             </tr>
           </thead>
@@ -32053,9 +32066,9 @@ async function carregarPainelDisponibilidade(){
             }).map(v=>{
               const placa = (v.placa||'').trim().toUpperCase();
               const nCargas = cargasPorVeic[placa]?.size || 0;
-              const nDias   = diasSPorVeic[placa] || 0;
-              const diasManut = diasManutPorVeic[placa]?.size || 0;
-              const diasDisp  = Math.max(diasDecorridosRef - diasManut, 0);
+              const nDias   = diasUteisSPorVeic[placa] || 0;
+              const diasManut = diasUteisManutPorVeic[placa] || 0;
+              const diasDisp  = diasUteisDispDe(placa);
               const visitante = !ehVinculadoUnidade(v);
               const pctCargas = totalCargasMes>0 ? (nCargas/totalCargasMes*100) : 0;
               // Visitante (cadastro de outra unidade) não é julgado pelos
@@ -32064,7 +32077,7 @@ async function carregarPainelDisponibilidade(){
               // usuário, 2026-09-30), só os números reais de cargas/dias
               // continuam aparecendo nas colunas ao lado.
               const pctUtilCarga = diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0;
-              const pctDias   = diasDisp>0 ? (nDias/diasDisp*100) : null;
+              const pctDias   = diasDisp>0 ? Math.min(100, nDias/diasDisp*100) : null;
               const emManut = emManutencaoAgoraSet.has(placa);
               const statusLabel = emManut ? '🔧 Manutenção' : (emRotaSet.has(v.placa) ? '🚗 Em Uso' : '✅ Disponível');
               const statusBg = emManut ? '#fee2e2' : (emRotaSet.has(v.placa) ? '#fcd34d' : '#d1fae5');
