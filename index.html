@@ -31788,6 +31788,25 @@ async function carregarPainelDisponibilidade(){
     abastecimentosRef
       .forEach(a=>_addCarga(a.veiculo, a.carga));
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
+    // Quantas vezes o veículo fez rota INTERNA (R.I.), EXTERNA (R.E.) e Abastecimento de
+    // Loja no mês — só informativo, NÃO filtra nem muda a utilização (pedido do usuário,
+    // 2026-10-05). Tipo da carga = rota da Expedição/Lançamento; Abastecimento não tem rota.
+    const tipoCargaPorVeic = {}; // placa -> { carga -> 'ri'|'re'|'ab'|'sr' }
+    const _tagTipo = (placaRaw, cargaRaw, rota, ehAbast) => {
+      const placa = (placaRaw||'').trim().toUpperCase();
+      const carga = Math.round(Number(cargaRaw));
+      if(!placa || !carga) return;
+      const r = (rota||'').toUpperCase().trim();
+      const t = ehAbast ? 'ab' : (r ? (ROTAS_RI.has(r) ? 'ri' : 're') : 'sr');
+      const m = tipoCargaPorVeic[placa] || (tipoCargaPorVeic[placa] = {});
+      const atual = m[carga];
+      if(!atual || ((atual==='ab'||atual==='sr') && (t==='ri'||t==='re'))) m[carga] = t;
+    };
+    viagensMes.filter(v=>(v.data_saida||'').slice(0,7)===mesRef).forEach(v=>_tagTipo(v.veiculo, v.carga, v.rota, false));
+    lancamentosDispRefRire.forEach(l=>_tagTipo(l.veiculo, l.carga, l.rota, false));
+    abastecimentosRef.forEach(a=>_tagTipo(a.veiculo, a.carga, null, true));
+    const _resumoTipos = placa => { const m = tipoCargaPorVeic[placa] || {}; const o = {ri:0,re:0,ab:0,sr:0}; Object.values(m).forEach(t=>o[t]++); return o; };
+    const _txtTipos = o => `interna ${o.ri} · externa ${o.re} · abastecimento ${o.ab}${o.sr?` · sem rota ${o.sr}`:''}`;
 
     // Utilização por carga: mesma fórmula já usada na Visão Anual (cargas ÷
     // dias úteis do período), aplicada ao mês selecionado — pedido do
@@ -31796,7 +31815,8 @@ async function carregarPainelDisponibilidade(){
     // existia essa conta na Visão Anual; o card mensal só tinha "Aprov. por
     // Carga" (fatia do total de cargas do mês entre os veículos, não ÷ dias
     // úteis) — mantido como está, essa é uma métrica adicional, não substitui.
-    const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diasDecorridosRef);
+    const feriadosMesSet = new Set(((await supaFetch(`feriados?data=gte.${mesRef}-01&data=lt.${proxMesRef}-01&select=data`).catch(()=>[])) || []).map(r=>r.data).filter(Boolean));
+    const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diasDecorridosRef, feriadosMesSet);
 
     const dispMapRef = _calcDispMapFrota({
       placas: veiculos.map(v=>v.placa),
@@ -31821,6 +31841,7 @@ async function carregarPainelDisponibilidade(){
       diasUteisSPorVeic[placa] = Object.entries(dispMapRef[placa]).filter(([dia,st])=>{
         if(st!=='S' || Number(dia)>diasDecorridosRef) return false;
         const dow = new Date(anoRef, numMesRef-1, Number(dia)).getDay();
+        if(feriadosMesSet.has(mesRef+'-'+String(dia).padStart(2,'0'))) return false; // feriado não é dia útil
         return dow>=1 && dow<=6;
       }).length;
     });
@@ -31955,7 +31976,7 @@ async function carregarPainelDisponibilidade(){
           const nDiasRodados = diasUteisSPorVeic[placa] || 0;
           const visitante = !ehVinculadoUnidade(v);
           const pct = diasUteisMes>0 ? (nCargas/diasUteisMes*100) : 0;
-          return { placa: v.placa||'—', pct, nCargas, nDiasRodados, visitante };
+          return { placa: v.placa||'—', pct, nCargas, nDiasRodados, visitante, tipos: _resumoTipos(placa) };
         // Visitante não entra na ordenação por %, sempre por último — mostrar
         // um valor (mesmo "sempre 100%") distorcia a lista, ficando no topo
         // do ranking sem ter rodado nada de verdade. Achado pelo usuário,
@@ -31968,7 +31989,7 @@ async function carregarPainelDisponibilidade(){
           <div style="position:relative;display:flex;justify-content:space-between;align-items:center;padding:9px 2px;border-bottom:1px solid var(--border);overflow:hidden">
             <div style="position:absolute;left:0;top:0;bottom:0;width:${r.visitante?0:Math.min(r.pct,100)}%;background:${fundo};z-index:0"></div>
             <span style="position:relative;font-size:.78rem;font-weight:700;color:var(--text-primary);z-index:1">${String(i+1).padStart(2,'0')} · ${r.placa}${r.visitante?' <span title="Cadastro de outra unidade — não entra na utilização nem no ranking" style="font-size:.62rem;font-weight:700;color:#8a8a8a;border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin-left:4px">VISITANTE</span>':''}</span>
-            <span style="position:relative;font-size:.76rem;font-weight:600;color:var(--text-secondary);z-index:1">${r.nCargas} cargas · ${r.nDiasRodados}/${diasUteisMes} dias</span>
+            <span style="position:relative;font-size:.76rem;font-weight:600;color:var(--text-secondary);z-index:1;text-align:center">${r.nCargas} cargas · ${r.nDiasRodados}/${diasUteisMes} dias<br><span style="font-size:.66rem;font-weight:500;color:var(--text-muted)">${_txtTipos(r.tipos)}</span></span>
             <span style="position:relative;font-size:.82rem;font-weight:700;color:${r.visitante?'var(--text-muted)':cor};z-index:1" title="${r.visitante?'Visitante não entra na utilização':`${r.nCargas} carga(s) ÷ ${diasUteisMes} dias úteis`}">${r.visitante?'—':r.pct.toFixed(1)+'%'}</span>
           </div>`;
         }).join('')}
@@ -32026,7 +32047,7 @@ async function carregarPainelDisponibilidade(){
                 <td style="padding:8px;text-align:center">
                   <span style="background:${statusBg};color:${statusCor};padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600">${statusLabel}</span>
                 </td>
-                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nCargas}</td>
+                <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nCargas}<div style="font-size:.62rem;color:var(--text-muted)">${_txtTipos(_resumoTipos(placa))}</div></td>
                 <td style="padding:8px;text-align:center;font-weight:700;color:${pctCargas>=15?'#059669':pctCargas>0?'#d97706':'var(--text-muted)'}">${pctCargas.toFixed(1)}%</td>
                 <td style="padding:8px;text-align:center;font-weight:700;color:${visitante?'var(--text-muted)':(pctUtilCarga>=70?'#059669':pctUtilCarga>=40?'#d97706':'#dc2626')}" title="${visitante?'Visitante não entra na utilização':`${nCargas} carga(s) ÷ ${diasUteisMes} dias úteis`}">${visitante?'—':pctUtilCarga.toFixed(1)+'%'}</td>
                 <td style="padding:8px;text-align:center;color:var(--text-secondary)">${nDias}/${diasDisp}${diasManut?` <span title="${diasManut} dia(s) em manutenção descontado(s)" style="color:var(--text-muted)">(−${diasManut}🔧)</span>`:''}</td>
@@ -32047,11 +32068,16 @@ async function carregarPainelDisponibilidade(){
 // usuário, 2026-09-29) entre o dia 1 e diaFim (inclusive) de um mês —
 // mesmo critério de _diasUteisAte, generalizado pra qualquer mês/ano (não só
 // o mês corrente).
-function _contarDiasUteisMes(ano, mesIdx0, diaFim){
+// feriadosSet (opcional): datas 'AAAA-MM-DD' da tabela feriados — dia útil = Seg–Sáb que
+// NÃO é feriado cadastrado (ex.: 07/09 e 08/09/2026 tiram 2 dias de setembro).
+function _contarDiasUteisMes(ano, mesIdx0, diaFim, feriadosSet){
   let count = 0;
   for(let d=1; d<=diaFim; d++){
     const dow = new Date(ano, mesIdx0, d).getDay();
-    if(dow>=1 && dow<=6) count++;
+    if(dow<1 || dow>6) continue;
+    const ds = ano+'-'+String(mesIdx0+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+    if(feriadosSet && feriadosSet.has(ds)) continue;
+    count++;
   }
   return count;
 }
@@ -32070,7 +32096,8 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
   const diasNoMesRef = new Date(anoRef, numMesRef, 0).getDate();
   const ehMesAtualRef = mesRef === hoje.slice(0,7);
   const diaFimRef = ehMesAtualRef ? new Date().getDate() : diasNoMesRef;
-  const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diaFimRef);
+  const feriadosAnoMes = new Set(((await supaFetch(`feriados?data=gte.${mesRef}-01&data=lt.${proxMesRef}-01&select=data`).catch(()=>[])) || []).map(r=>r.data).filter(Boolean));
+  const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diaFimRef, feriadosAnoMes);
 
   const viagensMesTodas = await supaFetch(
     `demandas_rota?select=veiculo,carga,rota,data_saida&veiculo=not.is.null&data_saida=gte.${prevMesRef}-01&data_saida=lt.${proxMesRef}-01&status=not.in.(cancelado,formacao,pendente,separacao,carregamento,aguardando_nf,aguardando_manifesto,pronto_viagem)`
