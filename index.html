@@ -31736,7 +31736,7 @@ async function carregarPainelDisponibilidade(){
     // aqui pra restringir cargas/dias contados sem afetar quem aparece.
     const viagensMes = viagensMesTodas.filter(v => _passaFiltroRire(v.rota, rireSel));
     const abastecimentosRef = await supaFetch(
-      `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,data_saida`
+      `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,carga,data_saida,unidade_origem`
     ).catch(()=>[]) || [];
     const primeiraViagemMapRef = await _buscarPrimeiraViagemPorVeiculo();
 
@@ -31755,8 +31755,20 @@ async function carregarPainelDisponibilidade(){
       if(!cargasPorVeic[placa]) cargasPorVeic[placa] = new Set();
       cargasPorVeic[placa].add(carga);
     };
-    viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
+    // viagensMes traz também o mês ANTERIOR (prevMesRef) só pra calcular dias
+    // de viagem que atravessam a virada — contar CARGA exige data_saida dentro
+    // do mês, senão carga de agosto entrava em setembro (achado 2026-10-05:
+    // RPG7H03/RPL0B75 com 1 carga de agosto no painel de setembro).
+    viagensMes.filter(v=>(v.data_saida||'').slice(0,7)===mesRef).forEach(v=>_addCarga(v.veiculo, v.carga));
     lancamentosDispRefRire.forEach(l=>_addCarga(l.veiculo, l.carga));
+    // Abastecimento de Loja (CD -> loja) também é carga rodada pelo veículo.
+    // Não tem rota: conta como rota interna (R.I.) — fora do filtro R.E. —, e
+    // com unidade selecionada vale a unidade de ORIGEM do abastecimento.
+    // Antes só dias eram marcados; veículo que só abastece loja (ex.: HUU5279,
+    // 17 cargas em setembro) ficava com 0 cargas.
+    abastecimentosRef
+      .filter(a => rireSel!=='RE' && (!undSel || (a.unidade_origem||'').trim()===undSel))
+      .forEach(a=>_addCarga(a.veiculo, a.carga));
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
 
     // Utilização por carga: mesma fórmula já usada na Visão Anual (cargas ÷
@@ -32065,8 +32077,17 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
     if(!cargasPorVeic[placa]) cargasPorVeic[placa] = new Set();
     cargasPorVeic[placa].add(carga);
   };
-  viagensMes.forEach(v=>_addCarga(v.veiculo, v.carga));
+  // Só cargas com data_saida DENTRO do mês (viagensMes inclui o mês anterior
+  // pra dias de viagem) + Abastecimento de Loja (conta como R.I.; unidade =
+  // unidade de origem). Mesma regra do painel mensal.
+  viagensMes.filter(v=>(v.data_saida||'').slice(0,7)===mesRef).forEach(v=>_addCarga(v.veiculo, v.carga));
   lancamentosDispRefRire.forEach(l=>_addCarga(l.veiculo, l.carga));
+  if(rireSel!=='RE'){
+    const abastRef = await supaFetch(
+      `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,carga${undSel?`&unidade_origem=eq.${encodeURIComponent(undSel)}`:''}`
+    ).catch(()=>[]) || [];
+    abastRef.forEach(a=>_addCarga(a.veiculo, a.carga));
+  }
 
   // Placas que lançaram carga de verdade nessa unidade neste mês — usado
   // pelo caller pra completar a lista de veículos além do cadastro.
