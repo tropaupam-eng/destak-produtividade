@@ -18643,7 +18643,7 @@ async function _buscarPrimeiraViagemPorVeiculo(){
 // ignorava lançamentos — rotas R.I. lançadas direto pela aba Lançamento
 // (sem passar pela Expedição) nunca contavam lá, derrubando a % pra quase
 // zero mesmo com o veículo rodando o mês inteiro.
-function _calcDispMapFrota({placas, demandas, lancamentosDisp, demandasC, abastecimentos, primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD}){
+function _calcDispMapFrota({placas, demandas, lancamentosDisp, demandasC, abastecimentos, primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD, soDiaLancamento=false}){
   const dispMap = {};
   placas.forEach(p => { dispMap[p] = {}; });
 
@@ -18680,7 +18680,8 @@ function _calcDispMapFrota({placas, demandas, lancamentosDisp, demandasC, abaste
     const dtIni = new Date(d.ts);
     const primeiraViagem = primeiraViagemMap[placa];
     const dtPrimeiraViagem = primeiraViagem ? new Date(primeiraViagem + 'T00:00:00') : null;
-    if(isRI){
+    // soDiaLancamento: Utilização de Frotas conta só o dia da carga (R.I. não "espalha" até o fim do mês)
+    if(isRI && !soDiaLancamento){
       const ini = dtIni < mesInicio ? mesInicio : dtIni;
       const iniAjustado = dtPrimeiraViagem && ini < dtPrimeiraViagem ? dtPrimeiraViagem : ini;
       const fim = (ehMesAtual ? hojeObj : mesFim) > mesFim ? mesFim : (ehMesAtual ? hojeObj : mesFim);
@@ -31638,7 +31639,7 @@ async function carregarPainelDisponibilidade(){
     // cedo pra poder completar a lista de veículos abaixo antes de qualquer
     // conta usar "veiculos".
     const lancamentosDispRef = await supaFetch(
-      `lancamentos?select=veiculo,carga,ts,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
+      `lancamentos?select=veiculo,carga,ts,rota,und&veiculo=not.is.null&mes_ano=eq.${mesRef}`
     ).catch(()=>[]) || [];
 
     // Filtro R.I./R.E. global do Painel de Indicadores — usado só pra
@@ -31662,11 +31663,15 @@ async function carregarPainelDisponibilidade(){
     // "FRETE" fica de fora de propósito (não é veículo próprio, é frete
     // terceirizado sem unidade fixa).
     const placasCadastroSet = new Set(veiculosCadastro.map(v=>(v.placa||'').trim().toUpperCase()));
-    const placasFaltantes = [...new Set(lancamentosDispRef.map(l=>(l.veiculo||'').trim().toUpperCase()))]
+    // Veículo de OUTRA unidade que só visitou esta unidade conta na utilização da unidade
+    // DONA dele (cadastro) — não entra na lista desta (pedido do usuário, 2026-10-05).
+    // Exceção: veículo SEM unidade no cadastro não tem dono — continua entrando pela
+    // unidade do lançamento (ex.: 20 cargas lançadas em Petrolina em setembro).
+    const placasFaltantes = [...new Set(lancamentosDispRef.filter(l=>!undSel || (l.und||'').trim()===undSel).map(l=>(l.veiculo||'').trim().toUpperCase()))]
       .filter(p=>p && !p.includes('FRETE') && !placasCadastroSet.has(p));
     let veiculosExtra = [];
     if(placasFaltantes.length){
-      veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=*`).catch(()=>[]) || [];
+      veiculosExtra = (await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=*`).catch(()=>[]) || []).filter(v=>!(v.unidade||'').trim());
     }
     // Filtro "Tipo de Veículo" (Interna/Externa) — campo do CADASTRO do
     // veículo (veiculos.uso), diferente do filtro global R.I./R.E. (que é
@@ -31774,7 +31779,6 @@ async function carregarPainelDisponibilidade(){
     // Antes só dias eram marcados; veículo que só abastece loja (ex.: HUU5279,
     // 17 cargas em setembro) ficava com 0 cargas.
     abastecimentosRef
-      .filter(a => !undSel || (a.unidade_origem||'').trim()===undSel)
       .forEach(a=>_addCarga(a.veiculo, a.carga));
     const totalCargasMes = Object.values(cargasPorVeic).reduce((a,s)=>a+s.size,0);
 
@@ -31792,7 +31796,8 @@ async function carregarPainelDisponibilidade(){
       demandas: viagensMes, lancamentosDisp: lancamentosDispRefRire, demandasC: null, abastecimentos: abastecimentosRef,
       primeiraViagemMap: primeiraViagemMapRef,
       mesInicio: new Date(anoRef, numMesRef-1, 1), mesFim: new Date(anoRef, numMesRef-1, diasNoMesRef),
-      ehMesAtual: ehMesAtualRef, hojeObj: new Date(), hojeD: hoje.slice(8,10)
+      ehMesAtual: ehMesAtualRef, hojeObj: new Date(), hojeD: hoje.slice(8,10),
+      soDiaLancamento: true
     });
     const diasSPorVeic = {}; // placa -> nº de dias com rota ('S') dentro dos dias já decorridos
     Object.keys(dispMapRef).forEach(placa=>{
@@ -32067,7 +32072,7 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
   // não pelo cadastro do veículo — mesmo motivo do fix em
   // carregarPainelDisponibilidade().
   const lancamentosDispRef = await supaFetch(
-    `lancamentos?select=veiculo,carga,rota&veiculo=not.is.null&mes_ano=eq.${mesRef}${undSel?`&und=eq.${encodeURIComponent(undSel)}`:''}`
+    `lancamentos?select=veiculo,carga,rota,und&veiculo=not.is.null&mes_ano=eq.${mesRef}`
   ).catch(()=>[]) || [];
 
   // Utilização de Frotas NÃO usa o filtro global R.I./R.E. (ver
@@ -32093,14 +32098,14 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
   lancamentosDispRefRire.forEach(l=>_addCarga(l.veiculo, l.carga));
   {
     const abastRef = await supaFetch(
-      `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,carga${undSel?`&unidade_origem=eq.${encodeURIComponent(undSel)}`:''}`
+      `abastecimento_loja?data_saida=gte.${mesRef}-01&data_saida=lt.${proxMesRef}-01&veiculo=not.is.null&select=veiculo,carga`
     ).catch(()=>[]) || [];
     abastRef.forEach(a=>_addCarga(a.veiculo, a.carga));
   }
 
   // Placas que lançaram carga de verdade nessa unidade neste mês — usado
   // pelo caller pra completar a lista de veículos além do cadastro.
-  const placasLancNaUnidade = new Set(lancamentosDispRef.map(l=>(l.veiculo||'').trim().toUpperCase()).filter(Boolean));
+  const placasLancNaUnidade = new Set(lancamentosDispRef.filter(l=>!undSel || (l.und||'').trim()===undSel).map(l=>(l.veiculo||'').trim().toUpperCase()).filter(Boolean));
 
   return { diasUteisMes, cargasPorVeic, placasLancNaUnidade };
 }
@@ -32153,8 +32158,8 @@ async function carregarPainelDisponibilidadeAno(){
     const placasCadastroSet = new Set(veiculosCadastro.map(v=>(v.placa||'').trim().toUpperCase()));
     const placasFaltantes = [...placasLancNaUnidadeAno].filter(p=>p && !p.includes('FRETE') && !placasCadastroSet.has(p));
     let veiculosExtra = [];
-    if(placasFaltantes.length){
-      veiculosExtra = await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=placa,uso,unidade`).catch(()=>[]) || [];
+    if(placasFaltantes.length){ // só veículo SEM unidade no cadastro (visitante de outra unidade conta na dona dele)
+      veiculosExtra = (await supaFetch(`veiculos?placa=in.(${placasFaltantes.map(p=>encodeURIComponent(p)).join(',')})&ativo=eq.true&select=placa,uso,unidade`).catch(()=>[]) || []).filter(v=>!(v.unidade||'').trim());
     }
     const veiculosTodos = [...veiculosCadastro, ...veiculosExtra];
     const veiculos = tipoVeicSel ? veiculosTodos.filter(v=>v.uso===tipoVeicSel) : veiculosTodos;
