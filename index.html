@@ -27457,7 +27457,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
 
   // Buscar base_data pelas cargas que saíram no mês (não por mes_ano do pedido)
   // Motivo: pedido criado no mês anterior mas entregue neste mês deve contar aqui
-  const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,hora_pedido,mes_ano,semana_mes,valor,ocorrencia';
+  const BD_SELECT = 'carga,pedido,condutor,ajudante,rire,rota,und,data_pedido,hora_pedido,mes_ano,semana_mes,valor,ocorrencia,cliente';
   let baseDataSupa;
   if(!cargasUndLanc.size){
     baseDataSupa = [];
@@ -27539,7 +27539,8 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
 // usada pelo Dashboard Interno e pelo Painel de Indicadores.
 function _calcPedidosPorSemana(bd, mesFiltro){
   const _semDoMes = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
-  const semData = [{ped:0,val:0},{ped:0,val:0},{ped:0,val:0},{ped:0,val:0},{ped:0,val:0}];
+  const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0,_ents:new Set()}));
+  const _entsMes = new Set(); // entregas distintas no mês inteiro (a mesma parada não pode contar em 2 semanas)
   const vistoPed = new Set();
   bd.forEach(p=>{
     const key = String(p.carga)+'_'+String(p.pedido);
@@ -27552,8 +27553,15 @@ function _calcPedidosPorSemana(bd, mesFiltro){
     // Rota sem prazo cadastrado (ex: CEASA) só é excluída do %OTIF — continua contando
     // aqui e em "Entregas por Rota", que são métricas de volume, não de prazo.
     const s = p.semana_mes || _semDoMes(p.data_pedido);
-    if(s>=1&&s<=5){ semData[s-1].ped++; semData[s-1].val+=Number(p.valor)||0; }
+    if(s>=1&&s<=5){
+      semData[s-1].ped++; semData[s-1].val+=Number(p.valor)||0;
+      const _ek = String(p.carga)+'|'+((p.cliente||'').toUpperCase().trim() || 'P'+p.pedido);
+      semData[s-1]._ents.add(_ek);
+      _entsMes.add(_ek);
+    }
   });
+  semData.forEach(s=>{ s.ent = s._ents.size; delete s._ents; });
+  semData.entMes = _entsMes.size;
   return semData;
 }
 
@@ -27583,15 +27591,123 @@ function _calcEntregasPorRota(bd, cargaRota, cargaIsRI, rireFiltro){
       }
     }
     if(rota === 'RETIRA') return; // cliente retira conta no total mas não entra no gráfico por rota
-    if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0};
+    if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0,ent:0,_ents:new Set()};
     rotaMap[rota].ped++;
     rotaMap[rota].val+=Number(p.valor)||0;
+    // "Entrega" = parada num cliente (vários pedidos do mesmo cliente na mesma
+    // carga são 1 entrega só). Sem nome de cliente, o pedido conta como 1 entrega.
+    rotaMap[rota]._ents.add(String(c)+'|'+((p.cliente||'').toUpperCase().trim() || 'P'+p.pedido));
   });
-  const top = Object.entries(rotaMap).sort((a,b)=>b[1].ped-a[1].ped).slice(0,10);
+  Object.values(rotaMap).forEach(d=>{ d.ent = d._ents.size; delete d._ents; });
+  return _montarRotaCalc(rotaMap);
+}
+
+// Monta o objeto usado pelos cards de Pedidos & Rotas a partir de { rota:{ped,val,ent} }.
+// top/labels/pedidos/totalPed (só as 10 maiores por pedido) continuam como sempre — o
+// Dashboard Interno depende deles. `todas` (TODAS as rotas) e `geral` (total real)
+// são novos: a lista "Valor por Rota" só mostrava as 10 maiores em PEDIDOS e deixava
+// de fora rotas de valor alto e poucos pedidos (Ceará, Aracaju, Rio Grande do Norte…),
+// então a soma da lista não fechava com o total do card.
+function _montarRotaCalc(rotaMap){
+  const todas = Object.entries(rotaMap).sort((a,b)=>b[1].ped-a[1].ped);
+  const top = todas.slice(0,10);
   const labels = top.map(([r])=>r);
   const pedidos = top.map(([,d])=>d.ped);
   const totalPed = pedidos.reduce((s,v)=>s+v,0)||1;
-  return { top, labels, pedidos, totalPed };
+  const geral = todas.reduce((a,[,d])=>({ped:a.ped+d.ped, val:a.val+d.val, ent:a.ent+(d.ent||0)}), {ped:0,val:0,ent:0});
+  return { top, labels, pedidos, totalPed, todas, geral };
+}
+
+// ── Volume R.E. (rota externa) a partir do que foi LANÇADO EM EXPEDIÇÃO ──────
+// Pedido do usuário (2026-10-05): "valor por rota da externa está errado — os dados
+// deveriam vir de tudo que foi lançado em Expedição". Antes o card R.E. partia de
+// `lancamentos` (tela Lançamento), que é outra coisa: subcontava (Salvador R$ 2,99 mi
+// contra R$ 4,11 mi lançados em Expedição; Pernambuco R$ 8,08 mi contra R$ 8,92 mi).
+// Fonte: demandas_rota (menos cancelada/formação), 1 linha por carga (a mais recente);
+// pedidos/valor de base_data (a demanda já guarda os mesmos totais). Mês = mês em
+// que a carga saiu (ts_saiu, fuso BRT) ou, sem saída ainda, a data de saída prevista.
+// Rota interna (Ceasa/Petrolina/Juazeiro/Retira) nasce em Lançamento e continua vindo
+// de lançamentos — por isso aqui só entram rotas externas.
+let _expRECache = { ts:0, chave:null, dados:null };
+async function _carregarExpedicaoRE(undSel){
+  const chave = undSel||'';
+  if(_expRECache.dados && _expRECache.chave===chave && Date.now()-_expRECache.ts < 60000) return _expRECache.dados;
+  const dems = await supaFetch('demandas_rota?carga=not.is.null&status=not.in.(cancelado,formacao)&select=carga,rota,status,data_saida,ts_saiu,unidade,criado_em&order=criado_em.desc&limit=5000') || [];
+  const porCarga = new Map();
+  dems.forEach(d=>{ const c = Math.round(Number(d.carga)); if(c && !porCarga.has(c)) porCarga.set(c, d); });
+  const cargas = [];
+  porCarga.forEach((d,c)=>{
+    const rota = normalizarRota((d.rota||'').trim());
+    if(!rota || ROTAS_RI.has(rota)) return;
+    // demandas_rota.unidade vem vazia em ~60% das linhas; toda carga externa da
+    // Expedição sai do CD (unidade 1 no ERP em 360 de 361 cargas conferidas).
+    const und = (d.unidade||'').trim() || '1 - CD';
+    if(undSel && und !== undSel) return;
+    const dataRef = d.ts_saiu ? dataLocalBRT(d.ts_saiu) : (d.data_saida||'');
+    if(!dataRef) return;
+    cargas.push({ carga:c, rota, dataRef, mes:dataRef.slice(0,7), ped:0, val:0, ent:0 });
+  });
+  const ids = cargas.map(x=>x.carga);
+  const pedPorCarga = new Map();
+  for(let i=0;i<ids.length;i+=250){
+    const rows = await supaFetch(`base_data?carga=in.(${ids.slice(i,i+250).join(',')})&select=carga,pedido,cliente,valor&limit=20000`).catch(()=>[]) || [];
+    rows.forEach(r=>{ const c = Math.round(Number(r.carga)); if(!pedPorCarga.has(c)) pedPorCarga.set(c,[]); pedPorCarga.get(c).push(r); });
+  }
+  // Código do cliente (da integração) é mais confiável que o nome pra contar entregas
+  const todosPed = [...new Set([...pedPorCarga.values()].flat().map(r=>r.pedido).filter(Boolean))];
+  const codMap = new Map();
+  for(let i=0;i<todosPed.length;i+=400){
+    const rows = await supaFetch(`pedidos_info_erp?pedido=in.(${todosPed.slice(i,i+400).join(',')})&select=pedido,codigo_cliente`).catch(()=>[]) || [];
+    rows.forEach(r=>{ if(r.codigo_cliente) codMap.set(String(r.pedido), String(r.codigo_cliente).trim()); });
+  }
+  cargas.forEach(cg=>{
+    const rows = pedPorCarga.get(cg.carga) || [];
+    const ents = new Set();
+    rows.forEach(r=>{
+      cg.val += Number(r.valor)||0;
+      ents.add(codMap.get(String(r.pedido)) || (r.cliente||'').toUpperCase().trim() || 'P'+r.pedido);
+    });
+    cg.ped = rows.length;
+    cg.ent = ents.size;
+  });
+  _expRECache = { ts:Date.now(), chave, dados:cargas };
+  return cargas;
+}
+
+// Semana do mês (calendário alinhado a domingo, máx. 5) — mesma regra de _calcPedidosPorSemana
+function _semanaDoMesData(dateStr){
+  if(!dateStr) return 0;
+  const dt = new Date(dateStr.slice(0,10)+'T00:00:00');
+  const primeiro = new Date(dt.getFullYear(), dt.getMonth(), 1);
+  return Math.min(Math.floor((dt.getDate()+primeiro.getDay()-1)/7)+1, 5);
+}
+
+// Soma as cargas da Expedição de um mês (mesStr) ou de um ano inteiro (anoStr)
+function _agregarExpedicaoRE(cargas, {mesStr, anoStr}={}){
+  const rotaMap = {};
+  const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0}));
+  const porMes = Array.from({length:12}, ()=>({ped:0,val:0,ent:0}));
+  cargas.forEach(cg=>{
+    if(mesStr && cg.mes !== mesStr) return;
+    if(anoStr && cg.mes.slice(0,4) !== anoStr) return;
+    if(!rotaMap[cg.rota]) rotaMap[cg.rota] = {ped:0,val:0,ent:0,cargas:0};
+    const r = rotaMap[cg.rota]; r.ped += cg.ped; r.val += cg.val; r.ent += cg.ent; r.cargas++;
+    const s = _semanaDoMesData(cg.dataRef);
+    if(s>=1 && s<=5){ semData[s-1].ped += cg.ped; semData[s-1].val += cg.val; semData[s-1].ent += cg.ent; }
+    const m = Number(cg.mes.slice(5,7));
+    if(m>=1 && m<=12){ porMes[m-1].ped += cg.ped; porMes[m-1].val += cg.val; porMes[m-1].ent += cg.ent; }
+  });
+  return { rotaMap, semData, porMes };
+}
+
+// Junta dois mapas { rota:{ped,val,ent} } (usado no filtro "Todos": interna + externa)
+function _somarRotaMaps(a, b){
+  const out = {};
+  [a,b].forEach(m=>Object.entries(m||{}).forEach(([r,d])=>{
+    if(!out[r]) out[r] = {ped:0,val:0,ent:0};
+    out[r].ped += d.ped||0; out[r].val += d.val||0; out[r].ent += d.ent||0;
+  }));
+  return out;
 }
 
 // OTIF por semana (agrupado pela semana da ENTREGA, com fallback pra semana
@@ -32924,6 +33040,75 @@ async function carregarPainelCarregamentoPrazoAno(){
 // apresentação pro visual executivo do Painel de Indicadores. Sempre visão
 // R.I. (o padrão do Dashboard Interno) filtrada pela unidade do usuário.
 let _cPainelRotasPizza = null;
+// Lista "Valor por Rota": TODAS as rotas, da maior pro menor VALOR, com entregas,
+// pedidos e valor por extenso, e linha de total (que agora fecha com o card).
+function _htmlListaValorPorRota(rotaCalc, cores, fmtVal){
+  const lista = [...rotaCalc.todas].sort((a,b)=>b[1].val-a[1].val);
+  const g = rotaCalc.geral;
+  const linhas = lista.map(([nome,d],i)=>{
+    const pctVal = g.val>0 ? (d.val/g.val*100) : 0;
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
+      <span style="width:10px;height:10px;border-radius:2px;background:${cores[i%cores.length]};flex-shrink:0"></span>
+      <span style="flex:1;font-size:.82rem;font-weight:600;color:#1a1a1a">${nome}</span>
+      <span style="font-size:.76rem;color:#6b6b6b;white-space:nowrap">${(d.ent||0).toLocaleString('pt-BR')} ent · ${d.ped.toLocaleString('pt-BR')} ped · ${pctVal.toFixed(1).replace('.',',')}%</span>
+      <span style="font-size:.82rem;font-weight:700;color:#1a1a1a;min-width:120px;text-align:right">${fmtVal(d.val)}</span>
+    </div>`;
+  }).join('');
+  if(!linhas) return '';
+  return linhas + `<div style="display:flex;align-items:center;gap:10px;padding:10px 0 2px;margin-top:2px;border-top:2px solid #1a1a1a">
+      <span style="width:10px;flex-shrink:0"></span>
+      <span style="flex:1;font-size:.82rem;font-weight:800;color:#1a1a1a">TOTAL (${lista.length} rotas)</span>
+      <span style="font-size:.76rem;font-weight:700;color:#1a1a1a;white-space:nowrap">${g.ent.toLocaleString('pt-BR')} ent · ${g.ped.toLocaleString('pt-BR')} ped</span>
+      <span style="font-size:.84rem;font-weight:800;color:#1a1a1a;min-width:120px;text-align:right">${fmtVal(g.val)}</span>
+    </div>`;
+}
+
+// Dados do gráfico de rosca: 10 maiores rotas em ENTREGAS + "Demais rotas" (fecha 100%)
+function _dadosRoscaRotas(rotaCalc){
+  const ord = [...rotaCalc.todas].sort((a,b)=>(b[1].ent||0)-(a[1].ent||0) || b[1].ped-a[1].ped);
+  const top = ord.slice(0,10);
+  const resto = ord.slice(10);
+  const itens = top.map(([nome,d])=>({nome, ent:d.ent||0, ped:d.ped, val:d.val}));
+  if(resto.length) itens.push({ nome:'DEMAIS ROTAS', ent:resto.reduce((s,[,d])=>s+(d.ent||0),0), ped:resto.reduce((s,[,d])=>s+d.ped,0), val:resto.reduce((s,[,d])=>s+d.val,0) });
+  return itens;
+}
+function _opcoesRoscaRotas(itens, fmtVal){
+  const totalEnt = itens.reduce((s,x)=>s+x.ent,0) || 1;
+  return {
+    responsive:true, maintainAspectRatio:false, cutout:'52%',
+    plugins:{
+      legend:{ position:'bottom', labels:{ color:'#6b6b6b', font:{size:10,weight:'600'}, boxWidth:10, padding:8 } },
+      tooltip:{ callbacks:{ label: c=>{
+        const x = itens[c.dataIndex];
+        return [` ${x.nome}`, ` ${x.ent.toLocaleString('pt-BR')} entregas (${Math.round(x.ent/totalEnt*100)}%)`, ` ${x.ped.toLocaleString('pt-BR')} pedidos`, ` ${fmtVal(x.val)}`];
+      } } }
+    }
+  };
+}
+
+// Volume do mês por semana e por rota, conforme o filtro R.I./R.E./Todos:
+//  R.I.  → lançamentos (rotas internas nascem em Lançamento)
+//  R.E.  → Expedição (demandas_rota)
+//  Todos → interna (lançamentos) + externa (Expedição)
+async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, cargaIsRI){
+  if(rireSel === 'RI'){
+    return { semData:_calcPedidosPorSemana(bd, mes), rotaCalc:_calcEntregasPorRota(bd, cargaRota, cargaIsRI, 'RI') };
+  }
+  const exp = _agregarExpedicaoRE(await _carregarExpedicaoRE(undSel), {mesStr:mes});
+  // Cada carga cai numa única semana (a da saída), então a soma das semanas já é o total do mês
+  exp.semData.entMes = exp.semData.reduce((a,s)=>a+s.ent,0);
+  if(rireSel === 'RE'){
+    return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap) };
+  }
+  const ri = await _calcularBaseFiltrada(mes, 'RI', undSel);
+  const semRI = _calcPedidosPorSemana(ri.bd, mes);
+  const calcRI = _calcEntregasPorRota(ri.bd, ri.cargaRota, ri.cargaIsRI, 'RI');
+  const semData = semRI.map((s,i)=>({ ped:s.ped+exp.semData[i].ped, val:s.val+exp.semData[i].val, ent:(s.ent||0)+exp.semData[i].ent }));
+  semData.entMes = (semRI.entMes||0) + exp.semData.entMes;
+  const rotaMapRI = Object.fromEntries(calcRI.todas);
+  return { semData, rotaCalc:_montarRotaCalc(_somarRotaMaps(rotaMapRI, exp.rotaMap)) };
+}
+
 async function carregarPainelPedidosRotas(){
   const container = document.getElementById('painel-ind-pedidos-rotas-container');
   if(!container) return;
@@ -32936,9 +33121,10 @@ async function carregarPainelPedidosRotas(){
     const rireSel = window._painelIndRireSel || '';
     const hoje = hojeDataBRT();
 
+    // `bd` (lançamentos) continua sendo a base do OTIF; o VOLUME (pedidos, entregas e
+    // valor por semana/rota) da rota externa vem do que foi lançado em Expedição.
     const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
-    const semData   = _calcPedidosPorSemana(bd, mesAtual);
-    const rotaCalc  = _calcEntregasPorRota(bd, cargaRota, cargaIsRI, rireSel);
+    const { semData, rotaCalc } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI);
     // Força recálculo do cache de OTIF quando o mês filtrado é o corrente —
     // mesmo padrão do Dashboard Interno/Logístico/OTIF Diário/TV (todos já
     // faziam isso). Sem essa linha, esta aba era a única do sistema que podia
@@ -32963,31 +33149,26 @@ function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rire
   const fmtBR = d => String(d).padStart(2,'0');
   const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(ultimoDia)}/${fmtBR(mes)}`;
   const rireLabel = rireSel==='RI' ? ' · R.I. (INTERNA)' : rireSel==='RE' ? ' · R.E. (EXTERNA)' : ' · R.I. + R.E.';
-  const fmtVal = v => v>=1000?'R$ '+(v/1000).toFixed(1).replace('.',',')+'k':'R$ '+v.toFixed(0);
+  // Valor por extenso (nada de "k") — pedido do usuário, igual ao card anual.
+  const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 
   const maxPed = Math.max(...semData.map(s=>s.ped),1);
   const cardsPedidos = semData.map((s,i)=>{
     const destaque = s.ped===maxPed && s.ped>0;
-    return `<div style="flex:1;min-width:0;background:${destaque?'#1a1a1a':'#fff'};border:1px solid ${destaque?'#1a1a1a':'#e5e5e5'};border-radius:10px;padding:16px 14px;text-align:center">
+    return `<div style="flex:1;min-width:0;background:${destaque?'#1a1a1a':'#fff'};border:1px solid ${destaque?'#1a1a1a':'#e5e5e5'};border-radius:10px;padding:16px 10px;text-align:center">
       <div style="font-size:.66rem;font-weight:700;letter-spacing:.5px;color:${destaque?'#b8b8b8':'#8a8a8a'};text-transform:uppercase;margin-bottom:8px">S${i+1}</div>
       <div style="font-size:1.6rem;font-weight:700;color:${destaque?'#fff':'#1a1a1a'};line-height:1">${s.ped.toLocaleString('pt-BR')}</div>
-      <div style="font-size:.68rem;color:${destaque?'#b8b8b8':'#8a8a8a'};margin:2px 0 8px">pedidos</div>
-      <div style="font-size:.82rem;font-weight:700;color:${destaque?'#fff':'#1a1a1a'}">${fmtVal(s.val)}</div>
+      <div style="font-size:.68rem;color:${destaque?'#b8b8b8':'#8a8a8a'};margin:2px 0 2px">pedidos</div>
+      <div style="font-size:.74rem;font-weight:700;color:${destaque?'#fff':'#1a1a1a'};margin-bottom:6px">${(s.ent||0).toLocaleString('pt-BR')} entregas</div>
+      <div style="font-size:.74rem;font-weight:700;color:${destaque?'#fff':'#1a1a1a'};word-break:break-word">${fmtVal(s.val)}</div>
     </div>`;
   }).join('');
   const totalPedSem = semData.reduce((a,s)=>a+s.ped,0);
+  const totalEntSem = semData.entMes ?? semData.reduce((a,s)=>a+(s.ent||0),0);
   const totalValSem = semData.reduce((a,s)=>a+s.val,0);
 
   const coresRota = ['#1a1a1a','#4d4d4d','#7a7a7a','#a8a8a8','#8a8a8a','#5c5c5c','#c2c2c2','#3a3a3a','#969696','#6b6b6b'];
-  const listaRotas = rotaCalc.top.map(([nome,d],i)=>{
-    const pct = Math.round(d.ped/rotaCalc.totalPed*100);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
-      <span style="width:10px;height:10px;border-radius:2px;background:${coresRota[i%coresRota.length]};flex-shrink:0"></span>
-      <span style="flex:1;font-size:.82rem;font-weight:600;color:#1a1a1a">${nome}</span>
-      <span style="font-size:.78rem;color:#6b6b6b">${d.ped} ped · ${pct}%</span>
-      <span style="font-size:.82rem;font-weight:700;color:#1a1a1a;min-width:70px;text-align:right">${fmtVal(d.val)}</span>
-    </div>`;
-  }).join('');
+  const listaRotas = _htmlListaValorPorRota(rotaCalc, coresRota, fmtVal);
 
   // OTIF, No Prazo e Completo agora vêm do mesmo motor canônico do Dashboard
   // Interno/TV/Dashboard Logístico (total no-prazo-e-completo ÷ total geral
@@ -33036,7 +33217,7 @@ function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rire
       <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #1a1a1a;margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:16px">
           <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a">PEDIDOS POR SEMANA</div>
-          <div style="font-size:.78rem;color:#6b6b6b">${totalPedSem.toLocaleString('pt-BR')} pedidos no mês · ${fmtVal(totalValSem)}</div>
+          <div style="font-size:.78rem;color:#6b6b6b">${totalPedSem.toLocaleString('pt-BR')} pedidos · ${totalEntSem.toLocaleString('pt-BR')} entregas no mês · ${fmtVal(totalValSem)}</div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">${cardsPedidos}</div>
       </div>
@@ -33087,16 +33268,12 @@ function _renderGraficoPainelRotas(rotaCalc){
   if(_cPainelRotasPizza){ _cPainelRotasPizza.destroy(); _cPainelRotasPizza=null; }
   if(!ctx || !rotaCalc.top.length) return;
   const coresRota = ['#1a1a1a','#4d4d4d','#7a7a7a','#a8a8a8','#8a8a8a','#5c5c5c','#c2c2c2','#3a3a3a','#969696','#6b6b6b'];
+  const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const itens = _dadosRoscaRotas(rotaCalc);
   _cPainelRotasPizza = new Chart(ctx,{
     type:'doughnut',
-    data:{ labels: rotaCalc.labels, datasets:[{ data: rotaCalc.pedidos, backgroundColor: coresRota, borderWidth:3, borderColor:'#ffffff', hoverOffset:6 }] },
-    options:{
-      responsive:true, maintainAspectRatio:false, cutout:'52%',
-      plugins:{
-        legend:{ position:'bottom', labels:{ color:'#6b6b6b', font:{size:10,weight:'600'}, boxWidth:10, padding:8 } },
-        tooltip:{ callbacks:{ label: c=>' '+c.label+': '+c.raw.toLocaleString('pt-BR')+' ped ('+Math.round(c.raw/rotaCalc.totalPed*100)+'%)' } }
-      }
-    }
+    data:{ labels: itens.map(x=>x.nome), datasets:[{ data: itens.map(x=>x.ent), backgroundColor: coresRota.concat('#d9d9d9'), borderWidth:3, borderColor:'#ffffff', hoverOffset:6 }] },
+    options:_opcoesRoscaRotas(itens, fmtVal)
   });
 }
 
@@ -33120,26 +33297,43 @@ async function carregarPainelPedidosRotasAno(){
 
     const bMesPed = Array(12).fill(0);
     const bMesVal = Array(12).fill(0);
-    let bdAno = [];
-    const cargaRotaAno = {};
-    const cargaIsRIAno = {};
-    for(let m=1;m<=12;m++){
-      const mesStr = anoSel+'-'+String(m).padStart(2,'0');
-      if(mesStr > mesAtualStr) break;
-      const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesStr, rireSel, undSel).catch(()=>({bd:[],cargaRota:{},cargaIsRI:{}}));
-      Object.assign(cargaRotaAno, cargaRota);
-      Object.assign(cargaIsRIAno, cargaIsRI);
-      const semData = _calcPedidosPorSemana(bd, mesStr);
-      bMesPed[m-1] = semData.reduce((a,s)=>a+s.ped,0);
-      bMesVal[m-1] = semData.reduce((a,s)=>a+s.val,0);
-      bdAno = bdAno.concat(bd);
-    }
+    const bMesEnt = Array(12).fill(0);
+    let rotaCalc;
 
-    const rotaCalc = _calcEntregasPorRota(bdAno, cargaRotaAno, cargaIsRIAno, rireSel);
+    // R.E. (e a parte externa do "Todos") vem do que foi lançado em Expedição;
+    // R.I. (e a parte interna do "Todos") continua vindo de lançamentos.
+    const exp = rireSel !== 'RI' ? _agregarExpedicaoRE(await _carregarExpedicaoRE(undSel), {anoStr:anoSel}) : null;
+    if(rireSel === 'RE'){
+      exp.porMes.forEach((m,i)=>{ bMesPed[i]=m.ped; bMesVal[i]=m.val; bMesEnt[i]=m.ent; });
+      rotaCalc = _montarRotaCalc(exp.rotaMap);
+    } else {
+      const filtroLanc = 'RI';
+      let bdAno = [];
+      const cargaRotaAno = {};
+      const cargaIsRIAno = {};
+      for(let m=1;m<=12;m++){
+        const mesStr = anoSel+'-'+String(m).padStart(2,'0');
+        if(mesStr > mesAtualStr) break;
+        const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesStr, filtroLanc, undSel).catch(()=>({bd:[],cargaRota:{},cargaIsRI:{}}));
+        Object.assign(cargaRotaAno, cargaRota);
+        Object.assign(cargaIsRIAno, cargaIsRI);
+        const semData = _calcPedidosPorSemana(bd, mesStr);
+        bMesPed[m-1] = semData.reduce((a,s)=>a+s.ped,0);
+        bMesVal[m-1] = semData.reduce((a,s)=>a+s.val,0);
+        bMesEnt[m-1] = semData.entMes || 0;
+        bdAno = bdAno.concat(bd);
+      }
+      rotaCalc = _calcEntregasPorRota(bdAno, cargaRotaAno, cargaIsRIAno, filtroLanc);
+      if(exp){
+        exp.porMes.forEach((m,i)=>{ bMesPed[i]+=m.ped; bMesVal[i]+=m.val; bMesEnt[i]+=m.ent; });
+        rotaCalc = _montarRotaCalc(_somarRotaMaps(Object.fromEntries(rotaCalc.todas), exp.rotaMap));
+      }
+    }
     const totalPed = bMesPed.reduce((a,b)=>a+b,0);
     const totalVal = bMesVal.reduce((a,b)=>a+b,0);
+    const totalEnt = bMesEnt.reduce((a,b)=>a+b,0);
 
-    container.innerHTML = _renderCardPedidosRotasAno({ anoSel, rireSel, bMesPed, bMesVal, totalPed, totalVal, rotaCalc });
+    container.innerHTML = _renderCardPedidosRotasAno({ anoSel, rireSel, bMesPed, bMesVal, bMesEnt, totalPed, totalVal, totalEnt, rotaCalc });
     _renderGraficoPainelRotasAno(rotaCalc);
   } catch(e){
     console.error('Erro ao carregar Pedidos & Rotas (ano):', e);
@@ -33147,7 +33341,7 @@ async function carregarPainelPedidosRotasAno(){
   }
 }
 
-function _renderCardPedidosRotasAno({anoSel, rireSel, bMesPed, bMesVal, totalPed, totalVal, rotaCalc}){
+function _renderCardPedidosRotasAno({anoSel, rireSel, bMesPed, bMesVal, bMesEnt, totalPed, totalVal, totalEnt, rotaCalc}){
   const NOMES_MES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
   // Por extenso, não abreviado (nada de "k") — pedido do usuário em 2026-09-28.
   const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -33164,8 +33358,9 @@ function _renderCardPedidosRotasAno({anoSel, rireSel, bMesPed, bMesVal, totalPed
     const alturaPct = Math.min(100, (v/eixoMax)*100);
     const acimaMedia = v > mediaPedMensal;
     const alturaBase = Math.max(alturaPct, v>0?1.5:0);
+    const dica = `${NOMES_MES[i]}: ${v.toLocaleString('pt-BR')} pedidos · ${((bMesEnt||[])[i]||0).toLocaleString('pt-BR')} entregas · ${fmtVal(bMesVal[i])}`;
     return `
-      <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;${futuro?'opacity:.4':''}">
+      <div title="${dica}" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;${futuro?'opacity:.4':''}">
         <div style="font-size:.6rem;font-weight:700;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v>0?v.toLocaleString('pt-BR'):''}</div>
         <div style="position:relative;width:100%;max-width:32px;height:120px;display:flex;align-items:flex-end">
           <div style="width:100%;height:${alturaBase}%;background:${acimaMedia ? 'linear-gradient(180deg,#1a1a1a 0%,#1a1a1a '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%,#b8b8b8 '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%)' : '#b8b8b8'};border-radius:2px 2px 0 0"></div>
@@ -33175,15 +33370,7 @@ function _renderCardPedidosRotasAno({anoSel, rireSel, bMesPed, bMesVal, totalPed
   }).join('');
 
   const coresRota = ['#1a1a1a','#4d4d4d','#7a7a7a','#a8a8a8','#8a8a8a','#5c5c5c','#c2c2c2','#3a3a3a','#969696','#6b6b6b'];
-  const listaRotas = rotaCalc.top.map(([nome,d],i)=>{
-    const pct = Math.round(d.ped/rotaCalc.totalPed*100);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
-      <span style="width:10px;height:10px;border-radius:2px;background:${coresRota[i%coresRota.length]};flex-shrink:0"></span>
-      <span style="flex:1;font-size:.82rem;font-weight:600;color:#1a1a1a">${nome}</span>
-      <span style="font-size:.78rem;color:#6b6b6b">${d.ped} ped · ${pct}%</span>
-      <span style="font-size:.82rem;font-weight:700;color:#1a1a1a;min-width:70px;text-align:right">${fmtVal(d.val)}</span>
-    </div>`;
-  }).join('');
+  const listaRotas = _htmlListaValorPorRota(rotaCalc, coresRota, fmtVal);
 
   return `
     <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
@@ -33200,6 +33387,14 @@ function _renderCardPedidosRotasAno({anoSel, rireSel, bMesPed, bMesVal, totalPed
             <div>
               <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">MÉDIA MENSAL</div>
               <div style="font-size:1rem;font-weight:600">${mediaPedMensal.toFixed(0)} pedidos</div>
+            </div>
+            <div>
+              <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">ENTREGAS</div>
+              <div style="font-size:1rem;font-weight:600">${(totalEnt||0).toLocaleString('pt-BR')}</div>
+            </div>
+            <div>
+              <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">VALOR NO ANO</div>
+              <div style="font-size:1rem;font-weight:600">${fmtVal(totalVal)}</div>
             </div>
           </div>
           <div style="border-top:1px solid #e5e5e5;padding-top:20px">
@@ -33232,16 +33427,12 @@ function _renderGraficoPainelRotasAno(rotaCalc){
   if(_cPainelRotasPizzaAno){ _cPainelRotasPizzaAno.destroy(); _cPainelRotasPizzaAno=null; }
   if(!ctx || !rotaCalc.top.length) return;
   const coresRota = ['#1a1a1a','#4d4d4d','#7a7a7a','#a8a8a8','#8a8a8a','#5c5c5c','#c2c2c2','#3a3a3a','#969696','#6b6b6b'];
+  const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const itens = _dadosRoscaRotas(rotaCalc);
   _cPainelRotasPizzaAno = new Chart(ctx,{
     type:'doughnut',
-    data:{ labels: rotaCalc.labels, datasets:[{ data: rotaCalc.pedidos, backgroundColor: coresRota, borderWidth:3, borderColor:'#ffffff', hoverOffset:6 }] },
-    options:{
-      responsive:true, maintainAspectRatio:false, cutout:'52%',
-      plugins:{
-        legend:{ position:'bottom', labels:{ color:'#6b6b6b', font:{size:10,weight:'600'}, boxWidth:10, padding:8 } },
-        tooltip:{ callbacks:{ label: c=>' '+c.label+': '+c.raw.toLocaleString('pt-BR')+' ped ('+Math.round(c.raw/rotaCalc.totalPed*100)+'%)' } }
-      }
-    }
+    data:{ labels: itens.map(x=>x.nome), datasets:[{ data: itens.map(x=>x.ent), backgroundColor: coresRota.concat('#d9d9d9'), borderWidth:3, borderColor:'#ffffff', hoverOffset:6 }] },
+    options:_opcoesRoscaRotas(itens, fmtVal)
   });
 }
 
