@@ -2907,6 +2907,9 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('prazo-formacao')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="prazo-formacao">
       <span data-feather="clock" style="width:15px;height:15px"></span> Prazo Formação→Entrega
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('produtividade')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="produtividade">
+      <span data-feather="award" style="width:15px;height:15px"></span> Produtividade
+    </button>
   </div>
 
   <!-- ABA 1a: Absenteísmo Expedição -->
@@ -2947,6 +2950,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando indicadores de disponibilidade...</p>
     </div>
     <div id="painel-ind-disponibilidade-container-ano" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+  </div>
+
+  <!-- ABA: Produtividade Motoristas e Ajudantes (visão anual, só valores) -->
+  <div id="aba-produtividade" class="painel-ind-aba" style="display:none">
+    <div id="painel-ind-produtividade-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Calculando produtividade do ano...</p></div>
   </div>
 
   <!-- ABA 4: Cargas Conferidas no Prazo -->
@@ -9071,7 +9079,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.8';
+const APP_VERSION = '4.89.9';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -30005,6 +30013,7 @@ function mudarAbaIndicadores(aba){
   else if(aba === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
   else if(aba === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
   else if(aba === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
+  else if(aba === 'produtividade') { carregarPainelProdutividadeAno(); }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -31041,6 +31050,75 @@ function _passaFiltroRire(rota, rireSel){
   return rireSel === 'RI' ? isRI : !isRI;
 }
 
+// ── Painel de Indicadores → aba Produtividade: SÓ O TOTAL DE ENTREGAS de motoristas e de ajudantes, mês a mês no ano ──
+// Mesma conta da tela Produtividade (gerarPagamentos em modo silencioso): entregas = pedidos sem
+// ocorrência. Motorista conta só rota interna (R.I.; a externa é paga por KM); ajudante conta R.I. + R.E.
+// Sem nomes: apenas os totais por mês. Respeita o ano e a unidade escolhidos no topo do painel
+// (o filtro R.I./R.E. não se aplica aqui). Pedido do usuário, 2026-10-05.
+let _prodPainelSeq = 0;
+async function carregarPainelProdutividadeAno(){
+  const container = document.getElementById('painel-ind-produtividade-container');
+  if(!container) return;
+  const seq = ++_prodPainelSeq;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Calculando produtividade do ano...</p>';
+  try{
+    const ano = _anoSelPainelIndicadores();
+    const undSel = window._painelIndUndSel || '';
+    const linhas = await gerarPagamentos(null, {silencioso:true, mesSel:''});
+    if(seq !== _prodPainelSeq) return; // veio uma chamada mais nova (troca de ano/unidade)
+    const MESES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
+    const doAno = (linhas||[]).filter(p => (p.mes_ano||'').slice(0,4)===ano && (!undSel || (p.und||'').trim()===undSel));
+    const totaisPorMes = tipo => {
+      const meses = Array(12).fill(0);
+      doAno.filter(p=>p.tipo===tipo).forEach(p=>{
+        const m = parseInt((p.mes_ano||'').slice(5,7),10)-1;
+        if(m>=0 && m<12) meses[m] += (p.entregas||0);
+      });
+      return meses;
+    };
+    const mot = totaisPorMes('motorista'), aj = totaisPorMes('ajudante');
+    const soma = a => a.reduce((x,y)=>x+y,0);
+    const fmt = v => v ? v.toLocaleString('pt-BR') : '<span style="color:#c4c4c4">–</span>';
+    const th = 'padding:12px 8px;text-align:right;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;border-bottom:2px solid #1a1a1a';
+    const td = 'padding:18px 8px;text-align:right;font-size:1.05rem;font-weight:600;font-variant-numeric:tabular-nums;color:#1a1a1a;border-bottom:1px solid #ececec';
+    const linha = (rotulo, arr) => `<tr>
+        <td style="padding:18px 8px;font-size:.8rem;font-weight:700;letter-spacing:1px;color:#1a1a1a;border-bottom:1px solid #ececec;white-space:nowrap">${rotulo}</td>
+        ${arr.map(v=>'<td style="'+td+'">'+fmt(v)+'</td>').join('')}
+        <td style="${td};font-weight:800;border-left:1px solid #dcdcdc">${fmt(soma(arr))}</td>
+      </tr>`;
+    container.innerHTML = `
+      <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;margin-bottom:24px;position:relative">
+        <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:#fff;border:1px solid #d8d8d8;border-radius:8px;padding:7px 12px;font-size:.74rem;font-weight:700;color:#1a1a1a;cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">📷 Baixar Imagem</button>
+        <div style="font-size:.72rem;font-weight:700;letter-spacing:2px;color:#8a8a8a">INDICADOR · PRODUTIVIDADE · ${ano}${undSel?' · '+undSel:''}</div>
+        <h2 style="font-size:2.4rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Produtividade — Motoristas e Ajudantes</h2>
+        <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 24px"></div>
+        <div style="background:#fff;border-radius:10px;padding:22px 24px;border-top:3px solid #1a1a1a;overflow-x:auto">
+          <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:6px">ENTREGAS POR MÊS · TOTAL DE CADA MÊS</div>
+          <div style="font-size:.66rem;color:#8a8a8a;margin-bottom:14px">Entregas = pedidos entregues sem ocorrência. Motorista conta só rota interna (R.I.), pois a rota externa é paga por KM; ajudante conta rota interna e externa.</div>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr>
+              <th style="${th};text-align:left"></th>
+              ${MESES.map(m=>'<th style="'+th+'">'+m+'</th>').join('')}
+              <th style="${th};color:#1a1a1a;border-left:1px solid #dcdcdc">TOTAL</th>
+            </tr></thead>
+            <tbody>
+              ${linha('MOTORISTAS', mot)}
+              ${linha('AJUDANTES', aj)}
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:24px;padding-top:14px;border-top:1px solid #e0e0e0;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
+          <span>PAINEL DE INDICADORES · VISÃO ANUAL</span>
+          <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
+        </div>
+      </div>`;
+  }catch(e){
+    if(seq !== _prodPainelSeq) return;
+    console.error('carregarPainelProdutividadeAno:', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao calcular a produtividade: '+e.message+'</p>';
+  }
+}
+
 function _recarregarAbaAtivaPainelIndicadores(){
   const abaAtiva = document.querySelector('.painel-ind-tab.active')?.dataset.aba || 'abs-expedicao';
   if(abaAtiva === 'abs-armazem') { carregarPainelAbsArmazem(); carregarPainelAbsArmazemAno(); }
@@ -31058,6 +31136,7 @@ function _recarregarAbaAtivaPainelIndicadores(){
   // recarregava essa aba, dava a impressão de que o filtro simplesmente não
   // existia.
   else if(abaAtiva === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
+  else if(abaAtiva === 'produtividade') { carregarPainelProdutividadeAno(); }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -42585,10 +42664,15 @@ function formatarMesAno(m){
   return `${nomes[parseInt(mes)]}/${ano}`;
 }
 
-async function gerarPagamentos(btn){
-  const mesSel = document.getElementById('fin-filtro-mes')?.value || '';
-  btn.textContent = '⏳ Gerando...';
-  btn.disabled = true;
+async function gerarPagamentos(btn, opts){
+  // opts.silencioso: só calcula e RETORNA as linhas (não renderiza nem altera a tela Produtividade nem
+  // os avisos globais) — usado pela aba Produtividade do Painel de Indicadores. opts.mesSel força o
+  // mês ('' = todos os meses).
+  opts = opts || {};
+  const silencioso = !!opts.silencioso;
+  const mesSel = (opts.mesSel !== undefined) ? opts.mesSel : (document.getElementById('fin-filtro-mes')?.value || '');
+  const _bkGlobais = silencioso ? { pend:_pagamentosMotoristaPendente, div:_pagamentosDivergentes, fora:_foraDeUnidade } : null;
+  if(btn){ btn.textContent = '⏳ Gerando...'; btn.disabled = true; }
 
   try {
     // Mesma lógica do renderBonus — getValorRota para valores por rota
@@ -42968,7 +43052,7 @@ async function gerarPagamentos(btn){
     historico.forEach(h=>{ histMap[h.nome+'__'+h.mes_ano] = h; });
 
     // Montar cache de pagamentos com status
-    _pagamentosCache = Object.values(pessoaMap).map(p=>{
+    const _linhasPag = Object.values(pessoaMap).map(p=>{
       const ex = histMap[p.nome+'__'+p.mes_ano];
       return {
         ...p,
@@ -42978,6 +43062,8 @@ async function gerarPagamentos(btn){
         observacao:  ex?.observacao || ''
       };
     }).sort((a,b)=>b.total-a.total);
+    if(silencioso) return _linhasPag;
+    _pagamentosCache = _linhasPag;
 
     _popularFiltrosDoCache();
     renderTabelaFinanceiro();
@@ -42988,10 +43074,11 @@ async function gerarPagamentos(btn){
       : '';
     showToast(`✅ ${_pagamentosCache.length} registros gerados!${_avisoMotPendente}`, _qtdMotPendente ? 'warning' : 'success');
   } catch(e){
+    if(silencioso) throw e;
     showToast('Erro: '+e.message, 'warning');
   } finally {
-    btn.textContent = '⚡ Carregar';
-    btn.disabled = false;
+    if(btn){ btn.textContent = '⚡ Carregar'; btn.disabled = false; }
+    if(_bkGlobais){ _pagamentosMotoristaPendente = _bkGlobais.pend; _pagamentosDivergentes = _bkGlobais.div; _foraDeUnidade = _bkGlobais.fora; }
   }
 }
 
