@@ -3562,11 +3562,22 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <button onclick="_evvCache={};carregarEvolucaoVendasComercial()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
   </div>
   <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-    <label style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Mês
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Visão
+      <select id="evv-periodo" onchange="evvMudouPeriodo()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)">
+        <option value="mes">Mês</option><option value="ano">Ano</option>
+      </select>
+    </label>
+    <label id="evv-wrap-mes" style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Mês
       <input type="month" id="evv-mes" onchange="evvMudouMeses(true)" style="border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)">
     </label>
-    <label style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Comparar com
+    <label id="evv-wrap-mes-comp" style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Comparar com
       <input type="month" id="evv-mes-comp" onchange="evvMudouMeses(false)" style="border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)">
+    </label>
+    <label id="evv-wrap-ano" style="display:none;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Ano
+      <input type="number" id="evv-ano" min="2020" max="2100" step="1" onchange="evvMudouMeses(true)" style="width:96px;border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)">
+    </label>
+    <label id="evv-wrap-ano-comp" style="display:none;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Comparar com
+      <input type="number" id="evv-ano-comp" min="2020" max="2100" step="1" onchange="evvMudouMeses(false)" style="width:96px;border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)">
     </label>
     <label style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;flex:1;min-width:200px">Rota
       <select id="evv-rota" onchange="renderEvolucaoVendasComercial()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)"><option value="">Todas as rotas</option></select>
@@ -47111,140 +47122,225 @@ async function abrirDetalheClienteVendedor(clienteEncoded){
 // Vendas = pedidos da integração ERP (pedidos_info_erp) pela DATA DO PEDIDO, sem
 // cancelados (situação CA). Rota = rota da carga (Expedição → lançamento → base_data);
 // pedido sem carga e carga sem rota aparecem em grupos próprios, sem chutar rota.
-// A agregação por dia/rota é feita no banco (rpc vendas_diarias_por_rota).
+// A agregação é feita no banco: vendas_diarias_por_rota (visão Mês, eixo = dias)
+// e vendas_mensais_por_rota (visão Ano, eixo = meses). Uma chamada por mês/ano,
+// porque o PostgREST corta respostas em 1000 linhas.
 let _evvCache = {};
-let _evvDados = null;          // { mesA, mesB, rotas:{ nome:{ A:{valor[],pedidos[]}, B:{...} } } }
+let _evvDados = null;          // { modo, A, B, rotas:{ nome:{ A:{valor[],pedidos[]}, B:{...}, BF? } } }
 let _evvChartPrincipal = null;
 let _evvChartsRotas = [];
 const _EVV_COR_A = '#2563eb', _EVV_COR_B = '#f59e0b';
 const _EVV_GRUPOS_ESPECIAIS = ['SEM CARGA','CARGA SEM ROTA'];
+const _EVV_MESES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
 
+function _evvModo(){ const el = document.getElementById('evv-periodo'); return el && el.value==='ano' ? 'ano' : 'mes'; }
 function _evvMesAnterior(mes){ const [y,m] = mes.split('-').map(Number); return m===1 ? (y-1)+'-12' : y+'-'+String(m-1).padStart(2,'0'); }
-function _evvDiasNoMes(mes){ const [y,m] = mes.split('-').map(Number); return new Date(y,m,0).getDate(); }
-function _evvNomeMes(mes){ const [y,m] = mes.split('-').map(Number); const n=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez']; return n[m-1]+'/'+String(y).slice(2); }
+function _evvDiasNoMes(ano,mes){ return new Date(ano,mes,0).getDate(); }
+function _evvNomeMes(mes){ const [y,m] = mes.split('-').map(Number); return _EVV_MESES[m-1]+'/'+String(y).slice(2); }
 const _evvFmtRS = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const _evvFmtCompacto = v => { const a=Math.abs(v); return a>=1e6 ? (v/1e6).toLocaleString('pt-BR',{maximumFractionDigits:1})+' mi' : a>=1e3 ? (v/1e3).toLocaleString('pt-BR',{maximumFractionDigits:0})+' mil' : String(Math.round(v)); };
+const _evvNomeLado = (modo,v) => modo==='ano' ? String(v) : _evvNomeMes(v);
 
 async function carregarEvolucaoVendasComercial(){
-  const elMes = document.getElementById('evv-mes'), elComp = document.getElementById('evv-mes-comp');
+  const elMes = document.getElementById('evv-mes');
   if(!elMes) return;
-  if(!elMes.value){ const mesHoje = hojeDataBRT().slice(0,7); elMes.value = mesHoje; elComp.value = _evvMesAnterior(mesHoje); }
+  if(!elMes.value){
+    const hoje = hojeDataBRT();
+    elMes.value = hoje.slice(0,7);
+    document.getElementById('evv-mes-comp').value = _evvMesAnterior(hoje.slice(0,7));
+    document.getElementById('evv-ano').value = hoje.slice(0,4);
+    document.getElementById('evv-ano-comp').value = String(Number(hoje.slice(0,4))-1);
+  }
+  _evvAjustarCamposPeriodo();
   await evvMudouMeses(false);
 }
 
-// mudouMes=true quando o usuário trocou o "Mês": o "Comparar com" acompanha (mês anterior)
-async function evvMudouMeses(mudouMes){
+function _evvAjustarCamposPeriodo(){
+  const ano = _evvModo()==='ano';
+  const show = (id,v)=>{ const el=document.getElementById(id); if(el) el.style.display = v ? 'flex' : 'none'; };
+  show('evv-wrap-mes',!ano); show('evv-wrap-mes-comp',!ano); show('evv-wrap-ano',ano); show('evv-wrap-ano-comp',ano);
+  const opt = document.querySelector('#evv-visao option[value="dia"]');
+  if(opt) opt.textContent = ano ? 'Mês a mês' : 'Dia a dia';
+  const opt2 = document.querySelector('#evv-visao option[value="acum"]');
+  if(opt2) opt2.textContent = ano ? 'Acumulada no ano' : 'Acumulada no mês';
+}
+
+// Trocou Mês/Ano: volta a comparar com o período imediatamente anterior
+async function evvMudouPeriodo(){
+  _evvAjustarCamposPeriodo();
+  await evvMudouMeses(true);
+}
+
+async function _evvBuscar(fn, ini, fim){
+  const chave = fn+'|'+ini+'|'+fim;
+  const c = _evvCache[chave];
+  if(c && Date.now()-c.ts < 60000) return c.rows;
+  const rows = await supaFetch('rpc/'+fn,{method:'POST',body:JSON.stringify({p_ini:ini,p_fim:fim})}) || [];
+  _evvCache[chave] = { ts:Date.now(), rows };
+  return rows;
+}
+
+function _evvNovaRota(){ return { A:{valor:Array(31).fill(0),pedidos:Array(31).fill(0)}, B:{valor:Array(31).fill(0),pedidos:Array(31).fill(0)}, BF:null }; }
+function _evvNomeRota(r){ return _EVV_GRUPOS_ESPECIAIS.includes(r) ? r : (normalizarRota(r) || r); }
+
+// mudouPrimeiro=true quando o usuário trocou o período principal: a comparação acompanha (período anterior)
+async function evvMudouMeses(mudouPrimeiro){
+  const modo = _evvModo();
   const elMes = document.getElementById('evv-mes'), elComp = document.getElementById('evv-mes-comp');
-  if(!elMes.value) return;
-  if(mudouMes || !elComp.value) elComp.value = _evvMesAnterior(elMes.value);
+  const elAno = document.getElementById('evv-ano'), elAnoComp = document.getElementById('evv-ano-comp');
+  if(modo==='mes'){
+    if(!elMes.value) return;
+    if(mudouPrimeiro || !elComp.value) elComp.value = _evvMesAnterior(elMes.value);
+  }else{
+    if(!elAno.value) return;
+    if(mudouPrimeiro || !elAnoComp.value) elAnoComp.value = String(Number(elAno.value)-1);
+  }
   const grid = document.getElementById('evv-grid');
   if(grid) grid.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted);grid-column:1/-1">Carregando...</p>';
   try{
-    const mesA = elMes.value, mesB = elComp.value;
-    const menor = mesA < mesB ? mesA : mesB, maior = mesA < mesB ? mesB : mesA;
-    const ini = menor+'-01', fim = _proximoMes(maior)+'-01';
-    const chave = ini+'|'+fim;
-    if(!_evvCache[chave] || Date.now()-_evvCache[chave].ts > 60000){
-      const rows = await supaFetch('rpc/vendas_diarias_por_rota',{method:'POST',body:JSON.stringify({p_ini:ini,p_fim:fim})}) || [];
-      _evvCache[chave] = { ts:Date.now(), rows };
-    }
+    const A = modo==='mes' ? elMes.value : elAno.value;
+    const B = modo==='mes' ? elComp.value : elAnoComp.value;
+    const hoje = hojeDataBRT();
     const rotas = {};
-    _evvCache[chave].rows.forEach(r=>{
-      const mes = String(r.dia).slice(0,7);
-      const lado = mes===mesA ? 'A' : mes===mesB ? 'B' : null;
-      if(!lado) return;
-      const nome = _EVV_GRUPOS_ESPECIAIS.includes(r.rota) ? r.rota : (normalizarRota(r.rota) || r.rota);
-      if(!rotas[nome]) rotas[nome] = { A:{valor:Array(31).fill(0),pedidos:Array(31).fill(0)}, B:{valor:Array(31).fill(0),pedidos:Array(31).fill(0)} };
-      const d = Number(String(r.dia).slice(8,10)) - 1;
-      rotas[nome][lado].valor[d]   += Number(r.valor)||0;
-      rotas[nome][lado].pedidos[d] += Number(r.pedidos)||0;
+    const acumular = (rows, lado) => rows.forEach(r=>{
+      const nome = _evvNomeRota(r.rota);
+      const idx = modo==='mes' ? Number(String(r.dia).slice(8,10))-1 : Number(String(r.mes).slice(5,7))-1;
+      const o = (rotas[nome] ||= _evvNovaRota());
+      o[lado].valor[idx]   += Number(r.valor)||0;
+      o[lado].pedidos[idx] += Number(r.pedidos)||0;
     });
-    _evvDados = { mesA, mesB, rotas };
+    let rowsA, rowsB;
+    if(modo==='mes'){
+      const pr = m => [m+'-01', _proximoMes(m)+'-01'];
+      [rowsA, rowsB] = await Promise.all([ _evvBuscar('vendas_diarias_por_rota',...pr(A)), _evvBuscar('vendas_diarias_por_rota',...pr(B)) ]);
+    }else{
+      const pr = y => [y+'-01-01', (Number(y)+1)+'-01-01'];
+      [rowsA, rowsB] = await Promise.all([ _evvBuscar('vendas_mensais_por_rota',...pr(A)), _evvBuscar('vendas_mensais_por_rota',...pr(B)) ]);
+    }
+    acumular(rowsA,'A'); acumular(rowsB,'B');
+    // Visão Ano com o ano em andamento: o ano de comparação, para o KPI, vai só até a mesma data de hoje
+    if(modo==='ano' && A===hoje.slice(0,4)){
+      const mm = Number(hoje.slice(5,7)), dd = Math.min(Number(hoje.slice(8,10)), _evvDiasNoMes(Number(B),mm));
+      const fim = new Date(Date.UTC(Number(B),mm-1,dd+1)).toISOString().slice(0,10);
+      const rowsBF = await _evvBuscar('vendas_mensais_por_rota', B+'-01-01', fim);
+      rowsBF.forEach(r=>{ const o = (rotas[_evvNomeRota(r.rota)] ||= _evvNovaRota()); o.BF ||= {valor:0,pedidos:0}; o.BF.valor += Number(r.valor)||0; o.BF.pedidos += Number(r.pedidos)||0; });
+      Object.values(rotas).forEach(o=>{ o.BF ||= {valor:0,pedidos:0}; });
+    }
+    _evvDados = { modo, A, B, rotas };
     // lista de rotas no seletor (maiores primeiro), mantendo a escolha atual
     const sel = document.getElementById('evv-rota'), atual = sel.value;
-    const ordem = Object.entries(rotas).map(([n,d])=>[n, d.A.valor.reduce((a,b)=>a+b,0)+d.B.valor.reduce((a,b)=>a+b,0)]).sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
+    const soma = a => a.reduce((x,y)=>x+y,0);
+    const ordem = Object.entries(rotas).map(([n,d])=>[n, soma(d.A.valor)+soma(d.B.valor)]).sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
     sel.innerHTML = '<option value="">Todas as rotas</option>' + ordem.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
     if(ordem.includes(atual)) sel.value = atual;
+    // avisos de cobertura dos dados (fatos do banco, sem suposição)
+    const avisos = [];
+    const anoDe = v => Number(String(v).slice(0,4));
+    if([A,B].some(v => modo==='mes' ? v < '2026-05' : anoDe(v) < 2026))
+      avisos.push('A integração com o ERP começou em maio/2026 — antes disso não há pedidos no sistema, então esse período aparece vazio.');
+    const temMaioJun = v => modo==='mes' ? (v==='2026-05'||v==='2026-06') : anoDe(v)===2026;
+    if([A,B].some(temMaioJun))
+      avisos.push('Maio e junho/2026 só têm os pedidos que já estavam em carga; os pedidos sem carga só entram a partir de julho. Para comparar esses meses de forma justa, desmarque "incluir pedidos sem carga / carga sem rota".');
     const aviso = document.getElementById('evv-aviso');
-    if(menor < '2026-05'){ aviso.style.display='block'; aviso.textContent = 'A integração com o ERP começou em maio/2026 — antes disso não há pedidos no sistema, então o mês de comparação aparece vazio.'; }
-    else aviso.style.display = 'none';
+    aviso.style.display = avisos.length ? 'block' : 'none';
+    aviso.innerHTML = avisos.map(escapeHtml).join('<br>');
     renderEvolucaoVendasComercial();
   }catch(e){
     if(grid) grid.innerHTML = `<p style="color:#dc2626;padding:20px;grid-column:1/-1">⚠️ Erro ao carregar vendas: ${escapeHtml(e.message)}</p>`;
   }
 }
 
-// Série diária (ou acumulada) de um lado (A/B) somando as rotas escolhidas
-function _evvSerie(rotasEscolhidas, lado, metrica, visao, dias, corteDia){
-  const diario = Array(dias).fill(0);
-  rotasEscolhidas.forEach(d=>{ for(let i=0;i<dias;i++) diario[i] += d[lado][metrica][i] || 0; });
+// Série do lado A/B somando as rotas escolhidas (diária/mensal ou acumulada); corte → null depois dele
+function _evvSerie(rotasEscolhidas, lado, metrica, visao, n, corte){
+  const base = Array(n).fill(0);
+  rotasEscolhidas.forEach(d=>{ for(let i=0;i<n;i++) base[i] += d[lado][metrica][i] || 0; });
   const serie = []; let acc = 0;
-  for(let i=0;i<dias;i++){
-    if(corteDia != null && i+1 > corteDia){ serie.push(null); continue; }
-    acc += diario[i];
-    serie.push(visao==='acum' ? acc : diario[i]);
+  for(let i=0;i<n;i++){
+    if(corte != null && i+1 > corte){ serie.push(null); continue; }
+    acc += base[i];
+    serie.push(visao==='acum' ? acc : base[i]);
   }
   return serie;
 }
-function _evvTotalAteDia(rotasEscolhidas, lado, metrica, ateDia){
+function _evvTotalA(rotasEscolhidas, metrica, corte){
   let t = 0;
-  rotasEscolhidas.forEach(d=>{ for(let i=0;i<Math.min(ateDia,31);i++) t += d[lado][metrica][i] || 0; });
+  rotasEscolhidas.forEach(d=>{ for(let i=0;i<Math.min(corte,31);i++) t += d.A[metrica][i] || 0; });
+  return t;
+}
+// Comparação "até o mesmo ponto": mês → mesmos dias; ano em andamento → até a mesma data (BF); senão o período todo
+function _evvTotalB(rotasEscolhidas, metrica, corte, fechado){
+  let t = 0;
+  rotasEscolhidas.forEach(d=>{
+    if(!fechado && d.BF) t += d.BF[metrica];
+    else for(let i=0;i<Math.min(fechado ? 31 : corte,31);i++) t += d.B[metrica][i] || 0;
+  });
   return t;
 }
 
 function renderEvolucaoVendasComercial(){
   if(!_evvDados) return;
-  const { mesA, mesB, rotas } = _evvDados;
+  const { modo, A, B, rotas } = _evvDados;
   const metrica = document.getElementById('evv-metrica').value;
   const visao = document.getElementById('evv-visao').value;
   const rotaSel = document.getElementById('evv-rota').value;
   const incluirEsp = document.getElementById('evv-incluir-sem-rota').checked;
   const fmt = metrica==='valor' ? _evvFmtRS : v=>Number(v||0).toLocaleString('pt-BR')+' ped';
 
-  const diasA = _evvDiasNoMes(mesA), diasB = _evvDiasNoMes(mesB), dias = Math.max(diasA, diasB);
   const hoje = hojeDataBRT();
-  // Mês em andamento: a linha para no dia de hoje, e a comparação é "até o mesmo dia"
-  const corteA = mesA === hoje.slice(0,7) ? Number(hoje.slice(8,10)) : (mesA > hoje.slice(0,7) ? 0 : diasA);
-  const labels = Array.from({length:dias}, (_,i)=>String(i+1));
+  let n, labels, corte, emAndamento, sufixoAndamento = '';
+  if(modo==='mes'){
+    const [yA,mA] = A.split('-').map(Number), [yB,mB] = B.split('-').map(Number);
+    const diasA = _evvDiasNoMes(yA,mA);
+    n = Math.max(diasA, _evvDiasNoMes(yB,mB));
+    labels = Array.from({length:n}, (_,i)=>String(i+1));
+    corte = A === hoje.slice(0,7) ? Number(hoje.slice(8,10)) : (A > hoje.slice(0,7) ? 0 : diasA);
+    emAndamento = corte < diasA;
+    sufixoAndamento = ` (até dia ${corte})`;
+  }else{
+    n = 12; labels = _EVV_MESES.slice();
+    corte = A === hoje.slice(0,4) ? Number(hoje.slice(5,7)) : (A > hoje.slice(0,4) ? 0 : 12);
+    emAndamento = A === hoje.slice(0,4);
+    sufixoAndamento = ` (até ${hoje.slice(8,10)}/${hoje.slice(5,7)})`;
+  }
 
-  const nomesVisiveis = Object.keys(rotas).filter(n => incluirEsp || !_evvGruposEspeciaisInclui(n));
-  const escolhidas = rotaSel ? [rotas[rotaSel]].filter(Boolean) : nomesVisiveis.map(n=>rotas[n]);
+  const nomesVisiveis = Object.keys(rotas).filter(nm => incluirEsp || !_EVV_GRUPOS_ESPECIAIS.includes(nm));
+  const escolhidas = rotaSel ? [rotas[rotaSel]].filter(Boolean) : nomesVisiveis.map(nm=>rotas[nm]);
 
   // KPIs
-  const totA = _evvTotalAteDia(escolhidas,'A',metrica,corteA);
-  const totBmesmoDia = _evvTotalAteDia(escolhidas,'B',metrica,corteA);
-  const totBfechado = _evvTotalAteDia(escolhidas,'B',metrica,31);
+  const totA = _evvTotalA(escolhidas, metrica, corte);
+  const totBigual = _evvTotalB(escolhidas, metrica, corte, false);
+  const totBfechado = _evvTotalB(escolhidas, metrica, corte, true);
   const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
-  const emAndamento = corteA < diasA;
-  set('evv-kpi-a-lbl', _evvNomeMes(mesA) + (emAndamento ? ` (até dia ${corteA})` : ''));
+  set('evv-kpi-a-lbl', _evvNomeLado(modo,A) + (emAndamento ? sufixoAndamento : ''));
   set('evv-kpi-a', fmt(totA));
-  set('evv-kpi-b-lbl', _evvNomeMes(mesB) + (emAndamento ? ` (até dia ${corteA})` : ''));
-  set('evv-kpi-b', fmt(totBmesmoDia));
-  set('evv-kpi-bt-lbl', _evvNomeMes(mesB)+' (mês fechado)');
+  set('evv-kpi-b-lbl', _evvNomeLado(modo,B) + (emAndamento ? sufixoAndamento : ''));
+  set('evv-kpi-b', fmt(totBigual));
+  set('evv-kpi-bt-lbl', _evvNomeLado(modo,B) + (modo==='ano' ? ' (ano fechado)' : ' (mês fechado)'));
   set('evv-kpi-bt', fmt(totBfechado));
   const kv = document.getElementById('evv-kpi-var');
   if(kv){
-    if(totBmesmoDia>0){ const v=(totA-totBmesmoDia)/totBmesmoDia*100; kv.textContent=(v>=0?'+':'')+v.toFixed(1).replace('.',',')+'%'; kv.style.color = v>=0?'#16a34a':'#dc2626'; }
+    if(totBigual>0){ const v=(totA-totBigual)/totBigual*100; kv.textContent=(v>=0?'+':'')+v.toFixed(1).replace('.',',')+'%'; kv.style.color = v>=0?'#16a34a':'#dc2626'; }
     else { kv.textContent='—'; kv.style.color=''; }
   }
 
   // Gráfico principal
-  set('evv-titulo-grafico', (rotaSel || 'Todas as rotas') + ' — ' + _evvNomeMes(mesA) + ' × ' + _evvNomeMes(mesB));
+  set('evv-titulo-grafico', (rotaSel || 'Todas as rotas') + ' — ' + _evvNomeLado(modo,A) + ' × ' + _evvNomeLado(modo,B));
   if(_evvChartPrincipal){ _evvChartPrincipal.destroy(); _evvChartPrincipal=null; }
   const ctx = document.getElementById('evv-canvas');
-  if(ctx) _evvChartPrincipal = new Chart(ctx, _evvConfigGrafico(labels, _evvSerie(escolhidas,'A',metrica,visao,dias,corteA), _evvSerie(escolhidas,'B',metrica,visao,dias,null), mesA, mesB, metrica, visao, fmt, false));
+  const cfg = (esc, mini) => _evvConfigGrafico(labels, _evvSerie(esc,'A',metrica,visao,n,corte), _evvSerie(esc,'B',metrica,visao,n,null), A, B, modo, metrica, fmt, mini);
+  if(ctx) _evvChartPrincipal = new Chart(ctx, cfg(escolhidas,false));
 
   // Um gráfico por rota
   _evvChartsRotas.forEach(c=>c.destroy()); _evvChartsRotas = [];
   const grid = document.getElementById('evv-grid');
-  const lista = nomesVisiveis.map(n=>({ nome:n, d:rotas[n],
-      a:_evvTotalAteDia([rotas[n]],'A',metrica,corteA), b:_evvTotalAteDia([rotas[n]],'B',metrica,corteA) }))
+  const lista = nomesVisiveis.map(nm=>({ nome:nm, d:rotas[nm],
+      a:_evvTotalA([rotas[nm]],metrica,corte), b:_evvTotalB([rotas[nm]],metrica,corte,false) }))
     .filter(x=>x.a>0 || x.b>0).sort((x,y)=>(y.a+y.b)-(x.a+x.b));
-  if(!lista.length){ grid.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted);grid-column:1/-1">Sem vendas nos dois meses.</p>'; return; }
+  if(!lista.length){ grid.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted);grid-column:1/-1">Sem vendas nos dois períodos.</p>'; return; }
   grid.innerHTML = lista.map((x,i)=>{
     const v = x.b>0 ? (x.a-x.b)/x.b*100 : null;
     const badge = v===null ? (x.a>0?'<span style="color:#2563eb;font-weight:700">novo</span>':'') : `<span style="font-weight:800;color:${v>=0?'#16a34a':'#dc2626'}">${v>=0?'+':''}${v.toFixed(1).replace('.',',')}%</span>`;
-    const esp = _evvGruposEspeciaisInclui(x.nome);
+    const esp = _EVV_GRUPOS_ESPECIAIS.includes(x.nome);
     return `<div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:var(--bg-card2)">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
         <div style="font-size:.85rem;font-weight:800;color:var(--text-primary)">${escapeHtml(x.nome)}${esp?' <span title="Pedidos que ainda não têm rota no sistema" style="font-size:.65rem;color:#b45309">⚠️</span>':''}</div>${badge}
@@ -47255,23 +47351,23 @@ function renderEvolucaoVendasComercial(){
   }).join('');
   lista.forEach((x,i)=>{
     const c = document.getElementById('evv-mini-'+i);
-    if(c) _evvChartsRotas.push(new Chart(c, _evvConfigGrafico(labels, _evvSerie([x.d],'A',metrica,visao,dias,corteA), _evvSerie([x.d],'B',metrica,visao,dias,null), mesA, mesB, metrica, visao, fmt, true)));
+    if(c) _evvChartsRotas.push(new Chart(c, cfg([x.d],true)));
   });
 }
-function _evvGruposEspeciaisInclui(nome){ return _EVV_GRUPOS_ESPECIAIS.includes(nome); }
 
-function _evvConfigGrafico(labels, serieA, serieB, mesA, mesB, metrica, visao, fmt, mini){
+function _evvConfigGrafico(labels, serieA, serieB, A, B, modo, metrica, fmt, mini){
+  const ponto = modo==='ano' ? (mini?2:3) : 0;
   return {
     type:'line',
     data:{ labels, datasets:[
-      { label:_evvNomeMes(mesA), data:serieA, borderColor:_EVV_COR_A, backgroundColor:_EVV_COR_A, borderWidth:mini?2:3, pointRadius:0, pointHoverRadius:4, tension:.15, spanGaps:false },
-      { label:_evvNomeMes(mesB), data:serieB, borderColor:_EVV_COR_B, backgroundColor:_EVV_COR_B, borderWidth:mini?1.5:2, borderDash:[6,4], pointRadius:0, pointHoverRadius:4, tension:.15 }
+      { label:_evvNomeLado(modo,A), data:serieA, borderColor:_EVV_COR_A, backgroundColor:_EVV_COR_A, borderWidth:mini?2:3, pointRadius:ponto, pointHoverRadius:4, tension:.15, spanGaps:false },
+      { label:_evvNomeLado(modo,B), data:serieB, borderColor:_EVV_COR_B, backgroundColor:_EVV_COR_B, borderWidth:mini?1.5:2, borderDash:[6,4], pointRadius:ponto, pointHoverRadius:4, tension:.15 }
     ]},
     options:{
       responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false },
       plugins:{
         legend:{ display:!mini, position:'bottom', labels:{ boxWidth:12, font:{size:11,weight:'600'} } },
-        tooltip:{ callbacks:{ title: it=>'Dia '+it[0].label, label: c=>' '+c.dataset.label+': '+(c.raw==null?'—':fmt(c.raw)) } }
+        tooltip:{ callbacks:{ title: it=> (modo==='ano' ? '' : 'Dia ')+it[0].label, label: c=>' '+c.dataset.label+': '+(c.raw==null?'—':fmt(c.raw)) } }
       },
       scales:{
         x:{ grid:{display:false}, ticks:{ font:{size:mini?9:11}, maxTicksLimit:mini?8:16 } },
