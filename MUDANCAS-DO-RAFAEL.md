@@ -20,6 +20,21 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-06 — painel MFV: bloco "O que o sistema já mede" (30 pedidos do ERP)
+
+Só na aba Fluxo do Pedido (MFV). Abaixo da linha de campo (que continua vazia, "—") entrou um bloco
+com o que o ERP Próton e o Cronos já carimbam sozinhos, para 30 pedidos da rota interna (24 Petrolina
++ 6 Juazeiro, CD Juazeiro, setembro/2026): digitação, pedido → romaneio, romaneio → NF, NF → carga
+lançada e pedido → carga lançada, em mediana com P25–P75, mais a tabela dos 30 (sem cliente nem
+vendedor). Os dados vieram do Power BI (tabela `TPED_HISTORICO_VENDA`, modelo Estoque) cruzados com
+`base_data` e `lancamentos` daqui, e ficaram em **`configuracoes.chave = 'mfv_pedidos_erp'`** (JSON,
+12 KB, uma linha nova; nada mais no banco). Funções novas: `_mfvCarregarErp`, `renderMFVErp`,
+constante `MFV_ERP_TRECHOS`. Duas armadilhas do ERP que o bloco explica na tela: romaneio, separação
+e volumes têm o MESMO carimbo (um clique), e o lançamento da carga é feito no fim do dia (vale como
+dia, não hora). Nenhuma outra tela foi tocada. `version.json` 4.89.16.
+
+---
+
 ## 2026-10-06 — painel MFV: sai tudo que era simulado
 
 Só na aba Fluxo do Pedido (MFV). Removido o dia simulado inteiro: o botão "Ver dia simulado

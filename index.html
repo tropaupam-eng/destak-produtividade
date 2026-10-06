@@ -2745,6 +2745,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   </div>
   <p style="font-size:.7rem;color:var(--text-muted);margin-top:8px">Rota total = da saída do caminhão até ele voltar. A rota conta como não agrega (transporte, convenção Lean).</p>
 
+  <!-- O que o sistema JA mede: carimbos do ERP Proton (via Power BI) + Cronos, 30 pedidos de set/2026.
+       Preenchido por renderMFVErp() a partir de configuracoes.chave='mfv_pedidos_erp'. Nao substitui a linha de campo acima:
+       o ERP nao enxerga separacao, bipagem, carregamento nem saida (romaneio=separacao=volumes no mesmo clique). -->
+  <div id="mfv-erp" style="margin-top:18px"></div>
   <details id="mfv-detalhes" style="margin-top:22px">
   <summary style="cursor:pointer;font-size:.8rem;font-weight:700;color:var(--text-secondary)">Mapa completo (banco, caixas de dados, fila e pedido a pedido)</summary>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:14px 0 16px">
@@ -30341,11 +30345,13 @@ async function carregarMFV(){
       _mfvCarregarFila(rire).catch(()=>null),
       _mfvCarregarCampos(),
       _mfvCarregarPedidos(mes, rire).catch(()=>null),
-      _mfvCarregarCarga0().catch(()=>null)
+      _mfvCarregarCarga0().catch(()=>null),
+      _mfvCarregarErp().catch(()=>null)
     ]);
     renderMFV();
     renderMFVPedidos();
     renderMFVPop();
+    renderMFVErp();
   }catch(e){
     if(box) box.innerHTML = `<p style="color:var(--orange);font-size:.8rem">Erro ao carregar: ${escapeHtml(e.message)}</p>`;
   }
@@ -30640,6 +30646,80 @@ function mfvExportarPedidos(){
   a.download='mfv_pedidos_'+P.rire+(_mfvRotaSel?'_'+_mfvRotaSel:'')+'_'+P.mes+'.csv';
   document.body.appendChild(a); a.click(); a.remove();
   showToast(P.comLead.length+' pedidos exportados','success');
+}
+
+// ── O que o sistema JÁ mede: ERP Próton (lido pelo Power BI) + Cronos, pedido a pedido ──
+// Carimbos que o ERP grava sozinho: digitação, romaneio e emissão da NF. O Cronos dá o dia da
+// carga (lancamentos.ts). Separação, bipagem, carregamento e saída NÃO estão aqui: romaneio,
+// separação e volumes têm o MESMO carimbo no ERP (um clique), e o lançamento da carga é feito
+// no fim do dia (17-18h), então diz o DIA da saída, não a hora. Entrega: o Cronos quase não
+// registra desde ago/2026. Fonte: configuracoes.chave='mfv_pedidos_erp' (JSON com os pedidos,
+// sem cliente nem vendedor), gravada pelo script de extração; a planilha de origem é
+// univasf/PCP 2/MFV-30-pedidos-rota-interna-set2026.xlsx.
+let _mfvErp = null;
+async function _mfvCarregarErp(){
+  if(_mfvErp) return _mfvErp;
+  try{
+    const r = await supaFetch('configuracoes?chave=eq.mfv_pedidos_erp&select=valor');
+    _mfvErp = (r && r[0] && r[0].valor) ? r[0].valor : null;
+  }catch(e){ _mfvErp = null; }
+  return _mfvErp;
+}
+const MFV_ERP_TRECHOS = [
+  { k:'dig',  label:'Digitação',              de:'dig_ini',  ate:'dig_fim',        cor:'var(--purple)', min:true, nota:'Vendedor digitando o pedido (início → fim da digitação).' },
+  { k:'esp',  label:'Pedido → romaneio',      de:'dig_ini',  ate:'romaneio',       cor:'var(--red)',    nota:'Espera até o ERP abrir o romaneio. Inclui financeiro, fila e noite: o pedido da tarde dorme.' },
+  { k:'arm',  label:'Romaneio → NF',          de:'romaneio', ate:'nf',             cor:'var(--green)',  nota:'Separação e conferência JUNTAS. O ERP grava romaneio, separação e volumes no mesmo clique, então não separa as duas.' },
+  { k:'nfc',  label:'NF → carga lançada',     de:'nf',       ate:'carga_lancada',  cor:'var(--orange)', nota:'O lançamento da carga é feito no fim do dia (17-18h): vale como DIA da saída, não como hora.' },
+  { k:'lead', label:'Pedido → carga lançada', de:'dig_ini',  ate:'carga_lancada',  cor:'var(--blue)',   nota:'Lead até o dia da carga. Entrega não tem registro confiável no sistema.' },
+];
+function renderMFVErp(){
+  const box = document.getElementById('mfv-erp'); if(!box) return;
+  const E = _mfvErp;
+  if(!E || !(E.pedidos||[]).length){ box.innerHTML = ''; return; }
+  const H = (a,b)=>{ const x=_mfvTs(a), y=_mfvTs(b); return (x&&y) ? (y-x)/3600000 : null; };
+  const fmt = (h,min)=> h==null ? '—' : (min ? (h*60).toFixed(1)+' min' : _mfvFmtH(h));
+  const seta = '<span style="align-self:center;color:var(--text-muted);flex:0 0 auto">→</span>';
+  const cards = MFV_ERP_TRECHOS.map(t=>{
+    const v = E.pedidos.map(p=>H(p[t.de],p[t.ate])).filter(h=>h!==null && h>=0);
+    const med=_mfvMediana(v), q1=_mfvQuantil(v,.25), q3=_mfvQuantil(v,.75);
+    return '<div style="flex:1 1 0;min-width:130px;background:var(--bg-card);border:1px solid var(--border);border-top:3px solid '+t.cor+';border-radius:10px;padding:10px 8px;text-align:center" title="'+escapeHtml(t.nota)+'">'+
+      '<div style="font-size:.64rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.03em;line-height:1.3">'+t.label+'</div>'+
+      '<div style="font-size:1.25rem;font-weight:800;color:var(--text-primary);margin-top:4px;white-space:nowrap">'+fmt(med,t.min)+'</div>'+
+      '<div style="font-size:.62rem;color:var(--text-secondary);margin-top:2px;white-space:nowrap">'+(v.length ? 'P25–P75 '+fmt(q1,t.min)+' – '+fmt(q3,t.min)+' · n '+v.length : 'sem carimbo')+'</div></div>';
+  }).join(seta);
+  const leads = E.pedidos.map(p=>H(p.dig_ini,p.carga_lancada)).filter(h=>h!==null);
+  const ate36 = leads.filter(h=>h<=36).length;
+  const porRota = {};
+  E.pedidos.forEach(p=>{ porRota[p.rota]=(porRota[p.rota]||0)+1; });
+  const M = E.mes_inteiro || {};
+  const fmtTs = s=>{ const d=_mfvTs(s); return d ? d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'; };
+  const th=(h,al)=>'<th style="text-align:'+(al||'right')+';padding:6px 8px;font-size:.63rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700;white-space:nowrap">'+h+'</th>';
+  const td=(v,al,extra)=>'<td style="text-align:'+(al||'right')+';padding:6px 8px;white-space:nowrap;'+(extra||'')+'">'+v+'</td>';
+  const linhas = E.pedidos.slice().sort((a,b)=>String(a.dig_ini).localeCompare(String(b.dig_ini))).map(p=>{
+    const lead = H(p.dig_ini,p.carga_lancada);
+    return '<tr style="border-bottom:1px solid var(--border)">'+
+      td('<b>'+escapeHtml(String(p.pedido))+'</b>','left')+td(escapeHtml(p.rota||''),'left')+td(p.carga!=null?escapeHtml(String(p.carga)):'—','left')+
+      td(fmtTs(p.dig_ini),'left')+td(fmtTs(p.romaneio),'left')+td(fmtTs(p.nf),'left')+td(fmtTs(p.carga_lancada),'left')+
+      td(fmt(H(p.dig_ini,p.romaneio)))+td(fmt(H(p.romaneio,p.nf)))+td(fmt(H(p.nf,p.carga_lancada)))+
+      td(fmt(lead),'right','font-weight:800;color:'+((lead!=null&&lead>36)?'var(--red)':'var(--text-primary)'))+'</tr>';
+  }).join('');
+  box.innerHTML =
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">'+
+      '<div><span style="font-size:.9rem;font-weight:800;color:var(--text-primary)">O que o sistema já mede</span>'+
+      '<span style="font-size:.74rem;color:var(--text-secondary);margin-left:8px">ERP Próton (lido pelo Power BI) + Cronos · '+E.pedidos.length+' pedidos de '+escapeHtml(E.mes||'')+
+      ' · '+Object.keys(porRota).sort().map(r=>escapeHtml(r)+' '+porRota[r]).join(', ')+' · extraído em '+escapeHtml(E.extraido_em||'')+'</span></div>'+
+      '<div style="font-size:.74rem;color:var(--text-secondary)"><b style="color:var(--text-primary)">'+ate36+' de '+leads.length+'</b> até 36 h <span style="color:var(--text-muted)">(até o dia da carga, não a entrega)</span></div>'+
+    '</div>'+
+    '<div style="display:flex;align-items:stretch;gap:6px;overflow-x:auto;padding-bottom:4px">'+cards+'</div>'+
+    '<p style="font-size:.7rem;color:var(--text-muted);line-height:1.5;margin:8px 0 0">Mediana, com P25–P75. '+
+      'O ERP não enxerga separação, bipagem, carregamento nem saída do veículo: esses continuam na linha de campo acima. '+
+      (M.n ? 'Mês inteiro ('+M.n+' pedidos internos, CD '+(M.cd||0)+' + Loja Petrolina '+(M.loja_petrolina||0)+'): pedido → romaneio '+_mfvFmtH(M.med_pedido_romaneio_h)+', romaneio → NF '+_mfvFmtH(M.med_romaneio_nf_h)+', pedido → carga lançada '+_mfvFmtH(M.med_pedido_carga_h)+'. ' : '')+
+      'A amostra é só do CD (unidade 1): a Loja Petrolina lança a carga em outro ritmo.</p>'+
+    '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:.78rem;font-weight:700;color:var(--text-primary)">Os '+E.pedidos.length+' pedidos, um por linha</summary>'+
+      '<div style="overflow-x:auto;margin-top:8px"><table style="width:100%;min-width:900px;border-collapse:collapse;font-size:.76rem"><thead><tr style="border-bottom:1.5px solid var(--border-med)">'+
+      th('Pedido','left')+th('Rota','left')+th('Carga','left')+th('Digitado','left')+th('Romaneio','left')+th('NF','left')+th('Carga lançada','left')+th('Ped→Rom')+th('Rom→NF')+th('NF→Carga')+th('Lead')+
+      '</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
+      '<p style="font-size:.66rem;color:var(--text-muted);margin-top:6px">Sem cliente e sem vendedor de propósito: o uso é acadêmico. Lead em vermelho = acima de 36 h até o dia da carga.</p></details>';
 }
 
 async function _mfvCarregarCampos(){
