@@ -20,6 +20,22 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-06 — painel MFV: linha única passa a ser calculada da medição de campo
+
+Só na aba Fluxo do Pedido (MFV). A linha do topo deixou de ser HTML escrito à mão: agora
+`renderMFVLinha()` calcula os 9 cards (mediana e P25–P75) a partir de
+**`configuracoes.chave = 'mfv_campo_pedidos'`**, um pedido por linha com P0 (digitado), E1/E2
+(separação), E3/E4 (bipagem), E5/E6 (carregamento e saída) e P1 (entrega). Sem a chave, os cards
+mostram "—" como antes. Hoje a chave tem os 30 pedidos da coleta de 23/09/2026 (17 Petrolina + 13
+Juazeiro, 6 viagens), identificados só por ordem (P01…), sem cliente. Abaixo da linha, tabela dos
+30 em `<details>`. A chave **`mfv_campos`** (caixa de dados do mapa completo) foi preenchida a
+partir dessas mesmas linhas: espera = média, tempo de ciclo = menor tempo entre pedidos de volume
+típico, `fora` marcado em financeiro, conferência/NF, reorganização e carga 0 (fora do escopo do
+estudo, decisão de 21/09). Duas linhas em `configuracoes` (uma nova, uma atualizada); nada mais no
+banco. Nenhuma outra tela foi tocada. `version.json` 4.89.17.
+
+---
+
 ## 2026-10-06 — painel MFV: bloco "O que o sistema já mede" (30 pedidos do ERP)
 
 Só na aba Fluxo do Pedido (MFV). Abaixo da linha de campo (que continua vazia, "—") entrou um bloco
