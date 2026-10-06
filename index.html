@@ -9079,7 +9079,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.9';
+const APP_VERSION = '4.89.10';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -16193,7 +16193,7 @@ async function carregarKmMotorista(){
         if(!_isRI(r)){
           kmRE+=diff;
           const cfgR = getValorRota(r.rota||'');
-          bonusKmRE += diff * (cfgR.valorKm || 0.20);
+          // bônus KM removido da conta (2026-10-05): mostra só os km rodados, sem R$
         }
       }
     });
@@ -16224,9 +16224,7 @@ async function carregarKmMotorista(){
       const temInicial = km&&km.km_inicial!=null;
       const temFinal   = km&&km.km_final!=null;
 
-      const kmBonusCard = !isRI && kmRodado != null
-        ? kmRodado * (getValorRota(l.rota||'').valorKm || 0.20)
-        : 0;
+      const kmBonusCard = 0; // bônus KM removido da conta (2026-10-05)
       return `<div style="background:rgba(13,148,136,.07);border:1px solid rgba(13,148,136,.18);border-radius:10px;padding:12px 14px;margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="display:flex;align-items:center;gap:8px">
@@ -22919,7 +22917,7 @@ async function carregarPortalMotorista(mesCustom = null){
       const kmReg = kmPorCargaPortal[c];
       const kmRodado = isRE && kmReg && kmReg.km_inicial != null && kmReg.km_final != null
         ? kmReg.km_final - kmReg.km_inicial : 0;
-      const kmBonusRE = kmRodado * (cfg.valorKm || 0.20);
+      const kmBonusRE = 0; // bônus KM removido da conta de ganhos (2026-10-05); kmRodado continua informativo
       if(isRE) totalKmRE += kmRodado;
       totalVal += bonus + kmBonusRE;
       totalBonusEntrega += bonus;
@@ -42878,47 +42876,10 @@ async function gerarPagamentos(btn, opts){
       }
     });
 
-    // ── BÔNUS KM PARA MOTORISTAS RE (DC-01) ─────────────────────────
-    // Fonte é rotas_viagem (km_inicial/km_final lançados na Expedição via
-    // Iniciar/Fim de Viagem) — km_cargas (portal do motorista) quase não tem
-    // uso real, então motoristas de R.E. ficavam sempre com R$0 de KM.
+    // ── BÔNUS KM: REMOVIDO da conta de pagamento (pedido do usuário, 2026-10-05) ──
+    // Motorista de rota externa (R.E.) não recebe mais valor por km aqui; o pagamento é só por
+    // pedido (R.I.) + bônus ADM. O km rodado continua registrado, só não entra no R$.
     const _mesGerPag = mesSel || new Date().toISOString().slice(0,7);
-    try{
-      const [_anoKm,_mesKm] = _mesGerPag.split('-').map(Number);
-      const _inicioMesKm = `${_mesGerPag}-01`;
-      const _fimMesKm = _mesKm===12 ? `${_anoKm+1}-01-01` : `${_anoKm}-${String(_mesKm+1).padStart(2,'0')}-01`;
-      const viagensMes = await supaFetch(
-        `rotas_viagem?data_saida=gte.${_inicioMesKm}&data_saida=lt.${_fimMesKm}&select=carga,demanda_id,km_inicial,km_final`
-      ).catch(()=>[]) || [];
-      const viagensValidas = viagensMes.filter(v=>v.km_inicial!=null && v.km_final!=null && v.km_final>v.km_inicial);
-      const demIds = [...new Set(viagensValidas.map(v=>v.demanda_id).filter(Boolean))];
-      const demandasKm = demIds.length
-        ? await supaFetch(`demandas_rota?id=in.(${demIds.join(',')})&select=id,motorista,rota`).catch(()=>[]) || []
-        : [];
-      const demMapKm = {}; demandasKm.forEach(d=>{ demMapKm[d.id]=d; });
-
-      viagensValidas.forEach(v=>{
-        const dem = v.demanda_id ? demMapKm[v.demanda_id] : null;
-        const rota = (dem?.rota||'').trim();
-        const motNome = (dem?.motorista||'').trim().toUpperCase();
-        if(!motNome || !rota || motNome==='LOJA' || motNome==='RETIRA') return;
-        const cfg = getValorRota(rota);
-        if(cfg.ri) return; // RI recebe por pedido, não por KM
-        const kmRodado = v.km_final - v.km_inicial;
-        const bonusKm = kmRodado * (cfg.valorKm||0.20);
-        const chave = motNome+'__'+_mesGerPag+'__MOT';
-        // Motorista que só roda R.E. nunca ganha entrada em pessoaMap pelo
-        // bloco de R.I. acima — sem criar aqui, o bônus de KM dele some
-        // silenciosamente (if(pessoaMap[chave]) nunca era true).
-        if(!pessoaMap[chave]) pessoaMap[chave] = {
-          nome:motNome, tipo:'motorista', mes_ano:_mesGerPag,
-          rota, rire:'R.E.', und:undMap[motNome]||'', entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0, cargas:[]
-        };
-        pessoaMap[chave].total    += bonusKm;
-        pessoaMap[chave].km_bonus  = (pessoaMap[chave].km_bonus||0)+bonusKm;
-        if(!pessoaMap[chave].cargas.some(x=>x.carga===v.carga)) pessoaMap[chave].cargas.push({carga:v.carga, rota, rire:'R.E.', qtd:0, kmBonus:true});
-      });
-    }catch(_){}
 
     // ── BÔNUS ADM CONFIRMADO (DC-06) ────────────────────────────────
     // Bônus ADM: lê da tabela bonus_adm (fonte oficial — substitui configuracoes.bonus_adm_*)
