@@ -6509,6 +6509,10 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
       🗺️ Rotas por Veículo
     </button>
+    <button id="frota-tab-km" onclick="frotaAba('km')"
+      style="padding:8px 20px;font-size:.85rem;font-weight:700;border:none;border-radius:8px 8px 0 0;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">
+      🔢 KM por Rota/Veículo
+    </button>
   </div>
 
   <!-- ── ABA STATUS ATUAL ── -->
@@ -6612,6 +6616,23 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     <div id="frota-rotas-wrap">
       <div style="text-align:center;padding:48px;color:var(--text-muted)">
         <div style="font-size:2rem;margin-bottom:8px">🗺️</div>
+        <p>Selecione o mês para visualizar.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ABA KM POR ROTA/VEÍCULO ── -->
+  <div id="frota-pane-km" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <label style="font-size:.85rem;font-weight:600;color:var(--text-primary)">Mês:</label>
+      <input type="month" id="frota-km-mes"
+        style="background:var(--bg-input);color:var(--text-primary);border:1.5px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.85rem;outline:none"
+        onchange="renderFrotaKm()"/>
+      <span style="font-size:.78rem;color:var(--text-muted)">KM inicial/final por viagem — lance aqui (saiu de ser pedido na saída/fim de viagem)</span>
+    </div>
+    <div id="frota-km-wrap">
+      <div style="text-align:center;padding:48px;color:var(--text-muted)">
+        <div style="font-size:2rem;margin-bottom:8px">🔢</div>
         <p>Selecione o mês para visualizar.</p>
       </div>
     </div>
@@ -9057,7 +9078,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.21';
+const APP_VERSION = '4.89.22';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18279,8 +18300,10 @@ async function renderFrotaStatus(){
 function frota_recarregar(){
   const pUso    = document.getElementById('frota-pane-uso');
   const pEscala = document.getElementById('frota-pane-escala');
+  const pKm     = document.getElementById('frota-pane-km');
   if(pEscala?.style.display !== 'none') renderFrotaEscala();
   else if(pUso?.style.display !== 'none') renderFrotaUso();
+  else if(pKm?.style.display !== 'none') renderFrotaKm();
   else renderFrota();
 }
 
@@ -18289,10 +18312,12 @@ function frotaAba(aba){
   const pUso    = document.getElementById('frota-pane-uso');
   const pEscala = document.getElementById('frota-pane-escala');
   const pRotas  = document.getElementById('frota-pane-rotas');
+  const pKm     = document.getElementById('frota-pane-km');
   const tStatus = document.getElementById('frota-tab-status');
   const tUso    = document.getElementById('frota-tab-uso');
   const tEscala = document.getElementById('frota-tab-escala');
   const tRotas  = document.getElementById('frota-tab-rotas');
+  const tKm     = document.getElementById('frota-tab-km');
   if(!pStatus || !pUso) return;
 
   const _on  = el => { if(el){ el.style.background='#2563eb'; el.style.color='#fff'; } };
@@ -18301,7 +18326,8 @@ function frotaAba(aba){
   pStatus.style.display='none'; pUso.style.display='none';
   if(pEscala) pEscala.style.display='none';
   if(pRotas)  pRotas.style.display='none';
-  _off(tStatus); _off(tUso); _off(tEscala); _off(tRotas);
+  if(pKm)     pKm.style.display='none';
+  _off(tStatus); _off(tUso); _off(tEscala); _off(tRotas); _off(tKm);
 
   if(aba === 'status'){
     pStatus.style.display=''; _on(tStatus);
@@ -18316,6 +18342,11 @@ function frotaAba(aba){
     const inp = document.getElementById('frota-rotas-mes');
     if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
     renderFrotaRotas();
+  } else if(aba === 'km'){
+    if(pKm) pKm.style.display=''; _on(tKm);
+    const inp = document.getElementById('frota-km-mes');
+    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    renderFrotaKm();
   } else {
     pUso.style.display=''; _on(tUso);
     const inp = document.getElementById('frota-uso-mes');
@@ -19267,6 +19298,176 @@ async function renderFrotaRotas(){
   }catch(e){
     wrap.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro: ${e.message}</p></div>`;
   }
+}
+
+// ── KM por Rota/Veículo — lançamento manual de km_inicial/km_final de
+// rotas_viagem, movido pra cá pra não travar a confirmação de saída/fim de
+// viagem na Expedição por falta de odômetro na hora (pedido do usuário,
+// 2026-10-06). km_total aqui é a mesma coluna usada no bônus KM do R.E. —
+// se não for preenchido aqui, o motorista fica sem o bônus daquela viagem.
+async function renderFrotaKm(){
+  const wrap = document.getElementById('frota-km-wrap');
+  if(!wrap) return;
+  const mes = document.getElementById('frota-km-mes')?.value || new Date().toISOString().slice(0,7);
+  if(!mes){ wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">Selecione o mês.</div>'; return; }
+
+  wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando...</p></div>';
+
+  try{
+    const proxMes = _proximoMes(mes);
+    const viagens = await supaFetch(
+      `rotas_viagem?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&select=*&order=data_saida.desc`
+    ) || [];
+
+    if(!viagens.length){
+      wrap.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text-muted)"><div style="font-size:2rem">🔢</div><p>Nenhuma viagem registrada neste mês.</p></div>';
+      return;
+    }
+
+    const demIds = [...new Set(viagens.map(v=>v.demanda_id).filter(Boolean))];
+    const demandas = demIds.length
+      ? (await supaFetch(`demandas_rota?id=in.(${demIds.join(',')})&select=id,rota,motorista,veiculo,carga`).catch(()=>[]) || [])
+      : [];
+    const demMap = {}; demandas.forEach(d=>{ demMap[d.id]=d; });
+
+    const linhas = viagens.map(v=>{
+      const d = demMap[v.demanda_id] || {};
+      return {
+        id: v.id,
+        data: v.data_saida,
+        rota: d.rota || '—',
+        carga: v.carga || d.carga || null,
+        veiculo: (d.veiculo||'').trim().toUpperCase() || '—',
+        motorista: d.motorista || '—',
+        kmIni: v.km_inicial,
+        kmFim: v.km_final,
+        kmTotal: (v.km_inicial!=null && v.km_final!=null) ? v.km_final-v.km_inicial : null,
+      };
+    });
+
+    // Totais por veículo / motorista — só entram viagens com KM completo
+    const porVeic = {}, porMot = {};
+    linhas.forEach(l=>{
+      if(l.kmTotal==null) return;
+      if(l.veiculo && l.veiculo!=='—'){
+        if(!porVeic[l.veiculo]) porVeic[l.veiculo] = {viagens:0, km:0};
+        porVeic[l.veiculo].viagens++; porVeic[l.veiculo].km += l.kmTotal;
+      }
+      if(l.motorista && l.motorista!=='—' && l.motorista.toUpperCase()!=='A DEFINIR MOTORISTA'){
+        if(!porMot[l.motorista]) porMot[l.motorista] = {viagens:0, km:0};
+        porMot[l.motorista].viagens++; porMot[l.motorista].km += l.kmTotal;
+      }
+    });
+
+    const kmTotalMes = linhas.reduce((sum,l)=>sum+(l.kmTotal||0),0);
+    const completas  = linhas.filter(l=>l.kmTotal!=null).length;
+    const pendentes  = linhas.length - completas;
+
+    const miniTabela = (titulo, mapa) => {
+      const itens = Object.entries(mapa).sort((a,b)=>b[1].km-a[1].km);
+      const linhasHtml = itens.length
+        ? itens.map(([nome,v])=>`<tr style="border-top:1px solid var(--border)">
+            <td style="padding:8px 12px;font-weight:600">${nome}</td>
+            <td style="padding:8px 12px;text-align:center">${v.viagens}</td>
+            <td style="padding:8px 12px;text-align:right;font-weight:700;color:var(--text-primary)">${v.km.toLocaleString('pt-BR')} km</td>
+          </tr>`).join('')
+        : `<tr><td colspan="3" style="padding:16px;text-align:center;color:var(--text-muted)">Sem KM lançado ainda</td></tr>`;
+      return `<div style="flex:1;min-width:280px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg-card2);font-size:.85rem;font-weight:700">${titulo}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          <thead><tr style="background:var(--bg-card2)">
+            <th style="padding:6px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Nome</th>
+            <th style="padding:6px 12px;text-align:center;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Viagens</th>
+            <th style="padding:6px 12px;text-align:right;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">KM Rodado</th>
+          </tr></thead>
+          <tbody>${linhasHtml}</tbody>
+        </table>
+      </div>`;
+    };
+
+    const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}) : '—';
+
+    const linhasTabela = linhas.map(l=>`
+      <tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px 12px;color:var(--text-muted);white-space:nowrap">${fmtData(l.data)}</td>
+        <td style="padding:8px 12px;font-weight:700">${l.rota}</td>
+        <td style="padding:8px 12px;font-family:monospace;color:var(--text-muted)">${l.carga?'#'+l.carga:'—'}</td>
+        <td style="padding:8px 12px;font-family:monospace">${l.veiculo}</td>
+        <td style="padding:8px 12px;color:var(--text-secondary)">${l.motorista}</td>
+        <td style="padding:6px 8px"><input type="number" id="km-ini-${l.id}" value="${l.kmIni??''}" placeholder="Inicial" style="width:90px;border:1.5px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.8rem;background:var(--bg-input);color:var(--text-primary);outline:none"></td>
+        <td style="padding:6px 8px"><input type="number" id="km-fim-${l.id}" value="${l.kmFim??''}" placeholder="Final" style="width:90px;border:1.5px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.8rem;background:var(--bg-input);color:var(--text-primary);outline:none"></td>
+        <td style="padding:8px 12px;text-align:right;font-weight:700;color:${l.kmTotal!=null?'var(--text-primary)':'var(--text-muted)'}">${l.kmTotal!=null?l.kmTotal.toLocaleString('pt-BR')+' km':'—'}</td>
+        <td style="padding:6px 8px"><button onclick="salvarKmViagem('${l.id}')" style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:.76rem;font-weight:700;cursor:pointer;white-space:nowrap">Salvar</button></td>
+      </tr>`).join('');
+
+    wrap.innerHTML = `
+      <div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #34d399;border-radius:10px;padding:12px 16px">
+          <div style="font-size:1.5rem;font-weight:800;color:var(--text-primary)">${kmTotalMes.toLocaleString('pt-BR')} km</div>
+          <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">KM Total Rodado</div>
+        </div>
+        <div style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #3b82f6;border-radius:10px;padding:12px 16px">
+          <div style="font-size:1.5rem;font-weight:800;color:var(--text-primary)">${completas}</div>
+          <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Viagens c/ KM completo</div>
+        </div>
+        <div style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid #f59e0b;border-radius:10px;padding:12px 16px">
+          <div style="font-size:1.5rem;font-weight:800;color:var(--text-primary)">${pendentes}</div>
+          <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Pendentes de KM</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px">
+        ${miniTabela('🚗 KM Total por Veículo', porVeic)}
+        ${miniTabela('🧑 KM Total por Motorista', porMot)}
+      </div>
+
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg-card2)">
+          <h3 style="margin:0;font-size:.9rem;font-weight:700;color:var(--text-primary)">🔢 Lançar/Editar KM por Viagem</h3>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+            <thead><tr style="background:var(--bg-card2)">
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Saída</th>
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Rota</th>
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Carga</th>
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Veículo</th>
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">Motorista</th>
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">KM Inicial</th>
+              <th style="padding:8px 12px;text-align:left;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">KM Final</th>
+              <th style="padding:8px 12px;text-align:right;font-size:.68rem;color:var(--text-muted);text-transform:uppercase">KM Rodado</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${linhasTabela}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }catch(e){
+    wrap.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626"><p>Erro: ${e.message}</p></div>`;
+  }
+}
+
+async function salvarKmViagem(id){
+  const kmIniEl = document.getElementById(`km-ini-${id}`);
+  const kmFimEl = document.getElementById(`km-fim-${id}`);
+  const kmIni = kmIniEl?.value !== '' ? parseInt(kmIniEl.value) : null;
+  const kmFim = kmFimEl?.value !== '' ? parseInt(kmFimEl.value) : null;
+  if(kmIni!=null && kmFim!=null && kmFim <= kmIni){
+    showToast(`KM Final (${kmFim.toLocaleString('pt-BR')}) deve ser maior que o Inicial (${kmIni.toLocaleString('pt-BR')})`,'warning');
+    return;
+  }
+  try{
+    const rv = await supaFetch(`rotas_viagem?id=eq.${id}&select=data_saida,data_retorno&limit=1`).catch(()=>[]) || [];
+    const row = rv[0] || {};
+    const kmTotal = (kmIni!=null && kmFim!=null) ? kmFim-kmIni : null;
+    const patch = { km_inicial:kmIni, km_final:kmFim, km_total:kmTotal };
+    if(row.data_saida && row.data_retorno){
+      patch.dias_rota = Math.round((new Date(row.data_retorno)-new Date(row.data_saida))/(864e5)) + 1;
+    }
+    await supaFetch(`rotas_viagem?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
+    showToast('✅ KM salvo','success');
+    renderFrotaKm();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 async function renderFrotaEscala(){
@@ -21516,8 +21717,6 @@ function abrirModalSaida(demandaId){
   if(info && dem) info.textContent = `${dem.rota||'—'} • Carga ${dem.carga} • ${dem.motorista||'—'}`;
   const hoje = hojeDataBRT();
   document.getElementById('saida-data').value = hoje;
-  document.getElementById('saida-km-inicial').value = '';
-  document.getElementById('saida-km-esperado').value = dem?.km_esperado||'';
   // Guarda data agendada para detectar atraso
   document.getElementById('saida-data').dataset.agendada = dem?.data_saida || '';
   // Esconde motivo por padrão (só aparece se houver atraso)
@@ -21525,10 +21724,6 @@ function abrirModalSaida(demandaId){
   if(motivoRow) motivoRow.style.display = 'none';
   // Verifica já de cara se hoje é posterior à data agendada
   _saidaVerificarAtraso();
-  const espRow = document.getElementById('saida-km-esperado-row');
-  if(espRow) espRow.style.display = '';
-  const iniDiv = document.getElementById('saida-km-inicial')?.closest('div');
-  if(iniDiv) iniDiv.style.gridColumn = '';
   document.getElementById('modal-saida-rota').style.display = 'flex';
 }
 
@@ -21548,14 +21743,6 @@ function motIniciarViagem(demandaId, carga, rota, motorista){
   const info = document.getElementById('saida-rota-info');
   if(info) info.textContent = `${rota||'—'} • Carga #${carga}`;
   document.getElementById('saida-data').value = hojeDataBRT();
-  document.getElementById('saida-km-inicial').value = '';
-  document.getElementById('saida-km-esperado').value = '';
-  // Motorista não precisa preencher KM Esperado
-  const espRow = document.getElementById('saida-km-esperado-row');
-  if(espRow) espRow.style.display = 'none';
-  // KM inicial ocupa largura total
-  const iniDiv = document.getElementById('saida-km-inicial')?.closest('div');
-  if(iniDiv) iniDiv.style.gridColumn = '1/-1';
   document.getElementById('modal-saida-rota').style.display = 'flex';
 }
 
@@ -21567,10 +21754,7 @@ function fecharModalSaida(){
 
 async function confirmarSaidaRota(){
   const data  = document.getElementById('saida-data').value;
-  const kmIni = parseInt(document.getElementById('saida-km-inicial').value)||null;
-  const kmEsp = parseInt(document.getElementById('saida-km-esperado').value)||null;
   if(!data){ showToast('Informe a data de saída','warning'); return; }
-  if(!kmIni){ showToast('Informe o KM inicial','warning'); return; }
   try{
     const dem = _demandasCache?.find(d=>d.id===_demandaSaidaId) || _demandaSaidaData;
     // Validar status atual antes de confirmar saída
@@ -21593,15 +21777,16 @@ async function confirmarSaidaRota(){
     // carga. Achado do usuário, 2026-10-01.
     const patchResult = await _patchStatusDemanda(savedId, 'saiu', 'modal_saida', {extra:{ts_saiu:tsSaiu, data_saida:data}});
     if(!patchResult.ok){ showToast('⛔ '+patchResult.msg,'warning'); return; }
-    // rotas_viagem é a fonte do bônus KM do motorista — se essa gravação falhar
-    // silenciosamente, o motorista fica sem o bônus daquela viagem sem ninguém notar.
+    // rotas_viagem é a fonte do bônus KM do motorista — KM é lançado depois em
+    // Frotas › KM por Rota/Veículo (não bloqueia mais a confirmação de saída);
+    // se essa gravação falhar silenciosamente, a viagem fica sem onde lançar o KM.
     await supaFetch('rotas_viagem',{method:'POST',body:JSON.stringify({
       demanda_id:savedId, carga:dem?.carga||null,
-      data_saida:data, km_inicial:kmIni, km_esperado:kmEsp,
+      data_saida:data, km_inicial:null, km_esperado:null,
       criado_em:new Date().toISOString()
     })}).catch(e=>{
       console.warn('rotas_viagem falhou p/ demanda '+savedId+':', e.message);
-      showToast('⚠️ Saída confirmada, mas o registro de KM (bônus do motorista) falhou ao salvar: '+e.message,'warning');
+      showToast('⚠️ Saída confirmada, mas o registro da viagem (p/ lançar KM depois) falhou ao salvar: '+e.message,'warning');
     });
     // #4 — Propagar data_saida para entrega_datas por pedido (fonte única para OTIF)
     if(dem?.carga && data){
@@ -21726,7 +21911,7 @@ async function confirmarSaidaRota(){
     // Atualizar painel admin (se aberto) ou portal motorista
     if(typeof renderDemandasKPIs==='function') { renderDemandasKPIs(_demandasCache); renderDemandasCards(); renderFrotaStatus(); }
     if(typeof carregarPortalMotorista==='function') await carregarPortalMotorista().catch(()=>{});
-    showToast('🚛 Viagem iniciada! KM '+kmIni.toLocaleString('pt-BR')+' registrado.','success');
+    showToast('🚛 Viagem iniciada!','success');
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
@@ -37268,10 +37453,9 @@ async function abrirModalFimViagem(demandaId){
   const info = document.getElementById('fim-viagem-info');
   if(info && dem) info.textContent = `${dem.rota||'—'} • Carga ${dem.carga} • ${dem.motorista||'—'}`;
   document.getElementById('fim-data').value = hojeDataBRT();
-  document.getElementById('fim-km-final').value = '';
   document.getElementById('fim-viagem-resumo').style.display = 'none';
 
-  // Buscar dados da saída para calcular KM total e dias
+  // Buscar dados da saída só pra exibir resumo (KM agora é lançado em Frotas)
   try{
     const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${demandaId}&select=*&order=criado_em.desc&limit=1`) || [];
     if(rv[0]){
@@ -37281,13 +37465,8 @@ async function abrirModalFimViagem(demandaId){
         el.style.display='block';
         el.innerHTML = `
           📅 Saída: ${saida.data_saida?new Date(saida.data_saida+'T00:00:00').toLocaleDateString('pt-BR'):'—'}
-          &nbsp;•&nbsp; 🔢 KM Inicial: ${saida.km_inicial?.toLocaleString('pt-BR')||'—'}
-          &nbsp;•&nbsp; 🎯 KM Esperado: ${saida.km_esperado?.toLocaleString('pt-BR')||'—'}
+          ${saida.km_inicial!=null?`&nbsp;•&nbsp; 🔢 KM Inicial: ${saida.km_inicial.toLocaleString('pt-BR')}`:''}
         `;
-      }
-      // Preencher KM esperado como sugestão
-      if(saida.km_inicial && saida.km_esperado){
-        document.getElementById('fim-km-final').placeholder = `Sugerido: ${(saida.km_inicial + saida.km_esperado).toLocaleString('pt-BR')}`;
       }
     }
   }catch(e){}
@@ -37303,9 +37482,7 @@ function fecharModalFimViagem(){
 
 async function confirmarFimViagem(){
   const data   = document.getElementById('fim-data').value;
-  const kmFim  = parseInt(document.getElementById('fim-km-final').value)||null;
   if(!data){ showToast('Informe a data de retorno','warning'); return; }
-  if(!kmFim){ showToast('Informe o KM final','warning'); return; }
 
   try{
     const dem = _demandasCache?.find(d=>d.id===_demandaFimId);
@@ -37323,19 +37500,19 @@ async function confirmarFimViagem(){
     const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${_demandaFimId}&select=*&order=criado_em.desc&limit=1`) || [];
     const saida = rv[0];
 
-    // Calcular dias e KM total
+    // Calcular dias em rota — KM fica para ser lançado depois em Frotas,
+    // então não mexe em km_final/km_total aqui (evita sobrescrever o que já
+    // tiver sido lançado lá com null).
     const diasRota = saida?.data_saida
       ? Math.round((new Date(data) - new Date(saida.data_saida)) / (1000*60*60*24)) + 1
       : null;
-    const kmTotal = saida?.km_inicial ? kmFim - saida.km_inicial : null;
 
     // Atualizar rotas_viagem
     if(saida){
       await supaFetch(`rotas_viagem?id=eq.${saida.id}`,{
         method:'PATCH',
         body:JSON.stringify({
-          km_final:kmFim, data_retorno:data,
-          dias_rota:diasRota, km_total:kmTotal
+          data_retorno:data, dias_rota:diasRota
         })
       });
     }
@@ -37374,7 +37551,6 @@ async function confirmarFimViagem(){
     _demandaFimId = null;
 
     const resumo = [
-      kmTotal ? `KM percorrido: ${kmTotal.toLocaleString('pt-BR')} km` : '',
       diasRota ? `Dias em rota: ${diasRota} dia${diasRota!==1?'s':''}` : '',
     ].filter(Boolean).join(' • ');
 
@@ -52618,14 +52794,7 @@ function _cftvRenderTable(data){
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">📅 Data de Saída *</label>
           <input type="date" id="saida-data" onchange="_saidaVerificarAtraso()" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
         </div>
-        <div>
-          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🔢 KM Inicial *</label>
-          <input type="number" id="saida-km-inicial" placeholder="Ex: 45230" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
-        </div>
-        <div id="saida-km-esperado-row">
-          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🎯 KM Esperado da Rota</label>
-          <input type="number" id="saida-km-esperado" placeholder="Ex: 850" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
-        </div>
+        <!-- KM inicial/esperado saiu daqui — agora é lançado em Frotas › KM por Rota/Veículo (pedido do usuário, 2026-10-06) -->
         <!-- Campo de motivo — aparece apenas quando a saída é posterior à data agendada -->
         <div id="saida-motivo-row" style="display:none;grid-column:1/-1">
           <div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:9px 14px;margin-bottom:8px">
@@ -52643,7 +52812,7 @@ function _cftvRenderTable(data){
         </div>
       </div>
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:9px 14px;margin-bottom:14px">
-        <p style="font-size:.76rem;color:#1d4ed8;margin:0">✅ O lançamento desta carga será registrado automaticamente ao confirmar a saída.</p>
+        <p style="font-size:.76rem;color:#1d4ed8;margin:0">✅ O lançamento desta carga será registrado automaticamente ao confirmar a saída. O KM é lançado depois, em <strong>Frotas › KM por Rota/Veículo</strong>.</p>
       </div>
       <div style="display:flex;gap:10px">
         <button onclick="fecharModalSaida()" style="flex:1;background:#f3f4f6;color:#374151;border:none;border-radius:10px;padding:12px;font-size:.9rem;font-weight:600;cursor:pointer">Cancelar</button>
@@ -52679,10 +52848,10 @@ function _cftvRenderTable(data){
           <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">📅 Data de Retorno *</label>
           <input type="date" id="fim-data" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
         </div>
-        <div style="grid-column:1/-1">
-          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px">🔢 KM Final *</label>
-          <input type="number" id="fim-km-final" placeholder="Ex: 46080" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
-        </div>
+        <!-- KM final saiu daqui — agora é lançado em Frotas › KM por Rota/Veículo (pedido do usuário, 2026-10-06) -->
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:9px 14px;margin-bottom:14px">
+        <p style="font-size:.76rem;color:#1d4ed8;margin:0">O KM é lançado depois, em <strong>Frotas › KM por Rota/Veículo</strong>.</p>
       </div>
       <!-- Resumo da viagem será exibido aqui -->
       <div id="fim-viagem-resumo" style="display:none;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin-bottom:16px;font-size:.83rem;color:#065f46"></div>
