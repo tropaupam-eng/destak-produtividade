@@ -9079,7 +9079,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.13';
+const APP_VERSION = '4.89.14';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -31054,9 +31054,30 @@ function _passaFiltroRire(rota, rireSel){
 // R$ 0,50 (rota interna); ajudante em rota externa R$ 0,75; Retira R$ 0,00. Teto: R$ 1,00 por entrega.
 // Embaixo de cada mês aparece, em cinza, a quantidade de entregas daquele mês (mesmo "Total Entregas" da
 // tela Produtividade: entregas dos motoristas em rota interna + entregas de rota externa dos ajudantes,
-// sem contar a mesma entrega duas vezes) só pra conferência. Respeita ano e unidade do topo do painel.
-// Pedido do usuário, 2026-10-05: "somente valores".
+// sem contar a mesma entrega duas vezes) só pra conferência.
+// Na parte de baixo do slide: PEDIDOS NA BONIFICAÇÃO do mês escolhido — internos e externos. O mês vem do
+// seletor de mês do topo do painel e também muda ao CLICAR em um mês do gráfico. "Na bonificação" = pedido
+// que paga valor > 0 (Retira, que paga R$ 0,00, fica de fora e aparece à parte). Respeita ano e unidade do
+// topo do painel. Pedido do usuário, 2026-10-06.
 let _prodPainelSeq = 0;
+let _prodPainelDados = null;
+const _PROD_MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+function _prodPainelSelecionarMes(i){
+  const d = _prodPainelDados; if(!d) return;
+  d.mesSel = i;
+  d.barras.forEach((el,k)=>{ if(el) el.style.background = (k===i) ? '#1a1a1a' : (d.valores[k] ? '#8c8c8c' : 'transparent'); });
+  d.rotulos.forEach((el,k)=>{ if(el) el.style.color = (k===i) ? '#1a1a1a' : '#8a8a8a'; });
+  const m = d.meses[i], det = document.getElementById('prod-painel-detalhe'); if(!det) return;
+  const n = v => v.toLocaleString('pt-BR');
+  det.innerHTML = `
+    <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:12px">PEDIDOS NA BONIFICAÇÃO · ${_PROD_MESES_NOME[i].toUpperCase()} / ${d.ano}</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #1a1a1a"><div style="font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">PEDIDOS INTERNOS</div><div style="font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px">${n(m.interna)}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #6b6b6b"><div style="font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">PEDIDOS EXTERNOS</div><div style="font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px">${n(m.externa)}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #c4c4c4"><div style="font-size:.66rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">TOTAL NA BONIFICAÇÃO</div><div style="font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px">${n(m.interna+m.externa)}</div></div>
+    </div>
+    <div style="font-size:.64rem;color:#8a8a8a;margin-top:10px">Internos: pedidos de rota interna entregues sem ocorrência que pagam bonificação ao motorista (e ao ajudante, quando há). Externos: pedidos de rota externa com ajudante, que pagam R$ 0,75.${m.retira ? ' Não entram: '+n(m.retira)+' pedido'+(m.retira===1?'':'s')+' de Retira, que paga R$ 0,00.' : ''}</div>`;
+}
 async function carregarPainelProdutividadeAno(){
   const container = document.getElementById('painel-ind-produtividade-container');
   if(!container) return;
@@ -31070,25 +31091,40 @@ async function carregarPainelProdutividadeAno(){
     const MESES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
     const doAno = (linhas||[]).filter(p => (p.mes_ano||'').slice(0,4)===ano && (!undSel || (p.und||'').trim()===undSel));
     const valores = Array(12).fill(0), entregas = Array(12).fill(0);
+    const meses = Array.from({length:12}, ()=>({interna:0, externa:0, retira:0}));
     doAno.forEach(p=>{
       const m = parseInt((p.mes_ano||'').slice(5,7),10)-1;
       if(!(m>=0 && m<12)) return;
       valores[m] += (p.total||0);
-      if(p.tipo==='motorista') entregas[m] += (p.entregas||0);
-      else if(p.tipo==='ajudante') entregas[m] += (p.ent_re||0);
+      if(p.tipo==='motorista'){
+        entregas[m] += (p.entregas||0);
+        // pedidos de rota interna: só os que pagam bonificação (valor > 0); Retira (R$ 0,00) conta à parte
+        (p.cargas||[]).forEach(c=>{
+          const cfg = getValorRota(c.rota||'');
+          if((cfg.motSem||0) > 0 || (cfg.motCom||0) > 0) meses[m].interna += (c.qtd||0); else meses[m].retira += (c.qtd||0);
+        });
+      } else if(p.tipo==='ajudante'){
+        entregas[m] += (p.ent_re||0);
+        meses[m].externa += (p.ent_re||0); // ajudante em rota externa: R$ 0,75 por pedido
+      }
     });
     const totalAno = valores.reduce((a,b)=>a+b,0);
     const entAno = entregas.reduce((a,b)=>a+b,0);
     const brl = v => v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
     const maxV = Math.max(...valores, 1);
     const ALT = 250; // altura útil das barras (px)
+    // mês aberto embaixo: o do seletor do topo do painel (se for deste ano) — senão o último mês com valor
+    const mesTopo = (window._painelIndMesSel||'').slice(0,4)===ano ? parseInt((window._painelIndMesSel||'').slice(5,7),10)-1 : -1;
+    let mesAberto = (mesTopo>=0 && mesTopo<12) ? mesTopo : -1;
+    if(mesAberto<0){ for(let i=11;i>=0;i--){ if(valores[i]){ mesAberto=i; break; } } }
+    if(mesAberto<0) mesAberto = 0;
     const barras = valores.map((v,i)=>{
       const alt = v ? Math.max(4, Math.round(v/maxV*ALT)) : 0;
-      return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;min-width:0">
+      return `<div onclick="_prodPainelSelecionarMes(${i})" title="Ver os pedidos de ${_PROD_MESES_NOME[i]}" style="cursor:pointer;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;min-width:0">
           <div style="font-size:.8rem;font-weight:700;font-variant-numeric:tabular-nums;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v ? brl(v) : '<span style="color:#c4c4c4">–</span>'}</div>
-          <div style="width:62%;height:${alt}px;background:${v?'#1a1a1a':'transparent'};border-radius:4px 4px 0 0"></div>
+          <div data-barra="${i}" style="width:62%;height:${alt}px;background:${v?'#8c8c8c':'transparent'};border-radius:4px 4px 0 0"></div>
           <div style="width:100%;border-top:2px solid #1a1a1a"></div>
-          <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:8px">${MESES[i]}</div>
+          <div data-rotulo="${i}" style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:8px">${MESES[i]}</div>
           <div style="font-size:.6rem;color:#a8a8a8;margin-top:2px;white-space:nowrap;font-variant-numeric:tabular-nums">${entregas[i] ? entregas[i].toLocaleString('pt-BR')+' entregas' : ''}</div>
         </div>`;
     }).join('');
@@ -31100,17 +31136,22 @@ async function carregarPainelProdutividadeAno(){
         <div style="width:56px;height:3px;background:#1a1a1a;margin:18px 0 24px"></div>
         <div style="background:#fff;border-radius:10px;padding:24px 28px;border-top:3px solid #1a1a1a">
           <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:6px">
-            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a">VALOR EM R$ POR MÊS · MOTORISTAS E AJUDANTES</div>
+            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a">VALOR EM R$ POR MÊS · MOTORISTAS E AJUDANTES · CLIQUE EM UM MÊS</div>
             <div style="font-size:.9rem;font-weight:700">TOTAL NO ANO R$ ${brl(totalAno)} · ${entAno.toLocaleString('pt-BR')} ENTREGAS</div>
           </div>
           <div style="font-size:.66rem;color:#8a8a8a;margin-bottom:20px">Valor por entrega: motorista sozinho R$ 1,00 · motorista com ajudante R$ 0,50 e ajudante R$ 0,50 · ajudante em rota externa R$ 0,75 · máximo de R$ 1,00 por entrega. Embaixo de cada mês, a quantidade de entregas.</div>
           <div style="display:flex;align-items:flex-end;gap:8px;height:${ALT+90}px">${barras}</div>
         </div>
+        <div id="prod-painel-detalhe" style="margin-top:22px"></div>
         <div style="display:flex;justify-content:space-between;margin-top:24px;padding-top:14px;border-top:1px solid #e0e0e0;font-size:.68rem;font-weight:700;letter-spacing:1px;color:#a0a0a0">
           <span>PAINEL DE INDICADORES · VISÃO ANUAL</span>
           <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
         </div>
       </div>`;
+    _prodPainelDados = { ano, valores, meses, mesSel: mesAberto,
+      barras: [...container.querySelectorAll('[data-barra]')].sort((a,b)=>a.dataset.barra-b.dataset.barra),
+      rotulos: [...container.querySelectorAll('[data-rotulo]')].sort((a,b)=>a.dataset.rotulo-b.dataset.rotulo) };
+    _prodPainelSelecionarMes(mesAberto);
   }catch(e){
     if(seq !== _prodPainelSeq) return;
     console.error('carregarPainelProdutividadeAno:', e);
