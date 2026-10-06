@@ -20,6 +20,16 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-06 — painel MFV: sai tudo que era simulado
+
+Só na aba Fluxo do Pedido (MFV). Removido o dia simulado inteiro: o botão "Ver dia simulado
+(teste)", o aviso vermelho, a constante `MFV_SIMULADO` e a função `mfvAlternarSimulado`, e os
+rótulos "SIMULADO" dos cards e caixas. A linha única do topo ficou com os 9 cards vazios ("—")
+esperando a medição de campo do Rafael. O resto do painel (filtros, caixas de dados, fila, pedido
+a pedido, linha do tempo) não mudou. Nenhuma outra tela foi tocada; nada no banco.
+
+---
+
 ## 2026-09-30 — painel MFV: linha única no topo, resto recolhido
 
 Só na aba Fluxo do Pedido (MFV). O topo virou UMA linha: espera para separar, separação, bipagem,
