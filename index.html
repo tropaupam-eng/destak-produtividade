@@ -27632,7 +27632,7 @@ let _expRECache = { ts:0, chave:null, dados:null };
 async function _carregarExpedicaoRE(undSel){
   const chave = undSel||'';
   if(_expRECache.dados && _expRECache.chave===chave && Date.now()-_expRECache.ts < 60000) return _expRECache.dados;
-  const dems = await supaFetch('demandas_rota?carga=not.is.null&status=not.in.(cancelado,formacao)&select=carga,rota,status,data_saida,ts_saiu,unidade,criado_em&order=criado_em.desc&limit=5000') || [];
+  const dems = await supaFetch('demandas_rota?carga=not.is.null&status=not.in.(cancelado,formacao)&select=carga,rota,status,data_saida,ts_saiu,unidade,criado_em,quantidade_pedidos,valor_total&order=criado_em.desc&limit=5000') || [];
   const porCarga = new Map();
   dems.forEach(d=>{ const c = Math.round(Number(d.carga)); if(c && !porCarga.has(c)) porCarga.set(c, d); });
   const cargas = [];
@@ -27646,12 +27646,14 @@ async function _carregarExpedicaoRE(undSel){
     // Mês = DATA DE SAÍDA da Expedição (regra do usuário, 2026-10-05: "se a data de saída está dentro do mês, conta no mês"); o horário real (ts_saiu) só entra se faltar a data.
     const dataRef = d.data_saida || (d.ts_saiu ? dataLocalBRT(d.ts_saiu) : '');
     if(!dataRef) return;
-    cargas.push({ carga:c, rota, dataRef, mes:dataRef.slice(0,7), ped:0, val:0, ent:0 });
+    // Pedidos e valor vêm da PRÓPRIA carga lançada em Expedição (quantidade_pedidos / valor_total,
+    // o mesmo que o card da Expedição mostra) — não se soma do base_data (pedido do usuário).
+    cargas.push({ carga:c, rota, dataRef, mes:dataRef.slice(0,7), ped:Number(d.quantidade_pedidos)||0, val:Number(d.valor_total)||0, ent:0 });
   });
   const ids = cargas.map(x=>x.carga);
   const pedPorCarga = new Map();
   for(let i=0;i<ids.length;i+=250){
-    const rows = await supaFetch(`base_data?carga=in.(${ids.slice(i,i+250).join(',')})&select=carga,pedido,cliente,valor&limit=20000`).catch(()=>[]) || [];
+    const rows = await supaFetch(`base_data?carga=in.(${ids.slice(i,i+250).join(',')})&select=carga,pedido,cliente&limit=20000`).catch(()=>[]) || [];
     rows.forEach(r=>{ const c = Math.round(Number(r.carga)); if(!pedPorCarga.has(c)) pedPorCarga.set(c,[]); pedPorCarga.get(c).push(r); });
   }
   // Código do cliente (da integração) é mais confiável que o nome pra contar entregas
@@ -27664,11 +27666,8 @@ async function _carregarExpedicaoRE(undSel){
   cargas.forEach(cg=>{
     const rows = pedPorCarga.get(cg.carga) || [];
     const ents = new Set();
-    rows.forEach(r=>{
-      cg.val += Number(r.valor)||0;
-      ents.add(codMap.get(String(r.pedido)) || (r.cliente||'').toUpperCase().trim() || 'P'+r.pedido);
-    });
-    cg.ped = rows.length;
+    // base_data só serve pra saber QUANTAS PARADAS (clientes) a carga tem; ped/val já vieram da Expedição
+    rows.forEach(r=>{ ents.add(codMap.get(String(r.pedido)) || (r.cliente||'').toUpperCase().trim() || 'P'+r.pedido); });
     cg.ent = ents.size;
   });
   _expRECache = { ts:Date.now(), chave, dados:cargas };
