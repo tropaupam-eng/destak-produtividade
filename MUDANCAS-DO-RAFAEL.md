@@ -20,6 +20,19 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-06 — painel MFV: cenário ajustado ao lado do ERP medido
+
+Só na aba Fluxo do Pedido (MFV), bloco "O que o sistema já mede". Entrou uma segunda linha de
+cards, tracejada e rotulada **"Cenário ajustado"**, com os mesmos 30 pedidos de setembro mas com NF,
+carga lançada e entrega alteradas por hipótese (corte de faturamento às 16h, esperas e trânsito
+maiores; planilha `MFV-30-pedidos-rota-interna-set2026-Ajustado.xlsx`). A linha do ERP medido não
+mudou. O cenário fica dentro da mesma chave `configuracoes.mfv_pedidos_erp`, no campo `cenario`
+(uma linha atualizada; nada mais no banco). Aviso que o painel já reflete: em 18 dos 30 pedidos do
+cenário a NF ficou antes do romaneio, então o trecho romaneio → NF do cenário descarta esses e
+mostra n=12. Nenhuma outra tela foi tocada. `version.json` 4.89.18.
+
+---
+
 ## 2026-10-06 — painel MFV: linha única passa a ser calculada da medição de campo
 
 Só na aba Fluxo do Pedido (MFV). A linha do topo deixou de ser HTML escrito à mão: agora
