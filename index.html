@@ -3395,11 +3395,6 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Pedidos do ERP (unidade 1 - CD) que ainda não têm carga. A sugestão vem da última carga do cliente e das rotas em formação/pendente na Expedição — a carga é colocada no pedido <b>dentro do ERP</b>; quando o ERP atualizar, o pedido sai desta aba sozinho. <span id="psc-atualizado" style="color:var(--text-muted)"></span></p>
     </div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <div id="psc-layouts" style="display:inline-flex;border:1px solid var(--border);border-radius:10px;overflow:hidden">
-        <button type="button" data-lay="1" onclick="pscLayout(1)" style="border:0;padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">1 · Lista</button>
-        <button type="button" data-lay="2" onclick="pscLayout(2)" style="border:0;border-left:1px solid var(--border);padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">2 · Por carga aberta</button>
-        <button type="button" data-lay="3" onclick="pscLayout(3)" style="border:0;border-left:1px solid var(--border);padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer;background:var(--bg-card2);color:var(--text-secondary)">3 · Por cliente</button>
-      </div>
       <button onclick="_pscCache=null;carregarPscDist()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
     </div>
   </div>
@@ -3409,7 +3404,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
     </label>
     <label style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Situação
       <select id="psc-sit" onchange="renderPscDist()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.88rem;background:var(--bg-input);color:var(--text-primary)">
-        <option value="">Todas</option><option value="DI">DI · Digitado</option><option value="RO">RO · Romaneio</option><option value="MA">MA · Manifesto</option><option value="BLOQ">Bloqueados (BC/BG)</option>
+        <option value="">Todas</option><option value="DI">DI · Digitado</option><option value="RO">RO · Romaneio</option><option value="MA">MA · Manifesto</option><option value="BLOQ">Bloqueados (BC crédito / BG gerencial)</option>
       </select>
     </label>
     <label style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Rota (última do cliente)
@@ -36864,16 +36859,19 @@ function histAba(aba){
 // Fonte: rpc pedidos_sem_carga_sugestao (somente leitura). Pedido do ERP, unidade 1 - CD,
 // sem carga, sem cancelados e sem o PDV da loja (vendedor 92). A sugestão é a rota da última
 // carga do cliente (120 dias) + cargas dessa rota em formação/pendente na Expedição. Sem
-// histórico = sem sugestão (nada é chutado). O sistema NÃO coloca o pedido na carga: o ERP faz isso.
+// histórico = sem sugestão (nada é chutado). O sistema NÃO coloca o pedido na carga: isso é
+// feito no ERP, e quando o ERP atualiza o pedido sai desta aba sozinho.
+// Pedido bloqueado (BC/BG) aparece na carga, mas separado e fora do valor "pronto".
 let _pscCache = null;       // { ts, rows }
 let _pscRows = [];          // linhas já classificadas
-let _pscLay = 1;
-const _PSC_SIT = { DI:'Digitado', RO:'Romaneio', MA:'Manifesto', VO:'Volume', CL:'Calculado', BC:'Bloq. crédito', BG:'Bloq. gerencial' };
+let _pscTimer = null;
+const _PSC_SIT = { DI:'Digitado', RO:'Romaneio', MA:'Manifesto', VO:'Volume', CL:'Calculado', BC:'Bloqueio de crédito', BG:'Bloqueio gerencial' };
 const _PSC_COR = { DI:'#2563eb', RO:'#7c3aed', MA:'#0891b2', VO:'#16a34a', CL:'#16a34a', BC:'#dc2626', BG:'#dc2626' };
 
 const _pscRS = v => 'R$ ' + Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const _pscDM = s => s ? String(s).slice(8,10)+'/'+String(s).slice(5,7) : '—';
 const _pscE  = s => escapeHtml(String(s==null?'':s));
+const _pscSoma = l => l.reduce((t,r)=>t+Number(r.valor||0),0);
 
 function _pscClassifica(r){
   const ab = Array.isArray(r.abertas) ? r.abertas : [];
@@ -36891,38 +36889,41 @@ function _pscBadgeSit(s){
   const c = _PSC_COR[s] || '#64748b';
   return '<span title="'+_pscE(_PSC_SIT[s]||s||'')+'" style="background:'+c+'1a;color:'+c+';border:1px solid '+c+'55;border-radius:6px;padding:1px 7px;font-size:.72rem;font-weight:800">'+_pscE(s||'?')+'</span>';
 }
-function _pscOrigem(r){
-  return r.ultima_carga ? 'Última carga do cliente: '+r.ultima_carga+' ('+_pscDM(r.ultima_carga_data)+')'+(r.ultima_rota?' · '+r.ultima_rota:'') : 'Cliente sem carga nos últimos 120 dias';
-}
-function _pscChipSug(r){
-  const base = 'display:inline-block;border-radius:8px;padding:3px 9px;font-size:.76rem;font-weight:700;';
-  if(r.tipo==='aberta'){
-    const st = r.prim.status==='formacao' ? 'formação' : 'pendente';
-    const mais = r.outras.length ? ' · +'+r.outras.length+' outra'+(r.outras.length>1?'s':'') : '';
-    return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:#dcfce7;color:#166534;border:1px solid #86efac">Carga '+_pscE(r.prim.carga)+' · '+_pscE(r.prim.rota)+'</span> <span style="font-size:.7rem;color:var(--text-muted)">'+st+(r.prim.data_saida?' · sai '+_pscDM(r.prim.data_saida):'')+mais+'</span>';
-  }
-  if(r.tipo==='aberta_sem_numero')
-    return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:#fef3c7;color:#92400e;border:1px solid #fcd34d">'+_pscE(r.prim.rota)+' em formação</span> <span style="font-size:.7rem;color:var(--text-muted)">ainda sem nº de carga</span>';
-  if(r.tipo==='interna')
-    return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:#e0f2fe;color:#075985;border:1px solid #7dd3fc">'+_pscE(r.ultima_rota)+' · rota interna</span> <span style="font-size:.7rem;color:var(--text-muted)">carga criada no Lançamento</span>';
-  if(r.tipo==='rota')
-    return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border)">'+_pscE(r.ultima_rota)+'</span> <span style="font-size:.7rem;color:var(--text-muted)">sem carga aberta agora</span>';
-  return '<span style="'+base+'background:var(--bg-card2);color:var(--text-muted);border:1px dashed var(--border)">sem histórico</span>';
-}
-function _pscUltima(r){
-  return r.ultima_carga ? '<span style="color:var(--text-secondary)">'+_pscE(r.ultima_carga)+'</span> <span style="color:var(--text-muted);font-size:.74rem">'+_pscE(r.ultima_rota||'rota ?')+' · '+_pscDM(r.ultima_carga_data)+'</span>' : '<span style="color:var(--text-muted)">—</span>';
+
+// Uma linha de pedido dentro de uma caixa
+function _pscLinha(r){
+  const cor = r.dias > 7 ? '#dc2626' : 'var(--text-muted)';
+  let sub = '';
+  if(r.ultima_carga) sub += 'última carga do cliente: '+_pscE(r.ultima_carga)+' · '+_pscE(r.ultima_rota||'rota ?')+' · '+_pscDM(r.ultima_carga_data);
+  else sub += 'cliente sem carga nos últimos 120 dias';
+  if(r.outras_rotas && r.outras_rotas.length) sub += ' · também já foi em: '+_pscE(r.outras_rotas.slice(0,3).join(', '))+(r.outras_rotas.length>3?'…':'');
+  if(r.outras && r.outras.length) sub += ' · ou carga '+_pscE(r.outras.map(o => o.carga==null ? 'sem nº' : o.carga).join(', '));
+  return '<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--border);font-size:.8rem">'+
+    '<div style="min-width:0"><div><b>'+_pscE(r.pedido)+'</b> '+_pscBadgeSit(r.situacao)+' <span style="color:var(--text-primary)">'+_pscE(r.cliente||'-')+'</span></div>'+
+    '<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">'+sub+'</div></div>'+
+    '<div style="white-space:nowrap;text-align:right"><div style="font-weight:700">'+_pscRS(r.valor)+'</div><div style="font-size:.7rem;color:'+cor+'">'+r.dias+'d parado</div></div></div>';
 }
 
-// A carga é colocada no pedido DENTRO DO ERP; quando o ERP atualiza (integração a cada ~10 min),
-// o pedido some desta aba. Por isso a aba relê sozinha enquanto está aberta (silencioso = sem "Carregando").
-let _pscTimer = null;
+// Caixa (uma carga, uma rota ou um grupo): pedidos prontos em cima, bloqueados separados embaixo
+function _pscCaixa(titulo, sub, cor, lista, avisoTopo){
+  const prontos = lista.filter(r => !r.bloqueado).sort((a,b)=>b.dias-a.dias || b.valor-a.valor);
+  const bloq = lista.filter(r => r.bloqueado).sort((a,b)=>b.dias-a.dias || b.valor-a.valor);
+  let h = '<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid '+cor+';border-radius:12px;padding:12px 14px">'+
+    '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><div style="font-weight:800;color:var(--text-primary)">'+titulo+'</div>'+
+    '<div style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">'+prontos.length+' pronto'+(prontos.length===1?'':'s')+' · '+_pscRS(_pscSoma(prontos))+'</div></div>'+
+    '<div style="font-size:.74rem;color:var(--text-muted);margin:2px 0 4px">'+sub+(bloq.length?' · <span style="color:#dc2626;font-weight:700">'+bloq.length+' bloqueado'+(bloq.length>1?'s':'')+'</span>':'')+'</div>'+(avisoTopo||'');
+  h += prontos.map(_pscLinha).join('');
+  if(bloq.length){
+    h += '<div style="margin-top:8px;padding:6px 8px;background:rgba(220,38,38,.07);border-radius:8px;font-size:.72rem;font-weight:800;color:#dc2626">Aguardando liberação · '+_pscRS(_pscSoma(bloq))+' (fora do valor pronto)</div>';
+    h += bloq.map(_pscLinha).join('');
+  }
+  return h + '</div>';
+}
+
 async function carregarPscDist(silencioso){
   const corpo = document.getElementById('psc-corpo');
   if(!corpo) return;
-  try{
-    const lay = Number(localStorage.getItem('psc_layout'));
-    if(lay>=1 && lay<=3) _pscLay = lay;
-  }catch(_){}
+  // A aba relê sozinha enquanto está aberta (o ERP atualiza a cada ~10 min); silencioso = sem "Carregando"
   if(!_pscTimer){
     _pscTimer = setInterval(() => {
       const pg = document.getElementById('page-pedidos-sem-carga');
@@ -36949,12 +36950,6 @@ async function carregarPscDist(silencioso){
   renderPscDist();
 }
 
-function pscLayout(n){
-  _pscLay = n;
-  try{ localStorage.setItem('psc_layout', String(n)); }catch(_){}
-  renderPscDist();
-}
-
 function _pscFiltradas(){
   const q = (document.getElementById('psc-busca').value||'').trim().toLowerCase();
   const sit = document.getElementById('psc-sit').value;
@@ -36977,105 +36972,59 @@ function _pscFiltradas(){
 function renderPscDist(){
   const corpo = document.getElementById('psc-corpo');
   if(!corpo) return;
-  document.querySelectorAll('#psc-layouts button').forEach(b => {
-    const on = Number(b.dataset.lay) === _pscLay;
-    b.style.background = on ? '#2563eb' : 'var(--bg-card2)';
-    b.style.color = on ? '#fff' : 'var(--text-secondary)';
-  });
   const rows = _pscFiltradas();
-  // KPIs
-  const soma = a => a.reduce((t,r)=>t+Number(r.valor||0),0);
-  const aberta = rows.filter(r => r.tipo==='aberta'), semAb = rows.filter(r => r.tipo==='rota' || r.tipo==='aberta_sem_numero'), interna = rows.filter(r => r.tipo==='interna'), nenhuma = rows.filter(r => r.tipo==='nenhuma'), bloq = rows.filter(r => r.bloqueado);
+  const hoje = hojeDataBRT();
+  const pronto = l => l.filter(r => !r.bloqueado);
+  const aberta = rows.filter(r => r.tipo==='aberta'), semAb = rows.filter(r => r.tipo==='rota' || r.tipo==='aberta_sem_numero'),
+        interna = rows.filter(r => r.tipo==='interna'), nenhuma = rows.filter(r => r.tipo==='nenhuma'), bloq = rows.filter(r => r.bloqueado);
   const kpi = (t,v,sub,cor) => '<div class="kpi-card" style="border-top-color:'+cor+'"><div class="kpi-label">'+t+'</div><div class="kpi-value" style="font-size:1.25rem">'+v+'</div><div style="font-size:.74rem;color:var(--text-muted);margin-top:2px">'+sub+'</div></div>';
   document.getElementById('psc-kpis').innerHTML =
-    kpi('Pedidos sem carga', rows.length, _pscRS(soma(rows)), '#2563eb') +
-    kpi('Com carga aberta sugerida', aberta.length, _pscRS(soma(aberta)), '#16a34a') +
-    kpi('Rota sem carga aberta', semAb.length, _pscRS(soma(semAb)), '#f59e0b') +
-    kpi('Rota interna', interna.length, _pscRS(soma(interna)), '#0ea5e9') +
-    kpi('Sem histórico', nenhuma.length, _pscRS(soma(nenhuma)), '#64748b') +
-    kpi('Bloqueados (BC/BG)', bloq.length, _pscRS(soma(bloq)), '#dc2626');
-  if(!rows.length){ corpo.innerHTML = '<p class="no-data" style="text-align:center;padding:30px;color:var(--text-muted)">✅ Nenhum pedido sem carga com esses filtros</p>'; return; }
-  corpo.innerHTML = _pscLay===2 ? _pscLayout2(rows) : _pscLay===3 ? _pscLayout3(rows) : _pscLayout1(rows);
-}
-
-// ── Layout 1: lista (uma linha por pedido) ──
-function _pscLayout1(rows){
-  const th = (t,al) => '<th style="text-align:'+(al||'left')+';padding:8px 12px;font-size:.72rem;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border);white-space:nowrap">'+t+'</th>';
-  const ord = rows.slice().sort((a,b)=> b.dias - a.dias || b.valor - a.valor);
-  const linhas = ord.map(r =>
-    '<tr style="border-bottom:1px solid var(--border)'+(r.bloqueado?';background:rgba(220,38,38,.05)':'')+'">'+
-    '<td style="padding:8px 12px;font-weight:800;color:var(--text-primary)">'+_pscE(r.pedido)+'</td>'+
-    '<td style="padding:8px 12px;color:var(--text-primary);max-width:260px">'+_pscE(r.cliente||'-')+'</td>'+
-    '<td style="padding:8px 12px">'+_pscBadgeSit(r.situacao)+'</td>'+
-    '<td style="padding:8px 12px;text-align:right;color:var(--text-secondary);white-space:nowrap">'+_pscRS(r.valor)+'</td>'+
-    '<td style="padding:8px 12px;text-align:right;color:'+(r.dias>7?'#dc2626':'var(--text-secondary)')+';font-weight:'+(r.dias>7?'800':'600')+'">'+r.dias+'d</td>'+
-    '<td style="padding:8px 12px">'+_pscUltima(r)+'</td>'+
-    '<td style="padding:8px 12px">'+_pscChipSug(r)+'</td></tr>').join('');
-  return '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem"><thead><tr style="background:var(--bg-card2)">'+
-    th('Pedido')+th('Cliente')+th('Sit.')+th('Valor','right')+th('Parado','right')+th('Última carga do cliente')+th('Sugestão')+'</tr></thead><tbody>'+linhas+'</tbody></table></div>';
-}
-
-// ── Layout 2: por carga aberta (o que dá para colocar em cada carga) ──
-function _pscMini(r){
-  return '<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--border);font-size:.8rem">'+
-    '<div style="min-width:0"><b>'+_pscE(r.pedido)+'</b> '+_pscBadgeSit(r.situacao)+' <span style="color:var(--text-secondary)">'+_pscE(r.cliente||'-')+'</span></div>'+
-    '<div style="white-space:nowrap;text-align:right"><div style="font-weight:700">'+_pscRS(r.valor)+'</div><div style="font-size:.7rem;color:'+(r.dias>7?'#dc2626':'var(--text-muted)')+'">'+r.dias+'d parado</div></div></div>';
-}
-function _pscCaixa(titulo, sub, cor, lista, extra){
-  const tot = lista.reduce((t,r)=>t+Number(r.valor||0),0);
-  return '<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid '+cor+';border-radius:12px;padding:12px 14px">'+
-    '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><div style="font-weight:800;color:var(--text-primary)">'+titulo+'</div><div style="font-size:.78rem;color:var(--text-secondary);white-space:nowrap">'+lista.length+' ped · '+_pscRS(tot)+'</div></div>'+
-    '<div style="font-size:.74rem;color:var(--text-muted);margin:2px 0 6px">'+sub+'</div>'+(extra||'')+
-    lista.slice().sort((a,b)=>b.dias-a.dias).map(_pscMini).join('')+'</div>';
-}
-function _pscLayout2(rows){
-  const porCarga = new Map(), porRota = new Map(), porInterna = new Map(), nenhuma = [];
-  rows.forEach(r => {
-    if(r.tipo==='interna'){ const k = r.ultima_rota; if(!porInterna.has(k)) porInterna.set(k,{lista:[]}); porInterna.get(k).lista.push(r); }
-    else if(r.tipo==='aberta'){ const k = r.prim.carga; if(!porCarga.has(k)) porCarga.set(k,{prim:r.prim,lista:[]}); porCarga.get(k).lista.push(r); }
-    else if(r.tipo==='rota' || r.tipo==='aberta_sem_numero'){ const k = r.ultima_rota || (r.prim && r.prim.rota) || '?'; if(!porRota.has(k)) porRota.set(k,{aberta:r.tipo==='aberta_sem_numero',lista:[]}); porRota.get(k).lista.push(r); }
-    else nenhuma.push(r);
-  });
-  const val = l => l.reduce((t,r)=>t+Number(r.valor||0),0);
-  const grade = h => '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px">'+h+'</div>';
-  const titulo = (t,s) => '<h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin:18px 0 4px">'+t+'</h3><p style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">'+s+'</p>';
-  let h = '';
-  const cargas = [...porCarga.values()].sort((a,b)=> val(b.lista)-val(a.lista));
-  h += titulo('✅ Cargas abertas que podem receber estes pedidos', 'Rota da última carga do cliente = rota da carga em formação/pendente.');
-  h += cargas.length ? grade(cargas.map(c => _pscCaixa('Carga '+_pscE(c.prim.carga)+' · '+_pscE(c.prim.rota), (c.prim.status==='formacao'?'em formação':'pendente')+(c.prim.data_saida?' · sai '+_pscDM(c.prim.data_saida):''), '#16a34a', c.lista)).join('')) : '<p style="color:var(--text-muted);font-size:.84rem">Nenhuma carga aberta casa com os pedidos filtrados.</p>';
-  const rotas = [...porRota.entries()].sort((a,b)=> val(b[1].lista)-val(a[1].lista));
-  if(rotas.length){
-    h += titulo('🟡 Rotas sem carga aberta', 'Há pedidos de clientes dessa rota, mas nenhuma carga em formação/pendente com número — abrir/formar a carga na Expedição.');
-    h += grade(rotas.map(([nome,g]) => _pscCaixa(_pscE(nome), g.aberta ? 'rota em formação, ainda sem nº de carga' : 'sem carga aberta agora', '#f59e0b', g.lista)).join(''));
+    kpi('Pedidos sem carga', rows.length, _pscRS(_pscSoma(rows)), '#2563eb') +
+    kpi('Com carga aberta sugerida', pronto(aberta).length, _pscRS(_pscSoma(pronto(aberta)))+' (prontos)', '#16a34a') +
+    kpi('Rota sem carga aberta', semAb.length, _pscRS(_pscSoma(semAb)), '#f59e0b') +
+    kpi('Rota interna', interna.length, _pscRS(_pscSoma(interna)), '#0ea5e9') +
+    kpi('Sem histórico', nenhuma.length, _pscRS(_pscSoma(nenhuma)), '#64748b') +
+    kpi('Aguardando liberação (BC/BG)', bloq.length, _pscRS(_pscSoma(bloq)), '#dc2626');
+  if(!rows.length){
+    corpo.innerHTML = '<p class="no-data" style="text-align:center;padding:30px;color:var(--text-muted)">✅ Nenhum pedido sem carga com esses filtros</p>';
+    return;
   }
-  const internas = [...porInterna.entries()].sort((a,b)=> val(b[1].lista)-val(a[1].lista));
+  const grade = h => '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px">'+h+'</div>';
+  const titulo = (t,s) => '<h3 style="font-size:.95rem;font-weight:800;color:var(--text-primary);margin:20px 0 4px">'+t+'</h3><p style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px">'+s+'</p>';
+  const porCarga = new Map(), porRota = new Map(), porInterna = new Map();
+  rows.forEach(r => {
+    if(r.tipo==='aberta'){ const k = r.prim.carga; if(!porCarga.has(k)) porCarga.set(k,{prim:r.prim,lista:[]}); porCarga.get(k).lista.push(r); }
+    else if(r.tipo==='rota' || r.tipo==='aberta_sem_numero'){ const k = r.ultima_rota || (r.prim && r.prim.rota) || '?'; if(!porRota.has(k)) porRota.set(k,{semNumero:r.tipo==='aberta_sem_numero',lista:[]}); const g = porRota.get(k); g.semNumero = g.semNumero || r.tipo==='aberta_sem_numero'; g.lista.push(r); }
+    else if(r.tipo==='interna'){ const k = r.ultima_rota; if(!porInterna.has(k)) porInterna.set(k,{lista:[]}); porInterna.get(k).lista.push(r); }
+  });
+  let h = '';
+  // 1) Cargas abertas: as que saem primeiro vêm primeiro
+  const cargas = [...porCarga.values()].sort((a,b) => String(a.prim.data_saida||'9999').localeCompare(String(b.prim.data_saida||'9999')) || a.prim.carga - b.prim.carga);
+  h += titulo('✅ Cargas abertas que podem receber estes pedidos', 'A rota da última carga do cliente é a mesma da carga em formação/pendente. Quem coloca o pedido na carga é o ERP.');
+  h += cargas.length ? grade(cargas.map(c => {
+    const p = c.prim, atrasada = p.data_saida && p.data_saida < hoje;
+    const st = p.status==='formacao' ? 'em formação' : 'pendente (aguarda separação)';
+    const aviso = atrasada ? '<div style="margin:4px 0;padding:5px 8px;background:rgba(245,158,11,.12);border-radius:8px;font-size:.72rem;color:#b45309;font-weight:700">Saída prevista '+_pscDM(p.data_saida)+' já passou — confirme se a carga ainda está aberta</div>' : '';
+    return _pscCaixa('Carga '+_pscE(p.carga)+' · '+_pscE(p.rota), st+(p.data_saida?' · sai '+_pscDM(p.data_saida):''), '#16a34a', c.lista, aviso);
+  }).join('')) : '<p style="color:var(--text-muted);font-size:.84rem">Nenhuma carga aberta casa com os pedidos filtrados.</p>';
+  // 2) Rotas externas sem carga aberta
+  const rotas = [...porRota.entries()].sort((a,b) => _pscSoma(b[1].lista)-_pscSoma(a[1].lista));
+  if(rotas.length){
+    h += titulo('🟡 Rotas sem carga aberta', 'Há pedidos de clientes dessa rota, mas nenhuma carga em formação/pendente com número — formar a carga na Expedição.');
+    h += grade(rotas.map(([nome,g]) => _pscCaixa(_pscE(nome), g.semNumero ? 'rota em formação, ainda sem nº de carga' : 'sem carga aberta agora', '#f59e0b', g.lista)).join(''));
+  }
+  // 3) Rotas internas
+  const internas = [...porInterna.entries()].sort((a,b) => _pscSoma(b[1].lista)-_pscSoma(a[1].lista));
   if(internas.length){
     h += titulo('🔵 Rotas internas (CEASA, Retira, Petrolina, Juazeiro)', 'Não passam pela Expedição: a carga é criada no Lançamento.');
     h += grade(internas.map(([nome,g]) => _pscCaixa(_pscE(nome), 'carga criada no Lançamento', '#0ea5e9', g.lista)).join(''));
   }
+  // 4) Sem histórico
   if(nenhuma.length){
     h += titulo('⚪ Sem histórico de carga', 'Cliente sem carga nos últimos 120 dias — não há base para sugerir rota.');
     h += grade(_pscCaixa('Sem sugestão', 'definir a rota manualmente', '#64748b', nenhuma));
   }
-  return h;
-}
-
-// ── Layout 3: por cliente (todos os pedidos do cliente juntos) ──
-function _pscLayout3(rows){
-  const m = new Map();
-  rows.forEach(r => { const k = r.codigo_cliente || r.cliente || ('p'+r.pedido); if(!m.has(k)) m.set(k,[]); m.get(k).push(r); });
-  const cards = [...m.values()].map(l => ({ l, tot:l.reduce((t,r)=>t+Number(r.valor||0),0), r0:l[0] })).sort((a,b)=>b.tot-a.tot);
-  return '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px">'+cards.map(c => {
-    const cor = c.r0.tipo==='aberta' ? '#16a34a' : (c.r0.tipo==='nenhuma' ? '#64748b' : (c.r0.tipo==='interna' ? '#0ea5e9' : '#f59e0b'));
-    const bloq = c.l.some(r => r.bloqueado);
-    return '<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid '+cor+';border-radius:12px;padding:12px 14px">'+
-      '<div style="display:flex;justify-content:space-between;gap:8px"><div style="font-weight:800;color:var(--text-primary);font-size:.88rem">'+_pscE(c.r0.cliente||'-')+'</div><div style="font-weight:800;white-space:nowrap">'+_pscRS(c.tot)+'</div></div>'+
-      '<div style="font-size:.74rem;color:var(--text-muted);margin:2px 0 8px">'+c.l.length+' pedido'+(c.l.length>1?'s':'')+(c.r0.vendedor?' · vendedor '+_pscE(c.r0.vendedor):'')+(bloq?' · <span style="color:#dc2626;font-weight:700">com bloqueio</span>':'')+'</div>'+
-      '<div style="font-size:.78rem;margin-bottom:6px">Última carga: '+_pscUltima(c.r0)+'</div>'+
-      '<div style="margin-bottom:8px">'+_pscChipSug(c.r0)+'</div>'+
-      c.l.slice().sort((a,b)=>b.dias-a.dias).map(r => '<div style="display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--border);padding:5px 0;font-size:.78rem"><span><b>'+_pscE(r.pedido)+'</b> '+_pscBadgeSit(r.situacao)+'</span><span style="color:var(--text-secondary)">'+_pscRS(r.valor)+' · <span style="color:'+(r.dias>7?'#dc2626':'var(--text-muted)')+'">'+r.dias+'d</span></span></div>').join('')+
-      '</div>';
-  }).join('')+'</div>';
+  corpo.innerHTML = h;
 }
 
 // Busca pedido->carga_erp em pedidos_info_erp (planilha de situação/vendedor)
