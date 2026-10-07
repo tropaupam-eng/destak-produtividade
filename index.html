@@ -9245,7 +9245,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.29';
+const APP_VERSION = '4.89.30';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -41107,12 +41107,36 @@ async function carregarSeparacaoConferente(){
     }
     const cargas = [...new Set(atribs.map(a=>a.carga))];
     const [demandas, baseRows] = await Promise.all([
-      supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&select=carga,rota,status&limit=500`).catch(()=>[]),
+      supaFetch(`demandas_rota?carga=in.(${cargas.join(',')})&select=carga,rota,status,ts_separacao&limit=500`).catch(()=>[]),
       supaFetch(`base_data?carga=in.(${cargas.join(',')})&select=carga,pedido&order=carga.asc,pedido.asc&limit=5000`).catch(()=>[])
     ]);
     const rotaPorCarga = {};
     const statusPorCarga = {};
-    (demandas||[]).forEach(d=>{ if(d.carga){ rotaPorCarga[d.carga] = d.rota||''; statusPorCarga[d.carga] = d.status; } });
+    const tsSeparacaoPorCarga = {};
+    (demandas||[]).forEach(d=>{ if(d.carga){ rotaPorCarga[d.carga] = d.rota||''; statusPorCarga[d.carga] = d.status; tsSeparacaoPorCarga[d.carga] = d.ts_separacao; } });
+
+    // Pedido alterado pelo ERP (corte/removido/adicionado/restaurado) DEPOIS
+    // que a carga entrou em separação — o conferente pode estar contando um
+    // romaneio que já mudou sem saber. Usa ts_separacao (sempre preenchido)
+    // como referência, não atribuicoes_armazem.inicio_separacao (quase nunca
+    // preenchido hoje — ver PERGUNTAS-RAFAEL-MFV.md). Pedido do usuário, 2026-10-07.
+    const alteracoesPorCarga = {};
+    try{
+      const pedidosDaCarga = [...new Set((baseRows||[]).map(r=>r.pedido))];
+      if(pedidosDaCarga.length){
+        const cargaPorPedido = {};
+        (baseRows||[]).forEach(r=>{ cargaPorPedido[r.pedido] = r.carga; });
+        const alts = await supaFetch(`pedidos_alteracoes_erp?pedido=in.(${pedidosDaCarga.join(',')})&select=pedido,tipo,descricao,mercadoria,quantidade_antes,quantidade_depois,detectado_em&order=detectado_em.desc&limit=2000`).catch(()=>[]) || [];
+        alts.forEach(a=>{
+          const carga = cargaPorPedido[a.pedido];
+          const tsSep = carga!=null ? tsSeparacaoPorCarga[carga] : null;
+          if(!carga || !tsSep) return;
+          if(new Date(a.detectado_em) <= new Date(tsSep)) return;
+          (alteracoesPorCarga[carga] = alteracoesPorCarga[carga]||[]).push(a);
+        });
+      }
+    }catch(e){}
+    const _tipoAltLabel = {corte:'✂️ Corte',removido:'🗑️ Removido',adicionado:'➕ Adicionado',restaurado:'↩️ Restaurado'};
 
     // A aba Separação só mostra carga em pendente/separação — assim que o
     // status avança pra carregamento (alguém já iniciou o carregamento),
@@ -41171,6 +41195,15 @@ async function carregarSeparacaoConferente(){
 
       const vinculado = !!atr.inicio_separacao;
       const horaInicio = vinculado ? new Date(atr.inicio_separacao).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+      const altsCarga = alteracoesPorCarga[atr.carga] || [];
+      const alertaAlteracao = altsCarga.length ? `
+        <div style="margin:12px 18px 0;background:rgba(239,68,68,.1);border:1.5px solid #ef4444;border-radius:8px;padding:9px 12px">
+          <div style="font-size:.76rem;font-weight:800;color:#ef4444">⚠️ ${altsCarga.length} pedido${altsCarga.length!==1?'s':''} alterado${altsCarga.length!==1?'s':''} desde que a separação começou</div>
+          <div style="font-size:.7rem;color:#fca5a5;margin-top:4px;display:flex;flex-direction:column;gap:2px">
+            ${altsCarga.slice(0,4).map(a=>`<span>Pedido ${a.pedido} — ${_tipoAltLabel[a.tipo]||a.tipo} ${escapeHtml(a.descricao||a.mercadoria||'')}${(a.quantidade_antes!=null||a.quantidade_depois!=null)?` (${a.quantidade_antes??'—'} → ${a.quantidade_depois??'—'})`:''}</span>`).join('')}
+            ${altsCarga.length>4?`<span>+ ${altsCarga.length-4} outra${altsCarga.length-4!==1?'s':''}</span>`:''}
+          </div>
+        </div>` : '';
 
       return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:3px solid #2563eb;border-radius:14px;margin-bottom:16px;overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--border);background:rgba(37,99,235,.05)">
@@ -41185,6 +41218,7 @@ async function carregarSeparacaoConferente(){
             <div style="height:100%;background:#2563eb;width:${pctCarga}%;transition:width .4s"></div>
           </div>`:''}
         </div>
+        ${alertaAlteracao}
         ${!vinculado?`
         <div style="padding:16px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
           <span style="font-size:.8rem;color:var(--text-muted)">A separação é vinculada ao romaneio inteiro, não pedido por pedido — vincule pra começar.</span>
@@ -42503,6 +42537,57 @@ async function renderArmazem(){
       demandasContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma pré-carga ativa no momento.</p>';
     } else {
       const confOptsAllHtml = confCards.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${escapeHtml(c.nome)}</option>`).join('');
+
+      // Pedido alterado pelo ERP (corte/removido/adicionado/restaurado) DEPOIS
+      // que a carga entrou em separação/carregamento — o conferente pode estar
+      // contando um romaneio que já mudou sem ninguém no admin saber. Mesma
+      // lógica usada no alerta do portal do conferente. Pedido do usuário, 2026-10-07.
+      const cargasEmConferencia = demandasAtivas.filter(d=>['separacao','carregamento'].includes(d.status));
+      const alteracoesPorCargaAdm = {};
+      if(cargasEmConferencia.length){
+        try{
+          const cargasNumsAdm = cargasEmConferencia.map(d=>d.carga);
+          const baseRowsAdm = await supaFetch(`base_data?carga=in.(${cargasNumsAdm.join(',')})&select=carga,pedido`).catch(()=>[]) || [];
+          const pedidosNumsAdm = [...new Set(baseRowsAdm.map(r=>r.pedido))];
+          if(pedidosNumsAdm.length){
+            const cargaPorPedidoAdm = {};
+            baseRowsAdm.forEach(r=>{ cargaPorPedidoAdm[r.pedido] = r.carga; });
+            const tsSepPorCargaAdm = {};
+            cargasEmConferencia.forEach(d=>{ tsSepPorCargaAdm[d.carga] = d.ts_separacao; });
+            const altsAdm = await supaFetch(`pedidos_alteracoes_erp?pedido=in.(${pedidosNumsAdm.join(',')})&select=pedido,tipo,detectado_em&order=detectado_em.desc&limit=2000`).catch(()=>[]) || [];
+            altsAdm.forEach(a=>{
+              const carga = cargaPorPedidoAdm[a.pedido];
+              const tsSep = carga!=null ? tsSepPorCargaAdm[carga] : null;
+              if(!carga || !tsSep) return;
+              if(new Date(a.detectado_em) <= new Date(tsSep)) return;
+              (alteracoesPorCargaAdm[carga] = alteracoesPorCargaAdm[carga]||[]).push(a);
+            });
+          }
+        }catch(e){}
+      }
+      const cargasComAlteracaoAdm = Object.keys(alteracoesPorCargaAdm).map(Number);
+      const alertaAlteracaoPedidosAdm = cargasComAlteracaoAdm.length ? `
+        <div style="background:rgba(239,68,68,.1);border:2px solid #ef4444;border-radius:12px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px">
+          <span style="font-size:1.3rem;line-height:1">✂️</span>
+          <div style="flex:1">
+            <div style="font-size:.82rem;font-weight:800;color:#ef4444;margin-bottom:4px">
+              ${cargasComAlteracaoAdm.length} carga${cargasComAlteracaoAdm.length!==1?'s':''} com pedido alterado depois que a separação começou!
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+              ${cargasComAlteracaoAdm.map(c=>{
+                const d = cargasEmConferencia.find(x=>x.carga===c);
+                const n = alteracoesPorCargaAdm[c].length;
+                return `<span style="background:#ef444422;border:1px solid #ef444466;border-radius:6px;padding:2px 10px;font-size:.75rem;font-weight:700;color:#ef4444">
+                  #${c} ${d?.rota||'—'} · ${n} alteraç${n!==1?'ões':'ão'}
+                </span>`;
+              }).join('')}
+            </div>
+            <div style="font-size:.72rem;color:#ef4444;margin-top:6px;font-weight:600">
+              Avise o conferente pra reconferir antes de finalizar o carregamento.
+            </div>
+          </div>
+        </div>` : '';
+
       // Carga já em separação/carregamento mas sem NENHUM conferente vinculado —
       // fica invisível pra qualquer conferente até alguém vincular ou o próprio
       // conferente "pegar" ela pelo número. Sem este alerta, passa despercebida
@@ -42548,7 +42633,7 @@ async function renderArmazem(){
             </div>
           </div>
         </div>` : '';
-      demandasContainer.innerHTML = alertaSemConferente + alertaPendentes + `
+      demandasContainer.innerHTML = alertaAlteracaoPedidosAdm + alertaSemConferente + alertaPendentes + `
         <div style="font-size:.68rem;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px">
           📦 Pré-Cargas em andamento
           <span style="height:1px;flex:1;background:var(--border)"></span>
@@ -44936,7 +45021,15 @@ async function iniciarApp(){
     window._confAutoRefresh = setInterval(async ()=>{
       if(USUARIO_LOGADO?.perfil==='conferente'){
         _supaLoadingQuiet = true;
-        try{ await carregarPortalConferente(); }catch(e){}
+        try{
+          await carregarPortalConferente();
+          // Aba Separação só carregava uma vez, ao trocar de aba — sem isso o
+          // conferente que fica parado ali nunca via o alerta de pedido
+          // alterado aparecer sozinho, só saindo e voltando na aba. Pedido
+          // do usuário, 2026-10-07.
+          const viewS = document.getElementById('conf-view-separacao');
+          if(viewS && viewS.style.display !== 'none') await carregarSeparacaoConferente();
+        }catch(e){}
         finally{ _supaLoadingQuiet = false; }
       } else {
         clearInterval(window._confAutoRefresh);
