@@ -36880,7 +36880,9 @@ function _pscClassifica(r){
   const comNum = ab.filter(a => a.carga != null);
   const prim = comNum.find(a => a.status==='formacao') || comNum[0] || ab[0] || null;
   let tipo = 'nenhuma';
-  if(prim) tipo = prim.carga != null ? 'aberta' : 'aberta_sem_numero';
+  // Rota interna (CEASA, Retira, Petrolina, Juazeiro) não passa pela Expedição: a carga nasce no Lançamento
+  if(r.ultima_rota && ROTAS_RI.has(r.ultima_rota)) tipo = 'interna';
+  else if(prim) tipo = prim.carga != null ? 'aberta' : 'aberta_sem_numero';
   else if(r.ultima_rota) tipo = 'rota';
   return Object.assign({}, r, { bloqueado: r.situacao==='BC' || r.situacao==='BG', prim, outras: ab.filter(a => a !== prim), tipo });
 }
@@ -36901,6 +36903,8 @@ function _pscChipSug(r){
   }
   if(r.tipo==='aberta_sem_numero')
     return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:#fef3c7;color:#92400e;border:1px solid #fcd34d">'+_pscE(r.prim.rota)+' em formação</span> <span style="font-size:.7rem;color:var(--text-muted)">ainda sem nº de carga</span>';
+  if(r.tipo==='interna')
+    return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:#e0f2fe;color:#075985;border:1px solid #7dd3fc">'+_pscE(r.ultima_rota)+' · rota interna</span> <span style="font-size:.7rem;color:var(--text-muted)">carga criada no Lançamento</span>';
   if(r.tipo==='rota')
     return '<span title="'+_pscE(_pscOrigem(r))+'" style="'+base+'background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border)">'+_pscE(r.ultima_rota)+'</span> <span style="font-size:.7rem;color:var(--text-muted)">sem carga aberta agora</span>';
   return '<span style="'+base+'background:var(--bg-card2);color:var(--text-muted);border:1px dashed var(--border)">sem histórico</span>';
@@ -36981,12 +36985,13 @@ function renderPscDist(){
   const rows = _pscFiltradas();
   // KPIs
   const soma = a => a.reduce((t,r)=>t+Number(r.valor||0),0);
-  const aberta = rows.filter(r => r.tipo==='aberta'), semAb = rows.filter(r => r.tipo==='rota' || r.tipo==='aberta_sem_numero'), nenhuma = rows.filter(r => r.tipo==='nenhuma'), bloq = rows.filter(r => r.bloqueado);
+  const aberta = rows.filter(r => r.tipo==='aberta'), semAb = rows.filter(r => r.tipo==='rota' || r.tipo==='aberta_sem_numero'), interna = rows.filter(r => r.tipo==='interna'), nenhuma = rows.filter(r => r.tipo==='nenhuma'), bloq = rows.filter(r => r.bloqueado);
   const kpi = (t,v,sub,cor) => '<div class="kpi-card" style="border-top-color:'+cor+'"><div class="kpi-label">'+t+'</div><div class="kpi-value" style="font-size:1.25rem">'+v+'</div><div style="font-size:.74rem;color:var(--text-muted);margin-top:2px">'+sub+'</div></div>';
   document.getElementById('psc-kpis').innerHTML =
     kpi('Pedidos sem carga', rows.length, _pscRS(soma(rows)), '#2563eb') +
     kpi('Com carga aberta sugerida', aberta.length, _pscRS(soma(aberta)), '#16a34a') +
     kpi('Rota sem carga aberta', semAb.length, _pscRS(soma(semAb)), '#f59e0b') +
+    kpi('Rota interna', interna.length, _pscRS(soma(interna)), '#0ea5e9') +
     kpi('Sem histórico', nenhuma.length, _pscRS(soma(nenhuma)), '#64748b') +
     kpi('Bloqueados (BC/BG)', bloq.length, _pscRS(soma(bloq)), '#dc2626');
   if(!rows.length){ corpo.innerHTML = '<p class="no-data" style="text-align:center;padding:30px;color:var(--text-muted)">✅ Nenhum pedido sem carga com esses filtros</p>'; return; }
@@ -37024,9 +37029,10 @@ function _pscCaixa(titulo, sub, cor, lista, extra){
     lista.slice().sort((a,b)=>b.dias-a.dias).map(_pscMini).join('')+'</div>';
 }
 function _pscLayout2(rows){
-  const porCarga = new Map(), porRota = new Map(), nenhuma = [];
+  const porCarga = new Map(), porRota = new Map(), porInterna = new Map(), nenhuma = [];
   rows.forEach(r => {
-    if(r.tipo==='aberta'){ const k = r.prim.carga; if(!porCarga.has(k)) porCarga.set(k,{prim:r.prim,lista:[]}); porCarga.get(k).lista.push(r); }
+    if(r.tipo==='interna'){ const k = r.ultima_rota; if(!porInterna.has(k)) porInterna.set(k,{lista:[]}); porInterna.get(k).lista.push(r); }
+    else if(r.tipo==='aberta'){ const k = r.prim.carga; if(!porCarga.has(k)) porCarga.set(k,{prim:r.prim,lista:[]}); porCarga.get(k).lista.push(r); }
     else if(r.tipo==='rota' || r.tipo==='aberta_sem_numero'){ const k = r.ultima_rota || (r.prim && r.prim.rota) || '?'; if(!porRota.has(k)) porRota.set(k,{aberta:r.tipo==='aberta_sem_numero',lista:[]}); porRota.get(k).lista.push(r); }
     else nenhuma.push(r);
   });
@@ -37042,6 +37048,11 @@ function _pscLayout2(rows){
     h += titulo('🟡 Rotas sem carga aberta', 'Há pedidos de clientes dessa rota, mas nenhuma carga em formação/pendente com número — abrir/formar a carga na Expedição.');
     h += grade(rotas.map(([nome,g]) => _pscCaixa(_pscE(nome), g.aberta ? 'rota em formação, ainda sem nº de carga' : 'sem carga aberta agora', '#f59e0b', g.lista)).join(''));
   }
+  const internas = [...porInterna.entries()].sort((a,b)=> val(b[1].lista)-val(a[1].lista));
+  if(internas.length){
+    h += titulo('🔵 Rotas internas (CEASA, Retira, Petrolina, Juazeiro)', 'Não passam pela Expedição: a carga é criada no Lançamento.');
+    h += grade(internas.map(([nome,g]) => _pscCaixa(_pscE(nome), 'carga criada no Lançamento', '#0ea5e9', g.lista)).join(''));
+  }
   if(nenhuma.length){
     h += titulo('⚪ Sem histórico de carga', 'Cliente sem carga nos últimos 120 dias — não há base para sugerir rota.');
     h += grade(_pscCaixa('Sem sugestão', 'definir a rota manualmente', '#64748b', nenhuma));
@@ -37055,7 +37066,7 @@ function _pscLayout3(rows){
   rows.forEach(r => { const k = r.codigo_cliente || r.cliente || ('p'+r.pedido); if(!m.has(k)) m.set(k,[]); m.get(k).push(r); });
   const cards = [...m.values()].map(l => ({ l, tot:l.reduce((t,r)=>t+Number(r.valor||0),0), r0:l[0] })).sort((a,b)=>b.tot-a.tot);
   return '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px">'+cards.map(c => {
-    const cor = c.r0.tipo==='aberta' ? '#16a34a' : (c.r0.tipo==='nenhuma' ? '#64748b' : '#f59e0b');
+    const cor = c.r0.tipo==='aberta' ? '#16a34a' : (c.r0.tipo==='nenhuma' ? '#64748b' : (c.r0.tipo==='interna' ? '#0ea5e9' : '#f59e0b'));
     const bloq = c.l.some(r => r.bloqueado);
     return '<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid '+cor+';border-radius:12px;padding:12px 14px">'+
       '<div style="display:flex;justify-content:space-between;gap:8px"><div style="font-weight:800;color:var(--text-primary);font-size:.88rem">'+_pscE(c.r0.cliente||'-')+'</div><div style="font-weight:800;white-space:nowrap">'+_pscRS(c.tot)+'</div></div>'+
