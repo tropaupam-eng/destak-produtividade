@@ -9264,7 +9264,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.32';
+const APP_VERSION = '4.89.33';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -41228,6 +41228,42 @@ function _sepAtualizarResumo(carga, idx){
   resumo.innerHTML = _sepResumoHtml(carga, idx, inp.value.trim());
   resumo.style.display = 'flex';
   inp.style.display = 'none';
+  // Grava no banco na hora — sem isso a confirmação só existia na tela, e o
+  // auto-refresh de 45s (que busca de novo no banco pra ver alterações de
+  // pedido) desfazia o "OK" porque nada tinha sido salvo ainda. Bug
+  // reportado pelo conferente, 2026-10-07: "quando eu confirmo os itens
+  // atualiza sozinho e fica como se não confirmasse".
+  if(inp.value.trim()!=='') _sepSalvarUmItem(carga, idx);
+}
+async function _sepSalvarUmItem(carga, idx){
+  const inp = document.getElementById(`sep-qtd-${carga}-${idx}`);
+  if(!inp) return;
+  const v = inp.value.trim();
+  if(v==='') return;
+  const item = (window._sepRomaneioCache?.[carga]||[])[idx];
+  if(!item) return;
+  const totalContado = Number(v)||0;
+  const totalEsperado = item.totalEsperado||0;
+  let restante = totalContado;
+  const rows = item.ocorrencias.map((o,i)=>{
+    const ehUltimo = i===item.ocorrencias.length-1;
+    const parte = ehUltimo ? restante
+      : (totalEsperado>0 ? Math.round(totalContado*o.esperado/totalEsperado) : Math.round(totalContado/item.ocorrencias.length));
+    if(!ehUltimo) restante -= parte;
+    return {
+      carga: Number(carga), pedido: Number(o.pedido), mercadoria: item.mercadoria,
+      quantidade_esperada: o.esperado, quantidade_separada: parte,
+      conferente_id: USUARIO_LOGADO?.id||null,
+      conferente_nome: USUARIO_LOGADO?.nome||null,
+      separado_em: new Date().toISOString()
+    };
+  });
+  try{
+    await supaFetch('separacao_itens?on_conflict=carga,pedido,mercadoria',{
+      method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify(rows)
+    });
+  }catch(e){ showToast('Erro ao salvar item: '+e.message,'warning'); }
 }
 
 function _renderItensRomaneio(carga, itensRomaneio){
