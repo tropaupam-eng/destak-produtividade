@@ -9240,7 +9240,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.30';
+const APP_VERSION = '4.89.31';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -40986,7 +40986,7 @@ async function pegarCargaParaSeparar(demandaId, carga){
 // todas as ocorrências), mostra UMA linha por produto — código + descrição
 // — com UM campo de quantidade total contada pro romaneio inteiro. Pedido
 // explícito do usuário, 2026-09-21.
-function _agregarItensRomaneio(carga, peds, itensPorPedido, separadosMap){
+function _agregarItensRomaneio(carga, peds, itensPorPedido, separadosMap, alteracoesCarga){
   const porMerc = {};
   peds.forEach(p=>{
     (itensPorPedido[p]||[]).forEach(it=>{
@@ -41000,35 +41000,95 @@ function _agregarItensRomaneio(carga, peds, itensPorPedido, separadosMap){
       });
     });
   });
+  // Liga cada mercadoria às alterações do ERP detectadas pra ela (depois do
+  // início da separação) — mesma fonte usada no alerta por carga, só que
+  // agora anotada no item certo. Pedido do usuário, 2026-10-07.
+  const altsPorMerc = {};
+  (alteracoesCarga||[]).forEach(a=>{
+    if(!a.mercadoria) return;
+    (altsPorMerc[a.mercadoria] = altsPorMerc[a.mercadoria]||[]).push(a);
+  });
   return Object.values(porMerc).map(m=>{
     const totalEsperado = m.ocorrencias.reduce((a,o)=>a+o.esperado,0);
     const todasPreenchidas = m.ocorrencias.every(o=>o.separado!=null);
     const totalSeparado = todasPreenchidas ? m.ocorrencias.reduce((a,o)=>a+o.separado,0) : null;
-    return { ...m, totalEsperado, totalSeparado, todasPreenchidas };
+    return { ...m, totalEsperado, totalSeparado, todasPreenchidas, alteracoes: altsPorMerc[m.mercadoria]||[] };
   });
 }
 
 window._sepRomaneioCache = {};
 
+// Resumo de um item: estado "não respondido" (mostra esperado + botão OK)
+// ou já respondido (confere/divergente), sempre com opção de corrigir.
+// Trocado de "contagem cega" pra "confirma por exceção" — pedido do
+// usuário, 2026-10-07: mais rápido pro caso comum (bate), só digita
+// quando é realmente diferente.
+function _sepItemEsperado(carga, idx){
+  const item = (window._sepRomaneioCache?.[carga]||[])[idx];
+  return item ? (item.totalEsperado||0) : 0;
+}
+function _sepResumoHtml(carga, idx, valorStr){
+  const esperado = _sepItemEsperado(carga, idx);
+  const btnEditar = `<button onclick="_sepAbrirDiferente('${carga}',${idx})" title="${valorStr===''?'Informar outra quantidade':'Corrigir'}" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:7px;padding:${valorStr===''?'6px 8px':'5px 8px'};font-size:.72rem;cursor:pointer">✏️</button>`;
+  if(valorStr===''){
+    return `<span style="font-size:.68rem;color:var(--text-muted);white-space:nowrap">Esperado: <strong style="color:var(--text-secondary)">${esperado}</strong></span>
+      <button onclick="_sepConfirmarOk('${carga}',${idx})" style="background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(5,150,105,.4);border-radius:7px;padding:6px 12px;font-size:.78rem;font-weight:800;cursor:pointer;white-space:nowrap">✅ OK</button>
+      ${btnEditar}`;
+  }
+  const divergente = Number(valorStr) !== esperado;
+  const cor = divergente ? '#ef4444' : '#34d399';
+  const bgCor = divergente ? 'rgba(239,68,68,.12)' : 'rgba(5,150,105,.12)';
+  const texto = divergente ? `⚠️ ${valorStr} <span style="opacity:.75;font-weight:600">(esp. ${esperado})</span>` : `✅ Confere (${valorStr})`;
+  return `<span style="background:${bgCor};color:${cor};border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:800;white-space:nowrap">${texto}</span>${btnEditar}`;
+}
+function _sepConfirmarOk(carga, idx){
+  const inp = document.getElementById(`sep-qtd-${carga}-${idx}`);
+  if(inp) inp.value = _sepItemEsperado(carga, idx);
+  _sepAtualizarResumo(carga, idx);
+}
+function _sepAbrirDiferente(carga, idx){
+  const inp = document.getElementById(`sep-qtd-${carga}-${idx}`);
+  const resumo = document.getElementById(`sep-resumo-${carga}-${idx}`);
+  if(resumo) resumo.style.display = 'none';
+  if(inp){ inp.style.display='inline-block'; inp.focus(); inp.select(); }
+}
+function _sepAtualizarResumo(carga, idx){
+  const inp = document.getElementById(`sep-qtd-${carga}-${idx}`);
+  const resumo = document.getElementById(`sep-resumo-${carga}-${idx}`);
+  if(!inp || !resumo) return;
+  resumo.innerHTML = _sepResumoHtml(carga, idx, inp.value.trim());
+  resumo.style.display = 'flex';
+  inp.style.display = 'none';
+}
+
 function _renderItensRomaneio(carga, itensRomaneio){
   window._sepRomaneioCache[carga] = itensRomaneio;
+  const _tipoAltLabelSep = {corte:'Corte',removido:'Removido',adicionado:'Adicionado',restaurado:'Restaurado'};
   const rows = itensRomaneio.map((m,i)=>{
-    const valorAtual = m.totalSeparado!=null ? m.totalSeparado : '';
+    const valorAtual = m.totalSeparado!=null ? String(m.totalSeparado) : '';
     const divergente = valorAtual!=='' && Number(valorAtual)!==m.totalEsperado;
-    let bg='var(--bg-input)', bd='var(--border-med)', txt='var(--text-primary)';
-    if(divergente){ bg='rgba(239,68,68,.12)'; bd='#ef4444'; txt='#fca5a5'; }
-    else if(valorAtual!==''){ bg='rgba(5,150,105,.12)'; bd='#059669'; txt='#34d399'; }
-    // Contagem cega: só código da mercadoria + descrição aparecem — a
-    // quantidade esperada NÃO é mostrada, pro conferente contar de verdade
-    // em vez de só copiar o número esperado. Ela continua guardada
-    // (no cache, por ocorrência) pra calcular divergência depois de salvo.
+
+    const alts = m.alteracoes||[];
+    const obsAlteracao = alts.length ? `
+      <div style="font-size:.68rem;margin-top:3px;display:flex;flex-direction:column;gap:1px">
+        ${alts.map(a=>{
+          const subiu = a.quantidade_depois!=null && a.quantidade_antes!=null && Number(a.quantidade_depois) > Number(a.quantidade_antes);
+          const cor = subiu ? '#34d399' : '#ef4444';
+          const seta = subiu ? '▲' : '▼';
+          const label = _tipoAltLabelSep[a.tipo] || a.tipo;
+          return `<span style="color:${cor};font-weight:700">${seta} ${label} pelo ERP: ${a.quantidade_antes??'—'} → ${a.quantidade_depois??'—'}</span>`;
+        }).join('')}
+      </div>` : '';
+
     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
       <div style="flex:1;min-width:0">
         <div style="font-size:.82rem;font-weight:700;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.descricao||'—')}</div>
         <div style="font-size:.68rem;color:${divergente?'#ef4444':'var(--text-muted)'}">Cód. ${escapeHtml(m.mercadoria||'—')}${divergente?' — divergente':''}</div>
+        ${obsAlteracao}
       </div>
-      <input type="number" id="sep-qtd-${carga}-${i}" value="${valorAtual}" placeholder="—"
-        style="width:64px;text-align:center;border-radius:8px;padding:7px 4px;font-size:.88rem;font-weight:700;outline:none;border:1.5px solid ${bd};background:${bg};color:${txt}">
+      <div id="sep-resumo-${carga}-${i}" style="display:flex;align-items:center;gap:4px">${_sepResumoHtml(carga,i,valorAtual)}</div>
+      <input type="number" id="sep-qtd-${carga}-${i}" value="${valorAtual}" onblur="_sepAtualizarResumo('${carga}',${i})"
+        style="display:none;width:64px;text-align:center;border-radius:8px;padding:7px 4px;font-size:.88rem;font-weight:700;outline:none;border:1.5px solid var(--border-med);background:var(--bg-input);color:var(--text-primary)">
     </div>`;
   }).join('');
   return `<div style="padding:4px 14px 12px">
@@ -41159,7 +41219,7 @@ async function carregarSeparacaoConferente(){
     const html = atribs.map(atr=>{
       const peds = atribPedidos[atr.id]||[];
       if(!peds.length) return '';
-      const itensRomaneio = _agregarItensRomaneio(atr.carga, peds, itensPorPedido, separadosMap);
+      const itensRomaneio = _agregarItensRomaneio(atr.carga, peds, itensPorPedido, separadosMap, alteracoesPorCarga[atr.carga]);
       if(!itensRomaneio.length) return '';
       const itensProntos = itensRomaneio.filter(m=>m.todasPreenchidas).length;
       const pctCarga = itensRomaneio.length ? Math.round(itensProntos/itensRomaneio.length*100) : 0;
