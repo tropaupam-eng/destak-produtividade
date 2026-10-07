@@ -2308,6 +2308,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <input id="l-ocorr-descricao" type="text" placeholder="Detalhe (opcional)"
           style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
       </div>
+      <div>
+        <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Data da ocorrência</label>
+        <input id="l-ocorr-data" type="date"
+          style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
+      </div>
     </div>
 
     <!-- Dados automáticos do pedido (somente leitura) -->
@@ -9264,7 +9269,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.33';
+const APP_VERSION = '4.89.34';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18236,12 +18241,20 @@ async function salvarOcorrenciaLanc(){
   const produtoResumo   = itensParaGravar.map(i=>i.produto).slice(0,3).join(', ') + (itensParaGravar.length>3?'...':'');
   const quantidadeTotal = itensParaGravar.reduce((s,i)=>s+(i.quantidade||0),0) || null;
 
+  // Data da ocorrência é opcional — em branco usa o momento do registro
+  // (comportamento de sempre). Quando preenchida (ex.: ocorrência de um
+  // dia anterior lançada com atraso), usa meio-dia no fuso de Brasília em
+  // vez de meia-noite UTC, pra não cair no dia errado. Pedido do usuário,
+  // 2026-10-07.
+  const dataEl = document.getElementById('l-ocorr-data')?.value || '';
+  const criadoEm = dataEl ? `${dataEl}T12:00:00-03:00` : new Date().toISOString();
+
   try{
     const inserido = await supaFetch('ocorrencias_distribuicao',{
       method:'POST',
       body:JSON.stringify({
         pedido, carga, rota:rotaFinal, tipo, status:'pendente',
-        criado_em:new Date().toISOString(), criado_por:usuario,
+        criado_em:criadoEm, criado_por:usuario,
         motivo_id:motivoId, motivo_nome:motivoNome,
         cliente, conferente, motorista, veiculo, tipo_devolucao:tipoDev,
         produto: produtoResumo || null, quantidade: quantidadeTotal, descricao: desc||null,
@@ -18255,7 +18268,7 @@ async function salvarOcorrenciaLanc(){
       }).catch(()=>{});
     }
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
-    ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-descricao'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+    ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-descricao','l-ocorr-data'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
     const motivoEl=document.getElementById('l-ocorr-motivo'); if(motivoEl) motivoEl.value='';
     const hint=document.getElementById('l-ocorr-rota-hint'); if(hint) hint.textContent='';
     const infoBox=document.getElementById('l-ocorr-autofill'); if(infoBox) infoBox.style.display='none';
@@ -41177,12 +41190,35 @@ function _agregarItensRomaneio(carga, peds, itensPorPedido, separadosMap, altera
     if(!a.mercadoria) return;
     (altsPorMerc[a.mercadoria] = altsPorMerc[a.mercadoria]||[]).push(a);
   });
-  return Object.values(porMerc).map(m=>{
+  const itens = Object.values(porMerc).map(m=>{
     const totalEsperado = m.ocorrencias.reduce((a,o)=>a+o.esperado,0);
     const todasPreenchidas = m.ocorrencias.every(o=>o.separado!=null);
     const totalSeparado = todasPreenchidas ? m.ocorrencias.reduce((a,o)=>a+o.separado,0) : null;
-    return { ...m, totalEsperado, totalSeparado, todasPreenchidas, alteracoes: altsPorMerc[m.mercadoria]||[] };
+    return { ...m, totalEsperado, totalSeparado, todasPreenchidas, alteracoes: altsPorMerc[m.mercadoria]||[], removido:false };
   });
+
+  // Item removido do pedido pelo ERP depois do início da separação some de
+  // pedidos_itens_erp (status deixa de ser 'ativo'), então nunca aparecia
+  // aqui — o conferente só via no banner da carga, não na lista em si.
+  // Agora entra riscado, mostrando o que já tinha sido separado antes (se
+  // tinha). Pedido do usuário, 2026-10-07.
+  const mercsPresentes = new Set(itens.map(i=>i.mercadoria));
+  (alteracoesCarga||[]).forEach(a=>{
+    if(a.tipo!=='removido' || !a.mercadoria || mercsPresentes.has(a.mercadoria)) return;
+    mercsPresentes.add(a.mercadoria);
+    const jaSeparado = peds.reduce((acc,p)=>{
+      const s = separadosMap[carga+'_'+p+'_'+a.mercadoria];
+      return acc + (s && s.quantidade_separada!=null ? Number(s.quantidade_separada) : 0);
+    }, 0);
+    itens.push({
+      mercadoria: a.mercadoria, descricao: a.descricao||'',
+      ocorrencias: [], totalEsperado: 0,
+      totalSeparado: jaSeparado>0 ? jaSeparado : null,
+      todasPreenchidas: true, alteracoes: altsPorMerc[a.mercadoria]||[],
+      removido: true
+    });
+  });
+  return itens;
 }
 
 window._sepRomaneioCache = {};
@@ -41270,6 +41306,15 @@ function _renderItensRomaneio(carga, itensRomaneio){
   window._sepRomaneioCache[carga] = itensRomaneio;
   const _tipoAltLabelSep = {corte:'Corte',removido:'Removido',adicionado:'Adicionado',restaurado:'Restaurado'};
   const rows = itensRomaneio.map((m,i)=>{
+    if(m.removido){
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);opacity:.55">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.82rem;font-weight:700;color:var(--text-muted);text-decoration:line-through;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.descricao||'—')}</div>
+          <div style="font-size:.68rem;color:#ef4444">Cód. ${escapeHtml(m.mercadoria||'—')} — removido do pedido pelo ERP${m.totalSeparado!=null?` · você já tinha separado ${m.totalSeparado}`:''}</div>
+        </div>
+        <span style="font-size:.7rem;color:#ef4444;font-weight:800;white-space:nowrap">🗑️ Removido</span>
+      </div>`;
+    }
     const valorAtual = m.totalSeparado!=null ? String(m.totalSeparado) : '';
     const divergente = valorAtual!=='' && Number(valorAtual)!==m.totalEsperado;
 
