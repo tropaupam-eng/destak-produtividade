@@ -9270,7 +9270,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.35';
+const APP_VERSION = '4.89.36';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -41662,7 +41662,7 @@ async function buscarCargaConferente(){
       <div style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:10px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <div>
           <div style="font-size:.85rem;font-weight:800;color:var(--text-primary);margin-bottom:4px">Carga ${dem.carga} — ${dem.rota||'—'}</div>
-          <div style="font-size:.78rem;color:var(--text-secondary)">🧑 ${dem.motorista||'—'} &nbsp;·&nbsp; 📦 ${dem.quantidade_pedidos||0} pedidos &nbsp;·&nbsp; ${stLabel}</div>
+          <div style="font-size:.78rem;color:var(--text-secondary)">🧑 ${dem.motorista||'—'} &nbsp;·&nbsp; 🚚 ${dem.veiculo||'—'} &nbsp;·&nbsp; 📦 ${dem.quantidade_pedidos||0} pedidos &nbsp;·&nbsp; ${stLabel}</div>
         </div>
         <button onclick="pegarCargaConferente('${dem.id}',${dem.carga})"
           style="background:#059669;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:.85rem;font-weight:700;cursor:pointer;white-space:nowrap">✅ Pegar Carga</button>
@@ -51813,7 +51813,89 @@ const _TV_ROTAS_STATUS_CFG = {
   separacao:{label:'Separação',icone:'📦',cor:'#3b82f6'},
   carregamento:{label:'Carregamento',icone:'🚛',cor:'#8b5cf6'},
 };
-function _tvRenderRotasView(pendSepCarRows, emTransitoRows, pctMap){
+
+// % de separação por carga — mesmo critério do portal do conferente
+// (_agregarItensRomaneio): agrupa os itens ativos dos pedidos da carga por
+// mercadoria, e considera "pronto" quando TODO pedido que tem aquela
+// mercadoria já tem registro em separacao_itens. Pedido do usuário,
+// 2026-10-08: a Sala Comum só mostrava a data de saída, sem dar ideia do
+// andamento real da separação/carregamento.
+async function _tvCalcPctSeparacao(cargasSep){
+  const pctPorCarga = {};
+  if(!cargasSep.length) return pctPorCarga;
+  try{
+    const [baseRows, separados] = await Promise.all([
+      supaFetch(`base_data?carga=in.(${cargasSep.join(',')})&select=carga,pedido&order=carga.asc,pedido.asc`).catch(()=>[]),
+      supaFetch(`separacao_itens?carga=in.(${cargasSep.join(',')})&select=carga,pedido,mercadoria`).catch(()=>[]),
+    ]);
+    const cargaPorPedido = {};
+    (baseRows||[]).forEach(r=>{ cargaPorPedido[r.pedido] = r.carga; });
+    const pedidosArr = [...new Set((baseRows||[]).map(r=>r.pedido))];
+    const itensErp = pedidosArr.length
+      ? await supaFetch(`pedidos_itens_erp?pedido=in.(${pedidosArr.join(',')})&status=eq.ativo&select=pedido,mercadoria`).catch(()=>[]) || []
+      : [];
+    const separadosSet = new Set((separados||[]).map(s=>s.carga+'_'+s.pedido+'_'+s.mercadoria));
+
+    const porCargaMerc = {}; // carga -> { mercadoria -> [pedido,...] }
+    itensErp.forEach(it=>{
+      const carga = cargaPorPedido[it.pedido];
+      if(!carga) return;
+      if(!porCargaMerc[carga]) porCargaMerc[carga] = {};
+      (porCargaMerc[carga][it.mercadoria] = porCargaMerc[carga][it.mercadoria]||[]).push(it.pedido);
+    });
+    Object.keys(porCargaMerc).forEach(carga=>{
+      const mercs = Object.entries(porCargaMerc[carga]);
+      if(!mercs.length){ pctPorCarga[carga] = null; return; }
+      const prontos = mercs.filter(([merc,peds])=> peds.every(p=> separadosSet.has(carga+'_'+p+'_'+merc))).length;
+      pctPorCarga[carga] = Math.round(prontos/mercs.length*100);
+    });
+  }catch(e){}
+  return pctPorCarga;
+}
+
+// % de carregamento por carga — mesmo critério do board Armazém (admin):
+// pedidos já conferidos (ok ou nok) em conferencia_pedidos / total de
+// pedidos da carga.
+async function _tvCalcPctCarregamento(cargasCar, qtdPedidosPorCarga){
+  const pctPorCarga = {};
+  if(!cargasCar.length) return pctPorCarga;
+  try{
+    const confStatus = await supaFetch(`conferencia_pedidos?carga=in.(${cargasCar.join(',')})&select=carga,pedido`).catch(()=>[]) || [];
+    const contagem = {};
+    (confStatus||[]).forEach(s=>{ contagem[s.carga] = (contagem[s.carga]||0)+1; });
+    cargasCar.forEach(c=>{
+      const total = qtdPedidosPorCarga[c]||0;
+      const feito = contagem[c]||0;
+      pctPorCarga[c] = total>0 ? Math.min(100, Math.round(feito/total*100)) : null;
+    });
+  }catch(e){}
+  return pctPorCarga;
+}
+
+// Conferente responsável por carga — separador_nome só é preenchido quando
+// alguém de fato vincula a separação (vincularSeparacaoRomaneio); antes
+// disso, ou pra carregamento (que não tem esse "vincular" dedicado), cai
+// pra conferente_nome (quem foi atribuído/pegou a carga). Checado contra
+// dado real: hoje o campo "tipo" é sempre 'conferente' em 100% das linhas
+// (362/362), então não serve pra distinguir separação de carregamento —
+// só separador_nome distingue de verdade.
+async function _tvCalcConferentePorCarga(todasCargas){
+  const map = {};
+  if(!todasCargas.length) return map;
+  try{
+    const atribs = await supaFetch(`atribuicoes_armazem?carga=in.(${todasCargas.join(',')})&select=carga,conferente_nome,separador_nome`).catch(()=>[]) || [];
+    const porCarga = {};
+    atribs.forEach(a=>{ (porCarga[a.carga]=porCarga[a.carga]||[]).push(a); });
+    Object.entries(porCarga).forEach(([carga,list])=>{
+      const separador = list.find(a=>a.separador_nome)?.separador_nome || list.find(a=>a.conferente_nome)?.conferente_nome || null;
+      const carregadores = [...new Set(list.filter(a=>a.conferente_nome).map(a=>a.conferente_nome))];
+      map[carga] = { separador, carregamento: carregadores.length?carregadores.join(', '):null };
+    });
+  }catch(e){}
+  return map;
+}
+
+function _tvRenderRotasView(pendSepCarRows, emTransitoRows, pctMap, pctSepMap, pctCarMap, confPorCarga){
   const pipelineEl = document.getElementById('tv-rotas-pipeline');
   const gaugesEl = document.getElementById('tv-rotas-gauges');
   if(!pipelineEl || !gaugesEl) return;
@@ -51826,12 +51908,28 @@ function _tvRenderRotasView(pendSepCarRows, emTransitoRows, pctMap){
   pipelineEl.innerHTML = statusKeys.map((key,idx)=>{
     const cfg = _TV_ROTAS_STATUS_CFG[key];
     const rows = porStatus[key];
+    // Separação/Carregamento mostram % de andamento (mesmo critério do
+    // portal do conferente/board Armazém) + quem está com a demanda —
+    // Pendente fica só com rota+data, não tem conferente nem progresso
+    // ainda. Pedido do usuário, 2026-10-08.
     const chips = rows.length
       ? rows.map(d=>{
           const dataTxt = fmtD(d.data_saida);
-          return `<div style="background:${cfg.cor}14;border:1px solid ${cfg.cor}40;border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px">
-            <span style="font-size:.92rem;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_escapeHtml(d.rota||'—')}</span>
-            <span style="font-size:.74rem;color:${cfg.cor};font-weight:700;white-space:nowrap">${dataTxt?`📅 ${dataTxt}`:'—'}</span>
+          const temProgresso = key==='separacao' || key==='carregamento';
+          const pct = key==='separacao' ? pctSepMap?.[d.carga] : key==='carregamento' ? pctCarMap?.[d.carga] : null;
+          const confNome = key==='separacao' ? confPorCarga?.[d.carga]?.separador : key==='carregamento' ? confPorCarga?.[d.carga]?.carregamento : null;
+          return `<div style="background:${cfg.cor}14;border:1px solid ${cfg.cor}40;border-radius:10px;padding:10px 14px;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <span style="font-size:.92rem;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_escapeHtml(d.rota||'—')}</span>
+              <span style="font-size:.74rem;color:${cfg.cor};font-weight:700;white-space:nowrap">${dataTxt?`📅 ${dataTxt}`:'—'}</span>
+            </div>
+            ${temProgresso?`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:.68rem">
+              <span style="color:rgba(255,255,255,.55);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:65%">👷 ${confNome?_escapeHtml(confNome):'sem conferente'}</span>
+              <span style="font-weight:800;color:${cfg.cor};white-space:nowrap">${pct!=null?pct+'%':'—'}</span>
+            </div>
+            <div style="background:rgba(255,255,255,.08);border-radius:3px;height:4px;overflow:hidden">
+              <div style="height:100%;width:${pct||0}%;background:${cfg.cor}"></div>
+            </div>`:''}
           </div>`;
         }).join('')
       : `<div style="text-align:center;padding:14px;color:rgba(255,255,255,.25);font-size:.76rem">Nenhuma rota</div>`;
@@ -51920,7 +52018,7 @@ async function carregarTV(){
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_prox}-01T00:00:00-03:00&select=carga,ts${undSelTV?`&und=eq.${encodeURIComponent(undSelTV)}`:''}`).catch(()=>[]),
       supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_prox}-01T00:00:00-03:00&select=carga,ts_saiu${_undQTV}`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento")&select=carga,rota,status,data_saida&order=data_saida.asc&limit=100${_undQTV}`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento")&select=carga,rota,status,data_saida,quantidade_pedidos&order=data_saida.asc&limit=100${_undQTV}`).catch(()=>[]),
     ]);
 
     // 2ª fase: base_data filtrado pelas cargas que saíram no mês
@@ -52031,10 +52129,21 @@ async function carregarTV(){
       }
     }
 
-    // ── Sala Comum: rotas por status, sem valores ──
+    // ── Sala Comum: rotas por status (pendente/separação/carregamento),
+    // com % de andamento e conferente responsável nas colunas Separação e
+    // Carregamento — pedido do usuário, 2026-10-08.
     const emTransitoRows = (demRota||[]).filter(d=>d.status==='saiu'||d.status==='fim_viagem');
     const _pctEntregaTV = await _calcPctEntregaPorCarga(emTransitoRows.map(d=>d.carga));
-    _tvRenderRotasView(demPendSepCar||[], emTransitoRows, _pctEntregaTV);
+    const _cargasSepTV = (demPendSepCar||[]).filter(d=>d.status==='separacao').map(d=>d.carga);
+    const _cargasCarTV = (demPendSepCar||[]).filter(d=>d.status==='carregamento').map(d=>d.carga);
+    const _qtdPedPorCargaTV = {};
+    (demPendSepCar||[]).forEach(d=>{ _qtdPedPorCargaTV[d.carga] = d.quantidade_pedidos||0; });
+    const [_pctSepTV, _pctCarTV, _confPorCargaTV] = await Promise.all([
+      _tvCalcPctSeparacao(_cargasSepTV),
+      _tvCalcPctCarregamento(_cargasCarTV, _qtdPedPorCargaTV),
+      _tvCalcConferentePorCarga([..._cargasSepTV, ..._cargasCarTV]),
+    ]);
+    _tvRenderRotasView(demPendSepCar||[], emTransitoRows, _pctEntregaTV, _pctSepTV, _pctCarTV, _confPorCargaTV);
 
   }catch(e){ console.error('[TV]',e); }
 }
