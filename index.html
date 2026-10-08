@@ -2345,6 +2345,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <div style="font-size:.8rem;color:var(--text-muted);padding:8px">Informe o pedido para listar os produtos.</div>
         </div>
       </div>
+      <div id="l-ocorr-valor-devolvido" style="margin-top:10px;font-size:.85rem;font-weight:800;color:#dc2626">💰 Valor a devolver: R$ 0,00</div>
     </div>
 
     <div style="margin-top:14px">
@@ -9269,7 +9270,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.34';
+const APP_VERSION = '4.89.35';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -17849,7 +17850,14 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
     // cai pra atribuicoes_armazem (por carga) se não achar — quando nenhuma
     // das duas tem registro, mostra "sem conferente" em vez de sumir o
     // campo, pra ficar claro que foi checado e realmente não tem dado.
-    const valor = o.pedido!=null ? _ocorrValorPorPedido[String(o.pedido).trim()] : undefined;
+    // valor_devolvido = quantidade devolvida × valor unitário do produto,
+    // gravado na própria ocorrência desde 2026-10-08 (não é o valor do
+    // pedido inteiro — nota com 10 produtos de R$10, faltou 1, devolvido é
+    // R$10). Ocorrência antiga sem esse campo cai pro valor do pedido
+    // inteiro (_ocorrValorPorPedido), mas identificado como tal, pra não
+    // passar a impressão de que é o valor devolvido quando não é.
+    const valorDevolvido = o.valor_devolvido!=null ? Number(o.valor_devolvido) : null;
+    const valorPedido = o.pedido!=null ? _ocorrValorPorPedido[String(o.pedido).trim()] : undefined;
     const confPedido = o.pedido!=null ? _ocorrConferentePorPedido[String(o.pedido).trim()] : null;
     const confSet = o.carga!=null ? _ocorrConferentePorCarga[o.carga] : null;
     // Prefere o que foi gravado na própria ocorrência (retrato de quando foi
@@ -17859,7 +17867,8 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
     const veiculo = o.veiculo || (o.carga!=null ? _ocorrVeiculoPorCarga[o.carga] : null);
     const detalhes = [
       o.produto ? `📦 ${o.quantidade!=null?o.quantidade+'x ':''}${escapeHtml(o.produto)}` : '',
-      valor!=null ? `💰 ${valor.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}` : '',
+      valorDevolvido!=null ? `💰 ${valorDevolvido.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} devolvido`
+        : (valorPedido!=null ? `💰 ${valorPedido.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} (valor do pedido)` : ''),
       o.cliente ? `👤 ${escapeHtml(o.cliente)}` : '',
       o.motorista ? `🚗 ${escapeHtml(o.motorista)}` : '',
       veiculo ? `🚛 ${escapeHtml(veiculo)}` : '',
@@ -18084,12 +18093,37 @@ async function _ocorrCarregarItensPedido(pedido){
   if(totalInfo) totalInfo.textContent = 'Carregando produtos...';
   if(lista) lista.innerHTML = '<div style="font-size:.8rem;color:var(--text-muted);padding:8px">Carregando...</div>';
   try{
-    const itens = await supaFetch(`pedidos_itens_erp?pedido=eq.${encodeURIComponent(pedido)}&select=mercadoria,descricao,quantidade_atual&limit=200`) || [];
+    const itens = await supaFetch(`pedidos_itens_erp?pedido=eq.${encodeURIComponent(pedido)}&select=mercadoria,descricao,quantidade_atual,valor_unitario&limit=200`) || [];
     _ocorrItensPedidoCache = itens;
   }catch(e){
     _ocorrItensPedidoCache = [];
   }
   _ocorrAtualizarItensUI();
+}
+
+// Valor realmente devolvido — não é o valor do pedido inteiro (base_data.valor),
+// é quantidade devolvida × valor unitário do produto. Ex.: nota com 10 produtos
+// de R$10 (R$100 no total), faltou 1 → devolvido é R$10, não R$100. Pedido do
+// usuário, 2026-10-08: o valor que aparecia na ocorrência era sempre o do
+// pedido inteiro, mesmo numa devolução parcial de 1 item.
+function _ocorrRecalcValorDevolvido(){
+  const tipoDev = document.getElementById('l-ocorr-tipodev-valor')?.value || 'total';
+  let valor = 0;
+  if(tipoDev === 'total'){
+    valor = _ocorrItensPedidoCache.reduce((s,it)=> s + (Number(it.quantidade_atual)||0)*(Number(it.valor_unitario)||0), 0);
+  } else {
+    document.querySelectorAll('.l-ocorr-item-chk:checked').forEach(chk=>{
+      const idx = Number(chk.dataset.idx);
+      const it  = _ocorrItensPedidoCache[idx];
+      if(!it) return;
+      const qtdEl = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
+      const qtd   = qtdEl && qtdEl.value!=='' ? Number(qtdEl.value) : 0;
+      valor += qtd * (Number(it.valor_unitario)||0);
+    });
+  }
+  const el = document.getElementById('l-ocorr-valor-devolvido');
+  if(el) el.textContent = '💰 Valor a devolver: ' + valor.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  return valor;
 }
 
 function _ocorrAtualizarItensUI(){
@@ -18106,21 +18140,24 @@ function _ocorrAtualizarItensUI(){
       ? _ocorrItensPedidoCache.map((it,idx)=>{
           const nome = it.descricao || it.mercadoria || 'Produto';
           const qtdMax = it.quantidade_atual!=null ? Number(it.quantidade_atual) : '';
+          const vUnit = Number(it.valor_unitario)||0;
           return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;font-size:.82rem;color:var(--text-primary)">
             <input type="checkbox" class="l-ocorr-item-chk" data-idx="${idx}" onchange="_ocorrToggleItemQtd(${idx})">
-            <span style="flex:1">${escapeHtml(nome)}</span>
-            <input type="number" class="l-ocorr-item-qtd" data-idx="${idx}" min="0" step="1" value="${qtdMax}" disabled
+            <span style="flex:1">${escapeHtml(nome)}${vUnit?` <span style="color:var(--text-muted);font-weight:600">(${vUnit.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}/un)</span>`:''}</span>
+            <input type="number" class="l-ocorr-item-qtd" data-idx="${idx}" min="0" step="1" value="${qtdMax}" disabled oninput="_ocorrRecalcValorDevolvido()"
               style="width:70px;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:.78rem;background:var(--bg-input);color:var(--text-primary)">
           </label>`;
         }).join('')
       : '<div style="font-size:.8rem;color:var(--text-muted);padding:8px">Nenhum produto encontrado pro pedido.</div>';
   }
+  _ocorrRecalcValorDevolvido();
 }
 
 function _ocorrToggleItemQtd(idx){
   const chk = document.querySelector(`.l-ocorr-item-chk[data-idx="${idx}"]`);
   const qtd = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
   if(qtd) qtd.disabled = !chk?.checked;
+  _ocorrRecalcValorDevolvido();
 }
 
 function _ocorrSetTipoDevolucao(tipo){
@@ -18140,6 +18177,7 @@ function _ocorrSetTipoDevolucao(tipo){
     bTotal.style.background='var(--bg-card2)'; bTotal.style.color='var(--text-secondary)'; bTotal.style.borderColor='transparent'; bTotal.style.fontWeight='600';
     parcialBox.style.display='block'; totalBox.style.display='none';
   }
+  _ocorrRecalcValorDevolvido();
 }
 
 // ── Auto-preenchimento completo ao digitar o pedido ──
@@ -18212,6 +18250,7 @@ async function salvarOcorrenciaLanc(){
     itensParaGravar = _ocorrItensPedidoCache.map(it=>({
       produto: it.descricao || it.mercadoria || 'Produto',
       quantidade: it.quantidade_atual!=null ? Number(it.quantidade_atual) : null,
+      valor_unitario: it.valor_unitario!=null ? Number(it.valor_unitario) : null,
     }));
   } else {
     document.querySelectorAll('.l-ocorr-item-chk:checked').forEach(chk=>{
@@ -18220,10 +18259,16 @@ async function salvarOcorrenciaLanc(){
       if(!it) return;
       const qtdEl = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
       const qtd   = qtdEl && qtdEl.value!=='' ? Number(qtdEl.value) : null;
-      itensParaGravar.push({ produto: it.descricao || it.mercadoria || 'Produto', quantidade: qtd });
+      itensParaGravar.push({ produto: it.descricao || it.mercadoria || 'Produto', quantidade: qtd, valor_unitario: it.valor_unitario!=null ? Number(it.valor_unitario) : null });
     });
     if(!itensParaGravar.length){ showToast('Selecione ao menos um produto para a devolução parcial','warning'); return; }
   }
+
+  // Valor devolvido = quantidade realmente devolvida × valor unitário de cada
+  // produto — não o valor do pedido inteiro. Mesmo cálculo do resumo que
+  // aparece ao vivo no formulário (_ocorrRecalcValorDevolvido), refeito aqui
+  // em cima do que foi de fato selecionado/digitado no momento de salvar.
+  const valorDevolvido = itensParaGravar.reduce((s,i)=> s + (Number(i.quantidade)||0)*(Number(i.valor_unitario)||0), 0) || null;
 
   const usuario   = USUARIO_LOGADO?.nome || USUARIO_LOGADO?.email || null;
   const motivoSel = document.getElementById('l-ocorr-motivo');
@@ -18258,13 +18303,18 @@ async function salvarOcorrenciaLanc(){
         motivo_id:motivoId, motivo_nome:motivoNome,
         cliente, conferente, motorista, veiculo, tipo_devolucao:tipoDev,
         produto: produtoResumo || null, quantidade: quantidadeTotal, descricao: desc||null,
+        valor_devolvido: valorDevolvido,
       })
     });
     const novaOcorrenciaId = inserido?.[0]?.id;
     if(novaOcorrenciaId && itensParaGravar.length){
       await supaFetch('ocorrencias_distribuicao_itens',{
         method:'POST',
-        body:JSON.stringify(itensParaGravar.map(i=>({ ocorrencia_id:novaOcorrenciaId, produto:i.produto, quantidade:i.quantidade })))
+        body:JSON.stringify(itensParaGravar.map(i=>({
+          ocorrencia_id:novaOcorrenciaId, produto:i.produto, quantidade:i.quantidade,
+          valor_unitario:i.valor_unitario,
+          valor_total: (i.quantidade!=null && i.valor_unitario!=null) ? i.quantidade*i.valor_unitario : null,
+        })))
       }).catch(()=>{});
     }
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
@@ -18275,6 +18325,7 @@ async function salvarOcorrenciaLanc(){
     _ocorrItensPedidoCache = [];
     _ocorrAtualizarItensUI();
     _ocorrSetTipoDevolucao('total');
+    _ocorrRecalcValorDevolvido();
     await carregarOcorrenciasDistrib();
     renderOcorrenciasLanc();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
