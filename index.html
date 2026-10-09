@@ -4859,7 +4859,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
     <div>
       <h2 style="font-size:1.2rem;font-weight:800;color:var(--text-primary)">🏭 Armazém</h2>
-      <p style="font-size:.78rem;color:var(--text-secondary);margin-top:2px">Gestão de cargas e conferentes</p>
+      <p style="font-size:.78rem;color:var(--text-secondary);margin-top:2px">Etapa de cada carga e o trabalho dos conferentes — separação (itens contados) e carregamento (pedidos conferidos)</p>
     </div>
     <button onclick="renderArmazem()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:.8rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
   </div>
@@ -4867,7 +4867,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
   <!-- KPIs compactos -->
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
     <div class="kpi-card" style="border-top-color:var(--red);padding:12px 14px">
-      <div class="kpi-label" style="font-size:.65rem">Rotas</div>
+      <div class="kpi-label" style="font-size:.65rem">Pré-carga</div>
       <div class="kpi-value" id="arm-kpi-cargas" style="font-size:1.6rem">—</div>
     </div>
     <div class="kpi-card" style="border-top-color:#f59e0b;padding:12px 14px">
@@ -4875,18 +4875,18 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
       <div class="kpi-value" id="arm-kpi-sep" style="font-size:1.6rem">—</div>
     </div>
     <div class="kpi-card" style="border-top-color:#3b82f6;padding:12px 14px">
-      <div class="kpi-label" style="font-size:.65rem">Carregando</div>
+      <div class="kpi-label" style="font-size:.65rem">Carregamento</div>
       <div class="kpi-value" id="arm-kpi-car" style="font-size:1.6rem">—</div>
     </div>
     <div class="kpi-card" style="border-top-color:var(--green);padding:12px 14px">
-      <div class="kpi-label" style="font-size:.65rem">Concluído</div>
+      <div class="kpi-label" style="font-size:.65rem">Aguardando NF</div>
       <div class="kpi-value" id="arm-kpi-ok" style="font-size:1.6rem">—</div>
     </div>
   </div>
 
   <!-- Abas Armazém -->
   <div id="arm-tabs-bar" style="display:flex;gap:4px;background:var(--bg-card2);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:20px;flex-wrap:wrap">
-    <button class="arm-tab active" id="arm-tab-demandas" onclick="switchArmTab('demandas',this)">📋 Demandas</button>
+    <button class="arm-tab active" id="arm-tab-demandas" onclick="switchArmTab('demandas',this)">📋 Hoje no armazém</button>
     <button class="arm-tab" id="arm-tab-concluido" onclick="switchArmTab('concluido',this)">✅ Concluídas</button>
   </div>
 
@@ -40815,6 +40815,7 @@ async function vincularConferentePorConf(confId, confNome, selectId){
       }
     }catch(e){}
     showToast('✅ '+confNome+' vinculado à carga '+carga,'success');
+    armRegistrarAcao(demandaId, carga, null, null, 'armazem_vincular_conferente: '+confNome);
     await renderArmazem();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -40851,6 +40852,7 @@ async function removerConferente(atribuicaoId, demandaId, carga, confNome){
       }
     }catch(eRev){ console.warn('reverter status erro:', eRev.message); }
 
+    armRegistrarAcao(demandaId, carga, null, null, 'armazem_desvincular_conferente: '+confNome);
     showToast(`✅ ${confNome} removido da carga ${carga}`, 'success');
     if(document.getElementById('page-armazem')?.classList.contains('active')) await renderArmazem();
     else await carregarDemandasArmazemAdm();
@@ -42824,405 +42826,403 @@ const ARM_STATUS = {
   carregado_ok:   { label:'✅ Carregado OK',     color:'#059669', bg:'rgba(5,150,105,.12)'  },
 };
 
+// ══ ARMAZÉM — quadro por etapa (separação / carregamento / pré-carga) + conferentes ══════════
+// Reformulado em 2026-10-09 para bater com o portal do conferente novo:
+//  • a ETAPA da carga vem de demandas_rota.status (formacao → pendente → separacao → carregamento);
+//    o campo arm_status ficou parado e NÃO é mais usado para contar nada aqui;
+//  • SEPARAÇÃO = itens contados no portal (separacao_itens), agregados por mercadoria com a mesma
+//    função do portal (_agregarItensRomaneio), então o % daqui é o mesmo % que o conferente vê;
+//  • CARREGAMENTO = pedidos conferidos (conferencia_pedidos ok/nok), como sempre;
+//  • mudanças (trocar/2º conferente, vincular, desvincular, voltar etapa) ficam registradas em
+//    historico_status_carga com quem fez.
+const _ARM_ETAPA_LABEL = { formacao:'Em formação', pendente:'Pendente', separacao:'Separação', carregamento:'Carregamento' };
+const _ARM_VOLTA = { carregamento:'separacao', separacao:'pendente' };
+const _ARM_VOLTA_LABEL = { separacao:'Separação', pendente:'Pendente (pré-carga)' };
+
+function _armAtras(iso){
+  if(!iso) return '';
+  const m = Math.floor((Date.now()-new Date(iso).getTime())/60000);
+  if(m < 1) return 'agora';
+  if(m < 60) return 'há '+m+' min';
+  const h = Math.floor(m/60);
+  if(h < 24) return 'há '+h+' h';
+  const d = Math.floor(h/24);
+  return 'há '+d+' dia'+(d>1?'s':'');
+}
+function _armDM(s){ return s ? String(s).slice(8,10)+'/'+String(s).slice(5,7) : '—'; }
+function _armChip(txt, cor){ return '<span style="background:'+cor+'1f;color:'+cor+';border:1px solid '+cor+'44;border-radius:999px;padding:1px 9px;font-size:.66rem;font-weight:800;white-space:nowrap">'+txt+'</span>'; }
+
+// Registra no histórico da carga quem mexeu e no quê (a mudança de status já é registrada por _patchStatusDemanda)
+async function armRegistrarAcao(demandaId, carga, rota, status, origem){
+  try{
+    if(!status || !rota){
+      const dm = (await supaFetch('demandas_rota?id=eq.'+demandaId+'&select=rota,status').catch(()=>[]))?.[0] || {};
+      rota = rota || dm.rota; status = status || dm.status;
+    }
+    await supaFetch('historico_status_carga',{
+      method:'POST',
+      body: JSON.stringify({
+        demanda_id: String(demandaId), carga: carga||null, rota: rota||null,
+        status_anterior: status||null, novo_status: status||'—',
+        usuario_id: USUARIO_LOGADO?.id ? String(USUARIO_LOGADO.id) : null,
+        usuario_nome: USUARIO_LOGADO?.nome || null, origem: String(origem||'').slice(0,200)
+      }),
+      prefer:'return=minimal'
+    });
+  }catch(_){}
+}
+
+// Itens ativos dos pedidos, em lotes (o servidor corta respostas em 1000 linhas)
+async function _armBuscaItens(pedidos){
+  const out = [];
+  for(let i=0; i<pedidos.length; i+=40){
+    const lote = pedidos.slice(i, i+40);
+    const r = await supaFetch(`pedidos_itens_erp?pedido=in.(${lote.join(',')})&status=eq.ativo&select=pedido,mercadoria,descricao,quantidade_atual`).catch(()=>[]) || [];
+    out.push(...r);
+  }
+  return out;
+}
+
+// Volta a carga uma etapa (carregamento→separação, separação→pendente). Só admin/ADM armazém.
+// Não apaga contagem nem conferência — só devolve a etapa para o conferente retomar.
+async function armVoltarEtapa(demandaId, carga, etapaAtual, tsSeparacao){
+  const prev = _ARM_VOLTA[etapaAtual];
+  if(!prev) return;
+  if(!podeGerenciarTimer()){ showToast('Só administrador ou ADM do armazém pode voltar a etapa','warning'); return; }
+  if(!confirm('Voltar a carga '+carga+' para "'+_ARM_VOLTA_LABEL[prev]+'"?\n\nOs itens já contados e os pedidos já conferidos NÃO são apagados.')) return;
+  try{
+    const extra = prev==='pendente'
+      ? { arm_status:'pendente', ts_separacao:null, ts_carregamento:null }
+      : { arm_status:'separacao', ts_carregamento:null, ts_separacao: tsSeparacao || null };
+    const r = await _patchStatusDemanda(demandaId, prev, 'armazem_voltar_etapa', { bypassValidacao:true, extra });
+    if(!r.ok){ showToast('Não foi possível voltar: '+(r.msg||'erro'),'warning'); return; }
+    await _patchStatusIndependente(demandaId, 'status_armazem', prev==='pendente' ? 'pendente' : 'em_andamento');
+    showToast('Carga '+carga+' voltou para '+_ARM_VOLTA_LABEL[prev],'success');
+    await renderArmazem();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
+// Janela só de leitura: itens da carga (esperado × contado) para o admin acompanhar a separação
+async function armVerItens(carga){
+  let ov = document.getElementById('modal-arm-itens');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'modal-arm-itens';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9600;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.onclick = e => { if(e.target===ov) ov.style.display='none'; };
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  ov.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:30px;color:var(--text-muted)">Carregando itens da carga '+carga+'...</div>';
+  try{
+    const base = await supaFetch(`base_data?carga=eq.${carga}&select=pedido`) || [];
+    const peds = [...new Set(base.map(r=>r.pedido))].sort((a,b)=>a-b);
+    const [itens, sep] = await Promise.all([
+      _armBuscaItens(peds),
+      supaFetch(`separacao_itens?carga=eq.${carga}&select=*`).catch(()=>[])
+    ]);
+    const porPed = {}; itens.forEach(it=>{ (porPed[it.pedido] = porPed[it.pedido]||[]).push(it); });
+    const sepMap = {}; (sep||[]).forEach(r=>{ sepMap[r.carga+'_'+r.pedido+'_'+r.mercadoria] = r; });
+    const rom = _agregarItensRomaneio(carga, peds, porPed, sepMap, []).filter(m=>!m.removido);
+    const quemPorMerc = {};
+    (sep||[]).forEach(r=>{ if(r.conferente_nome) quemPorMerc[r.mercadoria] = r.conferente_nome; });
+    const prontos = rom.filter(m=>m.todasPreenchidas).length;
+    const lin = rom.sort((a,b)=>(a.todasPreenchidas-b.todasPreenchidas) || String(a.descricao||'').localeCompare(String(b.descricao||''))).map(m=>{
+      const dif = m.todasPreenchidas && m.totalSeparado !== m.totalEsperado;
+      const est = !m.todasPreenchidas ? ['#f59e0b','pendente'] : dif ? ['#ef4444','divergente'] : ['#22c55e','confere'];
+      return '<tr style="border-top:1px solid var(--border)"><td style="padding:6px 8px;color:var(--text-muted);font-size:.72rem">'+escapeHtml(String(m.mercadoria))+'</td><td style="padding:6px 8px">'+escapeHtml(m.descricao||'')+'</td><td style="padding:6px 8px;text-align:right">'+m.totalEsperado+'</td><td style="padding:6px 8px;text-align:right;font-weight:700">'+(m.totalSeparado==null?'—':m.totalSeparado)+'</td><td style="padding:6px 8px">'+_armChip(est[1], est[0])+'</td><td style="padding:6px 8px;color:var(--text-muted);font-size:.72rem">'+escapeHtml(quemPorMerc[m.mercadoria]||'')+'</td></tr>';
+    }).join('');
+    ov.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;max-width:880px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">'+
+      '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px"><div><div style="font-weight:800;font-size:1rem;color:var(--text-primary)">Itens da carga '+carga+'</div><div style="font-size:.76rem;color:var(--text-muted)">'+prontos+' de '+rom.length+' mercadorias contadas · '+peds.length+' pedidos · somente leitura</div></div><button onclick="document.getElementById(\'modal-arm-itens\').style.display=\'none\'" style="background:var(--bg-card2);border:1px solid var(--border);color:var(--text-secondary);border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:700">Fechar</button></div>'+
+      '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:.8rem"><thead><tr style="background:var(--bg-card2);color:var(--text-muted);font-size:.68rem;text-transform:uppercase;text-align:left"><th style="padding:8px">Cód.</th><th style="padding:8px">Mercadoria</th><th style="padding:8px;text-align:right">Esperado</th><th style="padding:8px;text-align:right">Contado</th><th style="padding:8px">Situação</th><th style="padding:8px">Quem contou</th></tr></thead><tbody>'+(lin||'<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Sem itens do ERP para esta carga.</td></tr>')+'</tbody></table></div></div>';
+  }catch(e){
+    ov.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:30px;color:#ef4444">Erro: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+// Cartão de uma carga em separação/carregamento
+function _armCartaoTrabalho(d, x){
+  const cor = x.semConf ? '#ef4444' : (x.alertas.length ? '#f59e0b' : '#22c55e');
+  const emSep = d.status==='separacao';
+  const pct = emSep ? x.pctSep : x.pctCar;
+  const corBarra = pct>=100 ? '#22c55e' : pct>50 ? '#3b82f6' : '#f59e0b';
+  const progTxt = emSep
+    ? x.sepProntos+' de '+x.sepTotal+' mercadorias contadas'+(x.sepDiverg?' · <span style="color:#ef4444">'+x.sepDiverg+' divergente'+(x.sepDiverg>1?'s':'')+'</span>':'')
+    : x.pedOk+' de '+(x.totalPed||0)+' pedidos conferidos'+(x.pedNok?' · <span style="color:#ef4444">'+x.pedNok+' NOK</span>':'');
+  const chipsConf = x.confs.map(a=>'<span style="background:rgba(37,99,235,.1);border:1px solid rgba(37,99,235,.25);border-radius:6px;padding:2px 5px 2px 7px;font-size:.68rem;font-weight:700;color:#60a5fa;display:inline-flex;align-items:center;gap:4px">'+(a.tipo==='separador'?'🧺 ':'👷 ')+escapeHtml(a.conferente_nome||a.separador_nome||'—')+'<button onclick="removerConferente(\''+a.id+'\',\''+d.id+'\','+d.carga+',\''+_jsAttrStr(a.conferente_nome||'')+'\');event.stopPropagation()" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:.8rem;font-weight:900;line-height:1;padding:0 1px" title="Desvincular">✕</button></span>').join('');
+  const avisos = x.alertas.map(a=>'<div style="margin-top:6px;background:'+a.cor+'18;color:'+a.cor+';border-radius:8px;padding:5px 9px;font-size:.72rem;font-weight:700">'+a.txt+'</div>').join('');
+  const sTrf = 'arm-trf-'+d.carga, sAdd = 'arm-add-'+d.carga, sVinc = 'arm-vinc-'+d.carga;
+  const optsConf = x.optsConf;
+  const maisAcoes = '<details style="margin-top:8px;border-top:1px dashed var(--border-med)"><summary style="cursor:pointer;padding:7px 0;font-size:.72rem;font-weight:800;color:var(--text-secondary);list-style:none">⚙ Mudar ▾</summary>'+
+    '<div style="display:flex;flex-direction:column;gap:7px;padding-bottom:4px">'+
+    (x.confsPrinc.length
+      ? '<div style="display:flex;gap:5px"><select id="'+sTrf+'" style="flex:1;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.72rem"><option value="">Trocar conferente por...</option>'+optsConf+'</select><button onclick="transferirConferenteCarga(\''+x.confsPrinc[0].id+'\',\''+d.id+'\','+d.carga+',\''+sTrf+'\')" style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.72rem;font-weight:700;cursor:pointer">Trocar</button></div>'+
+        '<div style="display:flex;gap:5px"><select id="'+sAdd+'" style="flex:1;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.72rem"><option value="">Adicionar 2º conferente...</option>'+optsConf+'</select><button onclick="adicionarSegundoConferente(\''+d.id+'\','+d.carga+',\''+sAdd+'\')" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.72rem;font-weight:700;cursor:pointer">Adicionar</button></div>'
+      : '<div style="display:flex;gap:5px"><select id="'+sVinc+'" style="flex:1;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.72rem"><option value="">Vincular conferente...</option>'+optsConf+'</select><button onclick="armVincularAqui(\''+d.id+'\','+d.carga+',\''+sVinc+'\')" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.72rem;font-weight:700;cursor:pointer">Vincular</button></div>')+
+    (podeGerenciarTimer() && _ARM_VOLTA[d.status]
+      ? '<button onclick="armVoltarEtapa(\''+d.id+'\','+d.carga+',\''+d.status+'\','+(d.ts_separacao?'\''+d.ts_separacao+'\'':'null')+')" style="align-self:flex-start;background:rgba(239,68,68,.08);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:5px 11px;font-size:.72rem;font-weight:700;cursor:pointer">↩ Voltar para '+_ARM_VOLTA_LABEL[_ARM_VOLTA[d.status]]+'</button>' : '')+
+    '</div></details>';
+  const botoes = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'+
+    (emSep ? '<button onclick="armVerItens('+d.carga+')" style="background:rgba(59,130,246,.1);color:#3b82f6;border:1px solid rgba(59,130,246,.3);border-radius:7px;padding:5px 11px;font-size:.72rem;font-weight:700;cursor:pointer">📋 Ver itens</button>'
+           : (x.confsPrinc[0] ? '<button onclick="verPedidosConferencia('+d.carga+',\''+x.confsPrinc[0].id+'\',\''+(x.confsPrinc[0].conferente_id||'')+'\',\''+_jsAttrStr(x.confsPrinc[0].conferente_nome||'')+'\')" style="background:rgba(59,130,246,.1);color:#3b82f6;border:1px solid rgba(59,130,246,.3);border-radius:7px;padding:5px 11px;font-size:.72rem;font-weight:700;cursor:pointer">📋 Ver pedidos</button>' : ''))+
+    (!emSep && x.pctCar>=100 ? '<button onclick="salvarStatusArmazem(\''+d.id+'\',\'carregado_ok\')" style="background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:7px;padding:5px 11px;font-size:.72rem;font-weight:800;cursor:pointer">✅ Concluir carregamento</button>' : '')+
+    '</div>';
+  const timer = x.timerHtml ? x.timerHtml : '';
+  return '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden;align-self:start"><div style="height:3px;background:'+cor+'"></div><div style="padding:14px 16px 12px">'+
+    '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><div style="font-size:1.05rem;font-weight:800;color:var(--text-primary)">Carga '+d.carga+'</div><div style="font-size:.76rem;font-weight:700;color:var(--text-secondary);letter-spacing:.02em">'+escapeHtml(d.rota||'—')+' · '+(d.quantidade_pedidos||0)+' pedidos</div></div>'+
+    '<div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:3px">'+_armChip(_ARM_ETAPA_LABEL[d.status], emSep?'#8b5cf6':'#3b82f6')+(d.data_saida?'<span style="font-size:.7rem;color:var(--text-muted)">sai '+_armDM(d.data_saida)+'</span>':'')+'</div></div>'+
+    '<div style="display:flex;justify-content:space-between;font-size:.78rem;margin-top:12px"><span style="color:var(--text-secondary)">'+progTxt+'</span><b style="color:'+corBarra+'">'+pct+'%</b></div>'+
+    '<div style="height:6px;border-radius:3px;background:var(--bg-card2);overflow:hidden;margin:5px 0 8px"><div style="height:100%;width:'+pct+'%;background:'+corBarra+';transition:width .4s"></div></div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:.72rem">'+(chipsConf||'<span style="color:#ef4444;font-weight:700">Sem conferente</span>')+'</div>'+
+    '<div style="font-size:.72rem;color:var(--text-muted);margin-top:6px">'+x.linhaAtividade+'</div>'+timer+avisos+botoes+maisAcoes+
+    '</div></div>';
+}
+
+// Vincula um conferente direto no cartão (carga sem ninguém)
+async function armVincularAqui(demandaId, carga, selectId){
+  const sel = document.getElementById(selectId);
+  if(!sel || !sel.value){ showToast('Selecione o conferente','warning'); return; }
+  const [confId, confNome] = sel.value.split('|');
+  try{
+    const ja = await supaFetch(`atribuicoes_armazem?demanda_id=eq.${demandaId}&select=id,conferente_id`) || [];
+    if(ja.find(a=>String(a.conferente_id)===String(confId))){ showToast(confNome+' já está vinculado a esta carga','warning'); return; }
+    await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({ demanda_id:demandaId, carga, conferente_id:confId, conferente_nome:confNome, status:'pendente', criado_em:new Date().toISOString() })});
+    const dm = (await supaFetch(`demandas_rota?id=eq.${demandaId}&select=rota,status`).catch(()=>[]))?.[0] || {};
+    armRegistrarAcao(demandaId, carga, dm.rota, dm.status, 'armazem_vincular_conferente: '+confNome);
+    showToast('✅ '+confNome+' vinculado à carga '+carga,'success');
+    await renderArmazem();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+
 async function renderArmazem(){
   const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
-
-  let demandas=[], conferentes=[], atribs=[], confStatus=[], fotos={};
-  // Faltava 'aguardando_nf'/'aguardando_manifesto' aqui (já estavam na lista
-  // "certa" usada em _statusPosArmazem, linha ~19098) — carga que já saiu do
-  // Armazém e está esperando o Fiscal emitir NF continuava sendo classificada
-  // pelo arm_status antigo (travado em "separação"/"carregamento" desde a
-  // última vez que esteve lá), reaparecendo como fantasma no board do Armazém
-  // dias depois de já ter avançado. Achado pelo usuário, 2026-09-30 (carga
-  // #15701, "em carregamento" há 6 dias já estando em Aguardando NF).
+  const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
+  // Depois do armazém (Fiscal em diante): não é mais trabalho do armazém
   const statusPosArmazem = ['aguardando_nf','aguardando_manifesto','pronto_viagem','saiu','fim_viagem','concluido'];
+  const statusAtivos = ['formacao','pendente','separacao','carregamento'];
+  const hoje = hojeDataBRT();
+  const iniHoje = encodeURIComponent(hoje+'T00:00:00-03:00');
+  const iniMes = hoje.slice(0,7)+'-01';
 
-  // Datas do mês corrente
-  const _hoje = new Date();
-  const _mesIni = new Date(_hoje.getFullYear(), _hoje.getMonth(), 1).toISOString().split('T')[0];
-  const _mesFim = new Date(_hoje.getFullYear(), _hoje.getMonth()+1, 0).toISOString().split('T')[0];
-
+  let demandas=[], conferentes=[], fotos={};
+  let atribs=[], confStatus=[], sepItens=[], ordemRows=[], baseRows=[], atribsMes=[], confMes=[], sepHoje=[], confHoje=[];
   try{
-    const [_dem,_confs,_atribs,_confSt,_fotos,_atribsMes,_confStMes] = await Promise.all([
+    const [_dem,_confs,_fotos] = await Promise.all([
       supaFetch('demandas_rota?carga=not.is.null&select=*&order=data_saida.desc'),
       supaFetch('conferentes?select=id,nome,email,ativo,criado_em,perfil,data_demissao,unidade,ultimo_acesso,updated_at,desativado_em,desativado_por&ativo=eq.true&order=nome.asc'),
-      supaFetch('atribuicoes_armazem?select=*'),
-      supaFetch('conferencia_pedidos?select=carga,pedido,status,conferente_id,conferente_nome'),
-      supaFetch('configuracoes?chave=eq.conf_fotos&select=valor'),
-      supaFetch(`atribuicoes_armazem?criado_em=gte.${_mesIni}&select=conferente_id,carga`).catch(()=>[]),
-      supaFetch(`conferencia_pedidos?conferido_em=gte.${_mesIni}&conferido_em=lte.${_mesFim}T23:59:59&select=conferente_id,pedido`).catch(()=>[])
+      supaFetch('configuracoes?chave=eq.conf_fotos&select=valor')
     ]);
-    demandas = (_dem || []).filter(d=>d.status!=='cancelado');
+    demandas = (_dem||[]).filter(d=>d.status!=='cancelado');
     const _undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
     conferentes = (_confs||[]).filter(c=>{
       if(c.ativo!==true) return false;
-      if(_undUsr&&(c.unidade||'').trim()!==_undUsr) return false;
+      if(_undUsr && (c.unidade||'').trim()!==_undUsr) return false;
       return true;
     });
-    atribs     = _atribs || [];
-    confStatus = _confSt || [];
-    if(_fotos&&_fotos[0]) fotos = _fotos[0].valor||{};
-
-    // Stats mensais por conferente
+    if(_fotos && _fotos[0]) fotos = _fotos[0].valor||{};
+    const ativas0 = demandas.filter(d=>statusAtivos.includes(d.status));
+    const ids = ativas0.map(d=>d.id);
+    const cargas = [...new Set(ativas0.map(d=>d.carga))];
+    const cargasT = [...new Set(ativas0.filter(d=>['separacao','carregamento'].includes(d.status)).map(d=>d.carga))];
+    const q = p => supaFetch(p).catch(()=>[]);
+    [atribs, confStatus, sepItens, ordemRows, baseRows, atribsMes, confMes, sepHoje, confHoje] = await Promise.all([
+      ids.length    ? q(`atribuicoes_armazem?demanda_id=in.(${ids.join(',')})&select=*`) : [],
+      cargas.length ? q(`conferencia_pedidos?carga=in.(${cargas.join(',')})&select=carga,pedido,status,conferente_id,conferente_nome,conferido_em`) : [],
+      cargas.length ? q(`separacao_itens?carga=in.(${cargas.join(',')})&select=*`) : [],
+      cargasT.length? q(`ordem_carregamento?carga=in.(${cargasT.join(',')})&select=carga,pedido`) : [],
+      cargasT.length? q(`base_data?carga=in.(${cargasT.join(',')})&select=carga,pedido`) : [],
+      q(`atribuicoes_armazem?criado_em=gte.${iniMes}&select=conferente_id,carga`),
+      q(`conferencia_pedidos?conferido_em=gte.${iniMes}&select=conferente_id,pedido`),
+      q(`separacao_itens?separado_em=gte.${iniHoje}&select=conferente_id,separado_em`),
+      q(`conferencia_pedidos?conferido_em=gte.${iniHoje}&select=conferente_id,conferido_em`)
+    ]);
+    atribs = atribs||[]; confStatus = confStatus||[]; sepItens = sepItens||[]; ordemRows = ordemRows||[]; baseRows = baseRows||[];
     const _cMes={}, _pMes={};
-    (_atribsMes||[]).forEach(a=>{ if(!a.conferente_id) return; (_cMes[a.conferente_id]=_cMes[a.conferente_id]||new Set()).add(a.carga); });
-    (_confStMes||[]).forEach(s=>{ if(!s.conferente_id) return; _pMes[s.conferente_id]=(_pMes[s.conferente_id]||0)+1; });
-    window._armCMes = _cMes;
-    window._armPMes = _pMes;
+    (atribsMes||[]).forEach(a=>{ if(!a.conferente_id) return; (_cMes[a.conferente_id]=_cMes[a.conferente_id]||new Set()).add(a.carga); });
+    (confMes||[]).forEach(s=>{ if(!s.conferente_id) return; _pMes[s.conferente_id]=(_pMes[s.conferente_id]||0)+1; });
+    window._armCMes = _cMes; window._armPMes = _pMes;
   }catch(e){}
 
-  const demandasAtivas = demandas.filter(d=>!statusPosArmazem.includes(d.status));
-  const demandasConcluidas = demandas.filter(d=>statusPosArmazem.includes(d.status));
-  // Mapa demanda_id → demanda (chave de vínculo imune a carga errada)
-  const demandaIdMap = new Map(demandasAtivas.map(d=>[d.id, d]));
-
-  // Cargas com data de saída hoje ou passada ainda em 'pendente' — alerta ao conferente
-  const _hojeStr = _hoje.toISOString().split('T')[0];
-  const cargasPendentesAtrasadas = demandasAtivas.filter(d=>
-    (!d.status||d.status==='pendente') && d.data_saida && d.data_saida<=_hojeStr
-  );
-
-  const contStatus={pendente:0,separacao:0,carregamento:0,carregado_ok:0};
-  demandas.forEach(d=>{
-    const st = statusPosArmazem.includes(d.status)?'carregado_ok':(d.arm_status||'pendente');
-    contStatus[st]=(contStatus[st]||0)+1;
-  });
-  set('arm-kpi-cargas',demandasAtivas.length);
-  set('arm-kpi-sep',contStatus.separacao);
-  set('arm-kpi-car',contStatus.carregamento);
-  set('arm-kpi-ok',demandasConcluidas.length);
+  const ativas = demandas.filter(d=>statusAtivos.includes(d.status));
+  const emSep = ativas.filter(d=>d.status==='separacao');
+  const emCar = ativas.filter(d=>d.status==='carregamento');
+  const preCarga = ativas.filter(d=>['formacao','pendente'].includes(d.status));
+  const aguardNf = demandas.filter(d=>['aguardando_nf','aguardando_manifesto'].includes(d.status));
+  const concluidas = demandas.filter(d=>statusPosArmazem.includes(d.status));
+  set('arm-kpi-cargas', preCarga.length);
+  set('arm-kpi-sep', emSep.length);
+  set('arm-kpi-car', emCar.length);
+  set('arm-kpi-ok', aguardNf.length);
 
   const confCards = conferentes.filter(c=>(c.perfil||'').toLowerCase()==='conferente');
-  // Conferentes com demanda ativa primeiro
-  confCards.sort((a,b)=>{
-    const aAtivo = atribs.some(x=>String(x.conferente_id)===String(a.id)&&x.tipo!=='separador'&&demandaIdMap.has(x.demanda_id))?1:0;
-    const bAtivo = atribs.some(x=>String(x.conferente_id)===String(b.id)&&x.tipo!=='separador'&&demandaIdMap.has(x.demanda_id))?1:0;
-    return bAtivo - aAtivo;
+  const optsConf = confCards.map(c=>'<option value="'+c.id+'|'+String(c.nome||'').replace(/["|]/g,'')+'">'+escapeHtml(c.nome)+'</option>').join('');
+
+  // ── Alterações do ERP depois que a separação começou (mesma regra do portal do conferente) ──
+  const emTrabalho = [...emSep, ...emCar];
+  const pedPorCarga = {};
+  baseRows.forEach(r=>{ (pedPorCarga[r.carga] = pedPorCarga[r.carga]||new Set()).add(r.pedido); });
+  const todosPed = [...new Set(baseRows.map(r=>r.pedido))];
+  const altsPorCarga = {};
+  if(todosPed.length){
+    try{
+      const cargaPorPed = {}; baseRows.forEach(r=>{ cargaPorPed[r.pedido] = r.carga; });
+      const tsSep = {}; emTrabalho.forEach(d=>{ tsSep[d.carga] = d.ts_separacao; });
+      const alts = await supaFetch(`pedidos_alteracoes_erp?pedido=in.(${todosPed.join(',')})&select=pedido,mercadoria,descricao,tipo,quantidade_antes,quantidade_depois,detectado_em&order=detectado_em.desc&limit=2000`).catch(()=>[]) || [];
+      alts.forEach(a=>{
+        const c = cargaPorPed[a.pedido]; const t = c!=null ? tsSep[c] : null;
+        if(!c || !t || new Date(a.detectado_em) <= new Date(t)) return;
+        (altsPorCarga[c] = altsPorCarga[c]||[]).push(a);
+      });
+    }catch(e){}
+  }
+
+  // ── Itens de cada carga em separação (mesma agregação do portal) ──
+  const cargasSep = emSep.map(d=>d.carga);
+  const pedSep = [...new Set(cargasSep.flatMap(c=>[...(pedPorCarga[c]||[])]))];
+  const itensErp = pedSep.length ? await _armBuscaItens(pedSep) : [];
+  const itensPorPedido = {}; itensErp.forEach(it=>{ (itensPorPedido[it.pedido] = itensPorPedido[it.pedido]||[]).push(it); });
+  const sepMap = {}; sepItens.forEach(r=>{ sepMap[r.carga+'_'+r.pedido+'_'+r.mercadoria] = r; });
+
+  // ── Dados calculados de cada carga em trabalho ──
+  const info = {};
+  emTrabalho.forEach(d=>{
+    const confs = atribs.filter(a=>a.demanda_id===d.id);
+    const confsPrinc = confs.filter(a=>a.tipo!=='separador');
+    const peds = [...(pedPorCarga[d.carga]||[])].sort((a,b)=>a-b);
+    const rom = d.status==='separacao' ? _agregarItensRomaneio(d.carga, peds, itensPorPedido, sepMap, altsPorCarga[d.carga]).filter(m=>!m.removido) : [];
+    const sepTotal = rom.length;
+    const sepProntos = rom.filter(m=>m.todasPreenchidas).length;
+    const sepDiverg = rom.filter(m=>m.todasPreenchidas && m.totalSeparado !== m.totalEsperado).length;
+    const pedOk = confStatus.filter(s=>Number(s.carga)===Number(d.carga) && s.status==='ok').length;
+    const pedNok = confStatus.filter(s=>Number(s.carga)===Number(d.carga) && s.status==='nok').length;
+    const totalPed = d.quantidade_pedidos||0;
+    const pctSep = sepTotal ? Math.round(sepProntos/sepTotal*100) : 0;
+    const pctCar = totalPed>0 ? Math.min(100, Math.round((pedOk+pedNok)/Math.max(totalPed,pedOk+pedNok)*100)) : 0;
+    const ultSep = sepItens.filter(r=>Number(r.carga)===Number(d.carga) && r.separado_em).map(r=>r.separado_em).sort().pop() || null;
+    const ultCar = confStatus.filter(s=>Number(s.carga)===Number(d.carga) && s.conferido_em).map(s=>s.conferido_em).sort().pop() || null;
+    const ultimaAtiv = d.status==='separacao' ? (ultSep||d.ts_separacao) : (ultCar||d.ts_carregamento);
+    const nOrdem = ordemRows.filter(r=>Number(r.carga)===Number(d.carga)).length;
+    const alertas = [];
+    if(!confsPrinc.length) alertas.push({cor:'#ef4444', txt:'Sem conferente — ninguém vinculado a esta carga'});
+    if(d.data_saida && d.data_saida < hoje) alertas.push({cor:'#f59e0b', txt:'Saída prevista '+_armDM(d.data_saida)+' já passou — confirme se a carga ainda vai sair'});
+    const pct = d.status==='separacao' ? pctSep : pctCar;
+    if(ultimaAtiv && pct<100 && (Date.now()-new Date(ultimaAtiv).getTime()) > 24*3600*1000)
+      alertas.push({cor:'#f59e0b', txt:'Sem '+(d.status==='separacao'?'contagem':'conferência')+' '+_armAtras(ultimaAtiv).replace('há ','há mais de ')});
+    const nAlt = (altsPorCarga[d.carga]||[]).length;
+    if(nAlt) alertas.push({cor:'#ef4444', txt:'✂ O ERP alterou '+nAlt+' item(ns)/pedido(s) depois que a separação começou — reconferir'});
+    const partes = [];
+    if(ultimaAtiv) partes.push('última '+(d.status==='separacao'?'contagem':'conferência')+' '+_armAtras(ultimaAtiv));
+    else partes.push('nenhuma '+(d.status==='separacao'?'contagem':'conferência')+' registrada ainda');
+    if(nOrdem) partes.push('ordem de carregamento definida ('+nOrdem+' pedidos)');
+    // Tempos (mesma regra de antes)
+    let timerHtml = '';
+    try{
+      const tSep = calcTempoDecorrido(d.ts_separacao, d.ts_carregamento||d.ts_pausa, d.ts_carregamento?0:d.tempo_pausado_seg);
+      const tCar = d.ts_carregamento ? calcTempoDecorrido(d.ts_carregamento, d.ts_pausa||(pctCar>=100?new Date().toISOString():null), d.tempo_pausado_seg) : null;
+      const pausado = !!d.ts_pausa;
+      let t = '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;font-size:.66rem">';
+      if(tSep) t += '<span style="background:rgba(99,102,241,.1);color:#818cf8;border-radius:5px;padding:2px 7px;font-weight:700" title="Tempo de separação">🔧 Sep: '+tSep+'</span>';
+      if(tCar){
+        t += '<span style="background:rgba(59,130,246,.1);color:'+(pctCar>=100?'#059669':pausado?'#f59e0b':'#3b82f6')+';border-radius:5px;padding:2px 7px;font-weight:700">⏱ Car: '+tCar+(pausado?' ⏸':'')+'</span>';
+        if(podeGerenciarTimer() && pctCar<100){
+          t += pausado
+            ? '<button onclick="retomarTimer(\''+d.id+'\',\''+d.ts_pausa+'\','+(d.tempo_pausado_seg||0)+')" style="background:rgba(5,150,105,.15);color:#059669;border:1px solid rgba(5,150,105,.3);border-radius:5px;padding:1px 7px;font-size:.66rem;font-weight:700;cursor:pointer">▶ Retomar</button>'
+            : '<button onclick="pausarTimer(\''+d.id+'\')" style="background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.3);border-radius:5px;padding:1px 7px;font-size:.66rem;font-weight:700;cursor:pointer">⏸ Pausar</button>';
+        }
+      }
+      t += '</div>';
+      timerHtml = (tSep||tCar) ? t : '';
+    }catch(e){}
+    info[d.id] = { confs, confsPrinc, semConf:!confsPrinc.length, sepTotal, sepProntos, sepDiverg, pctSep, pedOk, pedNok, totalPed, pctCar, alertas, linhaAtividade: partes.join(' · '), timerHtml, optsConf };
   });
 
-  // ── PAINEL DEMANDAS — Pré-Cargas ──
-  const demandasContainer = document.getElementById('arm-demandas-container');
-  if(demandasContainer){
-    if(!demandasAtivas.length){
-      demandasContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma pré-carga ativa no momento.</p>';
-    } else {
-      const confOptsAllHtml = confCards.map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${escapeHtml(c.nome)}</option>`).join('');
-
-      // Pedido alterado pelo ERP (corte/removido/adicionado/restaurado) DEPOIS
-      // que a carga entrou em separação/carregamento — o conferente pode estar
-      // contando um romaneio que já mudou sem ninguém no admin saber. Mesma
-      // lógica usada no alerta do portal do conferente. Pedido do usuário, 2026-10-07.
-      const cargasEmConferencia = demandasAtivas.filter(d=>['separacao','carregamento'].includes(d.status));
-      const alteracoesPorCargaAdm = {};
-      if(cargasEmConferencia.length){
-        try{
-          const cargasNumsAdm = cargasEmConferencia.map(d=>d.carga);
-          const baseRowsAdm = await supaFetch(`base_data?carga=in.(${cargasNumsAdm.join(',')})&select=carga,pedido`).catch(()=>[]) || [];
-          const pedidosNumsAdm = [...new Set(baseRowsAdm.map(r=>r.pedido))];
-          if(pedidosNumsAdm.length){
-            const cargaPorPedidoAdm = {};
-            baseRowsAdm.forEach(r=>{ cargaPorPedidoAdm[r.pedido] = r.carga; });
-            const tsSepPorCargaAdm = {};
-            cargasEmConferencia.forEach(d=>{ tsSepPorCargaAdm[d.carga] = d.ts_separacao; });
-            const altsAdm = await supaFetch(`pedidos_alteracoes_erp?pedido=in.(${pedidosNumsAdm.join(',')})&select=pedido,tipo,detectado_em&order=detectado_em.desc&limit=2000`).catch(()=>[]) || [];
-            altsAdm.forEach(a=>{
-              const carga = cargaPorPedidoAdm[a.pedido];
-              const tsSep = carga!=null ? tsSepPorCargaAdm[carga] : null;
-              if(!carga || !tsSep) return;
-              if(new Date(a.detectado_em) <= new Date(tsSep)) return;
-              (alteracoesPorCargaAdm[carga] = alteracoesPorCargaAdm[carga]||[]).push(a);
-            });
-          }
-        }catch(e){}
-      }
-      const cargasComAlteracaoAdm = Object.keys(alteracoesPorCargaAdm).map(Number);
-      const alertaAlteracaoPedidosAdm = cargasComAlteracaoAdm.length ? `
-        <div style="background:rgba(239,68,68,.1);border:2px solid #ef4444;border-radius:12px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.3rem;line-height:1">✂️</span>
-          <div style="flex:1">
-            <div style="font-size:.82rem;font-weight:800;color:#ef4444;margin-bottom:4px">
-              ${cargasComAlteracaoAdm.length} carga${cargasComAlteracaoAdm.length!==1?'s':''} com pedido alterado depois que a separação começou!
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
-              ${cargasComAlteracaoAdm.map(c=>{
-                const d = cargasEmConferencia.find(x=>x.carga===c);
-                const n = alteracoesPorCargaAdm[c].length;
-                return `<span style="background:#ef444422;border:1px solid #ef444466;border-radius:6px;padding:2px 10px;font-size:.75rem;font-weight:700;color:#ef4444">
-                  #${c} ${d?.rota||'—'} · ${n} alteraç${n!==1?'ões':'ão'}
-                </span>`;
-              }).join('')}
-            </div>
-            <div style="font-size:.72rem;color:#ef4444;margin-top:6px;font-weight:600">
-              Avise o conferente pra reconferir antes de finalizar o carregamento.
-            </div>
-          </div>
-        </div>` : '';
-
-      // Carga já em separação/carregamento mas sem NENHUM conferente vinculado —
-      // fica invisível pra qualquer conferente até alguém vincular ou o próprio
-      // conferente "pegar" ela pelo número. Sem este alerta, passa despercebida
-      // por dias (achado em auditoria 2026-10-07: carga #15781 parada há 7 dias).
-      const cargasSemConferente = demandasAtivas.filter(d=>
-        ['separacao','carregamento'].includes(d.status) &&
-        !atribs.some(a=>a.demanda_id===d.id && a.tipo!=='separador')
-      );
-      const alertaSemConferente = cargasSemConferente.length ? `
-        <div style="background:rgba(245,158,11,.1);border:2px solid #f59e0b;border-radius:12px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.3rem;line-height:1">⚠️</span>
-          <div style="flex:1">
-            <div style="font-size:.82rem;font-weight:800;color:#f59e0b;margin-bottom:4px">
-              ${cargasSemConferente.length} carga${cargasSemConferente.length!==1?'s':''} em separação/carregamento sem nenhum conferente vinculado!
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
-              ${cargasSemConferente.map(d=>{
-                const dias = Math.floor((Date.now()-new Date(d.criado_em))/86400000);
-                return `<span style="background:#f59e0b22;border:1px solid #f59e0b66;border-radius:6px;padding:2px 10px;font-size:.75rem;font-weight:700;color:#f59e0b">
-                  #${d.carga} ${d.rota||'—'}${dias>0?` · há ${dias} dia${dias!==1?'s':''}`:''}
-                </span>`;
-              }).join('')}
-            </div>
-            <div style="font-size:.72rem;color:#f59e0b;margin-top:6px;font-weight:600">
-              Vincule um conferente abaixo, ou peça pro conferente buscar a carga pelo número no portal dele.
-            </div>
-          </div>
-        </div>` : '';
-      const alertaPendentes = cargasPendentesAtrasadas.length ? `
-        <div style="background:rgba(239,68,68,.1);border:2px solid #ef4444;border-radius:12px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.3rem;line-height:1">🚨</span>
-          <div style="flex:1">
-            <div style="font-size:.82rem;font-weight:800;color:#ef4444;margin-bottom:4px">
-              ${cargasPendentesAtrasadas.length} carga${cargasPendentesAtrasadas.length!==1?'s':''} com saída hoje ainda não iniciada${cargasPendentesAtrasadas.length!==1?'s':''}!
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
-              ${cargasPendentesAtrasadas.map(d=>`<span style="background:#ef444422;border:1px solid #ef444466;border-radius:6px;padding:2px 10px;font-size:.75rem;font-weight:700;color:#ef4444">
-                #${d.carga} ${d.rota||'—'} · ${d.motorista||'A definir'} · saída ${d.data_saida}
-              </span>`).join('')}
-            </div>
-            <div style="font-size:.72rem;color:#ef4444;margin-top:6px;font-weight:600">
-              ⚠️ Inicie a separação para que o fiscal possa acompanhar e enviar as NFs.
-            </div>
-          </div>
-        </div>` : '';
-      demandasContainer.innerHTML = alertaAlteracaoPedidosAdm + alertaSemConferente + alertaPendentes + `
-        <div style="font-size:.68rem;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px">
-          📦 Pré-Cargas em andamento
-          <span style="height:1px;flex:1;background:var(--border)"></span>
-          <span style="background:rgba(37,99,235,.12);color:#60a5fa;border-radius:20px;font-size:.62rem;padding:1px 8px;font-weight:700">${demandasAtivas.length} ativa${demandasAtivas.length!==1?'s':''}</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:28px">
-          ${demandasAtivas.map(d=>{
-            const confCarga = atribs.filter(a=>a.demanda_id===d.id&&a.tipo!=='separador');
-            const pedOk  = confStatus.filter(s=>Number(s.carga)===Number(d.carga)&&s.status==='ok').length;
-            const pedNok = confStatus.filter(s=>Number(s.carga)===Number(d.carga)&&s.status==='nok').length;
-            const total  = d.quantidade_pedidos||0;
-            const _confTotal = pedOk+pedNok;
-            const pct    = total>0?Math.min(100,Math.round((_confTotal/Math.max(total,_confTotal))*100)):0;
-            const semConf = !confCarga.length;
-            const semMot  = !d.motorista||d.motorista==='A DEFINIR MOTORISTA';
-            const corBorda  = semConf?'#ef4444':'#3b82f6';
-            const corPct    = pct===100?'#059669':pct>50?'#3b82f6':'#f59e0b';
-            const badgeBg   = semConf?'rgba(239,68,68,.12)':'rgba(37,99,235,.12)';
-            const badgeClr  = semConf?'#fca5a5':'#93c5fd';
-            const badgeTxt  = semConf?'⚠️ Sem conferente':'🚛 Carregando';
-            const okPct  = total>0?Math.round((pedOk/total)*100):0;
-            const nkPct  = total>0?Math.round((pedNok/total)*100):0;
-            const _sfAMap = {concluido:['#059669','✅ Fiscal OK'], em_andamento:['#2563eb','🔄 Fiscal And.'], pendente:['#6b7280','⏳ Fiscal Pend.']};
-            const [_sfC, _sfT] = _sfAMap[d.status_fiscal||'pendente']||_sfAMap.pendente;
-            return `<div style="background:var(--bg-card);border:1px solid ${corBorda}33;border-left:3px solid ${corBorda};border-radius:10px;padding:12px 13px">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px">
-                <span style="font-size:.88rem;font-weight:900;color:var(--text-primary)">Carga ${d.carga}</span>
-                <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
-                  <span style="background:${badgeBg};color:${badgeClr};border:1px solid ${badgeClr}55;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${badgeTxt}</span>
-                  <span style="background:${_sfC}18;color:${_sfC};border:1px solid ${_sfC}44;border-radius:20px;font-size:.6rem;font-weight:700;padding:2px 6px;white-space:nowrap">${_sfT}</span>
-                </div>
-              </div>
-              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:7px">📍 ${d.rota||'—'}</div>
-              <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:7px;font-size:.67rem">
-                <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Motorista</span><span style="color:var(--text-secondary);font-weight:600;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${semMot?'A DEFINIR':d.motorista}</span></div>
-                <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Pedidos</span><span style="color:var(--text-secondary);font-weight:600">${total} total</span></div>
-              </div>
-              ${confCarga.length?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:7px">${confCarga.map(a=>`<span style="background:rgba(37,99,235,.1);border:1px solid rgba(37,99,235,.25);border-radius:6px;padding:2px 5px 2px 7px;font-size:.64rem;font-weight:700;color:#60a5fa;display:inline-flex;align-items:center;gap:4px">👷 ${a.conferente_nome}<button onclick="removerConferente('${a.id}','${d.id}',${d.carga},'${_jsAttrStr((a.conferente_nome||''))}'); event.stopPropagation()" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:.8rem;font-weight:900;line-height:1;padding:0 1px;margin-left:1px" title="Desvincular conferente">✕</button></span>`).join('')}</div>`:''}
-              <div>
-                <div style="display:flex;justify-content:space-between;font-size:.62rem;margin-bottom:3px">
-                  <span style="color:var(--green)">✅ ${pedOk} OK${pedNok?` &nbsp; ❌ ${pedNok} NOK`:''}</span>
-                  <span style="font-weight:800;color:${corPct}">${pct}%</span>
-                </div>
-                <div style="background:var(--bg-card2);border-radius:3px;height:5px;overflow:hidden;display:flex">
-                  <div style="height:100%;width:${okPct}%;background:var(--green);transition:width .4s"></div>
-                  <div style="height:100%;width:${nkPct}%;background:#ef4444;transition:width .4s"></div>
-                </div>
-              </div>
-              ${(d.arm_status==='carregado_ok'&&pct>=100)
-                ?`<div style="width:100%;margin-top:8px;background:rgba(5,150,105,.1);color:#059669;border:1px solid rgba(5,150,105,.3);border-radius:7px;padding:6px;font-size:.72rem;font-weight:800;text-align:center">✅ Carregado — Aguardando Saída</div>`
-                :pct===100?`<button onclick="salvarStatusArmazem('${d.id}','carregado_ok')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:7px;padding:6px;font-size:.72rem;font-weight:800;cursor:pointer">✅ Concluir Carregamento</button>`
-                :`<div style="width:100%;margin-top:8px;background:rgba(245,158,11,.08);color:#b45309;border:1px solid rgba(245,158,11,.25);border-radius:7px;padding:6px;font-size:.72rem;font-weight:700;text-align:center">⏳ ${pct}% conferido — aguardando conclusão</div>`}
-            </div>`;
-          }).join('')}
-        </div>`;
-    }
+  // ── PAINEL: quadro por etapa ──
+  const dc = document.getElementById('arm-demandas-container');
+  if(dc){
+    const grade = h => '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,400px),1fr));gap:16px;align-items:start">'+h+'</div>';
+    const secao = (cor,t,n,s) => '<div style="display:flex;align-items:baseline;gap:10px;margin:22px 0 10px;flex-wrap:wrap"><span style="width:10px;height:10px;border-radius:50%;background:'+cor+';display:inline-block"></span><h3 style="font-size:1rem;font-weight:800;color:var(--text-primary);margin:0">'+t+'</h3><span style="font-size:.78rem;color:var(--text-muted)">'+n+' carga'+(n===1?'':'s')+(s?' · '+s:'')+'</span></div>';
+    const ord = (a,b) => String(a.data_saida||'9999').localeCompare(String(b.data_saida||'9999')) || (a.carga-b.carga);
+    // faixa de alertas
+    const nSemConf = emTrabalho.filter(d=>info[d.id].semConf).length;
+    const nVenc = emTrabalho.filter(d=>d.data_saida && d.data_saida<hoje).length + preCarga.filter(d=>d.data_saida && d.data_saida<hoje).length;
+    const nParada = emTrabalho.filter(d=>info[d.id].alertas.some(a=>/^Sem (contagem|conferência)/.test(a.txt))).length;
+    const nAltErp = emTrabalho.filter(d=>(altsPorCarga[d.carga]||[]).length).length;
+    const chipsAl = [
+      nSemConf ? _armChip(nSemConf+' carga'+(nSemConf>1?'s':'')+' sem conferente','#ef4444') : '',
+      nVenc ? _armChip(nVenc+' com saída vencida','#f59e0b') : '',
+      nParada ? _armChip(nParada+' parada'+(nParada>1?'s':'')+' há mais de 24 h','#f59e0b') : '',
+      nAltErp ? _armChip(nAltErp+' com alteração do ERP','#ef4444') : ''
+    ].filter(Boolean).join(' ');
+    let h = chipsAl ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">'+chipsAl+'</div>' : '<div style="font-size:.8rem;color:#22c55e;font-weight:700;margin-bottom:4px">Nenhum alerta no armazém agora</div>';
+    h += secao('#8b5cf6','Em separação', emSep.length, 'itens contados no portal do conferente');
+    h += emSep.length ? grade(emSep.sort(ord).map(d=>_armCartaoTrabalho(d, info[d.id])).join('')) : '<p style="color:var(--text-muted);font-size:.84rem;margin-left:20px">Nenhuma carga em separação.</p>';
+    h += secao('#3b82f6','Em carregamento', emCar.length, 'pedidos conferidos');
+    h += emCar.length ? grade(emCar.sort(ord).map(d=>_armCartaoTrabalho(d, info[d.id])).join('')) : '<p style="color:var(--text-muted);font-size:.84rem;margin-left:20px">Nenhuma carga em carregamento.</p>';
+    h += secao('#94a3b8','Pré-carga', preCarga.length, 'ainda não chegou ao armazém (formação / pendente)');
+    h += preCarga.length ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">'+preCarga.sort(ord).map(d=>{
+      const venc = d.data_saida && d.data_saida < hoje;
+      const confsPre = atribs.filter(a=>a.demanda_id===d.id && a.tipo!=='separador');
+      const nContados = sepItens.filter(r=>Number(r.carga)===Number(d.carga) && r.quantidade_separada!=null).length;
+      const linhaConf = confsPre.length
+        ? '<div style="margin-top:7px;font-size:.72rem;color:var(--text-secondary)">👷 '+confsPre.map(a=>escapeHtml(a.conferente_nome||'—')).join(', ')+'</div>' : '';
+      const linhaCont = nContados
+        ? '<div style="margin-top:5px;background:#f59e0b18;color:#f59e0b;border-radius:8px;padding:4px 8px;font-size:.7rem;font-weight:700">Contagem já iniciada ('+nContados+' itens) com a carga ainda em '+_ARM_ETAPA_LABEL[d.status]+'</div>' : '';
+      return '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:11px 13px"><div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start"><div><div style="font-weight:800;color:var(--text-primary)">Carga '+d.carga+'</div><div style="font-size:.72rem;font-weight:700;color:var(--text-secondary)">'+escapeHtml(d.rota||'—')+'</div></div>'+_armChip(_ARM_ETAPA_LABEL[d.status], d.status==='pendente'?'#f59e0b':'#22c55e')+'</div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--text-muted);margin-top:8px"><span>'+(d.quantidade_pedidos||0)+' pedidos · '+fv(d.valor_total||0)+'</span><span style="'+(venc?'color:#f59e0b;font-weight:700':'')+'">sai '+_armDM(d.data_saida)+(venc?' (vencida)':'')+'</span></div>'+linhaConf+linhaCont+'</div>';
+    }).join('')+'</div>' : '<p style="color:var(--text-muted);font-size:.84rem;margin-left:20px">Nenhuma carga em pré-carga.</p>';
+    dc.innerHTML = h;
   }
 
-  // ── PAINEL CONFERENTES ──
-  const confContainer = document.getElementById('arm-conf-container');
-  if(confContainer){
+  // ── PAINEL: conferentes (o que cada um faz agora) ──
+  const cc = document.getElementById('arm-conf-container');
+  if(cc){
     if(!confCards.length){
-      confContainer.innerHTML='<div style="text-align:center;padding:30px;color:var(--text-muted)">Nenhum conferente ativo cadastrado.</div>';
+      cc.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">Nenhum conferente ativo cadastrado.</div>';
     } else {
-      const cMes = window._armCMes||{};
-      const pMes = window._armPMes||{};
-      let html = `<div style="font-size:.68rem;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px">
-        👷 Conferentes
-        <span style="height:1px;flex:1;background:var(--border)"></span>
-        <span style="background:rgba(37,99,235,.1);color:#60a5fa;border-radius:20px;font-size:.62rem;padding:1px 8px;font-weight:700">${confCards.length} ativo${confCards.length!==1?'s':''}</span>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px">`;
-      confCards.forEach(conf=>{
-        const foto = (fotos||{})[conf.id]||'';
-        const fotoHtml = foto
-          ? `<img src="${foto}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid rgba(37,99,235,.35);flex-shrink:0"/>`
-          : `<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#1d4ed8);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.3rem;font-weight:800;flex-shrink:0">${(conf.nome||'?').charAt(0)}</div>`;
-        const cargasMes  = (cMes[conf.id]||new Set()).size;
-        const pedidosMes = pMes[conf.id]||0;
-        const minhasAtribs = atribs.filter(a=>String(a.conferente_id)===String(conf.id)&&a.tipo!=='separador'&&demandaIdMap.has(a.demanda_id));
-        const minhasDemandaIds = new Set(minhasAtribs.map(a=>a.demanda_id));
-        const cargasDisp = demandasAtivas.filter(d=>d.carga&&!minhasDemandaIds.has(d.id));
-        const selVinc = `conf-vinc-${conf.id}`;
-        const confOptsOutros = confCards.filter(c=>c.id!==conf.id).map(c=>`<option value="${c.id}|${c.nome.replace(/"/g,'')}">${escapeHtml(c.nome)}</option>`).join('');
-        const _cargasBodyArr = minhasAtribs.map(a=>{
-              const dem = demandaIdMap.get(a.demanda_id); if(!dem) return '';
-              const pedOk  = confStatus.filter(s=>Number(s.carga)===Number(dem.carga)&&s.status==='ok').length;
-              const pedNok = confStatus.filter(s=>Number(s.carga)===Number(dem.carga)&&s.status==='nok').length;
-              const total  = dem.quantidade_pedidos||0;
-              const pend   = Math.max(0,total-pedOk-pedNok);
-              const _confTotal = pedOk+pedNok;
-              const pct    = total>0?Math.min(100,Math.round((_confTotal/Math.max(total,_confTotal))*100)):0;
-              if(pct>=100) return ''; // carga totalmente conferida — ocultar do painel
-              const okPct  = total>0?Math.round((pedOk/total)*100):0;
-              const nkPct  = total>0?Math.round((pedNok/total)*100):0;
-              const corPct = pct===100?'#059669':pct>50?'#3b82f6':'#f59e0b';
-              const sTrf   = `arm-trf-${conf.id}-${dem.carga}`;
-              const sAdd   = `arm-add2-${conf.id}-${dem.carga}`;
-              return `<div style="font-size:.6rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Demanda atual</div>
-              <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:8px">
-                <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
-                  <div><div style="font-size:.82rem;font-weight:800;color:var(--text-primary)">Carga ${dem.carga}</div><div style="font-size:.64rem;color:var(--text-muted)">${dem.rota||'—'}</div></div>
-                  <div style="font-size:.78rem;font-weight:900;color:${corPct}">${pct}%</div>
-                </div>
-                <div style="background:var(--border);border-radius:3px;height:6px;overflow:hidden;display:flex;margin-bottom:5px">
-                  <div style="height:100%;width:${okPct}%;background:var(--green);transition:width .4s"></div>
-                  <div style="height:100%;width:${nkPct}%;background:#ef4444;transition:width .4s"></div>
-                </div>
-                <div style="display:flex;gap:8px;font-size:.62rem">
-                  <span style="color:var(--green)">✅ ${pedOk} OK</span>
-                  <span style="color:#ef4444">❌ ${pedNok} NOK</span>
-                  <span style="color:var(--text-muted)">⏳ ${pend} pendentes</span>
-                </div>
-                ${(()=>{
-                  const tSep  = calcTempoDecorrido(dem.ts_separacao, dem.ts_carregamento||dem.ts_pausa, dem.ts_carregamento?0:dem.tempo_pausado_seg);
-                  const _freezeAt = pct===100 ? new Date().toISOString() : null;
-                  const tCar  = dem.ts_carregamento ? calcTempoDecorrido(dem.ts_carregamento, dem.ts_pausa||_freezeAt, dem.tempo_pausado_seg) : null;
-                  const pausado = !!dem.ts_pausa || pct===100;
-                  const podePausar = podeGerenciarTimer();
-                  let timerHtml = '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;font-size:.62rem">';
-                  if(tSep) timerHtml += `<span style="background:rgba(99,102,241,.1);color:#818cf8;border-radius:5px;padding:2px 7px;font-weight:700" title="Tempo de separação">🔧 Sep: ${tSep}</span>`;
-                  if(tCar){
-                    const carColor = pct===100?'#059669':pausado?'#f59e0b':'#3b82f6';
-                    const carLabel = pct===100?`✅ Car: ${tCar}`:pausado?`⏱ Car: ${tCar} ⏸`:`⏱ Car: ${tCar}`;
-                    timerHtml += `<span id="timer-car-${dem.id}" style="background:rgba(59,130,246,.1);color:${carColor};border-radius:5px;padding:2px 7px;font-weight:700;${pausado&&pct!==100?'opacity:.7':''}">${carLabel}</span>`;
-                    if(podePausar && pct!==100){
-                      if(pausado){
-                        timerHtml += `<button onclick="retomarTimer('${dem.id}','${dem.ts_pausa}',${dem.tempo_pausado_seg||0})" style="background:rgba(5,150,105,.15);color:#059669;border:1px solid rgba(5,150,105,.3);border-radius:5px;padding:1px 7px;font-size:.62rem;font-weight:700;cursor:pointer">▶ Retomar</button>`;
-                      } else {
-                        timerHtml += `<button onclick="pausarTimer('${dem.id}')" style="background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.3);border-radius:5px;padding:1px 7px;font-size:.62rem;font-weight:700;cursor:pointer">⏸ Pausar</button>`;
-                      }
-                    }
-                  }
-                  timerHtml += '</div>';
-                  return (tSep||tCar) ? timerHtml : '';
-                })()}
-                <button onclick="verPedidosConferencia(${dem.carga},'${a.id}','${a.conferente_id||''}','${_jsAttrStr((a.conferente_nome||''))}') "
-                  style="width:100%;margin-top:7px;background:rgba(59,130,246,.1);color:#2563eb;border:1px solid rgba(59,130,246,.3);border-radius:7px;padding:5px;font-size:.72rem;font-weight:700;cursor:pointer">
-                  📋 Ver Pedidos para Conferir
-                </button>
-                <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap">
-                  <details style="flex:1;background:var(--bg-card);border-radius:7px;border:1px dashed var(--border-med)">
-                    <summary style="padding:4px 9px;font-size:.67rem;font-weight:700;color:var(--text-muted);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px">🔄 Trocar <span style="margin-left:auto">▾</span></summary>
-                    <div style="padding:7px 9px;border-top:1px solid var(--border);display:flex;gap:5px;flex-wrap:wrap">
-                      <select id="${sTrf}" style="flex:1;min-width:130px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.7rem;outline:none"><option value="">Novo conferente...</option>${confOptsOutros}</select>
-                      <button onclick="transferirConferenteCarga('${a.id}','${dem.id}',${dem.carga},'${sTrf}')" style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.7rem;font-weight:700;cursor:pointer">🔄</button>
-                    </div>
-                  </details>
-                  <details style="flex:1;background:var(--bg-card);border-radius:7px;border:1px dashed var(--border-med)">
-                    <summary style="padding:4px 9px;font-size:.67rem;font-weight:700;color:var(--text-muted);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px">➕ 2º conf. <span style="margin-left:auto">▾</span></summary>
-                    <div style="padding:7px 9px;border-top:1px solid var(--border);display:flex;gap:5px;flex-wrap:wrap">
-                      <select id="${sAdd}" style="flex:1;min-width:130px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:5px 8px;font-size:.7rem;outline:none"><option value="">Selecionar...</option>${confOptsOutros}</select>
-                      <button onclick="adicionarSegundoConferente('${dem.id}',${dem.carga},'${sAdd}')" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:.7rem;font-weight:700;cursor:pointer">➕</button>
-                    </div>
-                  </details>
-                </div>
-              </div>`;
-            });
-        const _cargasBodyHtml = _cargasBodyArr.filter(Boolean).join('');
-        const cargasBody = _cargasBodyHtml
-          ? _cargasBodyHtml
-          : (minhasAtribs.length
-            ? `<div style="font-size:.6rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Demanda atual</div>
-               <div style="background:rgba(5,150,105,.06);border:1px dashed rgba(5,150,105,.3);border-radius:9px;padding:10px 12px;text-align:center;font-size:.73rem;color:#059669;font-weight:700;margin-bottom:8px">✅ Todos os pedidos conferidos!</div>`
-            : `<div style="font-size:.6rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Demanda atual</div>
-               <div style="background:rgba(239,68,68,.04);border:1px dashed rgba(239,68,68,.2);border-radius:9px;padding:10px 12px;text-align:center;font-size:.73rem;color:var(--text-muted);margin-bottom:8px">🟡 Sem demanda no momento</div>`);
-        html += `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">
-          <div style="background:linear-gradient(135deg,rgba(37,99,235,.09),rgba(37,99,235,.03));padding:14px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border)">
-            ${fotoHtml}
-            <div style="flex:1;min-width:0">
-              <div style="font-size:.9rem;font-weight:800;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${conf.nome}</div>
-              <span style="background:rgba(37,99,235,.12);color:#2563eb;font-size:.62rem;font-weight:700;padding:1px 7px;border-radius:4px">conferente</span>
-              <div style="display:flex;gap:7px;margin-top:7px">
-                <div style="background:rgba(0,0,0,.15);border-radius:8px;padding:5px 10px;min-width:58px;text-align:center">
-                  <div style="font-size:.88rem;font-weight:900;color:var(--text-primary)">${cargasMes}</div>
-                  <div style="font-size:.54rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">cargas/mês</div>
-                </div>
-                <div style="background:rgba(0,0,0,.15);border-radius:8px;padding:5px 10px;min-width:58px;text-align:center">
-                  <div style="font-size:.88rem;font-weight:900;color:var(--text-primary)">${pedidosMes}</div>
-                  <div style="font-size:.54rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px">pedidos/mês</div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div style="padding:12px 14px">
-            ${cargasBody}
-            <div style="border-top:1px dashed var(--border);padding-top:8px;margin-top:2px">
-              ${cargasDisp.length
-                ?`<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
-                    <select id="${selVinc}" style="flex:1;min-width:150px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:6px 9px;font-size:.73rem;outline:none">
-                      <option value="">🔗 Vincular a uma pré-carga...</option>
-                      ${cargasDisp.map(d=>`<option value="${d.id}|${d.carga}">${d.rota||'—'} — Carga ${d.carga} (${d.quantidade_pedidos||0} ped.)</option>`).join('')}
-                    </select>
-                    <button onclick="vincularConferentePorConf('${conf.id}','${_jsAttrStr(conf.nome)}','${selVinc}')"
-                      style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:.73rem;font-weight:700;cursor:pointer;white-space:nowrap">🔗 Vincular</button>
-                  </div>`
-                :`<div style="text-align:center;font-size:.7rem;color:var(--text-muted)">Nenhuma pré-carga disponível</div>`}
-            </div>
-          </div>
-        </div>`;
-      });
-      html += '</div>';
-      confContainer.innerHTML = html;
+      const cMes = window._armCMes||{}, pMes = window._armPMes||{};
+      const demById = new Map(ativas.map(d=>[d.id,d]));
+      const linhas = confCards.map(conf=>{
+        const minhas = atribs.filter(a=>String(a.conferente_id)===String(conf.id) && a.tipo!=='separador' && demById.has(a.demanda_id));
+        const sepH = (sepHoje||[]).filter(r=>String(r.conferente_id)===String(conf.id)).length;
+        const pedH = (confHoje||[]).filter(r=>String(r.conferente_id)===String(conf.id)).length;
+        const ult = [...(sepHoje||[]).filter(r=>String(r.conferente_id)===String(conf.id)).map(r=>r.separado_em), ...(confHoje||[]).filter(r=>String(r.conferente_id)===String(conf.id)).map(r=>r.conferido_em)].sort().pop() || null;
+        return { conf, minhas, sepH, pedH, ult };
+      }).sort((a,b)=> (b.minhas.length-a.minhas.length) || (String(b.ult||'').localeCompare(String(a.ult||''))));
+      const tr = linhas.map(L=>{
+        const c = L.conf;
+        const foto = (fotos||{})[c.id]||'';
+        const av = foto ? '<img src="'+foto+'" style="width:34px;height:34px;border-radius:50%;object-fit:cover"/>' : '<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#1d4ed8);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800">'+escapeHtml((c.nome||'?').charAt(0))+'</div>';
+        const agora = L.minhas.length ? L.minhas.map(a=>{
+          const d = demById.get(a.demanda_id); const x = info[d.id];
+          const p = x ? (d.status==='separacao' ? x.pctSep : x.pctCar) : null;
+          return '<div style="font-size:.76rem;margin-bottom:2px"><b>Carga '+d.carga+'</b> <span style="color:var(--text-muted)">'+escapeHtml(d.rota||'')+'</span> '+_armChip(_ARM_ETAPA_LABEL[d.status], d.status==='separacao'?'#8b5cf6':(d.status==='carregamento'?'#3b82f6':'#94a3b8'))+(p!=null?' <b>'+p+'%</b>':'')+'</div>';
+        }).join('') : '<span style="color:var(--text-muted);font-size:.76rem">sem carga no momento</span>';
+        const disp = ativas.filter(d=>d.carga && !L.minhas.some(a=>a.demanda_id===d.id));
+        const selV = 'conf-vinc-'+c.id;
+        const vinc = disp.length ? '<div style="display:flex;gap:4px"><select id="'+selV+'" style="max-width:190px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:6px;padding:4px 6px;font-size:.7rem"><option value="">Vincular a...</option>'+disp.map(d=>'<option value="'+d.id+'|'+d.carga+'">'+escapeHtml((d.rota||'—')+' — '+d.carga+' ('+_ARM_ETAPA_LABEL[d.status]+')')+'</option>').join('')+'</select><button onclick="vincularConferentePorConf(\''+c.id+'\',\''+_jsAttrStr(c.nome)+'\',\''+selV+'\')" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:4px 9px;font-size:.7rem;font-weight:700;cursor:pointer">🔗</button></div>' : '<span style="color:var(--text-muted);font-size:.7rem">—</span>';
+        return '<tr style="border-top:1px solid var(--border);vertical-align:top"><td style="padding:10px 12px"><div style="display:flex;gap:10px;align-items:center">'+av+'<div><div style="font-weight:800;color:var(--text-primary);font-size:.84rem">'+escapeHtml(c.nome)+'</div><div style="font-size:.68rem;color:var(--text-muted)">'+(c.ultimo_acesso?'portal: '+_armAtras(c.ultimo_acesso):'nunca acessou o portal')+'</div></div></div></td>'+
+          '<td style="padding:10px 12px">'+agora+'</td>'+
+          '<td style="padding:10px 12px;font-size:.78rem"><b>'+L.sepH+'</b> itens contados<br><b>'+L.pedH+'</b> pedidos conferidos'+(L.ult?'<div style="font-size:.68rem;color:var(--text-muted)">última atividade '+_armAtras(L.ult)+'</div>':'')+'</td>'+
+          '<td style="padding:10px 12px;font-size:.78rem"><b>'+((cMes[c.id]||new Set()).size)+'</b> cargas<br><b>'+(pMes[c.id]||0)+'</b> pedidos</td>'+
+          '<td style="padding:10px 12px">'+vinc+'</td></tr>';
+      }).join('');
+      cc.innerHTML = '<div style="display:flex;align-items:baseline;gap:10px;margin:26px 0 10px"><span style="width:10px;height:10px;border-radius:50%;background:#2563eb;display:inline-block"></span><h3 style="font-size:1rem;font-weight:800;color:var(--text-primary);margin:0">Conferentes</h3><span style="font-size:.78rem;color:var(--text-muted)">'+confCards.length+' ativo'+(confCards.length>1?'s':'')+' · o que cada um faz agora</span></div>'+
+        '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--bg-card2);color:var(--text-muted);font-size:.66rem;text-transform:uppercase;letter-spacing:.04em;text-align:left"><th style="padding:9px 12px">Conferente</th><th style="padding:9px 12px">Agora</th><th style="padding:9px 12px">Hoje</th><th style="padding:9px 12px">No mês</th><th style="padding:9px 12px">Vincular</th></tr></thead><tbody>'+tr+'</tbody></table></div>';
     }
   }
 
-  // ── PAINEL CONCLUÍDAS ──
+  // ── PAINEL: concluídas (as 100 mais recentes) ──
   const conclContainer = document.getElementById('arm-concluido-container');
   if(conclContainer){
-    if(!demandasConcluidas.length){
+    if(!concluidas.length){
       conclContainer.innerHTML='<p style="text-align:center;padding:30px;color:var(--text-muted)">Nenhuma carga concluída ainda.</p>';
     } else {
-      conclContainer.innerHTML = demandasConcluidas.map(d=>`
+      conclContainer.innerHTML = '<p style="font-size:.74rem;color:var(--text-muted);margin-bottom:8px">Mostrando as '+Math.min(100,concluidas.length)+' mais recentes de '+concluidas.length+'.</p>' + concluidas.slice(0,100).map(d=>`
         <div style="background:rgba(5,150,105,.04);border:1px solid rgba(5,150,105,.2);border-left:3px solid #059669;border-radius:9px;padding:10px 14px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
           <div style="display:flex;align-items:center;gap:8px">
-            <span style="background:#059669;color:#fff;font-size:.72rem;font-weight:800;padding:2px 9px;border-radius:20px">✅ ${d.rota||'—'}</span>
+            <span style="background:#059669;color:#fff;font-size:.72rem;font-weight:800;padding:2px 9px;border-radius:20px">✅ ${escapeHtml(d.rota||'—')}</span>
             <span style="font-size:.78rem;font-weight:700;color:var(--text-primary)">Carga ${d.carga}</span>
-            <span style="font-size:.74rem;color:var(--text-secondary)">🚗 ${d.motorista||'—'} • 🚛 ${d.veiculo||'—'}</span>
+            <span style="font-size:.74rem;color:var(--text-secondary)">🚗 ${escapeHtml(d.motorista||'—')} • 🚛 ${escapeHtml(d.veiculo||'—')}</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span style="font-size:.8rem;font-weight:700;color:var(--green)">${fv(d.valor_total||0)}</span>
@@ -43244,7 +43244,6 @@ async function renderArmazem(){
       finally{ _supaLoadingQuiet = false; }
     }, 30000);
   }
-
 }
 
 // Transfere conferente de uma carga (sem avançar status)
@@ -43265,6 +43264,7 @@ async function adicionarSegundoConferente(demandaId, carga, selectId){
       demanda_id:demandaId, carga, conferente_id:novoId, conferente_nome:novoNome,
       status:'pendente', criado_em:new Date().toISOString()
     })});
+    armRegistrarAcao(demandaId, carga, null, null, 'armazem_2o_conferente: '+novoNome);
     showToast('✅ '+novoNome+' adicionado como 2º conferente','success');
     await renderArmazem();
   }catch(e){ showToast('Erro: '+e.message,'error'); }
@@ -43286,6 +43286,7 @@ async function transferirConferenteCarga(atribId, demandaId, carga, selectId){
       demanda_id:demandaId, carga, conferente_id:novoId, conferente_nome:novoNome,
       status:'pendente', criado_em:new Date().toISOString()
     })});
+    armRegistrarAcao(demandaId, carga, null, null, 'armazem_trocar_conferente: -> '+novoNome);
     showToast('✅ Responsável transferido para '+novoNome,'success');
     await renderArmazem();
   }catch(e){ showToast('Erro: '+e.message,'error'); }
