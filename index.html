@@ -5881,6 +5881,11 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
           <span class="cad-hub-nome">Vendedores</span>
           <span class="cad-hub-cnt" id="cad-hub-count-vendedores" style="color:var(--blue)">—</span>
         </button>
+        <button type="button" class="cad-hub-card" data-hub-nome="clientes" onclick="abrirCadastroTipo('clientes')">
+          <svg class="cad-ic" viewBox="0 0 24 24"><path d="M12 2l2.6 6.9L22 9l-5.6 4.8L18 22l-6-4-6 4 1.6-8.2L2 9l7.4-.1z"/></svg>
+          <span class="cad-hub-nome">Clientes</span>
+          <span class="cad-hub-cnt" id="cad-hub-count-clientes" style="color:var(--blue)">—</span>
+        </button>
       </div>
     </div>
 
@@ -6398,6 +6403,24 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <h3>Fornecedores Cadastrados <span id="badge-fornecedores" class="cad-badge">0</span></h3>
       </div>
       <div id="cad-forn-lista" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+  </div>
+
+  <!-- ── CLIENTES ── -->
+  <div class="cad-panel" id="cad-clientes">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+      <div>
+        <h3 style="font-size:1rem;font-weight:700;color:var(--text-primary);margin-bottom:4px">⭐ Clientes</h3>
+        <p style="font-size:.82rem;color:var(--text-muted)">Marque clientes prioritários — eles aparecem destacados no Painel de TV. A lista vem dos pedidos do ERP, não é cadastrada manualmente.</p>
+      </div>
+    </div>
+    <input type="text" id="cli-busca-input" placeholder="Buscar por nome ou código do cliente..." oninput="_cliBuscaDebounce()"
+      style="width:100%;max-width:420px;background:var(--bg-input);border:1.5px solid var(--border-med);border-radius:8px;padding:9px 12px;font-size:.88rem;color:var(--text-primary);outline:none;margin-bottom:18px;box-sizing:border-box"/>
+    <div class="cad-list-box">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h3>Clientes <span id="badge-clientes" class="cad-badge">0</span></h3>
+      </div>
+      <div id="cad-clientes-lista" style="display:flex;flex-direction:column;gap:8px"></div>
     </div>
   </div>
 
@@ -9264,7 +9287,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.38';
+const APP_VERSION = '4.89.39';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -24271,6 +24294,95 @@ function abrirCadastroTipo(nome){
   if(nome==='tipos-receita') renderTiposReceitaCad();
   if(nome==='feriados') carregarFeriados();
   if(nome==='motivos-devolucao') carregarMotivosDevolucao();
+  if(nome==='clientes') carregarClientesCad();
+}
+
+// ── CLIENTES (prioridade) ──────────────────────────────
+// Lista de clientes vem do ERP (pedidos_info_erp) — não é cadastrada
+// manualmente aqui, só a flag de prioridade (clientes_prioridade). Sem
+// busca, mostra só os já marcados (evita carregar milhares de clientes
+// de uma vez); buscando, filtra pedidos_info_erp por nome ou código.
+// Pedido do usuário, 2026-10-09 — cliente prioridade aparece destacado
+// no Painel de TV.
+let _cliBuscaTimer = null;
+function _cliBuscaDebounce(){
+  clearTimeout(_cliBuscaTimer);
+  _cliBuscaTimer = setTimeout(carregarClientesCad, 350);
+}
+
+async function carregarClientesCad(){
+  const lista = document.getElementById('cad-clientes-lista');
+  const badge = document.getElementById('badge-clientes');
+  if(!lista) return;
+  const q = (document.getElementById('cli-busca-input')?.value||'').trim();
+  lista.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">Carregando...</div>';
+  try{
+    const prioritarios = await supaFetch('clientes_prioridade?prioridade=eq.true&order=nome_cliente.asc&select=codigo_cliente,nome_cliente').catch(()=>[]) || [];
+    const prioMap = {};
+    prioritarios.forEach(p=>{ prioMap[p.codigo_cliente] = p; });
+    if(badge) badge.textContent = prioritarios.length;
+
+    let rows;
+    if(!q){
+      rows = prioritarios.map(p=>({ codigo_cliente:p.codigo_cliente, cliente:p.nome_cliente }));
+      if(!rows.length){
+        lista.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhum cliente prioritário marcado ainda.<br>Busque um cliente pelo nome ou código acima pra marcar.</div>';
+        return;
+      }
+    } else {
+      const isCodigo = /^\d+$/.test(q);
+      const filtro = isCodigo ? `codigo_cliente=eq.${q}` : `cliente=ilike.*${encodeURIComponent(q)}*`;
+      const achados = await supaFetch(`pedidos_info_erp?${filtro}&unidade_erp=eq.1&select=codigo_cliente,cliente&order=cliente.asc&limit=200`).catch(()=>[]) || [];
+      const vistos = new Set();
+      rows = [];
+      achados.forEach(a=>{
+        if(!a.codigo_cliente || vistos.has(a.codigo_cliente)) return;
+        vistos.add(a.codigo_cliente);
+        rows.push({ codigo_cliente:a.codigo_cliente, cliente:a.cliente });
+      });
+      if(!rows.length){
+        lista.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhum cliente encontrado pra essa busca.</div>';
+        return;
+      }
+    }
+
+    lista.innerHTML = `<table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted)">
+        <th style="padding:8px 10px">Código</th><th style="padding:8px 10px">Cliente</th><th style="padding:8px 10px;text-align:right">Prioridade</th>
+      </tr></thead>
+      <tbody>${rows.map(r=>{
+        const ehPrio = !!prioMap[r.codigo_cliente];
+        return `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:10px;font-size:.82rem;color:var(--text-muted)">${escapeHtml(r.codigo_cliente)}</td>
+          <td style="padding:10px;font-size:.85rem;font-weight:600;color:var(--text-primary)">${ehPrio?'⭐ ':''}${escapeHtml(r.cliente||'—')}</td>
+          <td style="padding:10px;text-align:right">
+            <button onclick="toggleClientePrioridade('${r.codigo_cliente}','${_jsAttrStr(r.cliente||'')}')"
+              style="background:${ehPrio?'rgba(251,191,36,.15)':'var(--bg-card2)'};color:${ehPrio?'#b45309':'var(--text-secondary)'};border:1px solid ${ehPrio?'rgba(251,191,36,.5)':'var(--border-med)'};border-radius:20px;padding:5px 13px;font-size:.72rem;font-weight:800;cursor:pointer;white-space:nowrap">${ehPrio?'⭐ Prioridade':'☆ Marcar prioridade'}</button>
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  }catch(e){
+    lista.innerHTML = `<div style="padding:20px;text-align:center;color:#ef4444">Erro: ${e.message}</div>`;
+  }
+}
+
+async function toggleClientePrioridade(codigo, nome){
+  try{
+    const existente = await supaFetch(`clientes_prioridade?codigo_cliente=eq.${codigo}&select=prioridade`).catch(()=>[]) || [];
+    const prioridadeAtual = !!existente[0]?.prioridade;
+    // Upsert, nunca DELETE — alterna o booleano em vez de apagar/recriar a
+    // linha. mantém histórico (quem marcou/desmarcou por último) e evita
+    // depender de DELETE, que em alguns fluxos de confirmação pode travar.
+    await supaFetch('clientes_prioridade?on_conflict=codigo_cliente',{
+      method:'POST', prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({
+        codigo_cliente: codigo, nome_cliente: nome, prioridade: !prioridadeAtual,
+        atualizado_em: new Date().toISOString(), atualizado_por: USUARIO_LOGADO?.nome||null
+      })
+    });
+    await carregarClientesCad();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
 function filtrarCadHub(){
@@ -25244,6 +25356,7 @@ async function renderCadastros(){
     renderFornecedoresCad().then(()=>{
       _setHubCount('fornecedores', document.querySelectorAll('#cad-forn-lista table tbody tr').length);
     }),
+    supaFetch('clientes_prioridade?prioridade=eq.true&select=codigo_cliente').then(rows=>_setHubCount('clientes', (rows||[]).length)).catch(()=>_setHubCount('clientes', 0)),
     renderTiposReceitaCad().then(()=>_syncHubCount('tipos-receita','badge-tipos-receita')),
     carregarFeriados().then(()=>_syncHubCount('feriados','badge-feriados')),
     carregarMotivosDevolucao().then(()=>_syncHubCount('motivos-devolucao','badge-motivos-devolucao')),
