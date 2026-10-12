@@ -9287,7 +9287,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.40';
+const APP_VERSION = '4.89.41';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -50118,6 +50118,17 @@ function _caGrupoDe(nome){
   const g = _CA_GRUPOS.find(g=>g.re.test(nome||''));
   return g ? g.key : null;
 }
+// Clique numa barra de EVOLUÇÃO MENSAL (visão anual de Custo/Receita Armazém):
+// mostra só aquele mês; clicar de novo no mesmo mês volta pro ano inteiro.
+function _toggleMesArmazem(tipo, prefixo, idx){
+  window._armMesCtx = window._armMesCtx || {}; window._armMesSel = window._armMesSel || {};
+  const k = tipo + '-ano:' + prefixo;
+  const ctx = window._armMesCtx[k] || { ano: (window._painelIndMesSel || new Date().toISOString().slice(0,7)).slice(0,4), und: window._painelIndUndSel || '' };
+  const cur = window._armMesSel[k];
+  const igual = cur && cur.ano === ctx.ano && cur.und === ctx.und && cur.idx === idx;
+  window._armMesSel[k] = igual ? null : { ano: ctx.ano, und: ctx.und, idx: idx };
+  return (tipo === 'custo') ? renderCustoArmazemAno(prefixo) : renderReceitaArmazemAno(prefixo);
+}
 // Clique numa barra de EVOLUÇÃO SEMANAL (Custo/Receita Armazém): mostra só
 // aquela semana; clicar de novo na mesma semana volta pro mês inteiro.
 function _toggleSemanaArmazem(tipo, prefixo, idx){
@@ -50664,23 +50675,35 @@ async function renderCustoArmazemAno(prefixo){
 
     const NOMES_MES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
     const bMes = Array(12).fill(0);
+    // Mês selecionado (clique numa barra) — só vale pro mesmo ano/unidade
+    const _selKey = 'custo-ano:' + p;
+    window._armMesCtx = window._armMesCtx || {}; window._armMesSel = window._armMesSel || {};
+    window._armMesCtx[_selKey] = { ano: anoSel, und: undSel };
+    const _selM = window._armMesSel[_selKey];
+    const mesIdx = (_selM && _selM.ano === anoSel && _selM.und === undSel && _selM.idx >= 0 && _selM.idx < 12) ? _selM.idx : null;
+    const NOMES_MES_LONGO = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+    const dadosView = [];
     const totCategoria = {};
     const somaGrupo = {temp:0, alim:0, alho:0};
     dados.forEach(d=>{
       const valor = Number(d.valor||0);
-      totCategoria[d.tipo_despesa_nome||'Outros'] = (totCategoria[d.tipo_despesa_nome||'Outros']||0) + valor;
+      const _mV = Number((d.data_referencia||'').slice(5,7)) - 1;
+      const _naVisao = (mesIdx == null) || (_mV === mesIdx);
+      if (_naVisao) dadosView.push(d);
+      if (_naVisao) totCategoria[d.tipo_despesa_nome||'Outros'] = (totCategoria[d.tipo_despesa_nome||'Outros']||0) + valor;
       const grupo = _caGrupoDe(d.tipo_despesa_nome);
-      if(grupo) somaGrupo[grupo] += valor;
+      if(grupo && _naVisao) somaGrupo[grupo] += valor;
       const mIdx = Number((d.data_referencia||'').slice(5,7)) - 1;
       if(mIdx>=0 && mIdx<12) bMes[mIdx] += valor;
     });
 
-    const somaTotal = bMes.reduce((a,b)=>a+b,0);
+    const somaTotalAno = bMes.reduce((a,b)=>a+b,0);
+    const somaTotal = mesIdx != null ? bMes[mesIdx] : somaTotalAno;
     const somaOutros = somaTotal - somaGrupo.temp - somaGrupo.alim - somaGrupo.alho;
     const catsOrdenadas = Object.entries(totCategoria).sort((a,b)=>b[1]-a[1]);
     const maiorCategoria = catsOrdenadas[0] || null;
     const mesesComDado = bMes.filter(v=>v>0).length || 1;
-    const mediaMensal = somaTotal / mesesComDado;
+    const mediaMensal = somaTotalAno / mesesComDado;
 
     const catsPorGrupo = {temp:[], alim:[], alho:[]};
     Object.keys(totCategoria).forEach(nome=>{ const g=_caGrupoDe(nome); if(g) catsPorGrupo[g].push(nome); });
@@ -50694,12 +50717,12 @@ async function renderCustoArmazemAno(prefixo){
       const acimaMedia = v > mediaMensal;
       const alturaBase = Math.max(alturaPct, v>0?1.5:0);
       return `
-        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0">
+        <div onclick="_toggleMesArmazem('custo','${p}',${i})" title="Clique pra ver só esse mês" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;cursor:pointer;padding:6px 1px 4px;${i===mesIdx?'background:#eee;border-radius:8px;':''}">
           <div style="font-size:.6rem;font-weight:700;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v>0?_caFmtCompacto(v):''}</div>
           <div style="position:relative;width:100%;max-width:32px;height:120px;display:flex;align-items:flex-end">
             <div style="width:100%;height:${alturaBase}%;background:${futuro ? '#e5e5e5' : (acimaMedia ? 'linear-gradient(180deg,#1a1a1a 0%,#1a1a1a '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%,#b8b8b8 '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%)' : '#b8b8b8')};border-radius:2px 2px 0 0"></div>
           </div>
-          <div style="font-size:.66rem;font-weight:700;color:#1a1a1a;margin-top:10px">${NOMES_MES[i]}</div>
+          <div style="font-size:.66rem;font-weight:700;color:#1a1a1a;margin-top:10px">${NOMES_MES[i]}${i===mesIdx?' ●':''}</div>
         </div>`;
     }).join('');
 
@@ -50720,6 +50743,10 @@ async function renderCustoArmazemAno(prefixo){
       </div>`).join('');
 
     const undLabel = undSel ? undSel : 'todas as unidades';
+    const rotMes = mesIdx != null ? NOMES_MES_LONGO[mesIdx] + '/' + anoSel : '';
+    const rotPeriodoNo = mesIdx != null ? 'EM ' + rotMes : 'NO ANO';
+    const rotPeriodoDo = mesIdx != null ? 'DE ' + rotMes : 'DO ANO';
+    const linkAnoInteiro = mesIdx != null ? `<span onclick="_toggleMesArmazem('custo','${p}',${mesIdx})" style="font-size:.68rem;font-weight:700;color:#8a8a8a;cursor:pointer;text-decoration:underline;margin-left:14px">✕ ver ano inteiro</span>` : '';
 
     container.innerHTML = `
       <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
@@ -50730,7 +50757,7 @@ async function renderCustoArmazemAno(prefixo){
 
         <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:start">
           <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #1a1a1a">
-            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:10px">ACUMULADO NO ANO</div>
+            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:10px">ACUMULADO ${rotPeriodoNo}${linkAnoInteiro}</div>
             <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
               <div style="display:flex;align-items:baseline;font-size:2.1rem;font-weight:700;line-height:1">${fv(somaTotal)}</div>
               <div>
@@ -50748,20 +50775,20 @@ async function renderCustoArmazemAno(prefixo){
               <div style="display:flex;gap:4px">${barras}</div>
             </div>
             <div style="border-top:1px solid #e5e5e5;margin-top:22px;padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
-              <span style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">CONSOLIDADO DO ANO</span>
-              <span style="font-size:.78rem;font-weight:600">${dados.length} lançamento${dados.length===1?'':'s'} · ${undLabel}</span>
+              <span style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">CONSOLIDADO ${rotPeriodoDo}</span>
+              <span style="font-size:.78rem;font-weight:600">${dadosView.length} lançamento${dadosView.length===1?'':'s'} · ${undLabel}</span>
             </div>
           </div>
 
           <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #8a8a8a">
-            <div style="font-size:1.05rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO DO ANO</div>
+            <div style="font-size:1.05rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO ${rotPeriodoDo}</div>
             <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px">ORIGEM DOS CUSTOS REGISTRADOS</div>
             <div style="margin-top:6px">${composicao}</div>
             <div style="margin-top:8px">
               <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">RESULTADO</div>
               <div style="font-size:2.2rem;font-weight:700;margin-top:4px">${fv(somaTotal)}</div>
-              <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">CUSTO TOTAL NO ANO</div>
-              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${dados.length} lançamento${dados.length===1?'':'s'} de despesa, ${undLabel}.</div>
+              <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">CUSTO TOTAL ${rotPeriodoNo}</div>
+              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${dadosView.length} lançamento${dadosView.length===1?'':'s'} de despesa, ${undLabel}.</div>
             </div>
           </div>
         </div>
@@ -50981,19 +51008,31 @@ async function renderReceitaArmazemAno(prefixo){
 
     const NOMES_MES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
     const bMes = Array(12).fill(0);
+    // Mês selecionado (clique numa barra) — só vale pro mesmo ano/unidade
+    const _selKey = 'receita-ano:' + p;
+    window._armMesCtx = window._armMesCtx || {}; window._armMesSel = window._armMesSel || {};
+    window._armMesCtx[_selKey] = { ano: anoSel, und: undSel };
+    const _selM = window._armMesSel[_selKey];
+    const mesIdx = (_selM && _selM.ano === anoSel && _selM.und === undSel && _selM.idx >= 0 && _selM.idx < 12) ? _selM.idx : null;
+    const NOMES_MES_LONGO = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+    const dadosView = [];
     const totCategoria = {};
     dados.forEach(d=>{
       const valor = Number(d.valor||0);
-      totCategoria[d.tipo_receita_nome||'Outros'] = (totCategoria[d.tipo_receita_nome||'Outros']||0) + valor;
+      const _mV = Number((d.data_referencia||'').slice(5,7)) - 1;
+      const _naVisao = (mesIdx == null) || (_mV === mesIdx);
+      if (_naVisao) dadosView.push(d);
+      if (_naVisao) totCategoria[d.tipo_receita_nome||'Outros'] = (totCategoria[d.tipo_receita_nome||'Outros']||0) + valor;
       const mIdx = Number((d.data_referencia||'').slice(5,7)) - 1;
       if(mIdx>=0 && mIdx<12) bMes[mIdx] += valor;
     });
 
-    const somaTotal = bMes.reduce((a,b)=>a+b,0);
+    const somaTotalAno = bMes.reduce((a,b)=>a+b,0);
+    const somaTotal = mesIdx != null ? bMes[mesIdx] : somaTotalAno;
     const catsOrdenadas = Object.entries(totCategoria).sort((a,b)=>b[1]-a[1]);
     const maiorCategoria = catsOrdenadas[0] || null;
     const mesesComDado = bMes.filter(v=>v>0).length || 1;
-    const mediaMensal = somaTotal / mesesComDado;
+    const mediaMensal = somaTotalAno / mesesComDado;
 
     const eixoMax = Math.max(mediaMensal * 1.5, ...bMes, 1) * 1.15;
     const alturaMedia = Math.min(100, (mediaMensal/eixoMax)*100);
@@ -51004,12 +51043,12 @@ async function renderReceitaArmazemAno(prefixo){
       const acimaMedia = v > mediaMensal;
       const alturaBase = Math.max(alturaPct, v>0?1.5:0);
       return `
-        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0">
+        <div onclick="_toggleMesArmazem('receita','${p}',${i})" title="Clique pra ver só esse mês" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;cursor:pointer;padding:6px 1px 4px;${i===mesIdx?'background:#eee;border-radius:8px;':''}">
           <div style="font-size:.6rem;font-weight:700;color:#1a1a1a;margin-bottom:6px;white-space:nowrap">${v>0?_caFmtCompacto(v):''}</div>
           <div style="position:relative;width:100%;max-width:32px;height:120px;display:flex;align-items:flex-end">
             <div style="width:100%;height:${alturaBase}%;background:${futuro ? '#e5e5e5' : (acimaMedia ? 'linear-gradient(180deg,#1a1a1a 0%,#1a1a1a '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%,#b8b8b8 '+(alturaMedia/Math.max(alturaBase,.01)*100)+'%)' : '#b8b8b8')};border-radius:2px 2px 0 0"></div>
           </div>
-          <div style="font-size:.66rem;font-weight:700;color:#1a1a1a;margin-top:10px">${NOMES_MES[i]}</div>
+          <div style="font-size:.66rem;font-weight:700;color:#1a1a1a;margin-top:10px">${NOMES_MES[i]}${i===mesIdx?' ●':''}</div>
         </div>`;
     }).join('');
 
@@ -51020,13 +51059,17 @@ async function renderReceitaArmazemAno(prefixo){
           <span style="font-size:.78rem;font-weight:700;color:#a0a0a0;flex-shrink:0">${String(i+1).padStart(2,'0')}</span>
           <div style="flex:1">
             <div style="font-size:.85rem;font-weight:700;color:#1a1a1a;letter-spacing:.3px">${nome} <span style="color:#8a8a8a;font-weight:600">— ${fv(valor)}</span></div>
-            <div style="font-size:.78rem;color:#6b6b6b;margin-top:4px">${pct}% da receita do ano</div>
+            <div style="font-size:.78rem;color:#6b6b6b;margin-top:4px">${pct}% da receita ${mesIdx != null ? 'do mês' : 'do ano'}</div>
           </div>
         </div>
       </div>`;
-    }).join('') : '<p style="text-align:center;padding:20px;color:#8a8a8a">Nenhuma receita lançada neste ano.</p>';
+    }).join('') : `<p style="text-align:center;padding:20px;color:#8a8a8a">Nenhuma receita lançada ${mesIdx != null ? 'neste mês' : 'neste ano'}.</p>`;
 
     const undLabel = undSel ? undSel : 'todas as unidades';
+    const rotMes = mesIdx != null ? NOMES_MES_LONGO[mesIdx] + '/' + anoSel : '';
+    const rotPeriodoNo = mesIdx != null ? 'EM ' + rotMes : 'NO ANO';
+    const rotPeriodoDo = mesIdx != null ? 'DE ' + rotMes : 'DO ANO';
+    const linkAnoInteiro = mesIdx != null ? `<span onclick="_toggleMesArmazem('receita','${p}',${mesIdx})" style="font-size:.68rem;font-weight:700;color:#8a8a8a;cursor:pointer;text-decoration:underline;margin-left:14px">✕ ver ano inteiro</span>` : '';
 
     container.innerHTML = `
       <div class="abs-report" style="background:#f7f7f7;border-radius:16px;padding:44px 40px;color:#1a1a1a;font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
@@ -51037,7 +51080,7 @@ async function renderReceitaArmazemAno(prefixo){
 
         <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:start">
           <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #1a1a1a">
-            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:10px">ACUMULADO NO ANO</div>
+            <div style="font-size:.7rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:10px">ACUMULADO ${rotPeriodoNo}${linkAnoInteiro}</div>
             <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
               <div style="display:flex;align-items:baseline;font-size:2.1rem;font-weight:700;line-height:1">${fv(somaTotal)}</div>
               <div>
@@ -51055,20 +51098,20 @@ async function renderReceitaArmazemAno(prefixo){
               <div style="display:flex;gap:4px">${barras}</div>
             </div>
             <div style="border-top:1px solid #e5e5e5;margin-top:22px;padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
-              <span style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">CONSOLIDADO DO ANO</span>
-              <span style="font-size:.78rem;font-weight:600">${dados.length} lançamento${dados.length===1?'':'s'} · ${undLabel}</span>
+              <span style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">CONSOLIDADO ${rotPeriodoDo}</span>
+              <span style="font-size:.78rem;font-weight:600">${dadosView.length} lançamento${dadosView.length===1?'':'s'} · ${undLabel}</span>
             </div>
           </div>
 
           <div style="background:#fff;border-radius:10px;padding:26px 28px;border-top:3px solid #8a8a8a">
-            <div style="font-size:1.05rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO DO ANO</div>
+            <div style="font-size:1.05rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO ${rotPeriodoDo}</div>
             <div style="font-size:.68rem;font-weight:700;letter-spacing:1px;color:#8a8a8a;margin-top:2px">ORIGEM DAS RECEITAS REGISTRADAS</div>
             <div style="margin-top:6px">${composicao}</div>
             <div style="margin-top:8px">
               <div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">RESULTADO</div>
               <div style="font-size:2.2rem;font-weight:700;margin-top:4px">${fv(somaTotal)}</div>
-              <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">RECEITA TOTAL NO ANO</div>
-              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${dados.length} lançamento${dados.length===1?'':'s'} de receita, ${undLabel}.</div>
+              <div style="font-size:.72rem;font-weight:700;letter-spacing:.5px;color:#8a8a8a;margin-top:2px">RECEITA TOTAL ${rotPeriodoNo}</div>
+              <div style="font-size:.76rem;color:#6b6b6b;margin-top:8px">${dadosView.length} lançamento${dadosView.length===1?'':'s'} de receita, ${undLabel}.</div>
             </div>
           </div>
         </div>
