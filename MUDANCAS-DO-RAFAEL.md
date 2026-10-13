@@ -20,6 +20,17 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-13 — painel MFV: caixas medidas em verde e rótulo de dado simulado
+
+Só na aba Fluxo do Pedido (MFV). Caixa de processo que entra no cálculo ganha classe `med` e
+fundo verde sutil (`rgba(52,211,153,.12)`, o mesmo verde das mensagens de sucesso); as que não
+têm carimbo continuam tracejadas como estavam. Se alguma linha importada traz "SIMULADO" na
+coluna `obs`, o cabeçalho do mapa mostra **DADOS SIMULADOS · não é medição de campo** (o rótulo
+sai do próprio dado e some quando entrar a coleta real). As três chaves antigas citadas abaixo
+**foram apagadas** em 13/10 (backup no PC do Rafael). `version.json` 4.89.43.
+
+---
+
 ## 2026-10-13 — painel MFV reescrito do zero (v2): mapa clássico, só rota interna, fonte única
 
 Só na aba Fluxo do Pedido (MFV). Todo o bloco anterior saiu (`MFV_ETAPAS_RE/RI`, `MFV_CAMPOS`,
