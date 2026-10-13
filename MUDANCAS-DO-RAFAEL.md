@@ -33,6 +33,7 @@ Só na aba Fluxo do Pedido (MFV); a conta (`_mfv2Cadeia`, importação, KPIs) n�
 - Indicadores numa faixa só com número grande; textos explicativos saíram da tela e foram para
   `data-tip` (janelinha no hover/toque, `_mfv2Tips`). Números com vírgula decimal.
 - Dado carregado: 41 pedidos de 21, 23 e 25/09 (planilha do Rafael). `version.json` 4.89.44.
+- 4.89.45: botões Importar/Modelo/Limpar ganham estilo (o app não define `.btn`; caíam no branco do navegador).
 
 ---
 
