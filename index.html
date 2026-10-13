@@ -6859,6 +6859,8 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
         <div style="font-size:.75rem;color:var(--text-muted);font-weight:600">Total</div>
       </div>
     </div>
+    <!-- Aviso: placas em viagem que não existem em Veículos (preenchido por renderFrota) -->
+    <div id="frota-aviso-cadastro" style="display:none;margin-bottom:14px;padding:10px 14px;border:1px solid #fcd34d;background:#fef3c7;color:#92400e;border-radius:10px;font-size:.8rem;font-weight:600"></div>
     <!-- Grade de veículos -->
     <div id="frota-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">
       <div style="text-align:center;padding:40px;color:var(--text-muted);grid-column:1/-1">
@@ -9391,7 +9393,7 @@ body.tv-mode .app-body  { margin-left:0!important;margin-top:0!important;width:1
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.53';
+const APP_VERSION = '4.89.54';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18542,12 +18544,12 @@ async function renderFrotaStatus(){
 }
 
 function frota_recarregar(){
-  const pUso    = document.getElementById('frota-pane-uso');
-  const pEscala = document.getElementById('frota-pane-escala');
-  const pKm     = document.getElementById('frota-pane-km');
-  if(pEscala?.style.display !== 'none') renderFrotaEscala();
-  else if(pUso?.style.display !== 'none') renderFrotaUso();
-  else if(pKm?.style.display !== 'none') renderFrotaKm();
+  // Recarrega a aba que está visível (inclui Rotas por Veículo; antes caía em renderFrota()).
+  const _vis = id => { const el = document.getElementById(id); return !!el && el.style.display !== 'none'; };
+  if(_vis('frota-pane-escala'))     renderFrotaEscala();
+  else if(_vis('frota-pane-uso'))   renderFrotaUso();
+  else if(_vis('frota-pane-rotas')) renderFrotaRotas();
+  else if(_vis('frota-pane-km'))    renderFrotaKm();
   else renderFrota();
 }
 
@@ -18579,22 +18581,22 @@ function frotaAba(aba){
   } else if(aba === 'escala'){
     if(pEscala) pEscala.style.display=''; _on(tEscala);
     const inp = document.getElementById('frota-escala-mes');
-    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    if(inp && !inp.value) inp.value = hojeDataBRT().slice(0,7);
     renderFrotaEscala();
   } else if(aba === 'rotas'){
     if(pRotas) pRotas.style.display=''; _on(tRotas);
     const inp = document.getElementById('frota-rotas-mes');
-    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    if(inp && !inp.value) inp.value = hojeDataBRT().slice(0,7);
     renderFrotaRotas();
   } else if(aba === 'km'){
     if(pKm) pKm.style.display=''; _on(tKm);
     const inp = document.getElementById('frota-km-mes');
-    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    if(inp && !inp.value) inp.value = hojeDataBRT().slice(0,7);
     renderFrotaKm();
   } else {
     pUso.style.display=''; _on(tUso);
     const inp = document.getElementById('frota-uso-mes');
-    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    if(inp && !inp.value) inp.value = hojeDataBRT().slice(0,7);
     renderFrotaUso();
   }
 }
@@ -18602,7 +18604,7 @@ function frotaAba(aba){
 async function renderFrotaUso(){
   const wrap = document.getElementById('frota-uso-wrap');
   if(!wrap) return;
-  const mes = document.getElementById('frota-uso-mes')?.value || new Date().toISOString().slice(0,7);
+  const mes = document.getElementById('frota-uso-mes')?.value || hojeDataBRT().slice(0,7);
   if(!mes){ wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">Selecione o mês.</div>'; return; }
 
   wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando...</p></div>';
@@ -18991,7 +18993,7 @@ function _calcDispMapFrota({placas, demandas, lancamentosDisp, demandasC, abaste
 async function renderFrotaDisp(){
   const wrap = document.getElementById('frota-disp-wrap');
   if(!wrap) return;
-  const mes  = document.getElementById('frota-disp-mes')?.value || new Date().toISOString().slice(0,7);
+  const mes  = document.getElementById('frota-disp-mes')?.value || hojeDataBRT().slice(0,7);
   const META = parseInt(document.getElementById('frota-disp-meta')?.value||'80')||80;
   const undFiltro = (document.getElementById('frota-disp-und')?.value||'').trim().toUpperCase();
   if(!mes){ wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">Selecione o mês.</div>'; return; }
@@ -19263,13 +19265,18 @@ async function renderFrota(){
     const todos    = veiculos  || [];
     const emViagem = demandas  || [];
 
-    // Mapas separados: saiu (em rota) e fim_viagem (retornou, aguardando liberação)
+    // Mapas separados: saiu (em rota) e fim_viagem (retornou, aguardando liberação).
+    // retornMap guarda a LISTA de viagens fim_viagem de cada placa (uma placa pode ter
+    // mais de uma viagem aguardando); saiuMap segue com uma demanda por placa.
     const saiuMap    = new Map();
     const retornMap  = new Map();
     emViagem.forEach(d=>{
       if(!d.veiculo) return;
       if(d.status === 'saiu')          saiuMap.set(d.veiculo, d);
-      else if(d.status==='fim_viagem') retornMap.set(d.veiculo, d);
+      else if(d.status==='fim_viagem'){
+        if(!retornMap.has(d.veiculo)) retornMap.set(d.veiculo, []);
+        retornMap.get(d.veiculo).push(d);
+      }
     });
 
     // Veículos em manutenção ativa (agendada ou em andamento)
@@ -19283,11 +19290,37 @@ async function renderFrota(){
         .map(v => v.placa)
     );
 
-    // KPIs
-    const nRota   = todos.filter(v=> saiuMap.has(v.placa)).length;
-    const nAguard = retornMap.size + orphanSet.size;
-    const nDisp   = todos.filter(v=> v.ativo && !saiuMap.has(v.placa) && !retornMap.has(v.placa)).length;
-    const nIndisp = todos.filter(v=> !v.ativo && !retornMap.has(v.placa) && !orphanSet.has(v.placa)).length;
+    // Classifica cada veículo UMA vez, na mesma precedência dos cards:
+    // aguardando liberação > indisponível > em rota > disponível.
+    // Os KPIs saem dessa classificação, então Em Rota + Disponíveis + Indisponíveis
+    // + Aguard. Liberação sempre fecha com o Total (só veículos cadastrados).
+    const estadoVeic = new Map();
+    let nRota=0, nDisp=0, nIndisp=0, nAguard=0;
+    todos.forEach(v=>{
+      let est;
+      if(retornMap.has(v.placa) || orphanSet.has(v.placa)){ est='aguard'; nAguard++; }
+      else if(!v.ativo){ est='indisp'; nIndisp++; }
+      else if(saiuMap.has(v.placa)){ est='rota'; nRota++; }
+      else { est='disp'; nDisp++; }
+      estadoVeic.set(v, est);
+    });
+
+    // Placas em viagem (saiu/fim_viagem) que não existem em Veículos: não entram nos
+    // KPIs nem no Total; só aviso factual acima da grade.
+    const placasCadastradas = new Set(todos.map(v=>v.placa));
+    const semCadastro = emViagem
+      .filter(d=> d.veiculo && !placasCadastradas.has(d.veiculo))
+      .map(d=> d.veiculo + ' (' + (d.carga ? 'carga '+d.carga+', ' : '') + (d.status==='fim_viagem' ? 'retornou' : 'em rota') + ')');
+    const elAviso = document.getElementById('frota-aviso-cadastro');
+    if(elAviso){
+      if(semCadastro.length){
+        elAviso.textContent = 'Placa em viagem sem cadastro em Veículos (não entra nos totais abaixo): ' + semCadastro.join('; ');
+        elAviso.style.display = '';
+      } else {
+        elAviso.textContent = '';
+        elAviso.style.display = 'none';
+      }
+    }
     const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
     set('frota-kpi-rota',   nRota);
     set('frota-kpi-disp',   nDisp);
@@ -19303,24 +19336,25 @@ async function renderFrota(){
     const fmtData = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : '—';
 
     // Ordenar: retornou/órfão primeiro, depois em rota, depois disponível, depois indisponível
-    const ordemFn = v => (retornMap.has(v.placa)||orphanSet.has(v.placa)) ? 0 : saiuMap.has(v.placa) ? 1 : v.ativo ? 2 : 3;
+    const ordemFn = v => estadoVeic.get(v)==='aguard' ? 0 : saiuMap.has(v.placa) ? 1 : v.ativo ? 2 : 3;
     todos.sort((a,b) => ordemFn(a) - ordemFn(b) || (a.placa||'').localeCompare(b.placa||''));
 
     grid.innerHTML = todos.map(v=>{
-      const demSaiu   = saiuMap.get(v.placa);
-      const demRetorn = retornMap.get(v.placa);
-      const isOrphan  = orphanSet.has(v.placa);
-      const dem = demRetorn || demSaiu;
+      const demSaiu    = saiuMap.get(v.placa);
+      const listRetorn = retornMap.get(v.placa) || [];
+      const estado     = estadoVeic.get(v);
+      // Viagens mostradas no card: as aguardando liberação (todas) ou a que está em rota
+      const demsCard = listRetorn.length ? listRetorn : (demSaiu ? [demSaiu] : []);
       let borderColor, headerBg, headerColor, badgeBg, badgeColor, badgeIcon, statusLabel;
 
-      if(demRetorn || isOrphan){
+      if(estado==='aguard'){
         // Veículo retornou — aguardando decisão da frota
         borderColor='#c4b5fd'; headerBg='#ede9fe'; headerColor='#4c1d95';
         badgeBg='#ede9fe'; badgeColor='#4c1d95'; badgeIcon='🟣'; statusLabel='Retornou';
-      } else if(!v.ativo){
+      } else if(estado==='indisp'){
         borderColor='#fca5a5'; headerBg='#fee2e2'; headerColor='#991b1b';
         badgeBg='#fee2e2'; badgeColor='#991b1b'; badgeIcon='🔴'; statusLabel='Indisponível';
-      } else if(demSaiu){
+      } else if(estado==='rota'){
         borderColor='#fcd34d'; headerBg='#fef3c7'; headerColor='#92400e';
         badgeBg='#fef3c7'; badgeColor='#92400e'; badgeIcon='🟡'; statusLabel='Em Rota';
       } else {
@@ -19328,16 +19362,25 @@ async function renderFrota(){
         badgeBg='#d1fae5'; badgeColor='#065f46'; badgeIcon='🟢'; statusLabel='Disponível';
       }
 
-      const infoRota = dem ? `
+      // Valores distintos das viagens do card (uma placa pode ter mais de uma viagem aguardando)
+      const _uniq = f => [...new Set(demsCard.map(f).filter(Boolean))];
+      const _rotasCard  = _uniq(d=>d.rota);
+      const _motsCard   = _uniq(d=>d.motorista);
+      const _cargasCard = _uniq(d=>d.carga);
+      const _saidasCard = _uniq(d=>d.data_saida);
+      const infoRota = demsCard.length ? `
         <div style="margin-top:10px;padding:8px 10px;background:rgba(0,0,0,.04);border-radius:8px;font-size:.76rem;display:flex;flex-direction:column;gap:4px">
-          <div><span style="color:var(--text-muted)">Rota:</span> <strong>${dem.rota||'—'}</strong></div>
-          ${dem.motorista ? `<div><span style="color:var(--text-muted)">Motorista:</span> <strong>${dem.motorista}</strong></div>` : ''}
-          ${dem.carga     ? `<div><span style="color:var(--text-muted)">Carga:</span> <strong>${dem.carga}</strong></div>` : ''}
-          <div><span style="color:var(--text-muted)">Saída:</span> <strong>${fmtData(dem.data_saida)}</strong></div>
+          ${listRetorn.length>1 ? `<div style="color:#4c1d95;font-weight:700">${listRetorn.length} viagens aguardando liberação</div>` : ''}
+          <div><span style="color:var(--text-muted)">Rota:</span> <strong>${_rotasCard.length ? _rotasCard.join(', ') : '—'}</strong></div>
+          ${_motsCard.length   ? `<div><span style="color:var(--text-muted)">Motorista:</span> <strong>${_motsCard.join(', ')}</strong></div>` : ''}
+          ${_cargasCard.length ? `<div><span style="color:var(--text-muted)">Carga:</span> <strong>${_cargasCard.join(', ')}</strong></div>` : ''}
+          <div><span style="color:var(--text-muted)">Saída:</span> <strong>${_saidasCard.length ? _saidasCard.map(fmtData).join(', ') : '—'}</strong></div>
         </div>` : '';
 
-      const _demId = demRetorn?.id || null;
-      const botoesLiberar = (demRetorn || isOrphan) ? `
+      // Liberar segue como antes (uma demanda por clique): usa a última da lista, que era a
+      // que o Map guardava. Liberar todas as viagens da placa fica para a fase de Liberar.
+      const _demId = listRetorn.length ? (listRetorn[listRetorn.length-1].id || null) : null;
+      const botoesLiberar = (estado==='aguard') ? `
         <div style="margin-top:10px;display:flex;gap:7px">
           <button onclick="liberarVeiculoFrota('${_jsAttrStr(v.placa)}','${_demId}')"
             style="flex:1;background:#059669;color:#fff;border:none;border-radius:8px;padding:8px 0;font-size:.78rem;font-weight:700;cursor:pointer">
@@ -19365,8 +19408,8 @@ async function renderFrota(){
           ${infoVeic}
           ${infoRota}
           ${botoesLiberar}
-          ${!dem && v.ativo ? '<div style="margin-top:8px;font-size:.75rem;color:var(--text-muted)">Sem demanda ativa no momento</div>' : ''}
-          ${!v.ativo && !demRetorn ? '<div style="margin-top:8px;font-size:.75rem;color:#991b1b;font-weight:600">Veículo em manutenção ou desativado</div>' : ''}
+          ${!demsCard.length && v.ativo ? '<div style="margin-top:8px;font-size:.75rem;color:var(--text-muted)">Sem demanda ativa no momento</div>' : ''}
+          ${!v.ativo && !listRetorn.length ? '<div style="margin-top:8px;font-size:.75rem;color:#991b1b;font-weight:600">Veículo em manutenção ou desativado</div>' : ''}
         </div>
       </div>`;
     }).join('');
@@ -19381,7 +19424,7 @@ let _frotaRotasChart = null;
 async function renderFrotaRotas(){
   const wrap = document.getElementById('frota-rotas-wrap');
   if(!wrap) return;
-  const mes = document.getElementById('frota-rotas-mes')?.value || new Date().toISOString().slice(0,7);
+  const mes = document.getElementById('frota-rotas-mes')?.value || hojeDataBRT().slice(0,7);
 
   wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando...</p></div>';
 
@@ -19547,12 +19590,12 @@ async function renderFrotaRotas(){
 // ── KM por Rota/Veículo — lançamento manual de km_inicial/km_final de
 // rotas_viagem, movido pra cá pra não travar a confirmação de saída/fim de
 // viagem na Expedição por falta de odômetro na hora (pedido do usuário,
-// 2026-10-06). km_total aqui é a mesma coluna usada no bônus KM do R.E. —
-// se não for preenchido aqui, o motorista fica sem o bônus daquela viagem.
+// 2026-10-06). O bônus KM saiu da conta de pagamento em 05/10/2026, então
+// km_total aqui é só informativo (Histórico de Rotas e portal do motorista).
 async function renderFrotaKm(){
   const wrap = document.getElementById('frota-km-wrap');
   if(!wrap) return;
-  const mes = document.getElementById('frota-km-mes')?.value || new Date().toISOString().slice(0,7);
+  const mes = document.getElementById('frota-km-mes')?.value || hojeDataBRT().slice(0,7);
   if(!mes){ wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">Selecione o mês.</div>'; return; }
 
   wrap.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Carregando...</p></div>';
@@ -19717,7 +19760,7 @@ async function salvarKmViagem(id){
 async function renderFrotaEscala(){
   const wrap = document.getElementById('frota-escala-wrap');
   if(!wrap) return;
-  const mes = document.getElementById('frota-escala-mes')?.value || new Date().toISOString().slice(0,7);
+  const mes = document.getElementById('frota-escala-mes')?.value || hojeDataBRT().slice(0,7);
   if(!mes){ wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">Selecione o mês.</div>'; return; }
 
   wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)"><div style="font-size:1.5rem">⏳</div><p>Calculando...</p></div>';
@@ -20192,7 +20235,7 @@ async function carregarGestaoFrota(){
 
 function renderGestaoFrotaKPIs(){
   const hoje = hojeDataBRT();
-  const mesAtual = new Date().toISOString().slice(0,7);
+  const mesAtual = hojeDataBRT().slice(0,7);
   const META_DISP = 80;
 
   // Veículos únicos — exclui veículos do tipo FRETE (não são frota própria)
@@ -22030,9 +22073,10 @@ async function confirmarSaidaRota(){
     // carga. Achado do usuário, 2026-10-01.
     const patchResult = await _patchStatusDemanda(savedId, 'saiu', 'modal_saida', {extra:{ts_saiu:tsSaiu, data_saida:data}});
     if(!patchResult.ok){ showToast('⛔ '+patchResult.msg,'warning'); return; }
-    // rotas_viagem é a fonte do bônus KM do motorista — KM é lançado depois em
-    // Frotas › KM por Rota/Veículo (não bloqueia mais a confirmação de saída);
-    // se essa gravação falhar silenciosamente, a viagem fica sem onde lançar o KM.
+    // rotas_viagem guarda o KM informativo da viagem (o bônus KM saiu da conta de
+    // pagamento em 05/10/2026) — KM é lançado depois em Frotas › KM por
+    // Rota/Veículo (não bloqueia mais a confirmação de saída); se essa gravação
+    // falhar silenciosamente, a viagem fica sem onde lançar o KM.
     await supaFetch('rotas_viagem',{method:'POST',body:JSON.stringify({
       demanda_id:savedId, carga:dem?.carga||null,
       data_saida:data, km_inicial:null, km_esperado:null,
@@ -24276,10 +24320,10 @@ function showPage(name,tab){
   else if(name==='pedidos-atrasados') safe(()=>carregarPedidosAtrasados(),'pedidos-atrasados');
   else if(name==='pedidos-sem-carga') safe(()=>carregarPscDist(),'pedidos-sem-carga');
   else if(name==='carregamento') safe(()=>popularCargasCarregamento(),'carregamento');
-  else if(name==='frota') safe(()=>renderFrota(),'frota');
+  else if(name==='frota') safe(()=>frotaAba('status'),'frota');
   else if(name==='frota-disponibilidade') safe(()=>{
     const inp = document.getElementById('frota-disp-mes');
-    if(inp && !inp.value) inp.value = new Date().toISOString().slice(0,7);
+    if(inp && !inp.value) inp.value = hojeDataBRT().slice(0,7);
     renderFrotaDisp();
   },'frota-disponibilidade');
   else if(name==='retorno-veiculos') safe(()=>{
