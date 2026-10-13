@@ -20,6 +20,22 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-13 — painel MFV: novo desenho em 3 faixas, letras maiores, explicação no "?"
+
+Só na aba Fluxo do Pedido (MFV); a conta (`_mfv2Cadeia`, importação, KPIs) não mudou.
+- **Faixa de informação (azul):** cliente (ícone de fábrica) → seta eletrônica → quadro "ERP Próton
+  + Cronos" com a ordem **crédito → lista → NF** (a NF sai depois do romaneio no ERP); crédito e NF
+  tracejados porque não têm carimbo.
+- **Fluxo do pedido:** marcos (digitado, lista) em pílula, processos com caixa de dados (T/C grande,
+  P25–75, n), triângulo de espera, seta empurrada listrada, caminhão no fim; estrela kaizen na maior
+  espera do armazém. Caixa que entra na conta = verde sutil.
+- **Linha do tempo no mesmo grid**, degrau embaixo de cada caixa/espera, com resumo no fim.
+- Indicadores numa faixa só com número grande; textos explicativos saíram da tela e foram para
+  `data-tip` (janelinha no hover/toque, `_mfv2Tips`). Números com vírgula decimal.
+- Dado carregado: 41 pedidos de 21, 23 e 25/09 (planilha do Rafael). `version.json` 4.89.44.
+
+---
+
 ## 2026-10-13 — painel MFV: caixas medidas em verde e rótulo de dado simulado
 
 Só na aba Fluxo do Pedido (MFV). Caixa de processo que entra no cálculo ganha classe `med` e
