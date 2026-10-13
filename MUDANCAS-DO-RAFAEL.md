@@ -20,6 +20,32 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-13 — painel MFV reescrito do zero (v2): mapa clássico, só rota interna, fonte única
+
+Só na aba Fluxo do Pedido (MFV). Todo o bloco anterior saiu (`MFV_ETAPAS_RE/RI`, `MFV_CAMPOS`,
+fila, pedido a pedido do banco, bloco do ERP, POP × sistema, cenário ajustado): o `index.html`
+perdeu ~800 linhas. Entrou um mapa só, no desenho clássico de MFV (Rother & Shook): fluxo de
+informação em cima (vendedor → ERP+Cronos → cliente), caixas de processo com caixa de dados
+(T/C mediana, P25–75, n, lote), triângulo ▲ de espera entre etapas, escada do tempo embaixo
+(espera em cima, trabalho embaixo) e totais (lead armazém, trabalho, espera, eficiência do ciclo).
+KPIs: demanda/dia, takt (jornada ÷ demanda), lead armazém, lead desde a digitação contra a
+promessa de 36 h e **regra do corte** (digitado até 16 h tem que estar carregado no mesmo dia;
+depois, no dia seguinte).
+
+Mostra as 10 etapas do pedido, mas **computa só as que têm carimbo na planilha**: pedido
+digitado, lista de separação, separação, conferência, montagem e carregamento. Crédito, NF,
+transporte e entrega aparecem tracejados ("sem carimbo") até existir medição.
+
+**Fonte única: `configuracoes.chave = 'mfv_v2'`**, gravada pelo botão "Importar planilha" (XLSX
+ou CSV, um pedido por linha; botão "Modelo" baixa o cabeçalho esperado; "Limpar" apaga a chave).
+Não lê mais `base_data`, `lancamentos`, `historico_status_carga` nem as chaves antigas
+`mfv_campos`, `mfv_campo_pedidos` e `mfv_pedidos_erp` — **essas três ficaram órfãs no banco**,
+pendente apagar (decisão do Rafael: desconsiderar a medição anterior). Nenhuma outra tela
+tocada; `carregarMFV()` continua sendo o ponto de entrada em `showPage`. Hora é hora de parede
+(BRT), sem conversão de fuso. `version.json` 4.89.42.
+
+---
+
 ## 2026-10-06 — painel MFV: cenário ajustado ao lado do ERP medido
 
 Só na aba Fluxo do Pedido (MFV), bloco "O que o sistema já mede". Entrou uma segunda linha de
