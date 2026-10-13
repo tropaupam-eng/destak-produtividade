@@ -20,6 +20,19 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-13 — painel MFV: o que agrega valor, NF medida, caso à parte (4.89.47)
+
+Decisões do Rafael, só na aba MFV:
+- **Bipagem não agrega valor** (inspeção): continua no fluxo e no lead time, sai do "agrega valor" e fica dourada.
+- **NF medida**: da lista (romaneio) até a emissão no ERP (`nf`, coluna nova da planilha; aceita `ref_emissao_nf`).
+  Não agrega valor e corre em paralelo ao armazém (`paralelo:true`): fica fora da cadeia de esperas e do lead time.
+- **Caso à parte**: coluna `fora` (preenchida = fora da conta, aparece apagado na tabela). O pedido 67423
+  (15.355 volumes) está marcado.
+- Sem estatística: caixa de dados só com média e número de pedidos (saíram desvio e as funções sem uso).
+- Só a regra do corte do carregamento (16 h) aparece; o 36 h do cadastro ficou na explicação. Jornada 480 min (8 h, pausa de 2 h).
+
+---
+
 ## 2026-10-13 — painel MFV: média no lugar da mediana (4.89.46)
 
 Pedido do Rafael. T/C, esperas, marcos e indicadores passam a usar MÉDIA, com desvio-padrão na caixa de dados
