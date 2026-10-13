@@ -34287,8 +34287,9 @@ async function _abrirPopupPendentes(setor){
       const ajudantes  = await supaFetch(`ajudantes?select=nome&ativo=eq.true&order=nome.asc${undQ}`) || [];
       todos = [...motoristas, ...ajudantes].map(f=>f.nome);
     } else {
-      // Armazém: conferentes ativos
-      const confs = await supaFetch(`conferentes?select=nome&ativo=eq.true&order=nome.asc${undQ}`) || [];
+      // Armazém: conferentes ativos — da área da tela (Expedição ou Recebimento/Armazenagem)
+      const areaPend = _absAreaDaTela();
+      const confs = await supaFetch(`conferentes?select=nome&ativo=eq.true&order=nome.asc${undQ}${areaPend ? '&area_armazem=eq.'+encodeURIComponent(areaPend) : ''}`) || [];
       todos = confs.map(f=>f.nome);
     }
 
@@ -34372,13 +34373,11 @@ async function salvarAbsGeral(){
   if(!data){ showToast('Informe a data','warning'); return; }
 
   try{
-    // Buscar todos os funcionários únicos no banco
-    const todos = await supaFetch('absenteismo?select=nome,funcao&order=nome.asc') || [];
-    // Dedup por nome em maiúsculas — registros antigos gravados com grafias
-    // diferentes (ex.: "João Silva" vs "JOÃO SILVA") não podem virar 2 pessoas.
-    const funcs = [...new Map(todos.map(f=>[(f.nome||'').toUpperCase().trim(),f])).values()];
+    // Só a EQUIPE do usuário (unidade + área). Antes lançava para todos os nomes que
+    // já apareceram no absenteísmo, de qualquer área ou unidade.
+    const funcs = await _absEquipeParaLancamento(document.getElementById('modal-abs-geral')?.dataset.setor || '');
 
-    if(!funcs.length){ showToast('Nenhum funcionário cadastrado','warning'); return; }
+    if(!funcs.length){ showToast('Nenhum funcionário da sua equipe encontrado','warning'); return; }
 
     const mesAno = data.slice(0,7);
 
@@ -34386,14 +34385,17 @@ async function salvarAbsGeral(){
     // atualização (em lote) vs inserção (em lote) — antes fazia 1 SELECT +
     // 1 PATCH/POST por funcionário, centenas de idas ao servidor pra um
     // lançamento em massa só.
-    const existentes = await supaFetch(`absenteismo?data=eq.${data}&select=id,nome`) || [];
-    const idPorNome = {};
-    existentes.forEach(e=>{ idPorNome[(e.nome||'').toUpperCase()] = e.id; });
+    const existentes = await supaFetch(`absenteismo?data=eq.${data}&select=id,nome,status`) || [];
+    const idPorNome = {}, statusPorNome = {};
+    existentes.forEach(e=>{ idPorNome[(e.nome||'').toUpperCase()] = e.id; statusPorNome[(e.nome||'').toUpperCase()] = e.status; });
 
     const idsParaAtualizar = [];
     const novos = [];
+    let preservados = 0;
     funcs.forEach(f=>{
       const id = idPorNome[(f.nome||'').toUpperCase()];
+      // atestado / férias / falta já lançados NÃO são sobrescritos pelo lançamento em massa
+      if(id && ['atestado','ferias','falta'].includes(statusPorNome[(f.nome||'').toUpperCase()])){ preservados++; return; }
       if(id) idsParaAtualizar.push(id);
       else novos.push({
         nome:f.nome, funcao:f.funcao, data, status, mes_ano:mesAno,
@@ -34412,7 +34414,7 @@ async function salvarAbsGeral(){
     const salvos = funcs.length;
 
     document.getElementById('modal-abs-geral').style.display = 'none';
-    showToast(`✅ ${status==='folga'?'Folga':'Status'} lançado para ${salvos} funcionários!`,'success');
+    showToast(`✅ ${status==='folga'?'Folga':'Status'} lançado para ${salvos-preservados} funcionário(s) da sua equipe`+(preservados?` (${preservados} com atestado/férias/falta foram mantidos)`:'')+'!','success');
     await renderAbsenteismo();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
@@ -39887,7 +39889,44 @@ function renderAbsArmazem(){ return renderAbsArmazemArea('', 'abs-arm', 'arm-abs
 function renderAbsExpedicao(){ return renderAbsArmazemArea('expedicao', 'abs-exp', 'exp-abs-tab', 'exp'); }
 function renderAbsRecebimentoArmazenagem(){ return renderAbsArmazemArea('recebimento_armazenagem', 'abs-rec', 'rec-abs-tab', 'rec'); }
 
-async function abrirModalLancarAbsArm(){
+// Área do absenteísmo da tela aberta: 'expedicao' | 'recebimento_armazenagem' | '' (sem área)
+function _absAreaDaTela(){
+  const id = document.querySelector('.page.active')?.id || '';
+  if(id==='page-abs-expedicao') return 'expedicao';
+  if(id==='page-abs-recebimento-armazenagem') return 'recebimento_armazenagem';
+  return '';
+}
+
+// Equipe que o usuário pode lançar EM MASSA: só ativos da unidade dele e da área da tela
+// (cada responsável lança só para a sua equipe). Distribuição = motoristas + ajudantes
+// ativos, menos quem é conferente (pertence ao armazém).
+async function _absEquipeParaLancamento(setorModal){
+  const area = _absAreaDaTela();
+  const und = await _getUnidadeUsuario();
+  const q = und ? '&unidade=eq.'+encodeURIComponent(und) : '';
+  if(setorModal==='armazem' || area){
+    const qa = area ? '&area_armazem=eq.'+encodeURIComponent(area) : '';
+    const cs = await supaFetch('conferentes?select=nome,ativo&order=nome.asc&limit=1000'+q+qa) || [];
+    return cs.filter(c=>c.ativo!==false).map(c=>({nome:(c.nome||'').trim().toUpperCase(), funcao:'conferente'}));
+  }
+  const [m,a,c] = await Promise.all([
+    supaFetch('motoristas?select=nome,ativo&order=nome.asc&limit=1000'+q) || [],
+    supaFetch('ajudantes?select=nome,ativo&order=nome.asc&limit=1000'+q) || [],
+    supaFetch('conferentes?select=nome&limit=2000').catch(()=>[]) || []
+  ]);
+  const conf = new Set((c||[]).map(x=>(x.nome||'').trim().toUpperCase()));
+  const vistos = new Set(); const out = [];
+  [...(m||[]).filter(x=>x.ativo!==false).map(x=>({nome:x.nome,funcao:'motorista'})), ...(a||[]).filter(x=>x.ativo!==false).map(x=>({nome:x.nome,funcao:'ajudante'}))].forEach(p=>{
+    const n = (p.nome||'').trim().toUpperCase();
+    if(!n || conf.has(n) || vistos.has(n)) return;
+    vistos.add(n); out.push({nome:n, funcao:p.funcao});
+  });
+  return out;
+}
+
+async function abrirModalLancarAbsArm(area){
+  if(area === undefined) area = _absAreaDaTela();
+  window._absAreaModal = area || '';
   const hoje    = hojeDataBRT();
   const hojeFmt = new Date(hoje+'T00:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'2-digit',year:'numeric'});
   const labelData = document.getElementById('abs-modal-data-label');
@@ -39899,9 +39938,10 @@ async function abrirModalLancarAbsArm(){
   let pessoas = [];
   try{
     const undUsuario = await _getUnidadeUsuario();
-    const urlConfs = undUsuario
-      ? `conferentes?select=nome,ativo,data_demissao&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
-      : `conferentes?select=nome,ativo,data_demissao&order=nome.asc`;
+    const filtrosConf = [];
+    if(undUsuario) filtrosConf.push('unidade=eq.'+encodeURIComponent(undUsuario));
+    if(area) filtrosConf.push('area_armazem=eq.'+encodeURIComponent(area));
+    const urlConfs = 'conferentes?select=nome,ativo,data_demissao&order=nome.asc' + (filtrosConf.length ? '&'+filtrosConf.join('&') : '');
     const confsDB = await supaFetch(urlConfs) || [];
     // Mesma regra de "ativo hoje" usada em renderAbsArmazem: inclui quem não tem
     // data_demissao ou foi desligado só a partir de hoje em diante
@@ -40211,6 +40251,7 @@ function abrirMudarSetor(id, nome, tabela){
   document.getElementById('ms-conf-nome').textContent = nome;
   popularSelectUnidade('ms-und', true, conf.unidade||'');
   document.getElementById('ms-und').value = conf.unidade||'';
+  document.getElementById('ms-area').value = conf.area_armazem||'';
   if(tabela==='conferentes'){
     document.getElementById('ms-perfil').value = conf.perfil||'conferente';
     msSelecionarDestino('armazem');
@@ -40240,8 +40281,11 @@ async function salvarMudarSetor(){
   const perfil   = document.getElementById('ms-perfil').value||'conferente';
   const tipoDist = document.getElementById('ms-tipo-dist')?.value||'ajudante';
   const und      = document.getElementById('ms-und').value;
+  const area     = document.getElementById('ms-area')?.value||'';
   const nome     = document.getElementById('ms-conf-nome').textContent.trim();
   const hoje     = hojeDataBRT();
+  // Indo para o armazém a área é obrigatória: sem ela a pessoa some das telas de absenteísmo
+  if(dest==='armazem' && !area){ showToast('Selecione a área do armazém (Expedição ou Recebimento/Armazenagem)','warning'); return; }
   try{
     // Busca registro de origem para copiar email/senha/cpf
     const srcArr = await supaFetch(`${tabela}?id=eq.${id}&select=*`) || [];
@@ -40251,7 +40295,7 @@ async function salvarMudarSetor(){
     const cpf   = src.cpf   || null;
 
     if(tabela==='conferentes' && dest==='armazem'){
-      await supaFetch(`conferentes?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({perfil, unidade:und||null})});
+      await supaFetch(`conferentes?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({perfil, unidade:und||null, area_armazem:area})});
       showToast('✅ Perfil atualizado!','success');
       await cadCarregarConferentes(_armSubTabAtiva||'todos');
     } else if(tabela==='conferentes' && dest==='distribuicao'){
@@ -40272,11 +40316,11 @@ async function salvarMudarSetor(){
       const ex = await supaFetch(`conferentes?nome=eq.${encodeURIComponent(nome)}&select=id`) || [];
       if(!ex.length){
         await supaFetch('conferentes', {method:'POST', body:JSON.stringify({
-          nome, email, senha, perfil, unidade:und||null,
+          nome, email, senha, perfil, unidade:und||null, area_armazem:area,
           ativo:true, criado_em:new Date().toISOString()
         })});
       } else {
-        await supaFetch(`conferentes?id=eq.${ex[0].id}`, {method:'PATCH', body:JSON.stringify({ativo:true, data_demissao:null, perfil, unidade:und||null})});
+        await supaFetch(`conferentes?id=eq.${ex[0].id}`, {method:'PATCH', body:JSON.stringify({ativo:true, data_demissao:null, perfil, unidade:und||null, area_armazem:area})});
       }
       await supaFetch(`${tabela}?id=eq.${id}`, {method:'PATCH', body:JSON.stringify({ativo:false, data_demissao:hoje})});
       showToast(`✅ ${nome} transferido(a) para Armazém!`,'success');
@@ -53950,6 +53994,12 @@ function _cftvRenderTable(data){
           <option value="separador">📋 Separador</option>
           <option value="ajudante">👷 Ajudante Armazém</option>
           <option value="empilhadeira">🚜 Empilhadeira</option>
+        </select>
+        <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;margin:10px 0 5px">Área do Armazém *</label>
+        <select id="ms-area" style="width:100%;border:1.5px solid var(--border-med);border-radius:8px;padding:10px 12px;font-size:.88rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
+          <option value="">— Selecione a área —</option>
+          <option value="expedicao">🚚 Expedição</option>
+          <option value="recebimento_armazenagem">📥 Recebimento / Armazenagem</option>
         </select>
       </div>
       <div id="ms-opcoes-dist" style="display:none">
