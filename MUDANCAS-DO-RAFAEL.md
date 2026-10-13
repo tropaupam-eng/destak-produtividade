@@ -20,6 +20,15 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-13 — painel MFV: média no lugar da mediana (4.89.46)
+
+Pedido do Rafael. T/C, esperas, marcos e indicadores passam a usar MÉDIA, com desvio-padrão na caixa de dados
+(saiu o P25–75). A média é aditiva: a soma das médias das etapas é igual à média do lead de cada pedido
+(10,2 h nos 41 pedidos), o que a soma de medianas não garantia (mostrava 3,8 h). "Digitado → carregado" fica
+sempre em horas. Só a aba MFV.
+
+---
+
 ## 2026-10-13 — painel MFV: novo desenho em 3 faixas, letras maiores, explicação no "?"
 
 Só na aba Fluxo do Pedido (MFV); a conta (`_mfv2Cadeia`, importação, KPIs) não mudou.
