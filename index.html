@@ -6924,7 +6924,7 @@ body.light-theme{
     <div class="fq-bar">
       <input type="search" id="frota-busca" placeholder="Buscar placa" autocomplete="off" aria-label="Buscar placa" oninput="_frotaDesenhar()"/>
       <select id="frota-filtro-uso" aria-label="Filtrar frota" onchange="_frotaDesenhar()">
-        <option value="">Todas as unidades</option>
+        <option value="">Todas</option>
         <option value="interno">Interna</option>
         <option value="externo">Externa</option>
       </select>
@@ -6952,7 +6952,7 @@ body.light-theme{
         <label for="frota-sinal-motivo">Motivo (curto)</label>
         <input type="text" id="frota-sinal-motivo" maxlength="80" placeholder="Ex.: revisão de freios" autocomplete="off" onkeydown="if(event.key==='Enter')frotaConfirmarSinal()"/>
         <div id="frota-sinal-msg" class="fq-modal-msg"></div>
-        <div class="fq-modal-nota">Fica registrada em Manutenção como agendada. Não altera a viagem nem a disponibilidade do veículo; o envio para manutenção é decidido quando ele estiver no pátio.</div>
+        <div class="fq-modal-nota">É apenas um aviso para a Frota. Não altera a viagem, não bloqueia o veículo na Expedição e não muda a disponibilidade dele em nenhuma tela. O veículo só passa a contar como em manutenção quando a Frota o enviar para manutenção.</div>
         <div class="fq-modal-bt">
           <button type="button" class="fq-btn" onclick="frotaFecharSinal()">Cancelar</button>
           <button type="button" class="fq-btn prim" id="frota-sinal-ok" onclick="frotaConfirmarSinal()">Sinalizar</button>
@@ -9486,7 +9486,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.56';
+const APP_VERSION = '4.89.57';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19403,17 +19403,33 @@ async function renderFrotaDisp(){
 // viagem está em fim_viagem (retornou ao pátio) e que não está em manutenção vai direto para
 // Disponíveis (derivado aqui; demandas_rota NÃO é alterada por esta tela — fim_viagem pertence
 // ao fluxo da Expedição/Baixa Caixa).
-// Fluxo de manutenção: a Frota SINALIZA (manutencoes_frota, status 'agendada', mesmo formato de
-// linha que enviarManutencaoFrota sempre gravou: tipo = motivo, data_inicio = hoje). Quando o
-// veículo sinalizado retorna (fim_viagem), aparece o alerta no topo + badge no menu + toast, e a
-// Frota decide: "Enviar para manutenção" (em_andamento + veículo ativo=false) ou "Manter
-// disponível" (sinalização cancelada).
+// Fluxo de manutenção: a Frota SINALIZA = só um AVISO (manutencoes_frota, status 'sinalizada';
+// tipo = motivo, data_inicio = hoje). Nenhuma outra tela conta 'sinalizada' como manutenção:
+// Expedição/Gestão/Painel/TV só olham agendada/em_andamento (ou ignoram ou filtram 'sinalizada').
+// Esta tela também lê 'agendada' já existente por compatibilidade (ex.: RDA3H53, desde 20/07).
+// Quando o veículo sinalizado retorna (fim_viagem), aparece o alerta no topo + badge no menu +
+// toast, e a Frota decide: "Enviar para manutenção" (em_andamento + veículo ativo=false: SÓ AÍ
+// ele passa a contar como em manutenção nas outras telas) ou "Manter disponível" (cancelada).
 let _frotaModelo = null;            // último modelo calculado (cartões + alertas + avisos)
 let _frotaReqSeq = 0;               // descarta resposta de uma carga antiga
 let _frotaCarregando = false;       // evita duas leituras simultâneas
+let _frotaChecandoLeve = false;     // evita duas checagens leves sobrepostas
 let _frotaAlertasVistos = new Set();// placas de alerta já anunciadas por toast nesta sessão
 let _frotaTimer = null;             // UM único timer global (60 s), nunca recriado
 let _frotaSinalPlaca = null;        // placa aberta no modal "Sinalizar manutenção"
+
+// Status que esta tela trata como "sinalização": 'sinalizada' (novo, só aviso) e 'agendada'
+// (compatibilidade com o que já existe). Tela e monitor do menu usam as MESMAS listas/regra.
+const _FROTA_ST_SINAL = ['sinalizada', 'agendada'];
+const _FROTA_Q_SINAL  = 'in.("sinalizada","agendada")';
+const _FROTA_Q_ATIVAS = 'in.("sinalizada","agendada","em_andamento")';
+// 'sinalizada' vale sempre; 'agendada' só quando a data já chegou (com data futura é manutenção
+// planejada na Gestão de Frota e não é sinalização).
+function _frotaEhSinal(m, hoje){
+  if(!m) return false;
+  if(m.status === 'sinalizada') return true;
+  return m.status === 'agendada' && (_frotaDataManut(m) || '') <= hoje;
+}
 
 const _FROTA_COL = {
   rota:  { titulo:'Em rota',     vazio:'Nenhum veículo em rota' },
@@ -19470,7 +19486,7 @@ function _frotaMontarModelo(veiculos, demandas, manut, hoje){
   (manut||[]).forEach(m=>{
     if(!m || !K(m.veiculo)) return;
     if(m.status === 'em_andamento') lista(emAnd, K(m.veiculo), m);
-    else if(m.status === 'agendada') lista(agend, K(m.veiculo), m);
+    else if(_FROTA_ST_SINAL.includes(m.status)) lista(agend, K(m.veiculo), m);
   });
   const porData = (a,b) => String(_frotaDataManut(a)||'').localeCompare(String(_frotaDataManut(b)||''));
 
@@ -19480,10 +19496,10 @@ function _frotaMontarModelo(veiculos, demandas, manut, hoje){
     const ret  = retorn.get(k) || [];
     const ea   = (emAnd.get(k) || []).slice().sort(porData)[0] || null;
     const ag   = (agend.get(k) || []).slice().sort(porData);
-    // Sinalização em vigor = 'agendada' cuja data já chegou; 'agendada' com data futura é
-    // manutenção planejada (Gestão de Frota) e aparece só como informação, sem ações.
-    const sinais   = ag.filter(m => (_frotaDataManut(m) || '') <= hoje);
-    const futuras  = ag.filter(m => (_frotaDataManut(m) || '') >  hoje);
+    // Sinalização em vigor: ver _frotaEhSinal. 'agendada' com data futura é manutenção planejada
+    // (Gestão de Frota) e aparece só como informação, sem ações.
+    const sinais   = ag.filter(m => _frotaEhSinal(m, hoje));
+    const futuras  = ag.filter(m => !_frotaEhSinal(m, hoje));
     const inativo  = !v.ativo;
     const emManut  = inativo || !!ea;
     const col      = emManut ? 'manut' : (viag.length ? 'rota' : 'disp');
@@ -19494,7 +19510,7 @@ function _frotaMontarModelo(veiculos, demandas, manut, hoje){
       placa: v.placa, k, veiculo: v, uso: v.uso || '', frete, col,
       viagensRota: viag, viagensRetorno: ret,
       manutAnd: ea,                         // manutenção em andamento
-      manutAgendLegada: emManut ? (sinais[0] || null) : null, // 'agendada' em veículo já indisponível
+      manutAgendLegada: emManut ? (sinais[0] || null) : null, // sinalização em veículo já indisponível
       sinal, sinalFutura: futuras[0] || null, alerta
     };
   });
@@ -19528,17 +19544,21 @@ function _frotaStatusVisivel(){
 
 // Checagem leve (fora da página Frota): só alimenta badge e toast.
 async function _frotaChecarAlertasLeve(){
-  if(_frotaCarregando) return;
-  const ag = await supaFetch('manutencoes_frota?status=eq.agendada&select=id,veiculo,tipo,data_inicio,criado_em', {_quiet:true});
-  const hoje = hojeDataBRT();
-  const sinais = (ag||[]).filter(m => m.veiculo && (_frotaDataManut(m) || '') <= hoje);
-  if(!sinais.length){ _frotaAplicarAlertas([]); return; }
-  const lista = [...new Set(sinais.map(m => m.veiculo))].map(p => '"'+encodeURIComponent(p)+'"').join(',');
-  const [dem, vei] = await Promise.all([
-    supaFetch(`demandas_rota?veiculo=in.(${lista})&status=in.("saiu","fim_viagem")&select=id,veiculo,status`, {_quiet:true}),
-    supaFetch(`veiculos?placa=in.(${lista})&select=placa,ativo`, {_quiet:true})
-  ]);
-  _frotaAplicarAlertas(_frotaMontarModelo(vei||[], dem||[], ag||[], hoje).alertas.map(c => c.placa));
+  if(_frotaCarregando || _frotaChecandoLeve) return;
+  _frotaChecandoLeve = true;
+  try{
+    // Mesmos status da tela; o conjunto de alertas sai de _frotaMontarModelo (mesma regra da tela)
+    const ag = await supaFetch('manutencoes_frota?status=' + _FROTA_Q_SINAL + '&select=id,veiculo,tipo,data_inicio,status,criado_em', {_quiet:true});
+    const hoje = hojeDataBRT();
+    const placas = [...new Set((ag||[]).map(m => m.veiculo).filter(Boolean))];
+    if(!placas.length){ _frotaAplicarAlertas([]); return; }
+    const lista = placas.map(p => '"'+encodeURIComponent(p)+'"').join(',');
+    const [dem, vei] = await Promise.all([
+      supaFetch(`demandas_rota?veiculo=in.(${lista})&status=in.("saiu","fim_viagem")&select=id,veiculo,status`, {_quiet:true}),
+      supaFetch(`veiculos?placa=in.(${lista})&select=placa,ativo`, {_quiet:true})
+    ]);
+    _frotaAplicarAlertas(_frotaMontarModelo(vei||[], dem||[], ag||[], hoje).alertas.map(c => c.placa));
+  } finally { _frotaChecandoLeve = false; }
 }
 
 // UM timer global de 60 s: com a aba Status visível recarrega a tela; fora dela só confere o alerta.
@@ -19579,7 +19599,7 @@ async function renderFrota(opts){
     const [veiculos, demandas, manut] = await Promise.all([
       supaFetch('veiculos?select=*&order=placa.asc', q),
       supaFetch('demandas_rota?status=in.("saiu","fim_viagem")&select=id,veiculo,rota,motorista,carga,data_saida,status,ts_fim_viagem', q),
-      supaFetch('manutencoes_frota?status=in.("agendada","em_andamento")&select=id,veiculo,tipo,descricao,data_inicio,data_fim,status,criado_em,usuario_nome', {_quiet:true}).catch(()=>null)
+      supaFetch('manutencoes_frota?status=' + _FROTA_Q_ATIVAS + '&select=id,veiculo,tipo,descricao,data_inicio,data_fim,status,criado_em,usuario_nome', {_quiet:true}).catch(()=>null)
     ]);
     if(seq !== _frotaReqSeq) return;
     const hoje = hojeDataBRT();
@@ -19591,6 +19611,7 @@ async function renderFrota(opts){
     _frotaDesenhar();
     if(elHora) elHora.textContent = 'Atualizado às ' + _frotaModelo.hora + ' (Salvador)';
   }catch(e){
+    if(seq !== _frotaReqSeq) return; // carga mais nova em andamento: não sobrescrever com erro antigo
     if(!auto){
       board.innerHTML = '<div class="fq-vazio" style="grid-column:1/-1;padding:40px;color:#dc2626">Erro ao carregar: ' + escapeHtml(e.message) + '</div>';
       if(elHora) elHora.textContent = 'Falha ao atualizar';
@@ -19599,7 +19620,7 @@ async function renderFrota(opts){
       if(elHora && _frotaModelo) elHora.textContent = 'Falha na atualização automática — última leitura às ' + _frotaModelo.hora + ' (Salvador)';
     }
   }finally{
-    _frotaCarregando = false;
+    if(seq === _frotaReqSeq) _frotaCarregando = false; // só a carga mais recente libera a trava
   }
 }
 
@@ -19789,20 +19810,21 @@ async function frotaConfirmarSinal(){
   btn.disabled = true;
   try{
     // Releitura: não duplicar se já existe manutenção ativa/sinalizada para a placa
-    const ativas = await supaFetch(`manutencoes_frota?veiculo=eq.${encodeURIComponent(placa)}&status=in.("agendada","em_andamento")&select=id,status`);
+    const ativas = await supaFetch(`manutencoes_frota?veiculo=eq.${encodeURIComponent(placa)}&status=${_FROTA_Q_ATIVAS}&select=id,status`);
     if((ativas||[]).length){
       msg.textContent = 'Este veículo já tem manutenção sinalizada ou em andamento. A tela será atualizada.';
       await renderFrota();
       return;
     }
     const u = USUARIO_LOGADO || {};
-    // Mesmo formato de linha que enviarManutencaoFrota sempre gravou (tipo = motivo, data_inicio = hoje)
+    // Mesmo formato de linha que enviarManutencaoFrota sempre gravou (tipo = motivo, data_inicio = hoje),
+    // mas com status próprio 'sinalizada': nenhuma outra tela a conta como manutenção ativa.
     await supaFetch('manutencoes_frota', {
       method:'POST',
       body: JSON.stringify({
         veiculo: placa,
         tipo: motivo,
-        status: 'agendada',
+        status: 'sinalizada',
         descricao: null,
         data_inicio: hojeDataBRT(),
         usuario_id: u.id || null,
@@ -19822,8 +19844,8 @@ async function frotaCancelarSinal(manutId, placa){
   if(!manutId) return;
   if(!confirm('Cancelar a sinalização de manutenção de ' + placa + '?\nO veículo segue disponível.')) return;
   try{
-    // status=eq.agendada no filtro: não cancela uma manutenção que outro usuário já tenha iniciado
-    const r = await supaFetch(`manutencoes_frota?id=eq.${encodeURIComponent(manutId)}&status=eq.agendada`, {
+    // filtro de status (sinalizada/agendada): não cancela uma manutenção que outro usuário já tenha iniciado
+    const r = await supaFetch(`manutencoes_frota?id=eq.${encodeURIComponent(manutId)}&status=${_FROTA_Q_SINAL}`, {
       method:'PATCH', body: JSON.stringify({ status:'cancelada' })
     });
     if(!Array.isArray(r) || !r.length) showToast('A sinalização de ' + placa + ' já havia sido alterada. Tela atualizada.', 'warning');
@@ -20603,7 +20625,9 @@ async function carregarGestaoFrota(){
       // Abastecimento de loja do mês — para calcular dias rodados
       supaFetch(`abastecimento_loja?data_saida=gte.${iniMes}&data_saida=lt.${amanhaStr}&veiculo=not.is.null&select=veiculo,data_saida`).catch(()=>[])
     ]);
-    _GF_MANUT           = manut          || [];
+    // 'sinalizada' = só aviso da tela Frota; fica fora da Gestão (vários cálculos daqui tratam
+    // qualquer status diferente de concluida/cancelada como manutenção ativa).
+    _GF_MANUT           = (manut || []).filter(m => m.status !== 'sinalizada');
     _GF_CUSTOS          = custos         || [];
     _GF_DIARIAS         = diarias        || [];
     _GF_DEMANDAS_ATIVAS = demandasAtivas || [];
@@ -21708,7 +21732,7 @@ async function gfAutoLiberarVeiculo(placa){
 }
 
 // Envia para manutenção um veículo SINALIZADO pela Frota (Frota > Status Atual): a linha de
-// manutencoes_frota 'agendada' (sinalização) passa a 'em_andamento' e o veículo fica ativo=false
+// manutencoes_frota 'sinalizada' (ou 'agendada' legada) passa a 'em_andamento' e o veículo fica ativo=false
 // (indisponível). A viagem (demandas_rota) NÃO é alterada: fim_viagem pertence ao fluxo da
 // Expedição/Baixa Caixa. Antes (v4.89.54) esta função criava uma linha nova e concluía a viagem.
 async function enviarManutencaoFrota(placa, manutId){
@@ -21720,7 +21744,7 @@ async function enviarManutencaoFrota(placa, manutId){
     const hoje = hojeDataBRT();
     // Releitura no banco (a tela pode estar desatualizada): manutenção ativa e viagem em rota da placa
     const [ativas, emRota] = await Promise.all([
-      supaFetch(`manutencoes_frota?veiculo=eq.${enc}&status=in.("agendada","em_andamento")&select=*`),
+      supaFetch(`manutencoes_frota?veiculo=eq.${enc}&status=${_FROTA_Q_ATIVAS}&select=*`),
       supaFetch(`demandas_rota?veiculo=eq.${enc}&status=eq.saiu&select=id,carga`)
     ]);
     if((emRota||[]).length){
@@ -21730,13 +21754,13 @@ async function enviarManutencaoFrota(placa, manutId){
     }
     const lst = ativas || [];
     const jaEmAndamento = lst.some(m => m.status === 'em_andamento');
-    const sinal = lst.find(m => m.status === 'agendada' && manutId && m.id === manutId)
-               || lst.find(m => m.status === 'agendada');
+    const sinal = lst.find(m => _frotaEhSinal(m, hoje) && manutId && m.id === manutId)
+               || lst.find(m => _frotaEhSinal(m, hoje));
     if(sinal){
       // Guarda no histórico da própria linha quando foi sinalizada (data_inicio passa a ser a data real da entrada)
       const quando = _frotaFmtDiaAno(_frotaDataManut(sinal));
       const nota = `[Sinalizada em ${quando}; enviada para manutenção em ${_frotaFmtDiaAno(hoje)}]`;
-      const r = await supaFetch(`manutencoes_frota?id=eq.${encodeURIComponent(sinal.id)}&status=eq.agendada`, {
+      const r = await supaFetch(`manutencoes_frota?id=eq.${encodeURIComponent(sinal.id)}&status=${_FROTA_Q_SINAL}`, {
         method:'PATCH',
         body: JSON.stringify({
           status: 'em_andamento',
