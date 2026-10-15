@@ -4,6 +4,10 @@
 > Registro das mudanças feitas pelo lado dele (colaborador), com o commit de cada uma e o que
 > ficou pendente do lado de vocês. Toda mudança nova entra lá no mesmo commit.
 
+> 📓 **O que o Gabriel mexeu aqui e por quê:** [`MUDANCAS-DO-GABRIEL.md`](MUDANCAS-DO-GABRIEL.md)
+> Mesmo formato do registro do Rafael, mas em arquivo separado. Toda mudança do Gabriel entra lá,
+> no mesmo commit, com o commit a reverter e o que ficou pendente.
+
 > 🟡 **PERGUNTA ABERTA, AGUARDANDO RESPOSTA DO DANIEL:** [`PERGUNTAS-RAFAEL-MFV.md`](PERGUNTAS-RAFAEL-MFV.md)
 > São 7 perguntas de verificação, feitas pelo Rafael (colaborador). **Nenhuma delas pede
 > para implementar nada** — pedem conferência no código e uma resposta escrita no próprio
