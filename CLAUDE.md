@@ -1,5 +1,19 @@
 # Regras do Projeto — Destak Produtividade
 
+> 🔴🔴 **SISTEMA FORA DO AR (2026-10-16) — NÃO É BUG DE CÓDIGO, É COTA DO SUPABASE:** o projeto
+> `hiydkyslgiomdyginfdx` está no plano **Free** do Supabase e estourou a cota de *egress*
+> (volume de dados transferido). O Supabase respondeu restringindo a API REST do projeto
+> inteiro (`exceed_egress_quota` — toda chamada `supaFetch` recebe 402). Acesso SQL direto
+> (usado por este agente/MCP) continua funcionando normalmente, o que mascarou o problema
+> numa primeira investigação (nenhuma tabela/coluna estava errada — o banco em si está saudável,
+> só a API de dados está bloqueada). **Único jeito de resolver:** o dono da conta
+> (`tropaupam-eng`) precisa entrar em supabase.com → projeto → Settings → Billing e fazer
+> upgrade pro plano Pro, ou remover/aumentar um spend cap já configurado. Nenhuma mudança de
+> código resolve isso — apague este aviso quando o acesso voltar ao normal.
+> Achado depois de melhorar as mensagens de erro do Painel de Indicadores (PR #481, v4.89.67)
+> para mostrar `e.message` em vez de um texto genérico — foi isso que expôs o
+> `exceed_egress_quota` real, que antes aparecia só como "Erro ao carregar dados" sem detalhe.
+
 > 📓 **O que o Rafael mexeu aqui e por quê:** [`MUDANCAS-DO-RAFAEL.md`](MUDANCAS-DO-RAFAEL.md)
 > Registro das mudanças feitas pelo lado dele (colaborador), com o commit de cada uma e o que
 > ficou pendente do lado de vocês. Toda mudança nova entra lá no mesmo commit.
