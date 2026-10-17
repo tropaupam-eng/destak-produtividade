@@ -9520,7 +9520,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.67';
+const APP_VERSION = '4.89.68';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -10614,7 +10614,29 @@ async function ressincronizarAjudantePedidos(cargas){
 
 // ── SYNC BASE_DATA ────────────────────────────────────
 // Carrega todos os registros do Supabase com paginação (sem limite fixo)
-async function syncBaseData(mesFiltro){
+async function syncBaseData(mesFiltro, opts={}){
+  // Guard de frescor (só pra carga SEM filtro de mês, isto é, a tabela inteira —
+  // 15k+ linhas / ~9MB) — evita rebaixar tudo de novo a cada F5/login dentro de
+  // uma janela curta, que foi um dos maiores consumidores de egress identificados
+  // (achado 2026-10-16, projeto Supabase estourou a cota de egress do plano Free).
+  // Chamadas explícitas (botão "Recarregar" por mês, botão "Sync", ou o reload
+  // logo depois do auto-sync de cargas locais pendentes) passam {force:true} e
+  // sempre buscam fresco — essencial pro reload pós-upload não servir dado velho.
+  if(!mesFiltro && !opts.force){
+    try{
+      const ts = Number(localStorage.getItem('base_data_prod_ts'))||0;
+      const cached = localStorage.getItem('base_data_prod');
+      if(cached && (Date.now()-ts) < 5*60*1000){
+        const arr = JSON.parse(cached);
+        if(Array.isArray(arr) && arr.length){
+          BASE_DATA = arr;
+          window._cargaMapCache = null;
+          console.log(`[Sync] BASE_DATA servido do cache local (${arr.length} registros, <5min) — sem consulta ao Supabase`);
+          return true;
+        }
+      }
+    }catch(e){}
+  }
   try{
     const label = mesFiltro ? `mês ${mesFiltro}` : 'todos os meses';
     showToast(`🔄 Carregando dados do banco (${label})...`,'warning');
@@ -10695,7 +10717,13 @@ async function syncBaseData(mesFiltro){
       }
       window._cargaMapCache = null;
 
-      try{ localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA)); }catch(e){}
+      try{
+        localStorage.setItem('base_data_prod', JSON.stringify(BASE_DATA));
+        // Só marca "fresco" numa carga SEM filtro de mês — é a única que reflete
+        // a tabela inteira; o guard de frescor no topo desta função só lê esse
+        // timestamp pra decisões de carga sem filtro também.
+        if(!mesFiltro) localStorage.setItem('base_data_prod_ts', String(Date.now()));
+      }catch(e){}
       console.log(`[Sync] ${deduped.length} registros após validação e dedup`);
       showToast(`✅ ${BASE_DATA.length.toLocaleString('pt-BR')} registros carregados em ${totalPages} páginas (paralelo)!`,'success');
       return true;
@@ -24658,7 +24686,9 @@ async function sincronizarTudo(){
     migrarRotasSupabase(); // normaliza PETRO→Petrolina, JUA→Juazeiro (roda 1x)
 
     // 3. BASE_DATA do Supabase → local (fonte oficial; localStorage não é fallback)
-    const temBase = await syncBaseData();
+    // force:true — botão "Sync" é ação explícita do usuário pedindo dado fresco,
+    // não pode servir o cache local (ver guard de frescor em syncBaseData).
+    const temBase = await syncBaseData(undefined, {force:true});
     if(!temBase){
       BASE_DATA = [];
       window._cargaMapCache = null;
@@ -39098,7 +39128,10 @@ async function carregarPortalFiscal(){
       cargasStr ? supaFetch(`conferencia_pedidos?carga=in.(${cargasStr})&select=*&order=carga.asc,pedido.asc`).catch(()=>[]) : Promise.resolve([]),
       cargasStr ? supaFetch(`base_data?carga=in.(${cargasStr})&select=carga,pedido&order=carga.asc,pedido.asc`).catch(()=>[]) : Promise.resolve([]),
       cargasStr ? supaFetch(`notas_fiscais?carga=in.(${cargasStr})&select=*`).catch(()=>[]) : Promise.resolve([]),
-      supaFetch('atribuicoes_fiscal?select=*').catch(()=>[])
+      // outrasAtribs (abaixo) só é consultado por carga dentro de cargasAtivasLista
+      // — escopar igual às 3 buscas acima, em vez de baixar a tabela inteira sem
+      // filtro (achado 2026-10-16, cota de egress do plano Free estourada).
+      cargasStr ? supaFetch(`atribuicoes_fiscal?carga=in.(${cargasStr})&select=*`).catch(()=>[]) : Promise.resolve([])
     ]);
 
     // Construir mapa de cargas a partir das demandas (garante que toda carga ativa aparece)
@@ -41429,17 +41462,29 @@ async function carregarPortalConferente(){
   const myNome = (USUARIO_LOGADO.nome||'').toUpperCase().trim();
   const mesInicio = mesStr+'-01';
 
+  // confRankAll/atribsAll não são pessoais — são o MESMO resultado pra qualquer
+  // conferente que abrir o portal no mesmo instante. Esse polling roda a cada
+  // 45s (ver interval mais abaixo), e com vários conferentes logados ao mesmo
+  // tempo num turno, cada um refazia as mesmas 2 buscas, sem compartilhar nada
+  // (achado 2026-10-16, cota de egress do plano Free estourada — ver CLAUDE.md).
+  // Cache de 2min por aba — só essas 2 queries, as pessoais (myId) continuam
+  // sempre frescas a cada 45s.
+  window._portalConfSharedCache = window._portalConfSharedCache || {ts:0, confRankAll:[], atribsAll:[]};
+  const _pcCache = window._portalConfSharedCache;
+  const _pcFresco = (Date.now() - _pcCache.ts) < 120000;
+
   try{
     // ── Buscar tudo em paralelo ──────────────────────────────────
     const [confMes, confRankAll, atribsMinha, demandasAtivas, atribsAll, abastPend, abastConfMes] = await Promise.all([
       supaFetch(`conferencia_pedidos?conferente_id=eq.${myId}&conferido_em=gte.${mesInicio}&status=eq.ok&select=pedido,carga`).catch(()=>[]),
-      supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
+      _pcFresco ? Promise.resolve(_pcCache.confRankAll) : supaFetch(`conferencia_pedidos?conferido_em=gte.${mesInicio}&status=eq.ok&select=conferente_nome`).catch(()=>[]),
       supaFetch(`atribuicoes_armazem?conferente_id=eq.${myId}&select=*&order=carga.desc`).catch(()=>[]),
       supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem")&carga=not.is.null&select=carga,rota,status,motorista,veiculo,id&order=carga.desc`).catch(()=>[]),
-      supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status,pedido_inicio`).catch(()=>[]),
+      _pcFresco ? Promise.resolve(_pcCache.atribsAll) : supaFetch(`atribuicoes_armazem?select=carga,conferente_id,conferente_nome,status,pedido_inicio`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.false&select=*&order=criado_em.desc`).catch(()=>[]),
       supaFetch(`abastecimento_loja?conferente_id=eq.${myId}&confirmado=eq.true&confirmado_em=gte.${mesInicio}&select=id`).catch(()=>[])
     ]);
+    if(!_pcFresco){ _pcCache.confRankAll = confRankAll||[]; _pcCache.atribsAll = atribsAll||[]; _pcCache.ts = Date.now(); }
 
     // Mapear rota por carga a partir das demandas já carregadas
     const rotaPorCarga = {};
@@ -43560,11 +43605,15 @@ async function renderArmazem(){
   let atribs=[], confStatus=[], sepItens=[], ordemRows=[], baseRows=[], atribsMes=[], confMes=[], sepHoje=[], confHoje=[];
   try{
     const [_dem,_confs,_fotos] = await Promise.all([
-      supaFetch('demandas_rota?carga=not.is.null&select=*&order=data_saida.desc'),
+      // status=neq.cancelado já vai filtrado na própria consulta — cancelado era
+      // descartado aqui mesmo em JS antes, então o resultado final é idêntico;
+      // só reduz o volume baixado do Supabase (achado 2026-10-16, cota de egress
+      // do plano Free estourada — ver CLAUDE.md).
+      supaFetch('demandas_rota?carga=not.is.null&status=neq.cancelado&select=*&order=data_saida.desc'),
       supaFetch('conferentes?select=id,nome,email,ativo,criado_em,perfil,data_demissao,unidade,ultimo_acesso,updated_at,desativado_em,desativado_por&ativo=eq.true&order=nome.asc'),
       supaFetch('configuracoes?chave=eq.conf_fotos&select=valor')
     ]);
-    demandas = (_dem||[]).filter(d=>d.status!=='cancelado');
+    demandas = _dem||[];
     const _undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
     conferentes = (_confs||[]).filter(c=>{
       if(c.ativo!==true) return false;
@@ -46138,9 +46187,12 @@ async function iniciarApp(){
         }
       }
 
-      // Recarregar BASE_DATA do banco para incluir os novos registros
-      await syncBaseData();
+      // Recarregar BASE_DATA do banco para incluir os novos registros — force:true
+      // pq acabou de escrever cargas novas no Supabase, não pode servir o cache
+      // local antigo (ver guard de frescor em syncBaseData).
+      await syncBaseData(undefined, {force:true});
       localStorage.removeItem('base_data_prod');
+      localStorage.removeItem('base_data_prod_ts');
       window._cargaMapCache = null;
       populateSelects(); renderMot(); renderVeic(); renderGeral(); renderLanc();
       showToast(`✅ ${cargasSoLocal.length} carga(s) sincronizada(s) automaticamente com o banco!`,'success');
