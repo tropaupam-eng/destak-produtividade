@@ -1,18 +1,16 @@
 # Regras do Projeto — Destak Produtividade
 
-> 🔴🔴 **SISTEMA FORA DO AR (2026-10-16) — NÃO É BUG DE CÓDIGO, É COTA DO SUPABASE:** o projeto
-> `hiydkyslgiomdyginfdx` está no plano **Free** do Supabase e estourou a cota de *egress*
-> (volume de dados transferido). O Supabase respondeu restringindo a API REST do projeto
-> inteiro (`exceed_egress_quota` — toda chamada `supaFetch` recebe 402). Acesso SQL direto
-> (usado por este agente/MCP) continua funcionando normalmente, o que mascarou o problema
-> numa primeira investigação (nenhuma tabela/coluna estava errada — o banco em si está saudável,
-> só a API de dados está bloqueada). **Único jeito de resolver:** o dono da conta
-> (`tropaupam-eng`) precisa entrar em supabase.com → projeto → Settings → Billing e fazer
-> upgrade pro plano Pro, ou remover/aumentar um spend cap já configurado. Nenhuma mudança de
-> código resolve isso — apague este aviso quando o acesso voltar ao normal.
-> Achado depois de melhorar as mensagens de erro do Painel de Indicadores (PR #481, v4.89.67)
-> para mostrar `e.message` em vez de um texto genérico — foi isso que expôs o
-> `exceed_egress_quota` real, que antes aparecia só como "Erro ao carregar dados" sem detalhe.
+> ✅ **Incidente resolvido (2026-10-15 a 2026-10-17) — cota de egress do Supabase:** o projeto
+> `hiydkyslgiomdyginfdx` estava no plano Free, estourou a cota de *egress* e o Supabase
+> restringiu a API REST do projeto inteiro (`exceed_egress_quota`, 402 em toda `supaFetch`) —
+> sistema fora do ar por ~1 dia. **Nenhum dado foi perdido** (confirmado: o banco nunca foi
+> tocado, só a API de leitura/escrita ficou bloqueada; os últimos registros em todas as
+> tabelas batem exatamente com o horário em que o bloqueio começou). Resolvido com upgrade
+> da conta pro plano **Pro**. Em paralelo, reduzido o consumo de egress no código (PR #483 —
+> `syncBaseData()` não rebaixa mais a tabela `base_data` inteira a cada login, cache
+> compartilhado no Portal do Conferente, filtros movidos pra consulta em vez de JS) pra não
+> estourar de novo. Se "erro ao carregar dados" voltar a aparecer, a mensagem de erro agora
+> mostra o motivo real (`e.message`, PR #481) — confira ali antes de supor bug de código.
 
 > 📓 **O que o Rafael mexeu aqui e por quê:** [`MUDANCAS-DO-RAFAEL.md`](MUDANCAS-DO-RAFAEL.md)
 > Registro das mudanças feitas pelo lado dele (colaborador), com o commit de cada uma e o que
