@@ -31941,6 +31941,8 @@ function _renderBarrasMensaisAno(bMes, {refLine, anoSel, invertido, onMesClick, 
   const alturaRef = Math.min(100, (ref/eixoMax)*100);
   const hoje = new Date();
   const mesAtualIdx = anoSel === String(hoje.getFullYear()) ? hoje.getMonth() : 11;
+  // mesSelIdx: um índice (Distribuição) ou uma lista (Ctrl/Shift+clique)
+  const selIdxs = Array.isArray(mesSelIdx) ? mesSelIdx : (mesSelIdx==null ? [] : [mesSelIdx]);
   return bMes.map((v,i)=>{
     const futuro = i>mesAtualIdx;
     if(v==null){
@@ -31957,9 +31959,11 @@ function _renderBarrasMensaisAno(bMes, {refLine, anoSel, invertido, onMesClick, 
     const pior = invertido ? v < ref : v > ref;
     const alturaBase = Math.max(alturaPct, v>0?1.5:0);
     const clicavel = onMesClick && !futuro;
-    const selecionado = mesSelIdx === i;
+    const selecionado = selIdxs.includes(i);
+    // Com seleção ativa, os meses fora dela ficam esmaecidos (como no Power BI).
+    const esmaecido = futuro || (selIdxs.length > 0 && !selecionado);
     return `
-      <div onclick="${clicavel?`${onMesClick}(${i})`:''}" title="${clicavel?'Clique pra ver esse mês':''}" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;cursor:${clicavel?'pointer':'default'};${futuro?'opacity:.4':''}${selecionado?'background:var(--bg-hover);border-radius:8px;':''}padding:4px 1px 2px">
+      <div onclick="${clicavel?`${onMesClick}(${i}, event)`:''}" title="${clicavel?'Clique: só esse mês · Ctrl+clique: soma meses · Shift+clique: intervalo':''}" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;cursor:${clicavel?'pointer':'default'};user-select:none;${esmaecido?'opacity:.4;':''}${selecionado?'background:var(--bg-hover);border-radius:8px;':''}padding:4px 1px 2px">
         <div style="font-size:.81rem;font-weight:700;color:var(--text-primary);margin-bottom:6px;white-space:nowrap">${v.toFixed(2).replace('.',',')}%</div>
         <div style="position:relative;width:100%;max-width:32px;height:120px;display:flex;align-items:flex-end">
           <div style="width:100%;height:${alturaBase}%;background:${pior ? 'linear-gradient(180deg,#E8000D 0%,#E8000D '+(alturaRef/Math.max(alturaBase,.01)*100)+'%,rgba(255,255,255,.18) '+(alturaRef/Math.max(alturaBase,.01)*100)+'%)' : 'rgba(255,255,255,.18)'};border-radius:2px 2px 0 0;${selecionado?'outline:2px solid var(--red);outline-offset:1px':''}"></div>
@@ -31989,7 +31993,8 @@ function _renderCardVisaoAnualPercentual({indicador, titulo, area, anoSel, pctAn
   // aberturas dessa função (Frotas, Prazo etc.) ficam iguais a antes.
   const graficoDiaSemanaAno = diaMaisOcorr ? _renderGraficoOcorrenciasPorDiaSemana(diaMaisOcorr, periodoLabelDia||'ANO', '') : '';
 
-  const temMesSel = mesSelIdx!=null && mesSelLabel;
+  const selIdxsAno = Array.isArray(mesSelIdx) ? mesSelIdx : (mesSelIdx==null ? [] : [mesSelIdx]);
+  const temMesSel = selIdxsAno.length > 0 && mesSelLabel;
   const periodoLabelView = temMesSel ? mesSelLabel : 'ANO';
   const pctResultado = temMesSel && pctView!=null ? pctView : pctAnual;
   const dentroDaMetaResultado = metaNum==null ? null : (temMesSel && dentroDaMetaView!=null ? dentroDaMetaView : dentroDaMeta);
@@ -32042,7 +32047,7 @@ function _renderCardVisaoAnualPercentual({indicador, titulo, area, anoSel, pctAn
         <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
             <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO ${temMesSel?('DE '+periodoLabelView):'DO ANO'}</div>
-            ${temMesSel ? `<span onclick="${onMesClick}(${mesSelIdx})" style="font-size:.76rem;font-weight:700;color:var(--text-muted);cursor:pointer;text-decoration:underline;white-space:nowrap">✕ ver ano inteiro</span>` : ''}
+            ${temMesSel ? `<span onclick="${onMesClick}(${selIdxsAno[0]}, null, true)" style="font-size:.76rem;font-weight:700;color:var(--text-muted);cursor:pointer;text-decoration:underline;white-space:nowrap">✕ ver ano inteiro</span>` : ''}
           </div>
           <div style="margin-top:6px">${composicao}</div>
           <div style="margin-top:8px">
@@ -32137,23 +32142,28 @@ function carregarPainelAbsRec(){ return carregarPainelAbsArea('recebimento_armaz
 // teclado (tablet/TV) o clique simples continua selecionando uma semana.
 window._absSemanaAncoraPorPrefixo = window._absSemanaAncoraPorPrefixo || {};
 function _absSelArr(v){ return Array.isArray(v) ? v : (v==null ? [] : [v]); }
-function _toggleSemanaAbsInd(prefix, idx, reloadFn, ev, limpar){
-  const atual = _absSelArr(window._absSemanaSelPorPrefixo[prefix]);
+// Regra única de seleção (semanas e meses): `store` guarda a seleção por prefixo
+// e `ancoras` a última barra clicada, que serve de ponta do intervalo do Shift.
+function _absSelToggle(store, ancoras, prefix, idx, ev, limpar){
+  const atual = _absSelArr(store[prefix]);
   let novo;
   if(limpar){
     novo = [];
-  } else if(ev && ev.shiftKey && window._absSemanaAncoraPorPrefixo[prefix] != null){
-    const a = window._absSemanaAncoraPorPrefixo[prefix];
+  } else if(ev && ev.shiftKey && ancoras[prefix] != null){
+    const a = ancoras[prefix];
     novo = [];
     for(let i=Math.min(a,idx); i<=Math.max(a,idx); i++) novo.push(i);
   } else if(ev && (ev.ctrlKey || ev.metaKey)){
     novo = atual.includes(idx) ? atual.filter(i => i!==idx) : [...atual, idx];
-    window._absSemanaAncoraPorPrefixo[prefix] = idx;
+    ancoras[prefix] = idx;
   } else {
     novo = (atual.length===1 && atual[0]===idx) ? [] : [idx];
-    window._absSemanaAncoraPorPrefixo[prefix] = idx;
+    ancoras[prefix] = idx;
   }
-  window._absSemanaSelPorPrefixo[prefix] = novo.length ? novo.sort((x,y)=>x-y) : null;
+  store[prefix] = novo.length ? novo.sort((x,y)=>x-y) : null;
+}
+function _toggleSemanaAbsInd(prefix, idx, reloadFn, ev, limpar){
+  _absSelToggle(window._absSemanaSelPorPrefixo, window._absSemanaAncoraPorPrefixo, prefix, idx, ev, limpar);
   reloadFn();
 }
 function _toggleSemanaAbsArmInd(idx, ev, limpar){ return _toggleSemanaAbsInd('abs-armazem', idx, carregarPainelAbsArmazem, ev, limpar); }
@@ -32165,15 +32175,41 @@ function _toggleSemanaAbsInd_abs_rec(idx, ev, limpar){ return _toggleSemanaAbsIn
 // — mesmo mecanismo da seleção de semana acima, mas por mês e só dentro do
 // próprio card de Visão Anual (não mexe no filtro de mês do topo). Clicar de
 // novo no mesmo mês desmarca e volta pro ano inteiro.
-window._absAnoMesSelPorPrefixo = window._absAnoMesSelPorPrefixo || {};
-function _toggleMesAbsAno(prefix, idx, reloadFn){
-  window._absAnoMesSelPorPrefixo[prefix] = (window._absAnoMesSelPorPrefixo[prefix] === idx) ? null : idx;
+// Armazém/Expedição/Recebimento aceitam seleção múltipla (Ctrl/Shift+clique, mesma
+// regra das semanas, pedido do usuário 2026-10-20); a Distribuição segue com um mês só.
+window._absAnoMesAncoraPorPrefixo = window._absAnoMesAncoraPorPrefixo || {};
+function _toggleMesAbsAno(prefix, idx, reloadFn, ev, limpar){
+  _absSelToggle(window._absAnoMesSelPorPrefixo, window._absAnoMesAncoraPorPrefixo, prefix, idx, ev, limpar);
   reloadFn();
 }
-function _toggleMesAbsAno_abs_armazem(idx){ return _toggleMesAbsAno('abs-armazem', idx, carregarPainelAbsArmazemAno); }
-function _toggleMesAbsAno_abs_exp(idx){ return _toggleMesAbsAno('abs-exp', idx, carregarPainelAbsExpAno); }
-function _toggleMesAbsAno_abs_rec(idx){ return _toggleMesAbsAno('abs-rec', idx, carregarPainelAbsRecAno); }
+function _toggleMesAbsAno_abs_armazem(idx, ev, limpar){ return _toggleMesAbsAno('abs-armazem', idx, carregarPainelAbsArmazemAno, ev, limpar); }
+function _toggleMesAbsAno_abs_exp(idx, ev, limpar){ return _toggleMesAbsAno('abs-exp', idx, carregarPainelAbsExpAno, ev, limpar); }
+function _toggleMesAbsAno_abs_rec(idx, ev, limpar){ return _toggleMesAbsAno('abs-rec', idx, carregarPainelAbsRecAno, ev, limpar); }
 function _toggleMesAbsAno_abs_distribuicao(idx){ return _toggleMesAbsAno('abs-distribuicao', idx, carregarPainelAbsDistribuicaoAno); }
+
+// Resumo dos meses selecionados na Visão Anual. 1 mês = o próprio dado do mês;
+// 2+ meses somam faltas/atestados/dias da semana e o percentual é ponderado pelos
+// dias trabalhados (faltas+atestados ÷ dias trabalhados), como o acumulado do ano.
+function _absResumoMesesSel(porMes, idxs, anoSel){
+  const ms = idxs.map(i => porMes[i]).filter(Boolean);
+  if(!ms.length) return null;
+  if(ms.length === 1) return { ...ms[0], label: `${NOMES_MES_PT_ABREV[idxs[0]]}/${anoSel}`, varios: false };
+  const faltas = ms.reduce((a,m)=>a+m.faltas,0), atestados = ms.reduce((a,m)=>a+m.atestados,0);
+  const dias = ms.reduce((a,m)=>a+(m.diasTrab||0),0);
+  const porDiaSemana = [0,0,0,0,0,0,0];
+  ms.forEach(m => m.diaMaisOcorr.porDiaSemana.forEach((v,i)=>{ porDiaSemana[i]+=v; }));
+  const total = porDiaSemana.reduce((a,b)=>a+b,0);
+  let maxIdx=1, maxVal=porDiaSemana[1];
+  for(let i=2;i<=6;i++){ if(porDiaSemana[i]>maxVal){ maxVal=porDiaSemana[i]; maxIdx=i; } }
+  const top = (total>0 && maxVal>0) ? { dia: DIAS_SEMANA_PT[maxIdx], idx: maxIdx, qtd: maxVal, pct: maxVal/total*100 } : null;
+  const nomes = idxs.filter(i => porMes[i]).map(i => NOMES_MES_PT_ABREV[i]);
+  return {
+    faltas, atestados, pct: dias>0 ? (faltas+atestados)/dias*100 : 0,
+    diaMaisOcorr: { porDiaSemana, total, top },
+    label: (nomes.length<=4 ? nomes.join(' + ') : `${nomes.length} MESES`)+'/'+anoSel,
+    varios: true
+  };
+}
 
 // Agrega uma função de cálculo mensal de absenteísmo (armazém ou distribuição)
 // pelos 12 meses do ano de referência, pra montar a visão anual. Cada chamada
@@ -32209,7 +32245,7 @@ async function _calcAbsenteismoAno(calcFn, anoSel, undSel){
     // mesma forma da visão mensal com dias da semana".
     const dsm = _calcDiaSemanaMaisOcorrencias(mesStr, r.porFunc);
     dsm.porDiaSemana.forEach((v,i)=>{ porDiaSemanaAno[i]+=v; });
-    porMes[m-1] = { mesStr, faltas: faltaMes, atestados: atesMes, pct: r.absNum, diaMaisOcorr: dsm, porFunc: r.porFunc };
+    porMes[m-1] = { mesStr, faltas: faltaMes, atestados: atesMes, pct: r.absNum, diasTrab: r.diasTrab, diaMaisOcorr: dsm, porFunc: r.porFunc };
   }
   const pctAnual = diasTrabTotal>0 ? ((totFalta+totAtes)/diasTrabTotal*100) : 0;
   const totalDiaSemana = porDiaSemanaAno.reduce((a,b)=>a+b,0);
@@ -32229,18 +32265,20 @@ async function carregarPainelAbsAreaAno(area, prefix, metaTipo, indicadorLabel, 
     const { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno } = await _calcAbsenteismoAno(calcFn, anoSel, window._painelIndUndSel||'');
     const totalOcorrencias = totFalta+totAtes; // folga não conta como ocorrência de absenteísmo
     const metaNum = _getMetaAbs(metaTipo);
-    const mesSelIdx = window._absAnoMesSelPorPrefixo[prefix] ?? null;
-    const mesSel = (mesSelIdx!=null && porMes[mesSelIdx]) ? porMes[mesSelIdx] : null;
-    const mesSelLabel = mesSel ? `${NOMES_MES_PT_ABREV[mesSelIdx]}/${anoSel}` : null;
+    // Meses selecionados (Ctrl/Shift+clique soma vários); índices sem dado são descartados.
+    const mesSelIdx = _absSelArr(window._absAnoMesSelPorPrefixo[prefix]).filter(i => porMes[i]);
+    const mesSel = _absResumoMesesSel(porMes, mesSelIdx, anoSel);
+    const mesSelLabel = mesSel ? mesSel.label : null;
+    const noMes = mesSel && mesSel.varios ? 'nos meses' : 'no mês';
     const viewOcorr = mesSel ? (mesSel.faltas+mesSel.atestados) : totalOcorrencias;
     container.innerHTML = _renderCardVisaoAnualPercentual({
       indicador: indicadorLabel, titulo: 'Absenteísmo', area: areaLabel, semDesvio: true, semFundo: true,
       anoSel, pctAnual, metaNum, invertido: false, bMes,
       composicaoItems: [
-        {label:'FALTAS', valor: mesSel ? mesSel.faltas : totFalta, desc: mesSel ? 'Ausências não justificadas registradas na equipe no mês.' : 'Ausências não justificadas registradas na equipe no ano.'},
-        {label:'ATESTADOS', valor: mesSel ? mesSel.atestados : totAtes, desc: mesSel ? 'Ausências com justificativa médica apresentada no mês.' : 'Ausências com justificativa médica apresentada.'},
+        {label:'FALTAS', valor: mesSel ? mesSel.faltas : totFalta, desc: mesSel ? `Ausências não justificadas registradas na equipe ${noMes}.` : 'Ausências não justificadas registradas na equipe no ano.'},
+        {label:'ATESTADOS', valor: mesSel ? mesSel.atestados : totAtes, desc: mesSel ? `Ausências com justificativa médica apresentada ${noMes}.` : 'Ausências com justificativa médica apresentada.'},
       ],
-      baseTxt: mesSel ? `${viewOcorr} ocorrência${viewOcorr===1?'':'s'} no mês` : `${totalOcorrencias} ocorrências no ano`,
+      baseTxt: mesSel ? `${viewOcorr} ocorrência${viewOcorr===1?'':'s'} ${noMes}` : `${totalOcorrencias} ocorrências no ano`,
       diaMaisOcorr: mesSel ? mesSel.diaMaisOcorr : diaMaisOcorrAno,
       periodoLabelDia: mesSelLabel || 'ANO',
       onMesClick: `_toggleMesAbsAno_${prefix.replace(/-/g,'_')}`,
