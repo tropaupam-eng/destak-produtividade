@@ -32,7 +32,12 @@ Vale em todas as abas de Absenteísmo, inclusive Distribuição. Outras Visões 
 não mudam. O link "✕ ver mês/ano inteiro" do card da direita continua existindo.
 Sem mudança em dado do Supabase. Sem dinheiro, pagamento nem banco.
 Como desfazer: `git revert` do commit desta entrada.
-Pendente/risco: teste visual do Gabriel em localhost antes de publicar.
+Publicado na `main` em 2026-10-20 (commit 6fc08c6), versão 4.89.71. Antes: `node check.js` ok, testes de
+lógica fora do navegador e teste visual do Gabriel em localhost (o botão só aparece com barra selecionada,
+por projeto; o Gabriel chegou a testar sem selecionar e achou que faltava). Depois: deploy do Pages concluído
+com sucesso e `index.html` do site idêntico, byte a byte, ao do commit 6fc08c6.
+Como desfazer: `git revert 6fc08c6` e subir `version.json`/`APP_VERSION`.
+Pendente/risco: nenhum conhecido.
 
 ## 2026-10-20, Gabriel: Absenteísmo — seleção de várias semanas e meses nas barras (Ctrl/Shift+clique)
 Onde: `index.html`, abas Absenteísmo Expedição, Receb./Armazenagem e Armazém (mesmo código).
