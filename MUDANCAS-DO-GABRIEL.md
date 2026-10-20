@@ -21,6 +21,19 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-20, Gabriel: Absenteísmo — botão "Limpar filtros" nas barras semanais e mensais
+Onde: `index.html`: `renderRelatorioAbsenteismo` (cabeçalho EVOLUÇÃO SEMANAL), `_renderCardVisaoAnualPercentual`
+(cabeçalho EVOLUÇÃO MENSAL), helper novo `_absBtnLimparFiltros`, e `baixarImagemRelatorio` (a linha
+`ignoreElements`, para o botão não sair na imagem exportada pra slide). `version.json` e `APP_VERSION`
+4.89.70 → 4.89.71.
+Por quê: pedido do Gabriel, complemento da seleção múltipla. O botão "✕ Limpar filtros" aparece ao lado de
+EVOLUÇÃO SEMANAL/MENSAL só quando há barra selecionada, remove a seleção e volta pro mês/ano inteiro.
+Vale em todas as abas de Absenteísmo, inclusive Distribuição. Outras Visões Anuais (Frotas, Custo etc.)
+não mudam. O link "✕ ver mês/ano inteiro" do card da direita continua existindo.
+Sem mudança em dado do Supabase. Sem dinheiro, pagamento nem banco.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar.
+
 ## 2026-10-20, Gabriel: Absenteísmo — seleção de várias semanas e meses nas barras (Ctrl/Shift+clique)
 Onde: `index.html`, abas Absenteísmo Expedição, Receb./Armazenagem e Armazém (mesmo código).
 Barras semanais: `carregarPainelAbsArea`, `_toggleSemanaAbsInd` (e wrappers `_toggleSemanaAbsInd_abs_*`),
