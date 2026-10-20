@@ -43,7 +43,11 @@ dias trabalhados; ACUMULADO NO ANO continua sempre o ano inteiro.
 A aba Distribuição NÃO foi alterada (semana e mês continuam um por vez). Outras Visões Anuais (Frotas etc.) idem.
 Sem mudança em dado do Supabase: só leitura, nenhuma tabela ou coluna alterada.
 Como desfazer: `git revert` do commit desta entrada.
-Pendente/risco: teste visual no navegador ainda por fazer (a lógica foi testada fora do navegador).
+Publicado na `main` em 2026-10-20 (commits 3b36611, 2ecd6c2, d1aecb4), versão 4.89.70. Antes: `node check.js`
+ok, testes de lógica fora do navegador e teste visual do Gabriel em localhost. Depois: deploy do Pages concluído
+com sucesso, e o `index.html` do site é idêntico, byte a byte, ao do commit d1aecb4 (versão 4.89.70 no ar).
+Como desfazer tudo: `git revert d1aecb4 2ecd6c2 3b36611` (nessa ordem) e subir `version.json`/`APP_VERSION`.
+Pendente/risco: nenhum conhecido. A Distribuição ficou de fora de propósito.
 Sem dinheiro, pagamento nem banco, então não exige aviso prévio ao Daniel.
 
 ## 2026-10-15, Gabriel: regras de publicação definidas pelo Daniel (opção A)
