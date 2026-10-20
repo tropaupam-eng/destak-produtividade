@@ -28,7 +28,11 @@ Barras semanais: `carregarPainelAbsArea`, `_toggleSemanaAbsInd` (e wrappers `_to
 Barras mensais (Visão Anual): `_toggleMesAbsAno` (e wrappers), `_renderBarrasMensaisAno`,
 `_renderCardVisaoAnualPercentual`, `carregarPainelAbsAreaAno`, `_calcAbsenteismoAno` (porMes ganhou `diasTrab`).
 Helpers novos: `_absSelArr`, `_absSelToggle` (regra única), `_absResumoMesesSel`.
-`version.json` 4.89.69 → 4.89.70.
+`version.json` e `APP_VERSION` (index.html) 4.89.69 → 4.89.70.
+Erro meu, corrigido antes de publicar (só existiu na branch, nunca na `main`): o commit 2ecd6c2 apagou
+sem querer a linha que inicializa `window._absAnoMesSelPorPrefixo`, e a Visão Anual mostrava "Cannot read
+properties of undefined (reading 'abs-exp')"; também faltou subir `APP_VERSION`, e o app mostrava o aviso
+"Nova versão 4.89.70 disponível" sem parar. Achado no teste local do Gabriel; correção no commit seguinte.
 Por quê: pedido do Gabriel, comportamento parecido com o Power BI. Clique = uma semana (como antes);
 Ctrl/Cmd+clique soma ou tira uma semana; Shift+clique pega o intervalo. Barras fora da seleção ficam
 esmaecidas. Com 2+ semanas, COMPOSIÇÃO, lista de colaboradores e gráfico por dia da semana somam só
