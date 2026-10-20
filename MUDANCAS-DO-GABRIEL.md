@@ -21,6 +21,22 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-20, Gabriel: Absenteísmo — seleção de várias semanas nas barras (Ctrl/Shift+clique)
+Onde: `index.html`, abas Absenteísmo Expedição, Receb./Armazenagem e Armazém (mesmo código):
+`carregarPainelAbsArea`, `_toggleSemanaAbsInd` (e os wrappers `_toggleSemanaAbsInd_abs_*`),
+`renderRelatorioAbsenteismo`, `_listarColaboradoresOcorrenciaAbs`, `_calcDiaSemanaMaisOcorrencias`;
+helper novo `_absSelArr`. `version.json` 4.89.69 → 4.89.70.
+Por quê: pedido do Gabriel, comportamento parecido com o Power BI. Clique = uma semana (como antes);
+Ctrl/Cmd+clique soma ou tira uma semana; Shift+clique pega o intervalo. Barras fora da seleção ficam
+esmaecidas. Com 2+ semanas, COMPOSIÇÃO, lista de colaboradores e gráfico por dia da semana somam só
+essas semanas; o percentual é ponderado (faltas+atestados ÷ dias trabalhados somados), não a média.
+ACUMULADO NO MÊS continua sempre o mês inteiro. Sem botão para tablet/TV, por decisão do Gabriel.
+Distribuição e Visão Anual NÃO foram alteradas (a Distribuição segue com uma semana só).
+Sem mudança em dado do Supabase: só leitura, nenhuma tabela ou coluna alterada.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual no navegador ainda por fazer (a lógica foi testada fora do navegador).
+Sem dinheiro, pagamento nem banco, então não exige aviso prévio ao Daniel.
+
 ## 2026-10-15, Gabriel: regras de publicação definidas pelo Daniel (opção A)
 Onde: processo de trabalho, não há mudança de código. Resposta do Daniel, repassada pelo
 Gabriel no chat (o texto original não está neste repositório).

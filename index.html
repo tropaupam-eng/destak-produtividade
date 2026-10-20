@@ -32087,11 +32087,13 @@ async function carregarPainelAbsArea(area, prefix, metaTipo, indicadorLabel, are
     const mesAtual = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const r = await _calcularAbsenteismoArmazem(mesAtual, {unidade: window._painelIndUndSel||'', area});
     const semanas = _calcAbsSemanaArmazem(mesAtual, r.porFunc);
-    const semSelIdxArm = window._absSemanaSelPorPrefixo[prefix] ?? null;
-    const semSelObjArm = (semSelIdxArm!=null && semanas[semSelIdxArm]) ? semanas[semSelIdxArm] : null;
-    const diaMaisOcorr = _calcDiaSemanaMaisOcorrencias(mesAtual, r.porFunc, semSelObjArm?.ini, semSelObjArm?.fim);
+    // Seleção pode ter várias semanas (Ctrl/Shift+clique nas barras). Índices
+    // que não existem mais (mês trocado) são descartados.
+    const semSelIdxsArm = _absSelArr(window._absSemanaSelPorPrefixo[prefix]).filter(i => semanas[i]);
+    const faixasArm = semSelIdxsArm.map(i => ({ini:semanas[i].ini, fim:semanas[i].fim}));
+    const diaMaisOcorr = _calcDiaSemanaMaisOcorrencias(mesAtual, r.porFunc, null, null, faixasArm.length ? faixasArm : null);
     const nomesPermitidos = new Set(r.funcs.map(n=>n.trim().toUpperCase()));
-    const colaboradoresOcorr = await _listarColaboradoresOcorrenciaAbs(mesAtual, nomesPermitidos, semSelObjArm ? {ini:semSelObjArm.ini, fim:semSelObjArm.fim} : null);
+    const colaboradoresOcorr = await _listarColaboradoresOcorrenciaAbs(mesAtual, nomesPermitidos, faixasArm.length ? faixasArm : null);
 
     container.innerHTML = renderRelatorioAbsenteismo({
       titulo: 'Absenteísmo',
@@ -32108,7 +32110,7 @@ async function carregarPainelAbsArea(area, prefix, metaTipo, indicadorLabel, are
         percentualNum: r.absNum
       },
       semanasPrecalc: semanas,
-      semanaSelIdx: semSelIdxArm,
+      semanaSelIdx: semSelIdxsArm,
       // onclick="${onSemanaClick}(...)" é JS literal — hífen no prefixo
       // (abs-exp/abs-rec) quebraria o nome da função, por isso o replace.
       onSemanaClick: `_toggleSemanaAbsInd_${prefix.replace(/-/g,'_')}`,
@@ -32127,14 +32129,37 @@ function carregarPainelAbsRec(){ return carregarPainelAbsArea('recebimento_armaz
 
 // Seleção de semana (clique numa barra de EVOLUÇÃO SEMANAL) — clicar de
 // novo na mesma semana desmarca e volta pro mês inteiro.
-function _toggleSemanaAbsInd(prefix, idx, reloadFn){
-  window._absSemanaSelPorPrefixo[prefix] = (window._absSemanaSelPorPrefixo[prefix] === idx) ? null : idx;
+// Seleção múltipla, como no Power BI (pedido do usuário, 2026-10-20):
+//   clique              → só essa semana (clicar de novo na única selecionada desmarca)
+//   Ctrl/Cmd + clique   → soma ou tira essa semana da seleção
+//   Shift + clique      → intervalo entre a última semana clicada e esta
+// `limpar` (link "ver mês inteiro") volta pro mês inteiro. Só desktop: sem
+// teclado (tablet/TV) o clique simples continua selecionando uma semana.
+window._absSemanaAncoraPorPrefixo = window._absSemanaAncoraPorPrefixo || {};
+function _absSelArr(v){ return Array.isArray(v) ? v : (v==null ? [] : [v]); }
+function _toggleSemanaAbsInd(prefix, idx, reloadFn, ev, limpar){
+  const atual = _absSelArr(window._absSemanaSelPorPrefixo[prefix]);
+  let novo;
+  if(limpar){
+    novo = [];
+  } else if(ev && ev.shiftKey && window._absSemanaAncoraPorPrefixo[prefix] != null){
+    const a = window._absSemanaAncoraPorPrefixo[prefix];
+    novo = [];
+    for(let i=Math.min(a,idx); i<=Math.max(a,idx); i++) novo.push(i);
+  } else if(ev && (ev.ctrlKey || ev.metaKey)){
+    novo = atual.includes(idx) ? atual.filter(i => i!==idx) : [...atual, idx];
+    window._absSemanaAncoraPorPrefixo[prefix] = idx;
+  } else {
+    novo = (atual.length===1 && atual[0]===idx) ? [] : [idx];
+    window._absSemanaAncoraPorPrefixo[prefix] = idx;
+  }
+  window._absSemanaSelPorPrefixo[prefix] = novo.length ? novo.sort((x,y)=>x-y) : null;
   reloadFn();
 }
-function _toggleSemanaAbsArmInd(idx){ return _toggleSemanaAbsInd('abs-armazem', idx, carregarPainelAbsArmazem); }
-function _toggleSemanaAbsInd_abs_armazem(idx){ return _toggleSemanaAbsArmInd(idx); }
-function _toggleSemanaAbsInd_abs_exp(idx){ return _toggleSemanaAbsInd('abs-exp', idx, carregarPainelAbsExp); }
-function _toggleSemanaAbsInd_abs_rec(idx){ return _toggleSemanaAbsInd('abs-rec', idx, carregarPainelAbsRec); }
+function _toggleSemanaAbsArmInd(idx, ev, limpar){ return _toggleSemanaAbsInd('abs-armazem', idx, carregarPainelAbsArmazem, ev, limpar); }
+function _toggleSemanaAbsInd_abs_armazem(idx, ev, limpar){ return _toggleSemanaAbsArmInd(idx, ev, limpar); }
+function _toggleSemanaAbsInd_abs_exp(idx, ev, limpar){ return _toggleSemanaAbsInd('abs-exp', idx, carregarPainelAbsExp, ev, limpar); }
+function _toggleSemanaAbsInd_abs_rec(idx, ev, limpar){ return _toggleSemanaAbsInd('abs-rec', idx, carregarPainelAbsRec, ev, limpar); }
 
 // Seleção de mês no card Visão Anual (clique numa barra de EVOLUÇÃO MENSAL)
 // — mesmo mecanismo da seleção de semana acima, mas por mês e só dentro do
@@ -32467,8 +32492,20 @@ async function _listarColaboradoresOcorrenciaAbs(mesRef, nomesPermitidosSet, sem
   // Distribuicao) — precisam virar YYYY-MM-DD antes de ir pro filtro da URL,
   // senão o template literal serializa o Date inteiro (toString()) e o
   // filtro falha silenciosamente (lista some quando uma semana é selecionada).
-  if(semSel) url += `&data=gte.${_fmtISO(semSel.ini)}&data=lte.${_fmtISO(semSel.fim)}`;
-  const rows = await supaFetch(url).catch(()=>[]) || [];
+  // semSel pode ser uma faixa {ini,fim} ou uma lista de faixas (várias semanas
+  // selecionadas): a consulta cobre do início da primeira ao fim da última, e as
+  // semanas não selecionadas no meio são descartadas logo abaixo.
+  const faixas = Array.isArray(semSel) ? semSel : (semSel ? [semSel] : []);
+  if(faixas.length){
+    const ini = faixas.reduce((m,f)=> f.ini < m ? f.ini : m, faixas[0].ini);
+    const fim = faixas.reduce((m,f)=> f.fim > m ? f.fim : m, faixas[0].fim);
+    url += `&data=gte.${_fmtISO(ini)}&data=lte.${_fmtISO(fim)}`;
+  }
+  let rows = await supaFetch(url).catch(()=>[]) || [];
+  if(faixas.length > 1){
+    const isos = faixas.map(f => [_fmtISO(f.ini), _fmtISO(f.fim)]);
+    rows = rows.filter(r => isos.some(([a,b]) => r.data >= a && r.data <= b));
+  }
   const ocorrencias = rows.filter(r => nomesPermitidosSet.has((r.nome||'').trim().toUpperCase()));
   if(!ocorrencias.length) return [];
   const entrevistas = await supaFetch(`absenteismo_entrevistas?absenteismo_id=in.(${ocorrencias.map(o=>o.id).join(',')})&select=*`).catch(()=>[]) || [];
@@ -32496,18 +32533,33 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
   // ACUMULADO/COMPOSIÇÃO de "mês inteiro" pra só aquela semana. Pedido do
   // usuário, 2026-09-29: "quando selecione a semana apareça somente os
   // dados da semana: Folgas, Faltas, Atestados".
-  const semSel = (semanaSelIdx!=null && semanasPrecalc[semanaSelIdx]) ? semanasPrecalc[semanaSelIdx] : null;
-  const periodoLabel = semSel ? `SEMANA ${_fmtDia(semSel.ini)}–${_fmtDia(semSel.fim)}/${fmtBR(mes)}` : 'MÊS';
+  // semanaSelIdx aceita um índice (Distribuição) ou uma lista (Ctrl/Shift+clique
+  // em várias barras). Com 2+ semanas os números são SOMADOS, e o percentual é
+  // ponderado pelos dias trabalhados (faltas+atestados ÷ total), não a média
+  // dos percentuais das semanas.
+  const selIdxs = (Array.isArray(semanaSelIdx) ? semanaSelIdx : (semanaSelIdx==null ? [] : [semanaSelIdx])).filter(i => semanasPrecalc[i]);
+  const semsSel = selIdxs.map(i => semanasPrecalc[i]);
+  const semSel = semsSel.length ? semsSel[0] : null;   // truthy = há semana(s) selecionada(s)
+  const varias = semsSel.length > 1;
+  const periodoLabel = !semSel ? 'MÊS'
+    : varias ? `SEMANAS ${semsSel.map(s => s.chartLabel).join(' + ')}/${fmtBR(mes)}`
+    : `SEMANA ${_fmtDia(semSel.ini)}–${_fmtDia(semSel.fim)}/${fmtBR(mes)}`;
   // "semana" é feminino (DA/NA), "mês" é masculino (DO/NO) — sem isso virava
   // "COMPOSIÇÃO DA MÊS" quando nenhuma semana está selecionada.
-  const prepA = semSel ? 'DA' : 'DO';
-  const prepNa = semSel ? 'NA' : 'NO';
+  const prepA = semSel ? (varias ? 'DAS' : 'DA') : 'DO';
+  const prepNa = semSel ? (varias ? 'NAS' : 'NA') : 'NO';
+  const somaSel = campo => semsSel.reduce((a,s) => a + (s[campo]||0), 0);
+  const totalDiasSel = somaSel('total');
+  const pctSel = !semSel ? 0
+    : !varias ? (semSel.pct||0)
+    : (totalDiasSel > 0 ? (somaSel('faltas')+somaSel('atestados'))/totalDiasSel*100 : 0);
   const viewStats = semSel ? {
-    faltas: semSel.faltas, atestados: semSel.atestados, folgas: semSel.folgas,
-    percentualNum: semSel.pct||0, percentual: (semSel.pct||0).toFixed(2)+'%',
+    faltas: somaSel('faltas'), atestados: somaSel('atestados'), folgas: somaSel('folgas'),
+    percentualNum: pctSel, percentual: pctSel.toFixed(2)+'%',
     total: stats.total
   } : stats;
-  const viewOcorrencias = semSel ? (semSel.faltas+semSel.atestados) : totalOcorrencias;
+  const viewOcorrencias = semSel ? (viewStats.faltas+viewStats.atestados) : totalOcorrencias;
+  const txtSemana = varias ? 'nessas semanas' : 'nessa semana';
   const dentroDaMeta = viewStats.percentualNum <= metaNum;
   // ACUMULADO (card da esquerda) sempre mostra o MÊS inteiro, mesmo com uma
   // semana selecionada — antes ele trocava junto com viewStats e passava a
@@ -32521,9 +32573,11 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
     const alturaPct = Math.min(100, (pct/eixoMax)*100);
     const alturaMeta = Math.min(100, (metaNum/eixoMax)*100);
     const acimaDaMeta = pct > metaNum;
-    const selecionada = idx === semanaSelIdx;
+    const selecionada = selIdxs.includes(idx);
+    // Com seleção ativa, as barras fora dela ficam esmaecidas (como no Power BI).
+    const esmaecida = selIdxs.length > 0 && !selecionada;
     return `
-      <div onclick="${onSemanaClick}(${idx})" title="Clique pra ver só essa semana" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;cursor:pointer;${selecionada?'background:var(--bg-hover);border-radius:8px;':''}padding:6px 2px 4px">
+      <div onclick="${onSemanaClick}(${idx}, event)" title="Clique: só essa semana · Ctrl+clique: soma semanas · Shift+clique: intervalo" style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;cursor:pointer;user-select:none;${selecionada?'background:var(--bg-hover);border-radius:8px;':''}${esmaecida?'opacity:.4;':''}padding:6px 2px 4px">
         <div style="font-size:.81rem;font-weight:700;color:var(--text-primary);margin-bottom:6px">${pct.toFixed(1)}%</div>
         <div style="position:relative;width:100%;max-width:64px;height:120px;display:flex;align-items:flex-end">
           <div style="width:100%;height:${Math.max(alturaPct,1.5)}%;background:${acimaDaMeta ? 'linear-gradient(180deg,#E8000D 0%,#E8000D '+(alturaMeta/Math.max(alturaPct,1.5)*100)+'%,rgba(255,255,255,.18) '+(alturaMeta/Math.max(alturaPct,1.5)*100)+'%)' : 'rgba(255,255,255,.18)'};border-radius:2px 2px 0 0;${selecionada?'outline:2px solid var(--red);outline-offset:1px':''}"></div>
@@ -32556,7 +32610,7 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
   // certo do caller). Pedido do usuário, 2026-09-29, depois de testar ao
   // vivo: "quando clico na semana tem que alterar e tem que ter os
   // gráficos mostrando o dia da semana e a ocorrência".
-  const graficoDiaSemana = _renderGraficoOcorrenciasPorDiaSemana(diaMaisOcorr, periodoLabel, semSel ? 'Sem ocorrências nessa semana.' : '');
+  const graficoDiaSemana = _renderGraficoOcorrenciasPorDiaSemana(diaMaisOcorr, periodoLabel, semSel ? `Sem ocorrências ${txtSemana}.` : '');
 
   // Lista de colaboradores com falta/atestado no período em vista — substitui
   // o bloco RESULTADO (um % redundante com o ACUMULADO ao lado). Cada linha
@@ -32599,7 +32653,7 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
         </div>
         <div style="display:none;padding-bottom:8px">${detalhes}</div>
       </div>`;
-  }).join('') : `<div style="font-size:.9rem;color:var(--text-muted);padding:16px 0">Nenhuma falta/atestado ${semSel?'nessa semana':'nesse mês'}.</div>`;
+  }).join('') : `<div style="font-size:.9rem;color:var(--text-muted);padding:16px 0">Nenhuma falta/atestado ${semSel?txtSemana:'nesse mês'}.</div>`;
 
   return `
     <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
@@ -32632,7 +32686,7 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
         <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
             <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">COMPOSIÇÃO ${prepA} ${periodoLabel}</div>
-            ${semSel ? `<span onclick="${onSemanaClick}(${semanaSelIdx})" style="font-size:.76rem;font-weight:700;color:var(--text-muted);cursor:pointer;text-decoration:underline;white-space:nowrap">✕ ver mês inteiro</span>` : ''}
+            ${semSel ? `<span onclick="${onSemanaClick}(${selIdxs[0]}, null, true)" style="font-size:.76rem;font-weight:700;color:var(--text-muted);cursor:pointer;text-decoration:underline;white-space:nowrap">✕ ver mês inteiro</span>` : ''}
           </div>
           <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">ORIGEM DAS OCORRÊNCIAS REGISTRADAS</div>
           <div style="margin-top:6px">${composicao}</div>
@@ -32641,7 +32695,7 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
               <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">COLABORADORES ${prepA} ${periodoLabel}</div>
               <span style="font-size:.76rem;font-weight:700;color:${dentroDaMeta?'#34d399':'#ef4444'};white-space:nowrap">${dentroDaMeta?'DENTRO DA META':'FORA DA META'}</span>
             </div>
-            <div style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">${viewOcorrencias} ocorrência${viewOcorrencias===1?'':'s'} em ${viewStats.total} colaborador${viewStats.total===1?'':'es'} acompanhado${viewStats.total===1?'':'s'} ${semSel?'na semana':'no mês'}.</div>
+            <div style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">${viewOcorrencias} ocorrência${viewOcorrencias===1?'':'s'} em ${viewStats.total} colaborador${viewStats.total===1?'':'es'} acompanhado${viewStats.total===1?'':'s'} ${semSel?(varias?'nas semanas':'na semana'):'no mês'}.</div>
             <div style="margin-top:10px;max-height:380px;overflow-y:auto">${listaColaboradores}</div>
           </div>
         </div>
@@ -36072,7 +36126,7 @@ const NOMES_MES_PT_ABREV = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET
 // (Date) pra escopar ao período em vista (semana selecionada ou, sem
 // filtro, o mês inteiro) — usa a mesma fonte porFunc[nome].dias[iso] já
 // calculada por _calcularAbsenteismoArmazem/Distribuicao, sem query nova.
-function _calcDiaSemanaMaisOcorrencias(mesRef, porFunc, iniLimite, fimLimite){
+function _calcDiaSemanaMaisOcorrencias(mesRef, porFunc, iniLimite, fimLimite, faixas){
   const feriadosNacionais = new Set([
     '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
     '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
@@ -36088,6 +36142,8 @@ function _calcDiaSemanaMaisOcorrencias(mesRef, porFunc, iniLimite, fimLimite){
     const d = new Date(ano, mes-1, dia);
     if(iniLimite && d < iniLimite) continue;
     if(fimLimite && d > fimLimite) continue;
+    // faixas = várias semanas selecionadas (só conta os dias dentro delas)
+    if(faixas && !faixas.some(f => d >= f.ini && d <= f.fim)) continue;
     const iso = _fmtISO(d);
     if(d.getDay()===0 || feriadosNacionais.has(iso)) continue;
     Object.values(porFunc).forEach(f=>{
