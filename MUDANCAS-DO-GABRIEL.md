@@ -34,7 +34,11 @@ dado alterado. Na leitura de 20/10: 83 das 86 ocorrências resolvem setor; 3 nã
 O campo `tipo` continua sendo gravado e usado normalmente pelo OTIF; só deixou de aparecer nesse selo.
 Sem dinheiro, pagamento nem banco estrutural.
 Como desfazer: `git revert` do commit desta entrada.
-Pendente/risco: teste visual do Gabriel em localhost antes de publicar.
+Publicado na `main` em 2026-10-21 (commit be599cc), versão 4.89.72. Antes: `node check.js` ok, testes de lógica
+fora do navegador e teste visual do Gabriel em localhost ("tudo certo"). Depois: deploy do Pages concluído com
+sucesso e `index.html` do site idêntico, byte a byte, ao do commit be599cc.
+Como desfazer: `git revert be599cc` e subir `version.json`/`APP_VERSION`.
+Pendente/risco: nenhum conhecido.
 
 ## 2026-10-20, Gabriel: Absenteísmo — botão "Limpar filtros" nas barras semanais e mensais
 Onde: `index.html`: `renderRelatorioAbsenteismo` (cabeçalho EVOLUÇÃO SEMANAL), `_renderCardVisaoAnualPercentual`
