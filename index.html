@@ -9520,7 +9520,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.71';
+const APP_VERSION = '4.89.72';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18132,6 +18132,18 @@ async function carregarOcorrenciasDistrib(){
         rows.forEach(r=>{ if(r.carga!=null && r.veiculo) _ocorrVeiculoPorCarga[r.carga] = r.veiculo; });
       }
     }catch(e){}
+    // Setor do motivo (Armazém, Comercial, Mercado...): a ocorrência só grava
+    // motivo_id/motivo_nome, o setor mora em motivos_devolucao. Tabela pequena
+    // (cadastro), traz inclusive os inativos pra ocorrência antiga continuar com setor.
+    _ocorrSetorPorMotivo = { id:{}, nome:{} };
+    try{
+      const rows = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500',{_quiet:true}) || [];
+      rows.forEach(m=>{
+        if(!m.setor) return;
+        _ocorrSetorPorMotivo.id[m.id] = m.setor;
+        _ocorrSetorPorMotivo.nome[String(m.nome||'').trim().toLowerCase()] = m.setor;
+      });
+    }catch(e){}
 
     _atualizarBadgeOcorr();
     renderOcorrenciasDistrib();
@@ -18197,6 +18209,21 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
 
   el.innerHTML = dados.map(o=>{
     const tc = tipoCfg[o.tipo] || tipoCfg.outro;
+    // Selo em destaque ao lado do pedido = SETOR do motivo (Armazém, Comercial,
+    // Mercado...), e não mais o tipo de OTIF (Inversão, Falta...). Pedido do
+    // usuário, 2026-10-21. Ocorrência sem motivo cadastrado (ou com motivo que
+    // não existe mais) mantém o selo de tipo, pra não ficar sem nada.
+    const setorKey = _ocorrSetorPorMotivo.id[o.motivo_id] || _ocorrSetorPorMotivo.nome[String(o.motivo_nome||'').trim().toLowerCase()] || null;
+    const setorCor = {
+      armazem:      { bg:'#dbeafe', color:'#1e40af' },
+      comercial:    { bg:'#ede9fe', color:'#5b21b6' },
+      mercado:      { bg:'#d1fae5', color:'#065f46' },
+      distribuicao: { bg:'#ffedd5', color:'#9a3412' },
+      logistica:    { bg:'#e0f2fe', color:'#075985' },
+    }[setorKey] || { bg:'#f3f4f6', color:'#374151' };
+    const seloDestaque = setorKey
+      ? { label: (typeof MOTIVO_DEVOLUCAO_SETOR_LABEL!=='undefined' && MOTIVO_DEVOLUCAO_SETOR_LABEL[setorKey]) || setorKey, bg:setorCor.bg, color:setorCor.color }
+      : tc;
     const isPend = o.status === 'pendente';
     // Valor, conferente e veículo não são colunas da ocorrência — vêm dos
     // lookups em lote montados em carregarOcorrenciasDistrib(). Conferente
@@ -18232,7 +18259,7 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
       <div style="flex:1;min-width:200px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
           <span style="font-weight:800;font-size:.95rem;color:var(--text-primary)">Pedido #${o.pedido}</span>
-          <span style="font-size:.72rem;font-weight:700;background:${tc.bg};color:${tc.color};padding:2px 8px;border-radius:10px">${tc.label}</span>
+          <span style="font-size:.72rem;font-weight:700;background:${seloDestaque.bg};color:${seloDestaque.color};padding:2px 8px;border-radius:10px">${escapeHtml(seloDestaque.label)}</span>
           ${o.motivo_nome?`<span style="font-size:.72rem;font-weight:700;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px">↩️ ${escapeHtml(o.motivo_nome)}</span>`:''}
           ${o.tipo_devolucao?`<span style="font-size:.72rem;font-weight:600;background:var(--bg-card2);color:var(--text-secondary);padding:2px 8px;border-radius:10px">${o.tipo_devolucao==='total'?'Devolução total':'Devolução parcial'}</span>`:''}
           ${o.rota?`<span style="font-size:.72rem;font-weight:600;background:var(--bg-card2);color:var(--text-secondary);padding:2px 8px;border-radius:10px">${escapeHtml(o.rota)}</span>`:''}
@@ -18413,6 +18440,7 @@ function _popularSelectRotaOcorr(){
 
 // ── Motivos de devolução: select agrupado por setor ──
 let _ocorrMotivosCache = [];
+let _ocorrSetorPorMotivo = { id:{}, nome:{} };   // motivo → setor, usado no selo da lista de ocorrências
 
 async function _ocorrCarregarMotivosSelect(){
   const sel = document.getElementById('l-ocorr-motivo');

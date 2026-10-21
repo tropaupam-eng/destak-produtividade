@@ -21,6 +21,21 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-21, Gabriel: Ocorrências (Distribuição) — selo em destaque mostra o setor do motivo
+Onde: `index.html`: `_renderOcorrenciasGeneric` (selo ao lado de "Pedido #..."), `carregarOcorrenciasDistrib`
+(lê `motivos_devolucao` uma vez por carga da lista, só `id,nome,setor`), variável nova `_ocorrSetorPorMotivo`.
+`version.json` e `APP_VERSION` 4.89.71 → 4.89.72.
+Por quê: pedido do Gabriel. O primeiro selo mostrava o tipo de OTIF (Inversão, Falta, Erro do Vendedor...);
+agora mostra o setor do motivo (📦 Armazém, 💼 Comercial, 🏪 Mercado, 🚚 Distribuição, 🚛 Logística), com os
+mesmos nomes do select do formulário. O segundo selo (↩️ nome do motivo) continua igual.
+Ocorrência sem motivo gravado (ou com motivo que não existe mais) mantém o selo de tipo, pra não ficar sem nada.
+Setor vem do cadastro de motivos (por `motivo_id`, e pelo nome quando não há id): nenhuma coluna nova e nenhum
+dado alterado. Na leitura de 20/10: 83 das 86 ocorrências resolvem setor; 3 não têm motivo e ficam com o tipo.
+O campo `tipo` continua sendo gravado e usado normalmente pelo OTIF; só deixou de aparecer nesse selo.
+Sem dinheiro, pagamento nem banco estrutural.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar.
+
 ## 2026-10-20, Gabriel: Absenteísmo — botão "Limpar filtros" nas barras semanais e mensais
 Onde: `index.html`: `renderRelatorioAbsenteismo` (cabeçalho EVOLUÇÃO SEMANAL), `_renderCardVisaoAnualPercentual`
 (cabeçalho EVOLUÇÃO MENSAL), helper novo `_absBtnLimparFiltros`, e `baixarImagemRelatorio` (a linha
