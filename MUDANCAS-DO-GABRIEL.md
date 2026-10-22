@@ -21,6 +21,22 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-22, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial
+Onde: `index.html`: formulário "Registrar Ocorrência": `_ocorrAtualizarItensUI` (coluna nova "Valor unit. (R$) *"
+em cada produto), `_ocorrToggleItemQtd`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`; helpers novos
+`_ocorrPrecoItem` e `_ocorrMarcarPrecoVazio`. `version.json` e `APP_VERSION` 4.89.72 → 4.89.73.
+Por quê: pedido do Gabriel. Desde 18/09 quase todo item do ERP chega sem preço unitário (100% em outubro), e a
+ocorrência acabava mostrando "(valor do pedido)", que superestima a devolução parcial. Agora, na devolução
+PARCIAL, cada produto marcado tem um campo de valor unitário OBRIGATÓRIO: vem pré-preenchido quando o ERP tem o
+preço e vazio quando não tem. Sem valor (ou valor 0) o sistema não registra, destaca o campo em vermelho e avisa
+qual produto falta. O "Valor a devolver" do formulário atualiza ao digitar. O valor digitado é gravado em
+`ocorrencias_distribuicao_itens.valor_unitario` e o total em `ocorrencias_distribuicao.valor_devolvido`
+(colunas que já existiam; nenhuma coluna nova). Valores gravados em centavos (arredondados).
+Devolução TOTAL não mudou. As 41 ocorrências parciais antigas sem valor NÃO mudam sozinhas.
+Sem mudança de estrutura de banco. Causa raiz (preço não chega do ERP) segue pendente com o Daniel.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. O valor depende de digitação.
+
 ## 2026-10-21, Gabriel: Ocorrências (Distribuição) — selo em destaque mostra o setor do motivo
 Onde: `index.html`: `_renderOcorrenciasGeneric` (selo ao lado de "Pedido #..."), `carregarOcorrenciasDistrib`
 (lê `motivos_devolucao` uma vez por carga da lista, só `id,nome,setor`), variável nova `_ocorrSetorPorMotivo`.
