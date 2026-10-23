@@ -31,6 +31,10 @@ Por quê: pedido do Gabriel. Duas roscas com as ocorrências de Distribuição �
 (Armazém, Distribuição, Comercial, Mercado, Logística, mais "Sem motivo") e (2) motivos de devolução (os 5 maiores
 + "Outros"; a tabela ao lado lista todos). Filtro de período: todo o período, últimos 30 dias ou um mês. Número
 total no centro, tooltip com quantidade e %, legenda em forma de tabela.
+Formato (pedido do Gabriel, referência de um gráfico do Power BI): rosca grossa, só a PORCENTAGEM (2 casas) de
+cada fatia escrita fora do anel com linha de ligação, legenda (bolinha + nome) à direita, sem número no centro
+(o total fica no topo); a tabela com quantidades continua abaixo de cada rosca. Rótulos vizinhos são afastados
+pra não se sobrepor. Conferido numa tela de teste com o código real e os dados reais, no tema escuro e no claro.
 Cores: paleta categórica validada (script de validação passou nos dois temas, nas superfícies reais do app);
 cada setor tem sempre a mesma cor; rosca com no máximo 6 fatias.
 Só LEITURA: lê `ocorrencias_distribuicao` (id, motivo_id, motivo_nome, criado_em) e `motivos_devolucao` (id, nome,

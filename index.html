@@ -3286,17 +3286,23 @@ body.light-theme{
     </div>
   </div>
   <div id="devol-msg" style="display:none;text-align:center;padding:40px;color:var(--text-muted);font-size:.9rem"></div>
-  <div id="devol-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:20px">
+  <div id="devol-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:20px">
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
       <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos por setor</div>
       <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Setor responsável pelo motivo da devolução</div>
-      <div style="position:relative;height:250px"><canvas id="devol-chart-setor" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por setor do motivo"></canvas></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="position:relative;flex:1 1 300px;min-width:280px;height:280px"><canvas id="devol-chart-setor" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por setor do motivo"></canvas></div>
+        <div id="devol-leg-setor" style="flex:0 1 190px;min-width:150px"></div>
+      </div>
       <div id="devol-legenda-setor" style="margin-top:14px"></div>
     </div>
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
       <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos de devolução</div>
       <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Os 5 motivos mais frequentes; os demais ficam em “Outros” e aparecem na tabela</div>
-      <div style="position:relative;height:250px"><canvas id="devol-chart-motivo" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por motivo"></canvas></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="position:relative;flex:1 1 300px;min-width:280px;height:280px"><canvas id="devol-chart-motivo" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por motivo"></canvas></div>
+        <div id="devol-leg-motivo" style="flex:0 1 190px;min-width:150px"></div>
+      </div>
       <div id="devol-legenda-motivo" style="margin-top:14px"></div>
     </div>
   </div>
@@ -25459,7 +25465,7 @@ function renderDashDevolucao(){
   const superficie = css.getPropertyValue('--bg-card2').trim() || (tema==='claro' ? '#f0f4fc' : '#1c1c28');
   const tinta = css.getPropertyValue('--text-primary').trim() || (tema==='claro' ? '#0b0b0b' : '#f0efec');
   const tintaSec = css.getPropertyValue('--text-secondary').trim() || '#94a3b8';
-  const fmtPct = n => (n/total*100).toFixed(1).replace('.',',')+'%';
+  const fmtPct = n => (n/total*100).toFixed(2).replace('.',',')+'%';
 
   // 1) Motivos por setor — a cor segue o setor.
   const porSetor = {};
@@ -25495,14 +25501,35 @@ function renderDashDevolucao(){
   const somaResto = resto.reduce((s,[,n])=>s+n,0);
   if(somaResto) fatiasMotivo.push({ nome:'Outros', n:somaResto, cor:cinza });
 
-  const centro = {
-    id:'devolCentro',
-    afterDraw(chart){
-      const { ctx, chartArea:a } = chart; if(!a) return;
-      const x = (a.left+a.right)/2, y = (a.top+a.bottom)/2;
-      ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillStyle = tinta; ctx.font = '700 28px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillText(String(total), x, y-8);
-      ctx.fillStyle = tintaSec; ctx.font = '600 11px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillText('ocorrências', x, y+14);
+  // Formato "Power BI": rosca grossa, só a PORCENTAGEM de cada fatia escrita fora do
+  // anel, ligada por uma linha, e a legenda (bolinha + nome) à direita. Pedido do
+  // usuário, 2026-10-23. Os rótulos de fatias vizinhas são afastados pra não se sobrepor.
+  const rotulos = {
+    id:'devolRotulos',
+    afterDatasetsDraw(chart){
+      const meta = chart.getDatasetMeta(0); if(!meta || !meta.data.length) return;
+      const { ctx } = chart; const LH = 15, ELBOW = 14, GAP = 10;
+      const itens = meta.data.map((arc,i)=>{
+        const ang = (arc.startAngle+arc.endAngle)/2, cos = Math.cos(ang), sin = Math.sin(ang);
+        return { i, side: cos>=0 ? 1 : -1,
+          x0: arc.x+cos*arc.outerRadius, y0: arc.y+sin*arc.outerRadius,
+          x1: arc.x+cos*(arc.outerRadius+ELBOW), y1: arc.y+sin*(arc.outerRadius+ELBOW), ly: 0 };
+      });
+      [1,-1].forEach(side=>{
+        const lado = itens.filter(t=>t.side===side).sort((a,b)=>a.y1-b.y1);
+        lado.forEach((t,k)=>{ t.ly = t.y1; if(k && t.ly < lado[k-1].ly+LH) t.ly = lado[k-1].ly+LH; });
+        const maxY = chart.height-8;                       // se empurrou demais pra baixo, sobe de volta
+        for(let k=lado.length-1;k>=0;k--){ const lim = k===lado.length-1 ? maxY : lado[k+1].ly-LH; if(lado[k].ly>lim) lado[k].ly = lim; }
+      });
+      ctx.save(); ctx.font = '600 12px "Segoe UI",system-ui,Arial,sans-serif'; ctx.textBaseline='middle';
+      ctx.lineWidth = 1; ctx.strokeStyle = tintaSec; ctx.fillStyle = tinta;
+      itens.forEach(t=>{
+        const n = chart.data.datasets[0].data[t.i];
+        const xl = t.x1 + t.side*GAP;
+        ctx.beginPath(); ctx.moveTo(t.x0,t.y0); ctx.lineTo(t.x1,t.y1); ctx.lineTo(xl,t.ly); ctx.stroke();
+        ctx.textAlign = t.side>0 ? 'left' : 'right';
+        ctx.fillText(fmtPct(n), xl + t.side*4, t.ly);
+      });
       ctx.restore();
     }
   };
@@ -25512,15 +25539,23 @@ function renderDashDevolucao(){
     canvas.setAttribute('aria-label', 'Gráfico de rosca: ' + fatias.map(f=>f.nome+' '+f.n+' ('+fmtPct(f.n)+')').join('; '));
     _devolCharts[chave] = new Chart(canvas, {
       type:'doughnut',
-      data:{ labels:fatias.map(f=>f.nome), datasets:[{ data:fatias.map(f=>f.n), backgroundColor:fatias.map(f=>f.cor), borderColor:superficie, borderWidth:2, hoverOffset:6 }] },
-      options:{ responsive:true, maintainAspectRatio:false, cutout:'62%',
+      data:{ labels:fatias.map(f=>f.nome), datasets:[{ data:fatias.map(f=>f.n), backgroundColor:fatias.map(f=>f.cor), borderColor:superficie, borderWidth:2, hoverOffset:4 }] },
+      options:{ responsive:true, maintainAspectRatio:false, cutout:'55%',
+        layout:{ padding:{ left:70, right:70, top:22, bottom:22 } },
         plugins:{ legend:{display:false},
-          tooltip:{ callbacks:{ label: c => ' '+c.label+': '+c.raw+' ('+fmtPct(c.raw)+')' } } } },
-      plugins:[centro]
+          tooltip:{ callbacks:{ label: c => ' '+c.label+': '+c.raw+' ocorrência'+(c.raw===1?'':'s')+' ('+fmtPct(c.raw)+')' } } } },
+      plugins:[rotulos]
     });
   };
   desenhar('setor',  'devol-chart-setor',  fatiasSetor);
   desenhar('motivo', 'devol-chart-motivo', fatiasMotivo);
+
+  // Legenda à direita da rosca: título + bolinha colorida e nome (a quantidade fica na tabela abaixo).
+  const legenda = (titulo, fatias) => `<div style="font-size:.85rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">${titulo}</div>` +
+    fatias.map(f=>`<div style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;font-size:.8rem;color:var(--text-secondary);line-height:1.3">
+      <span style="width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:3px;background:${f.cor}"></span><span style="min-width:0">${escapeHtml(f.nome)}</span></div>`).join('');
+  const legSetor = document.getElementById('devol-leg-setor');   if(legSetor)  legSetor.innerHTML  = legenda('Setor', fatiasSetor);
+  const legMotivo = document.getElementById('devol-leg-motivo'); if(legMotivo) legMotivo.innerHTML = legenda('Motivo', fatiasMotivo);
 
   // Legendas em forma de tabela (identidade nunca só por cor): nome em tinta de texto,
   // quadradinho colorido ao lado.
