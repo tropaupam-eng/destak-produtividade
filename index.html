@@ -3316,6 +3316,20 @@ body.light-theme{
       </div>
     </div>
   </div>
+  <div id="devol-grid2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:20px;margin-top:20px">
+    <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
+      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Erros por conferente</div>
+      <div id="devol-sub-conf" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Ocorrências cujo motivo é do setor Armazém</div>
+      <div id="devol-msg-conf" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
+      <div id="devol-wrap-conf" style="position:relative;height:260px"><canvas id="devol-chart-conf" role="img" aria-label="Gráfico de barras horizontais: erros do Armazém por conferente"></canvas></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
+      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Erros por vendedor</div>
+      <div id="devol-sub-vend" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial</div>
+      <div id="devol-msg-vend" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
+      <div id="devol-wrap-vend" style="position:relative;height:340px"><canvas id="devol-chart-vend" role="img" aria-label="Gráfico de barras verticais: erros por vendedor"></canvas></div>
+    </div>
+  </div>
 </div></div>
 
 <!-- ══ DASHBOARD INTERNA ══ -->
@@ -25409,16 +25423,22 @@ const DEVOL_SETORES = {   // slot fixo por setor: a cor acompanha o setor, não 
 let _devolOcorr = [];
 let _devolMotivos = { id:{}, nome:{} };
 let _devolCharts = { setor:null, motivo:null };
+let _devolPedVend = {};      // pedido -> código do vendedor (só dos pedidos com os 3 motivos de "Erros por vendedor")
+let _devolNomeVend = {};     // código do vendedor -> nome
+// Motivos que entram em "Erros por vendedor" (comparados por nome, sem diferenciar maiúsculas/espaços).
+const DEVOL_MOTIVOS_VENDEDOR = ['forma de pagamento incorreto', 'pedido digitado com a quantidade incorreta', 'pedido duplicado - comercial'];
+function _devolEhMotivoVendedor(o){ return DEVOL_MOTIVOS_VENDEDOR.includes(String(o.motivo_nome||'').trim().toLowerCase()); }
 let _devolSetorSel = null;   // setor clicado em "Motivos por setor" (filtra "Motivos de devolução")
 
 async function carregarDashDevolucao(){
   _devolSetorSel = null;
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
+  const grid2 = document.getElementById('devol-grid2');
   if(msg){ msg.style.display=''; msg.textContent='Carregando...'; }
-  if(grid) grid.style.display='none';
+  if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none';
   try{
-    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000') || [];
+    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,conferente,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000') || [];
     const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
     _devolMotivos = { id:{}, nome:{} };
     motivos.forEach(m=>{
@@ -25435,6 +25455,24 @@ async function carregarDashDevolucao(){
       const dia = l ? String(l.getUTCFullYear()).padStart(4,'0')+'-'+String(l.getUTCMonth()+1).padStart(2,'0')+'-'+String(l.getUTCDate()).padStart(2,'0') : '';
       return { ...o, dia };
     });
+
+    // Vendedor dos pedidos com os 3 motivos do gráfico "Erros por vendedor": pedidos_info_erp.vendedor (código),
+    // com base_data.vendedor_cod de reserva; o nome vem do cadastro de usuários (perfil vendedor).
+    _devolPedVend = {}; _devolNomeVend = {};
+    try{
+      const pedidosVend = [...new Set(_devolOcorr.filter(_devolEhMotivoVendedor).map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p)))];
+      for(let i=0;i<pedidosVend.length;i+=150){
+        const rows = await supaFetch('pedidos_info_erp?pedido=in.('+pedidosVend.slice(i,i+150).join(',')+')&select=pedido,vendedor&limit=1000',{_quiet:true}) || [];
+        rows.forEach(r=>{ if(r.vendedor!=null && String(r.vendedor).trim()!=='') _devolPedVend[String(r.pedido).trim()] = String(r.vendedor).trim(); });
+      }
+      const faltam = pedidosVend.filter(p=>!_devolPedVend[p]);
+      for(let i=0;i<faltam.length;i+=150){
+        const rows = await supaFetch('base_data?pedido=in.('+faltam.slice(i,i+150).join(',')+')&select=pedido,vendedor_cod&limit=2000',{_quiet:true}) || [];
+        rows.forEach(r=>{ if(r.vendedor_cod!=null && !_devolPedVend[String(r.pedido).trim()]) _devolPedVend[String(r.pedido).trim()] = String(r.vendedor_cod).trim(); });
+      }
+      const vendedores = await supaFetch('usuarios?perfil=eq.vendedor&select=nome,codigo_vendedor&limit=1000',{_quiet:true}) || [];
+      vendedores.forEach(v=>{ if(v.codigo_vendedor!=null) _devolNomeVend[String(v.codigo_vendedor).trim()] = v.nome; });
+    }catch(e){ console.warn('Dashboard Devolução: não consegui o vendedor dos pedidos:', e.message); }
     renderDashDevolucao();
   }catch(e){
     if(msg){ msg.style.display=''; msg.textContent='Erro ao carregar as ocorrências: '+e.message; }
@@ -25460,6 +25498,7 @@ function devolLimparSetor(){ _devolSetorSel = null; renderDashDevolucao(); }
 function renderDashDevolucao(){
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
+  const grid2 = document.getElementById('devol-grid2');
   const totalEl = document.getElementById('devol-total');
   // Período = data inicial e/ou final (inclusive nas duas pontas); campo vazio = sem limite.
   const iniEl = document.getElementById('devol-data-ini'), fimEl = document.getElementById('devol-data-fim');
@@ -25470,7 +25509,7 @@ function renderDashDevolucao(){
   if(ini && fim && ini > fim){
     if(totalEl) totalEl.textContent = '';
     if(msg){ msg.style.display=''; msg.textContent='A data inicial é maior que a data final. Ajuste o período.'; }
-    if(grid) grid.style.display='none';
+    if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none';
     return;
   }
   // Com data no filtro, ocorrência de data impossível (ex.: registrada em 0026 por erro de digitação) fica
@@ -25482,11 +25521,11 @@ function renderDashDevolucao(){
   if(totalEl) totalEl.textContent = total + ' ocorrência' + (total===1?'':'s');
   if(!total){
     if(msg){ msg.style.display=''; msg.textContent='Nenhuma ocorrência de devolução no período selecionado.'; }
-    if(grid) grid.style.display='none';
+    if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none';
     return;
   }
   if(msg) msg.style.display='none';
-  if(grid) grid.style.display='grid';
+  if(grid) grid.style.display='grid'; if(grid2) grid2.style.display='grid';
   if(typeof Chart==='undefined'){
     if(msg){ msg.style.display=''; msg.textContent='A biblioteca de gráficos ainda não carregou. Atualize a página.'; }
     return;
@@ -25619,6 +25658,92 @@ function renderDashDevolucao(){
   const legMotivo = document.getElementById('devol-leg-motivo'); if(legMotivo) legMotivo.innerHTML = legenda('Motivo', fatiasMotivo, false);
   // As tabelas com quantidade e % que ficavam embaixo das roscas saíram (pedido do usuário, 2026-10-24):
   // a % já está escrita em cada fatia e a quantidade aparece no balão ao passar o mouse.
+
+  // ── Barras (pedido do usuário, 2026-10-26) ──────────────────────────────────────────────
+  // Texto do eixo em até 2 linhas pra caber (nome completo continua no balão).
+  const quebrar = (txt, max) => {
+    const linhas = []; let atual = '';
+    String(txt).split(' ').forEach(p => { if((atual+' '+p).trim().length > max && atual){ linhas.push(atual); atual = p; } else atual = (atual+' '+p).trim(); });
+    if(atual) linhas.push(atual);
+    return linhas.length > 2 ? [linhas[0], linhas.slice(1).join(' ').slice(0, max-1)+'…'] : linhas;
+  };
+  const grade = css.getPropertyValue('--border').trim() || (tema==='claro' ? '#d9deea' : '#2a2a3a');
+  const valorNoFim = (horizontal) => ({
+    id:'devolValorNoFim',
+    afterDatasetsDraw(chart){
+      const { ctx } = chart; ctx.save(); ctx.font = '700 12px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillStyle = tinta;
+      chart.getDatasetMeta(0).data.forEach((barra, i) => {
+        const n = chart.data.datasets[0].data[i];
+        if(horizontal){ ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillText(String(n), barra.x+6, barra.y); }
+        else { ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText(String(n), barra.x, barra.y-4); }
+      });
+      ctx.restore();
+    }
+  });
+  const barras = (chave, canvasId, itens, horizontal, cor) => {
+    const canvas = document.getElementById(canvasId); if(!canvas) return;
+    if(_devolCharts[chave]){ _devolCharts[chave].destroy(); _devolCharts[chave]=null; }
+    canvas.setAttribute('aria-label', 'Gráfico de barras ' + (horizontal?'horizontais':'verticais') + ': ' + itens.map(f=>f.nome+' '+f.n).join('; '));
+    const eixoValor = { beginAtZero:true, ticks:{ precision:0, color:tintaSec, font:{size:11} }, grid:{ color:grade }, border:{ display:false } };
+    const eixoNome = { ticks:{ color:tinta, font:{size:11, weight:'600'}, autoSkip:false }, grid:{ display:false }, border:{ color:grade } };
+    _devolCharts[chave] = new Chart(canvas, {
+      type:'bar',
+      data:{ labels:itens.map(f=>quebrar(f.nome, horizontal?26:13)), datasets:[{ data:itens.map(f=>f.n), backgroundColor:itens.map(f=>f.cinza?cinza:cor), borderRadius:4, borderSkipped:false, maxBarThickness: horizontal?30:46 }] },
+      options:{ indexAxis: horizontal?'y':'x', responsive:true, maintainAspectRatio:false,
+        layout:{ padding: horizontal ? { right:34 } : { top:22 } },
+        scales: horizontal ? { x:eixoValor, y:eixoNome } : { x:eixoNome, y:eixoValor },
+        plugins:{ legend:{display:false},
+          tooltip:{ callbacks:{
+            title: c => itens[c[0].dataIndex].nome,
+            label: c => ' '+c.raw+' erro'+(c.raw===1?'':'s'),
+            afterLabel: c => (itens[c.dataIndex].detalhe||[]).map(([m,q]) => '   '+m+': '+q) } } } },
+      plugins:[valorNoFim(horizontal)]
+    });
+  };
+  const mostrarBarras = (idWrap, idMsg, temDados, msgVazia) => {
+    const w = document.getElementById(idWrap), m = document.getElementById(idMsg);
+    if(w) w.style.display = temDados ? '' : 'none';
+    if(m){ m.style.display = temDados ? 'none' : ''; m.textContent = temDados ? '' : msgVazia; }
+  };
+
+  // 3) Erros por conferente — só ocorrências cujo motivo é do setor Armazém.
+  const dadosArm = dados.filter(o => (_devolSetorDe(o) || 'sem') === 'armazem');
+  const porConf = {};
+  dadosArm.forEach(o => { const k = String(o.conferente||'').trim() || 'Sem conferente registrado'; porConf[k] = (porConf[k]||0)+1; });
+  const itensConf = Object.entries(porConf).sort((a,b) => (a[0]==='Sem conferente registrado') - (b[0]==='Sem conferente registrado') || b[1]-a[1] || a[0].localeCompare(b[0]))
+    .map(([nome,n]) => ({ nome, n, cinza: nome==='Sem conferente registrado' }));
+  const subConf = document.getElementById('devol-sub-conf');
+  if(subConf){
+    const semNome = porConf['Sem conferente registrado'] || 0;
+    subConf.textContent = 'Ocorrências cujo motivo é do setor Armazém: ' + dadosArm.length + (semNome ? ' (' + semNome + ' sem conferente registrado)' : '');
+  }
+  mostrarBarras('devol-wrap-conf', 'devol-msg-conf', itensConf.length > 0, 'Nenhuma ocorrência do Armazém no período.');
+  if(itensConf.length){
+    const wc = document.getElementById('devol-wrap-conf'); if(wc) wc.style.height = Math.max(200, itensConf.length*46 + 50) + 'px';
+    barras('conf', 'devol-chart-conf', itensConf, true, cores[0]);
+  }
+
+  // 4) Erros por vendedor — só os 3 motivos de pedido digitado/pagamento/duplicado; vendedor = vendedor do pedido.
+  const dadosVend = dados.filter(_devolEhMotivoVendedor);
+  const porVend = {};
+  dadosVend.forEach(o => {
+    const cod = _devolPedVend[String(o.pedido||'').trim()];
+    const nome = cod ? (_devolNomeVend[cod] || 'Vendedor cód. ' + cod) : 'Sem vendedor';
+    const v = porVend[nome] || (porVend[nome] = { nome, n:0, motivos:{} });
+    v.n++; const m = String(o.motivo_nome||'').trim(); v.motivos[m] = (v.motivos[m]||0)+1;
+  });
+  let itensVend = Object.values(porVend).sort((a,b) => (a.nome==='Sem vendedor') - (b.nome==='Sem vendedor') || b.n-a.n || a.nome.localeCompare(b.nome))
+    .map(v => ({ nome:v.nome, n:v.n, cinza:v.nome==='Sem vendedor', detalhe:Object.entries(v.motivos).sort((a,b)=>b[1]-a[1]) }));
+  // Com muitos vendedores (período longo) mostra os 14 maiores e junta o resto em "Outros".
+  if(itensVend.length > 15){
+    const topo = itensVend.filter(v=>!v.cinza).slice(0, 14), resto = itensVend.filter(v => !topo.includes(v));
+    const det = {}; resto.forEach(v => v.detalhe.forEach(([m,q]) => { det[m] = (det[m]||0)+q; }));
+    itensVend = [...topo, { nome:'Outros ('+resto.length+' vendedores)', n:resto.reduce((a,v)=>a+v.n,0), cinza:true, detalhe:Object.entries(det).sort((a,b)=>b[1]-a[1]) }];
+  }
+  const subVend = document.getElementById('devol-sub-vend');
+  if(subVend) subVend.textContent = 'Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial: ' + dadosVend.length + ' ocorrência' + (dadosVend.length===1?'':'s');
+  mostrarBarras('devol-wrap-vend', 'devol-msg-vend', itensVend.length > 0, 'Nenhuma ocorrência desses motivos no período.');
+  if(itensVend.length) barras('vend', 'devol-chart-vend', itensVend, false, cores[2]);
 }
 
 // ══ GERENCIAR PERFIS CUSTOMIZADOS ═══════════════════
