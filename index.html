@@ -1943,6 +1943,9 @@ body.light-theme{
   <div class="sidebar-item" data-page="gerot" data-perfil="admin,adm_fiscal,fiscal_admin,adm_distribuicao,adm_armazem,operador,exped_admin" onclick="showPage('gerot',this)">
     <span class="si-icon" data-feather="trending-up"></span><span class="si-label">Gerot</span>
   </div>
+  <div class="sidebar-item" data-page="dash-devolucao" data-perfil="admin,adm_distribuicao,exped_admin,adm_armazem" onclick="showPage('dash-devolucao',this)">
+    <span class="si-icon" data-feather="pie-chart"></span><span class="si-label">Dashboard Devolução</span>
+  </div>
 
   <div class="sidebar-divider"></div>
   <div class="sidebar-section-label">Prevenção</div>
@@ -3265,6 +3268,38 @@ body.light-theme{
     <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
   </div>
 
+</div></div>
+
+<!-- ══ DASHBOARD DEVOLUÇÃO (Análise) — 2026-10-23 ══
+     Fonte: ocorrencias_distribuicao (motivo_id/motivo_nome) + motivos_devolucao (setor).
+     Duas roscas: motivos por setor e motivos de devolução. Só leitura. -->
+<div class="page" id="page-dash-devolucao"><div class="container" style="max-width:1400px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:22px;flex-wrap:wrap;gap:14px">
+    <div>
+      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary)">↩️ Dashboard Devolução</h2>
+      <p style="font-size:.85rem;color:var(--text-secondary);margin-top:4px">Ocorrências de devolução registradas em Distribuição › Ocorrências, por setor e por motivo.</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <label for="devol-periodo" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Período</label>
+      <select id="devol-periodo" onchange="renderDashDevolucao()" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)"></select>
+      <span id="devol-total" style="font-size:.82rem;font-weight:700;color:var(--text-secondary)"></span>
+    </div>
+  </div>
+  <div id="devol-msg" style="display:none;text-align:center;padding:40px;color:var(--text-muted);font-size:.9rem"></div>
+  <div id="devol-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:20px">
+    <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
+      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos por setor</div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Setor responsável pelo motivo da devolução</div>
+      <div style="position:relative;height:250px"><canvas id="devol-chart-setor" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por setor do motivo"></canvas></div>
+      <div id="devol-legenda-setor" style="margin-top:14px"></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
+      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos de devolução</div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Os 5 motivos mais frequentes; os demais ficam em “Outros” e aparecem na tabela</div>
+      <div style="position:relative;height:250px"><canvas id="devol-chart-motivo" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por motivo"></canvas></div>
+      <div id="devol-legenda-motivo" style="margin-top:14px"></div>
+    </div>
+  </div>
 </div></div>
 
 <!-- ══ DASHBOARD INTERNA ══ -->
@@ -9520,7 +9555,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.72';
+const APP_VERSION = '4.89.73';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -24862,6 +24897,7 @@ function showPage(name,tab){
   else if(name==='dashboard') safe(()=>renderDashboard(),'dashboard');
   else if(name==='dash-logistico') safe(()=>renderDashLogistico(),'dash-logistico');
   else if(name==='dash-interna') safe(()=>renderDashInterna(),'dash-interna');
+  else if(name==='dash-devolucao') safe(()=>carregarDashDevolucao(),'dash-devolucao');
   else if(name==='otif-diario') safe(()=>renderOtifDiario(),'otif-diario');
   else if(name==='cadastros') safe(()=>renderCadastros(),'cadastros');
   else if(name==='recursos-humanos') safe(()=>renderRH(),'recursos-humanos');
@@ -25336,6 +25372,177 @@ async function salvarEditarPerfil(){
   }
 }
 
+// ══ DASHBOARD DEVOLUÇÃO (Análise) — 2026-10-23 ═════════════════════
+// Duas roscas sobre ocorrencias_distribuicao: (1) motivos por setor, (2) motivos de
+// devolução. Só leitura. O setor vem de motivos_devolucao (a ocorrência grava
+// motivo_id/motivo_nome). Cores: paleta categórica validada nos dois temas, em ordem
+// fixa; cada setor tem sempre a mesma cor. Rosca com no máximo 6 fatias: os motivos
+// além dos 5 maiores viram "Outros" (cinza) e todos aparecem na tabela ao lado.
+const DEVOL_CORES = {
+  claro:  ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300','#6250d6','#e34948'],
+  escuro: ['#3987e5','#d95926','#199e70','#c98500','#d55181','#008300','#9085e9','#e66767'],
+};
+const DEVOL_CINZA = { claro:'#8a93a6', escuro:'#5d6479' };
+const DEVOL_SETORES = {   // slot fixo por setor: a cor acompanha o setor, não a posição na lista
+  armazem:      { nome:'Armazém',      slot:0 },
+  distribuicao: { nome:'Distribuição', slot:1 },
+  comercial:    { nome:'Comercial',    slot:2 },
+  mercado:      { nome:'Mercado',      slot:3 },
+  logistica:    { nome:'Logística',    slot:4 },
+};
+let _devolOcorr = [];
+let _devolMotivos = { id:{}, nome:{} };
+let _devolCharts = { setor:null, motivo:null };
+
+async function carregarDashDevolucao(){
+  const msg = document.getElementById('devol-msg');
+  const grid = document.getElementById('devol-grid');
+  if(msg){ msg.style.display=''; msg.textContent='Carregando...'; }
+  if(grid) grid.style.display='none';
+  try{
+    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000') || [];
+    const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
+    _devolMotivos = { id:{}, nome:{} };
+    motivos.forEach(m=>{
+      if(!m.setor) return;
+      _devolMotivos.id[m.id] = m.setor;
+      _devolMotivos.nome[String(m.nome||'').trim().toLowerCase()] = m.setor;
+    });
+    _devolOcorr = ocorr.map(o=>({ ...o, mes: (typeof dataLocalBRT==='function' ? dataLocalBRT(o.criado_em) : String(o.criado_em||'').slice(0,10)).slice(0,7) }));
+
+    // Filtro de período: todo o período, últimos 30 dias, ou um mês presente nos dados.
+    const sel = document.getElementById('devol-periodo');
+    if(sel){
+      const atual = sel.value || 'todos';
+      const meses = [...new Set(_devolOcorr.map(o=>o.mes).filter(Boolean))].sort().reverse();
+      const NOMES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+      sel.innerHTML = '<option value="todos">Todo o período</option><option value="30d">Últimos 30 dias</option>' +
+        meses.map(m=>`<option value="${m}">${NOMES[Number(m.slice(5,7))-1]||m.slice(5,7)}/${m.slice(0,4)}</option>`).join('');
+      sel.value = [...sel.options].some(o=>o.value===atual) ? atual : 'todos';
+    }
+    renderDashDevolucao();
+  }catch(e){
+    if(msg){ msg.style.display=''; msg.textContent='Erro ao carregar as ocorrências: '+e.message; }
+  }
+}
+
+// Setor do motivo de uma ocorrência (por id; pelo nome quando não há id). null = sem motivo/setor.
+function _devolSetorDe(o){
+  return _devolMotivos.id[o.motivo_id] || _devolMotivos.nome[String(o.motivo_nome||'').trim().toLowerCase()] || null;
+}
+
+function renderDashDevolucao(){
+  const msg = document.getElementById('devol-msg');
+  const grid = document.getElementById('devol-grid');
+  const totalEl = document.getElementById('devol-total');
+  const periodo = document.getElementById('devol-periodo')?.value || 'todos';
+  let dados = _devolOcorr;
+  if(periodo==='30d'){ const lim = Date.now()-30*86400000; dados = dados.filter(o=>new Date(o.criado_em).getTime()>=lim); }
+  else if(periodo!=='todos'){ dados = dados.filter(o=>o.mes===periodo); }
+  const total = dados.length;
+  if(totalEl) totalEl.textContent = total + ' ocorrência' + (total===1?'':'s');
+  if(!total){
+    if(msg){ msg.style.display=''; msg.textContent='Nenhuma ocorrência de devolução no período.'; }
+    if(grid) grid.style.display='none';
+    return;
+  }
+  if(msg) msg.style.display='none';
+  if(grid) grid.style.display='grid';
+  if(typeof Chart==='undefined'){
+    if(msg){ msg.style.display=''; msg.textContent='A biblioteca de gráficos ainda não carregou. Atualize a página.'; }
+    return;
+  }
+
+  const tema = document.body.classList.contains('light-theme') ? 'claro' : 'escuro';
+  const cores = DEVOL_CORES[tema], cinza = DEVOL_CINZA[tema];
+  const css = getComputedStyle(document.body);
+  const superficie = css.getPropertyValue('--bg-card2').trim() || (tema==='claro' ? '#f0f4fc' : '#1c1c28');
+  const tinta = css.getPropertyValue('--text-primary').trim() || (tema==='claro' ? '#0b0b0b' : '#f0efec');
+  const tintaSec = css.getPropertyValue('--text-secondary').trim() || '#94a3b8';
+  const fmtPct = n => (n/total*100).toFixed(1).replace('.',',')+'%';
+
+  // 1) Motivos por setor — a cor segue o setor.
+  const porSetor = {};
+  dados.forEach(o=>{ const k = _devolSetorDe(o) || 'sem'; porSetor[k] = (porSetor[k]||0)+1; });
+  const fatiasSetor = Object.entries(porSetor).sort((a,b)=>b[1]-a[1]).map(([k,n])=>({
+    nome: k==='sem' ? 'Sem motivo' : (DEVOL_SETORES[k]?.nome || k),
+    n,
+    cor: k==='sem' ? cinza : (DEVOL_SETORES[k] ? cores[DEVOL_SETORES[k].slot] : cinza),
+  }));
+
+  // 2) Motivos de devolução — cor pela posição do motivo no ranking GERAL (todas as
+  // ocorrências, sem filtro), pra não repintar quando o período muda; quem estiver
+  // fora do top 8 geral pega um slot livre.
+  const nomeMotivo = o => String(o.motivo_nome||'').trim() || 'Sem motivo';
+  const geral = {};
+  _devolOcorr.forEach(o=>{ const k = nomeMotivo(o); if(k!=='Sem motivo') geral[k]=(geral[k]||0)+1; });
+  const rankGeral = Object.entries(geral).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+  const porMotivo = {};
+  dados.forEach(o=>{ const k = nomeMotivo(o); porMotivo[k]=(porMotivo[k]||0)+1; });
+  const todosMotivos = Object.entries(porMotivo).sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]));
+  const mostrar = todosMotivos.length <= 6 ? todosMotivos : todosMotivos.slice(0,5);
+  const resto = todosMotivos.length <= 6 ? [] : todosMotivos.slice(5);
+  const slotsUsados = new Set();
+  const corMotivo = {};
+  mostrar.forEach(([k])=>{ const r = rankGeral.indexOf(k); if(k!=='Sem motivo' && r>=0 && r<8){ corMotivo[k]=cores[r]; slotsUsados.add(r); } });
+  mostrar.forEach(([k])=>{
+    if(corMotivo[k]) return;
+    if(k==='Sem motivo'){ corMotivo[k]=cinza; return; }
+    const livre = cores.findIndex((_,i)=>!slotsUsados.has(i));
+    corMotivo[k] = livre>=0 ? cores[livre] : cinza; if(livre>=0) slotsUsados.add(livre);
+  });
+  const fatiasMotivo = mostrar.map(([k,n])=>({ nome:k, n, cor:corMotivo[k] }));
+  const somaResto = resto.reduce((s,[,n])=>s+n,0);
+  if(somaResto) fatiasMotivo.push({ nome:'Outros', n:somaResto, cor:cinza });
+
+  const centro = {
+    id:'devolCentro',
+    afterDraw(chart){
+      const { ctx, chartArea:a } = chart; if(!a) return;
+      const x = (a.left+a.right)/2, y = (a.top+a.bottom)/2;
+      ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle = tinta; ctx.font = '700 28px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillText(String(total), x, y-8);
+      ctx.fillStyle = tintaSec; ctx.font = '600 11px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillText('ocorrências', x, y+14);
+      ctx.restore();
+    }
+  };
+  const desenhar = (chave, canvasId, fatias) => {
+    const canvas = document.getElementById(canvasId); if(!canvas) return;
+    if(_devolCharts[chave]){ _devolCharts[chave].destroy(); _devolCharts[chave]=null; }
+    canvas.setAttribute('aria-label', 'Gráfico de rosca: ' + fatias.map(f=>f.nome+' '+f.n+' ('+fmtPct(f.n)+')').join('; '));
+    _devolCharts[chave] = new Chart(canvas, {
+      type:'doughnut',
+      data:{ labels:fatias.map(f=>f.nome), datasets:[{ data:fatias.map(f=>f.n), backgroundColor:fatias.map(f=>f.cor), borderColor:superficie, borderWidth:2, hoverOffset:6 }] },
+      options:{ responsive:true, maintainAspectRatio:false, cutout:'62%',
+        plugins:{ legend:{display:false},
+          tooltip:{ callbacks:{ label: c => ' '+c.label+': '+c.raw+' ('+fmtPct(c.raw)+')' } } } },
+      plugins:[centro]
+    });
+  };
+  desenhar('setor',  'devol-chart-setor',  fatiasSetor);
+  desenhar('motivo', 'devol-chart-motivo', fatiasMotivo);
+
+  // Legendas em forma de tabela (identidade nunca só por cor): nome em tinta de texto,
+  // quadradinho colorido ao lado.
+  const linha = (cor, nome, n, destaque) => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--border);font-size:.84rem">
+      <span style="width:12px;height:12px;border-radius:3px;flex-shrink:0;background:${cor||'transparent'};${cor?'':'border:1px dashed var(--text-muted);'}"></span>
+      <span style="flex:1;min-width:0;color:var(--text-primary);${destaque?'font-weight:700':''}">${escapeHtml(nome)}</span>
+      <span style="color:var(--text-primary);font-weight:700;min-width:34px;text-align:right">${n}</span>
+      <span style="color:var(--text-secondary);min-width:52px;text-align:right">${fmtPct(n)}</span>
+    </div>`;
+  const elSetor = document.getElementById('devol-legenda-setor');
+  if(elSetor) elSetor.innerHTML = fatiasSetor.map(f=>linha(f.cor, f.nome, f.n, true)).join('');
+  const elMotivo = document.getElementById('devol-legenda-motivo');
+  if(elMotivo){
+    // Tabela completa: os motivos mostrados na rosca (com a cor) e, abaixo, os que ficaram em "Outros".
+    elMotivo.innerHTML = fatiasMotivo.filter(f=>f.nome!=='Outros').map(f=>linha(f.cor, f.nome, f.n, true)).join('')
+      + (somaResto ? linha(cinza, 'Outros ('+resto.length+' motivos)', somaResto, true)
+          + resto.map(([k,n])=>`<div style="display:flex;align-items:center;gap:10px;padding:4px 0 4px 22px;font-size:.78rem;color:var(--text-secondary)">
+              <span style="flex:1;min-width:0">${escapeHtml(k)}</span><span style="min-width:34px;text-align:right">${n}</span><span style="min-width:52px;text-align:right">${fmtPct(n)}</span></div>`).join('')
+        : '');
+  }
+}
+
 // ══ GERENCIAR PERFIS CUSTOMIZADOS ═══════════════════
 window._perfisCustom = [];
 
@@ -25350,6 +25557,7 @@ const PAGINAS = {
   dashboard:                  {label:'Dashboard',           icon:'📊'},
   'dash-logistico':           {label:'Dashboard Logístico', icon:'📊'},
   'dash-interna':             {label:'Dashboard Interna',   icon:'📦'},
+  'dash-devolucao':           {label:'Dashboard Devolução', icon:'↩️'},
   'painel-indicadores':       {label:'Painel de Indicadores',icon:'📊'},
   'otif-diario':              {label:'OTIF Diário',         icon:'🎯'},
   historico:                  {label:'Histórico',            icon:'📁'},
@@ -25404,6 +25612,7 @@ const PAGINAS_GRUPOS = [
     ['dashboard',    '📊 Dashboard'],
     ['dash-logistico', '📊 Dashboard Logístico'],
     ['dash-interna', '📦 Dashboard Interna'],
+    ['dash-devolucao', '↩️ Dashboard Devolução'],
     ['painel-indicadores', '📊 Painel de Indicadores'],
     ['otif-diario',  '🎯 OTIF Diário'],
     ['historico',    '📁 Histórico'],
@@ -25477,9 +25686,9 @@ const PAGINAS_GRUPOS = [
 // divergir: o que aparece na tela É o que é aplicado.
 const PERFIS_PADRAO_SISTEMA = [
   {key:'admin',           label:'👑 Admin',               cor:'#7c3aed', desc:'Acesso total ao sistema',                                          get paginas(){ return Object.keys(PAGINAS); }},
-  {key:'adm_distribuicao',label:'📦 ADM Distribuição',    cor:'#2563eb', desc:'Gestão completa da distribuição',                                  paginas:['dashboard','dash-logistico','dash-interna','historico','geral','financeiro','gerot','cftv','expedicao','ocorrencias','pedidos-atrasados','pedidos-sem-carga','carregamento','lancamento','agendamento','motoristas','veiculos','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','absenteismo','cadastros','recursos-humanos','datas-entrega']},
-  {key:'exped_admin',     label:'🚚 Expedição Admin',     cor:'#2563eb', desc:'Gestão de expedição com frota e armazém',                          paginas:['dashboard','dash-logistico','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','pedidos-atrasados','pedidos-sem-carga','carregamento','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','armazem','absenteismo','abs-expedicao','datas-entrega','painel-indicadores']},
-  {key:'adm_armazem',     label:'🏭 ADM Armazém',         cor:'#d97706', desc:'Gestão completa do armazém',                                       paginas:['dashboard','dash-logistico','dash-interna','historico','geral','gerot','cftv','motoristas','veiculos','armazem','abs-expedicao','abs-recebimento-armazenagem','abastecimento-loja','receitas-armazem','erro-conferente','cadastros','recursos-humanos','painel-indicadores']},
+  {key:'adm_distribuicao',label:'📦 ADM Distribuição',    cor:'#2563eb', desc:'Gestão completa da distribuição',                                  paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','historico','geral','financeiro','gerot','cftv','expedicao','ocorrencias','pedidos-atrasados','pedidos-sem-carga','carregamento','lancamento','agendamento','motoristas','veiculos','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','absenteismo','cadastros','recursos-humanos','datas-entrega']},
+  {key:'exped_admin',     label:'🚚 Expedição Admin',     cor:'#2563eb', desc:'Gestão de expedição com frota e armazém',                          paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','motoristas','veiculos','lancamento','expedicao','ocorrencias','pedidos-atrasados','pedidos-sem-carga','carregamento','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','armazem','absenteismo','abs-expedicao','datas-entrega','painel-indicadores']},
+  {key:'adm_armazem',     label:'🏭 ADM Armazém',         cor:'#d97706', desc:'Gestão completa do armazém',                                       paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','historico','geral','gerot','cftv','motoristas','veiculos','armazem','abs-expedicao','abs-recebimento-armazenagem','abastecimento-loja','receitas-armazem','erro-conferente','cadastros','recursos-humanos','painel-indicadores']},
   {key:'adm_fiscal',      label:'📊 ADM Fiscal',          cor:'#059669', desc:'Gestão completa da área fiscal',                                   paginas:['dashboard','dash-logistico','fiscal','gestao-fiscal','seguros','caixa','motoristas','veiculos','geral','financeiro','gerot','cftv','historico','cadastros']},
   {key:'fiscal_admin',    label:'📋 Fiscal Admin',        cor:'#0891b2', desc:'Administração fiscal',                                             paginas:['dashboard','dash-logistico','fiscal','gestao-fiscal','seguros','motoristas','veiculos','geral','financeiro','gerot','cftv','historico']},
   {key:'fiscal_op',       label:'📋 Fiscal Operacional',  cor:'#0891b2', desc:'Operação fiscal — lançar NFs',                                     paginas:['dashboard','fiscal']},

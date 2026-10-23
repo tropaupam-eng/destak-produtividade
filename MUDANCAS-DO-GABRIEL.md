@@ -21,6 +21,26 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-23, Gabriel: nova aba "Dashboard Devolução" em Análise (duas roscas)
+Onde: `index.html`: item novo no menu Análise (`data-page="dash-devolucao"`, depois do Gerot); página
+`page-dash-devolucao`; `showPage` (rota nova); funções novas `carregarDashDevolucao`, `renderDashDevolucao`,
+`_devolSetorDe` e as constantes `DEVOL_*`; permissão: `PAGINAS`, `PAGINAS_GRUPOS` e as listas padrão de
+`PERFIS_PADRAO_SISTEMA` de adm_distribuicao, exped_admin e adm_armazem (admin vê tudo). `version.json` e
+`APP_VERSION` 4.89.72 → 4.89.73.
+Por quê: pedido do Gabriel. Duas roscas com as ocorrências de Distribuição › Ocorrências: (1) motivos por setor
+(Armazém, Distribuição, Comercial, Mercado, Logística, mais "Sem motivo") e (2) motivos de devolução (os 5 maiores
++ "Outros"; a tabela ao lado lista todos). Filtro de período: todo o período, últimos 30 dias ou um mês. Número
+total no centro, tooltip com quantidade e %, legenda em forma de tabela.
+Cores: paleta categórica validada (script de validação passou nos dois temas, nas superfícies reais do app);
+cada setor tem sempre a mesma cor; rosca com no máximo 6 fatias.
+Só LEITURA: lê `ocorrencias_distribuicao` (id, motivo_id, motivo_nome, criado_em) e `motivos_devolucao` (id, nome,
+setor). Nenhuma coluna nova, nenhum dado alterado, sem dinheiro.
+Observação de dado: existe uma ocorrência com a data de registro no ano 0026 (erro de digitação); ela aparece como
+um período "out/0026" no filtro e conta em "Todo o período". Não corrigi (seria alterar dado de produção).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Perfis com permissão customizada em
+Cadastro › Perfis podem precisar marcar a página nova.
+
 ## 2026-10-21, Gabriel: Ocorrências (Distribuição) — selo em destaque mostra o setor do motivo
 Onde: `index.html`: `_renderOcorrenciasGeneric` (selo ao lado de "Pedido #..."), `carregarOcorrenciasDistrib`
 (lê `motivos_devolucao` uma vez por carga da lista, só `id,nome,setor`), variável nova `_ocorrSetorPorMotivo`.
