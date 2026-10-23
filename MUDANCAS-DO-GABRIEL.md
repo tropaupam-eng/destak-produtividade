@@ -33,6 +33,8 @@ Por quê: pedido do Gabriel. Duas roscas com as ocorrências de Distribuição �
 lugar do seletor de período); vazio = sem limite, as duas pontas são inclusivas, a data da ocorrência é a de
 Brasília, intervalo invertido mostra aviso, botão "Limpar datas" aparece quando há data. Com data no filtro,
 ocorrência de data impossível (ano 0026) fica de fora; sem filtro, conta no total. Tooltip com quantidade e %.
+Os campos de data usam `color-scheme` escuro (claro no tema claro) pra o ícone do calendário aparecer branco, e
+não preto, no tema escuro. Só nesses dois campos; os outros campos de data do app não foram mexidos.
 Formato (pedido do Gabriel, referência de um gráfico do Power BI): rosca grossa, só a PORCENTAGEM (2 casas) de
 cada fatia escrita fora do anel com linha de ligação, legenda (bolinha + nome) à direita, sem número no centro
 (o total fica no topo); a tabela com quantidades continua abaixo de cada rosca. Rótulos vizinhos são afastados
