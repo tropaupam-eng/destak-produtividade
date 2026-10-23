@@ -33,6 +33,13 @@ de novo na mesma fatia, ou em "Limpar filtros", volta ao total. "Sem motivo" tam
 com o filtro de datas (se o setor não tem ocorrência no período novo, a seleção é solta) e zera ao reabrir a aba.
 Cada motivo mantém a mesma cor com e sem filtro. Só leitura: nenhuma consulta nova, nenhum dado alterado.
 Como desfazer: `git revert` do commit desta entrada.
+Erro meu, achado no teste local do Gabriel e corrigido antes de publicar (nunca foi pra `main`): o 1º commit desta
+entrada (9ac4e33) redesenhava as roscas DENTRO do onClick do próprio gráfico; o Chart.js seguia tratando o clique
+num gráfico já destruído e lançava "Cannot read properties of undefined (reading 'handleEvent')", que o Log de Erros
+registrou como "Script error." (JS Error, página dash-devolucao, usuário Gabriel, 23/10 10:57 e 10:58, versão
+4.89.74, localhost:8080). Correção: o redesenho roda depois do clique (setTimeout 0). Conferido no navegador com
+clique de verdade: sem nenhum erro. Esses 2 registros no Log de Erros são do teste; o Gabriel pode marcá-los como
+resolvidos pelo botão da própria tela.
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
 real e dados reais, com clique de verdade na fatia.
 
