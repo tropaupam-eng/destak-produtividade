@@ -40,6 +40,10 @@ registrou como "Script error." (JS Error, página dash-devolucao, usuário Gabri
 4.89.74, localhost:8080). Correção: o redesenho roda depois do clique (setTimeout 0). Conferido no navegador com
 clique de verdade: sem nenhum erro. Esses 2 registros no Log de Erros são do teste; o Gabriel pode marcá-los como
 resolvidos pelo botão da própria tela.
+Também (pedido do Gabriel, pra aproveitar o espaço): saíram as tabelas com quantidade e % que ficavam embaixo das
+duas roscas, e o gráfico ficou mais alto (280 → 340 px). A % continua escrita em cada fatia e a quantidade aparece
+no balão ao passar o mouse; a seleção de setor segue pela fatia e pela legenda à direita. Efeito conhecido: os
+motivos que ficam dentro de "Outros" deixaram de aparecer listados em algum lugar (antes estavam na tabela).
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
 real e dados reais, com clique de verdade na fatia.
 
