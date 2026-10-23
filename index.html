@@ -3280,8 +3280,11 @@ body.light-theme{
       <p style="font-size:.85rem;color:var(--text-secondary);margin-top:4px">Ocorrências de devolução registradas em Distribuição › Ocorrências, por setor e por motivo.</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <label for="devol-periodo" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Período</label>
-      <select id="devol-periodo" onchange="renderDashDevolucao()" style="border:1px solid var(--border-med);border-radius:8px;padding:7px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)"></select>
+      <label for="devol-data-ini" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data inicial</label>
+      <input type="date" id="devol-data-ini" onchange="renderDashDevolucao()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <label for="devol-data-fim" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data final</label>
+      <input type="date" id="devol-data-fim" onchange="renderDashDevolucao()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <button type="button" id="devol-limpar-datas" onclick="devolLimparDatas()" title="Remove as datas e mostra todo o período" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap">✕ Limpar datas</button>
       <span id="devol-total" style="font-size:.82rem;font-weight:700;color:var(--text-secondary)"></span>
     </div>
   </div>
@@ -25414,22 +25417,25 @@ async function carregarDashDevolucao(){
       _devolMotivos.id[m.id] = m.setor;
       _devolMotivos.nome[String(m.nome||'').trim().toLowerCase()] = m.setor;
     });
-    _devolOcorr = ocorr.map(o=>({ ...o, mes: (typeof dataLocalBRT==='function' ? dataLocalBRT(o.criado_em) : String(o.criado_em||'').slice(0,10)).slice(0,7) }));
-
-    // Filtro de período: todo o período, últimos 30 dias, ou um mês presente nos dados.
-    const sel = document.getElementById('devol-periodo');
-    if(sel){
-      const atual = sel.value || 'todos';
-      const meses = [...new Set(_devolOcorr.map(o=>o.mes).filter(Boolean))].sort().reverse();
-      const NOMES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
-      sel.innerHTML = '<option value="todos">Todo o período</option><option value="30d">Últimos 30 dias</option>' +
-        meses.map(m=>`<option value="${m}">${NOMES[Number(m.slice(5,7))-1]||m.slice(5,7)}/${m.slice(0,4)}</option>`).join('');
-      sel.value = [...sel.options].some(o=>o.value===atual) ? atual : 'todos';
-    }
+    // dia = data da ocorrência no fuso de Brasília (AAAA-MM-DD, ano com 4 dígitos), pra comparar com as
+    // datas do filtro. Não usa dataLocalBRT porque ela não completa o ano com zeros (ano 0026 vira "26-10-15"
+    // e passaria na comparação de texto como se fosse depois de 2026).
+    _devolOcorr = ocorr.map(o=>{
+      const d = new Date(o.criado_em), ok = !isNaN(d);
+      const l = ok ? new Date(d.getTime() - 3*3600000) : null;
+      const dia = l ? String(l.getUTCFullYear()).padStart(4,'0')+'-'+String(l.getUTCMonth()+1).padStart(2,'0')+'-'+String(l.getUTCDate()).padStart(2,'0') : '';
+      return { ...o, dia };
+    });
     renderDashDevolucao();
   }catch(e){
     if(msg){ msg.style.display=''; msg.textContent='Erro ao carregar as ocorrências: '+e.message; }
   }
+}
+
+function devolLimparDatas(){
+  const a = document.getElementById('devol-data-ini'), b = document.getElementById('devol-data-fim');
+  if(a) a.value = ''; if(b) b.value = '';
+  renderDashDevolucao();
 }
 
 // Setor do motivo de uma ocorrência (por id; pelo nome quando não há id). null = sem motivo/setor.
@@ -25441,14 +25447,27 @@ function renderDashDevolucao(){
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
   const totalEl = document.getElementById('devol-total');
-  const periodo = document.getElementById('devol-periodo')?.value || 'todos';
-  let dados = _devolOcorr;
-  if(periodo==='30d'){ const lim = Date.now()-30*86400000; dados = dados.filter(o=>new Date(o.criado_em).getTime()>=lim); }
-  else if(periodo!=='todos'){ dados = dados.filter(o=>o.mes===periodo); }
+  // Período = data inicial e/ou final (inclusive nas duas pontas); campo vazio = sem limite.
+  const iniEl = document.getElementById('devol-data-ini'), fimEl = document.getElementById('devol-data-fim');
+  const ini = iniEl?.value || '', fim = fimEl?.value || '';
+  if(iniEl) iniEl.max = fim; if(fimEl) fimEl.min = ini;   // o seletor de data já bloqueia intervalo invertido
+  const btnLimpar = document.getElementById('devol-limpar-datas');
+  if(btnLimpar) btnLimpar.style.display = (ini || fim) ? '' : 'none';
+  if(ini && fim && ini > fim){
+    if(totalEl) totalEl.textContent = '';
+    if(msg){ msg.style.display=''; msg.textContent='A data inicial é maior que a data final. Ajuste o período.'; }
+    if(grid) grid.style.display='none';
+    return;
+  }
+  // Com data no filtro, ocorrência de data impossível (ex.: registrada em 0026 por erro de digitação) fica
+  // de fora, em vez de cair em qualquer "até"; sem filtro, entra normalmente no total.
+  const dados = (ini || fim)
+    ? _devolOcorr.filter(o => o.dia >= '2000-01-01' && (!ini || o.dia >= ini) && (!fim || o.dia <= fim))
+    : _devolOcorr;
   const total = dados.length;
   if(totalEl) totalEl.textContent = total + ' ocorrência' + (total===1?'':'s');
   if(!total){
-    if(msg){ msg.style.display=''; msg.textContent='Nenhuma ocorrência de devolução no período.'; }
+    if(msg){ msg.style.display=''; msg.textContent='Nenhuma ocorrência de devolução no período selecionado.'; }
     if(grid) grid.style.display='none';
     return;
   }

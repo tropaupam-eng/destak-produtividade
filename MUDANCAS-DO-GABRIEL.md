@@ -29,8 +29,10 @@ Onde: `index.html`: item novo no menu Análise (`data-page="dash-devolucao"`, de
 `APP_VERSION` 4.89.72 → 4.89.73.
 Por quê: pedido do Gabriel. Duas roscas com as ocorrências de Distribuição › Ocorrências: (1) motivos por setor
 (Armazém, Distribuição, Comercial, Mercado, Logística, mais "Sem motivo") e (2) motivos de devolução (os 5 maiores
-+ "Outros"; a tabela ao lado lista todos). Filtro de período: todo o período, últimos 30 dias ou um mês. Número
-total no centro, tooltip com quantidade e %, legenda em forma de tabela.
++ "Outros"; a tabela embaixo lista todos). Período = campos "Data inicial" e "Data final" (pedido do Gabriel, no
+lugar do seletor de período); vazio = sem limite, as duas pontas são inclusivas, a data da ocorrência é a de
+Brasília, intervalo invertido mostra aviso, botão "Limpar datas" aparece quando há data. Com data no filtro,
+ocorrência de data impossível (ano 0026) fica de fora; sem filtro, conta no total. Tooltip com quantidade e %.
 Formato (pedido do Gabriel, referência de um gráfico do Power BI): rosca grossa, só a PORCENTAGEM (2 casas) de
 cada fatia escrita fora do anel com linha de ligação, legenda (bolinha + nome) à direita, sem número no centro
 (o total fica no topo); a tabela com quantidades continua abaixo de cada rosca. Rótulos vizinhos são afastados
