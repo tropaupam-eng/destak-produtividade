@@ -3298,7 +3298,7 @@ body.light-theme{
   <div id="devol-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:20px">
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
       <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos por setor</div>
-      <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Setor responsável pelo motivo da devolução</div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Setor responsável pelo motivo da devolução · clique numa fatia para ver os motivos dele</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <div style="position:relative;flex:1 1 300px;min-width:280px;height:280px"><canvas id="devol-chart-setor" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por setor do motivo"></canvas></div>
         <div id="devol-leg-setor" style="flex:0 1 190px;min-width:150px"></div>
@@ -3306,8 +3306,11 @@ body.light-theme{
       <div id="devol-legenda-setor" style="margin-top:14px"></div>
     </div>
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
-      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos de devolução</div>
-      <div style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Os 5 motivos mais frequentes; os demais ficam em “Outros” e aparecem na tabela</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div id="devol-titulo-motivo" style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos de devolução</div>
+        <button type="button" id="devol-limpar-setor" onclick="devolLimparSetor()" title="Remove a seleção do setor e mostra todos os motivos" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:3px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap">✕ Limpar filtros</button>
+      </div>
+      <div id="devol-sub-motivo" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Os 5 motivos mais frequentes; os demais ficam em “Outros” e aparecem na tabela</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <div style="position:relative;flex:1 1 300px;min-width:280px;height:280px"><canvas id="devol-chart-motivo" role="img" aria-label="Gráfico de rosca: ocorrências de devolução por motivo"></canvas></div>
         <div id="devol-leg-motivo" style="flex:0 1 190px;min-width:150px"></div>
@@ -9570,7 +9573,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.73';
+const APP_VERSION = '4.89.74';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -25408,8 +25411,10 @@ const DEVOL_SETORES = {   // slot fixo por setor: a cor acompanha o setor, não 
 let _devolOcorr = [];
 let _devolMotivos = { id:{}, nome:{} };
 let _devolCharts = { setor:null, motivo:null };
+let _devolSetorSel = null;   // setor clicado em "Motivos por setor" (filtra "Motivos de devolução")
 
 async function carregarDashDevolucao(){
+  _devolSetorSel = null;
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
   if(msg){ msg.style.display=''; msg.textContent='Carregando...'; }
@@ -25448,6 +25453,11 @@ function devolLimparDatas(){
 function _devolSetorDe(o){
   return _devolMotivos.id[o.motivo_id] || _devolMotivos.nome[String(o.motivo_nome||'').trim().toLowerCase()] || null;
 }
+
+// Clicar numa fatia (ou linha) de "Motivos por setor" filtra "Motivos de devolução" pra esse setor;
+// clicar de novo, ou em "Limpar filtros", volta ao total. Pedido do usuário, 2026-10-24.
+function devolSelecionarSetor(chave){ _devolSetorSel = (_devolSetorSel === chave) ? null : chave; renderDashDevolucao(); }
+function devolLimparSetor(){ _devolSetorSel = null; renderDashDevolucao(); }
 
 function renderDashDevolucao(){
   const msg = document.getElementById('devol-msg');
@@ -25490,26 +25500,31 @@ function renderDashDevolucao(){
   const superficie = css.getPropertyValue('--bg-card2').trim() || (tema==='claro' ? '#f0f4fc' : '#1c1c28');
   const tinta = css.getPropertyValue('--text-primary').trim() || (tema==='claro' ? '#0b0b0b' : '#f0efec');
   const tintaSec = css.getPropertyValue('--text-secondary').trim() || '#94a3b8';
-  const fmtPct = n => (n/total*100).toFixed(2).replace('.',',')+'%';
+  const fmtPct = (n, t) => (n/t*100).toFixed(2).replace('.',',')+'%';   // % sobre o total DAQUELE gráfico
 
   // 1) Motivos por setor — a cor segue o setor.
   const porSetor = {};
   dados.forEach(o=>{ const k = _devolSetorDe(o) || 'sem'; porSetor[k] = (porSetor[k]||0)+1; });
+  const nomeSetor = k => k==='sem' ? 'Sem motivo' : (DEVOL_SETORES[k]?.nome || k);
   const fatiasSetor = Object.entries(porSetor).sort((a,b)=>b[1]-a[1]).map(([k,n])=>({
-    nome: k==='sem' ? 'Sem motivo' : (DEVOL_SETORES[k]?.nome || k),
-    n,
+    chave:k, nome:nomeSetor(k), n,
     cor: k==='sem' ? cinza : (DEVOL_SETORES[k] ? cores[DEVOL_SETORES[k].slot] : cinza),
   }));
+  // Setor selecionado que não tem ocorrência no período atual: solta a seleção.
+  if(_devolSetorSel && !porSetor[_devolSetorSel]) _devolSetorSel = null;
+  const sel = _devolSetorSel;
 
-  // 2) Motivos de devolução — cor pela posição do motivo no ranking GERAL (todas as
-  // ocorrências, sem filtro), pra não repintar quando o período muda; quem estiver
-  // fora do top 8 geral pega um slot livre.
+  // 2) Motivos de devolução (só do setor selecionado, quando houver) — cor pela posição do motivo
+  // no ranking GERAL (todas as ocorrências, sem filtro), pra não repintar quando o filtro muda;
+  // quem estiver fora do top 8 geral pega um slot livre.
+  const dadosMotivo = sel ? dados.filter(o => (_devolSetorDe(o) || 'sem') === sel) : dados;
+  const totalMotivo = dadosMotivo.length;
   const nomeMotivo = o => String(o.motivo_nome||'').trim() || 'Sem motivo';
   const geral = {};
   _devolOcorr.forEach(o=>{ const k = nomeMotivo(o); if(k!=='Sem motivo') geral[k]=(geral[k]||0)+1; });
   const rankGeral = Object.entries(geral).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
   const porMotivo = {};
-  dados.forEach(o=>{ const k = nomeMotivo(o); porMotivo[k]=(porMotivo[k]||0)+1; });
+  dadosMotivo.forEach(o=>{ const k = nomeMotivo(o); porMotivo[k]=(porMotivo[k]||0)+1; });
   const todosMotivos = Object.entries(porMotivo).sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]));
   const mostrar = todosMotivos.length <= 6 ? todosMotivos : todosMotivos.slice(0,5);
   const resto = todosMotivos.length <= 6 ? [] : todosMotivos.slice(5);
@@ -25526,10 +25541,20 @@ function renderDashDevolucao(){
   const somaResto = resto.reduce((s,[,n])=>s+n,0);
   if(somaResto) fatiasMotivo.push({ nome:'Outros', n:somaResto, cor:cinza });
 
+  // Título/subtítulo do gráfico de motivos e botão "Limpar filtros" acompanham a seleção.
+  const tituloMotivo = document.getElementById('devol-titulo-motivo');
+  if(tituloMotivo) tituloMotivo.textContent = sel ? 'Motivos de devolução — ' + nomeSetor(sel) : 'Motivos de devolução';
+  const subMotivo = document.getElementById('devol-sub-motivo');
+  if(subMotivo) subMotivo.textContent = sel
+    ? totalMotivo + ' ocorrência' + (totalMotivo===1?'':'s') + ' do setor ' + nomeSetor(sel) + '; as porcentagens são sobre esse total'
+    : 'Os 5 motivos mais frequentes; os demais ficam em “Outros” e aparecem na tabela';
+  const btnSetor = document.getElementById('devol-limpar-setor');
+  if(btnSetor) btnSetor.style.display = sel ? '' : 'none';
+
   // Formato "Power BI": rosca grossa, só a PORCENTAGEM de cada fatia escrita fora do
   // anel, ligada por uma linha, e a legenda (bolinha + nome) à direita. Pedido do
   // usuário, 2026-10-23. Os rótulos de fatias vizinhas são afastados pra não se sobrepor.
-  const rotulos = {
+  const criarRotulos = (t) => ({
     id:'devolRotulos',
     afterDatasetsDraw(chart){
       const meta = chart.getDatasetMeta(0); if(!meta || !meta.data.length) return;
@@ -25548,57 +25573,66 @@ function renderDashDevolucao(){
       });
       ctx.save(); ctx.font = '600 12px "Segoe UI",system-ui,Arial,sans-serif'; ctx.textBaseline='middle';
       ctx.lineWidth = 1; ctx.strokeStyle = tintaSec; ctx.fillStyle = tinta;
-      itens.forEach(t=>{
-        const n = chart.data.datasets[0].data[t.i];
-        const xl = t.x1 + t.side*GAP;
-        ctx.beginPath(); ctx.moveTo(t.x0,t.y0); ctx.lineTo(t.x1,t.y1); ctx.lineTo(xl,t.ly); ctx.stroke();
-        ctx.textAlign = t.side>0 ? 'left' : 'right';
-        ctx.fillText(fmtPct(n), xl + t.side*4, t.ly);
+      itens.forEach(it=>{
+        const n = chart.data.datasets[0].data[it.i];
+        const xl = it.x1 + it.side*GAP;
+        ctx.beginPath(); ctx.moveTo(it.x0,it.y0); ctx.lineTo(it.x1,it.y1); ctx.lineTo(xl,it.ly); ctx.stroke();
+        ctx.textAlign = it.side>0 ? 'left' : 'right';
+        ctx.fillText(fmtPct(n, t), xl + it.side*4, it.ly);
       });
       ctx.restore();
     }
-  };
-  const desenhar = (chave, canvasId, fatias) => {
+  });
+  // clicavel = a rosca de setor: clique na fatia seleciona/solta o setor; as outras fatias esmaecem.
+  const desenhar = (chave, canvasId, fatias, t, clicavel) => {
     const canvas = document.getElementById(canvasId); if(!canvas) return;
     if(_devolCharts[chave]){ _devolCharts[chave].destroy(); _devolCharts[chave]=null; }
-    canvas.setAttribute('aria-label', 'Gráfico de rosca: ' + fatias.map(f=>f.nome+' '+f.n+' ('+fmtPct(f.n)+')').join('; '));
+    canvas.setAttribute('aria-label', 'Gráfico de rosca' + (clicavel ? ' (clique numa fatia para filtrar os motivos)' : '') + ': ' + fatias.map(f=>f.nome+' '+f.n+' ('+fmtPct(f.n,t)+')').join('; '));
+    const esmaecer = f => (clicavel && sel && f.chave!==sel) ? f.cor+'4D' : f.cor;   // 4D = ~30% de opacidade
     _devolCharts[chave] = new Chart(canvas, {
       type:'doughnut',
-      data:{ labels:fatias.map(f=>f.nome), datasets:[{ data:fatias.map(f=>f.n), backgroundColor:fatias.map(f=>f.cor), borderColor:superficie, borderWidth:2, hoverOffset:4 }] },
+      data:{ labels:fatias.map(f=>f.nome), datasets:[{ data:fatias.map(f=>f.n), backgroundColor:fatias.map(esmaecer), borderColor:superficie, borderWidth:2, hoverOffset:4,
+        offset: fatias.map(f=> (clicavel && sel && f.chave===sel) ? 12 : 0) }] },
       options:{ responsive:true, maintainAspectRatio:false, cutout:'55%',
         layout:{ padding:{ left:70, right:70, top:22, bottom:22 } },
+        onClick: clicavel ? (ev, els) => { if(els.length) devolSelecionarSetor(fatias[els[0].index].chave); } : undefined,
+        onHover: clicavel ? (ev, els) => { if(ev.native && ev.native.target) ev.native.target.style.cursor = els.length ? 'pointer' : 'default'; } : undefined,
         plugins:{ legend:{display:false},
-          tooltip:{ callbacks:{ label: c => ' '+c.label+': '+c.raw+' ocorrência'+(c.raw===1?'':'s')+' ('+fmtPct(c.raw)+')' } } } },
-      plugins:[rotulos]
+          tooltip:{ callbacks:{ label: c => ' '+c.label+': '+c.raw+' ocorrência'+(c.raw===1?'':'s')+' ('+fmtPct(c.raw,t)+')' } } } },
+      plugins:[criarRotulos(t)]
     });
   };
-  desenhar('setor',  'devol-chart-setor',  fatiasSetor);
-  desenhar('motivo', 'devol-chart-motivo', fatiasMotivo);
+  desenhar('setor',  'devol-chart-setor',  fatiasSetor,  total,       true);
+  desenhar('motivo', 'devol-chart-motivo', fatiasMotivo, totalMotivo, false);
 
   // Legenda à direita da rosca: título + bolinha colorida e nome (a quantidade fica na tabela abaixo).
-  const legenda = (titulo, fatias) => `<div style="font-size:.85rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">${titulo}</div>` +
-    fatias.map(f=>`<div style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;font-size:.8rem;color:var(--text-secondary);line-height:1.3">
-      <span style="width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:3px;background:${f.cor}"></span><span style="min-width:0">${escapeHtml(f.nome)}</span></div>`).join('');
-  const legSetor = document.getElementById('devol-leg-setor');   if(legSetor)  legSetor.innerHTML  = legenda('Setor', fatiasSetor);
-  const legMotivo = document.getElementById('devol-leg-motivo'); if(legMotivo) legMotivo.innerHTML = legenda('Motivo', fatiasMotivo);
+  // Na de setor, cada item também seleciona o setor (mesmo efeito de clicar na fatia).
+  const legenda = (titulo, fatias, clicavel) => `<div style="font-size:.85rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">${titulo}</div>` +
+    fatias.map(f=>{
+      const ativo = clicavel && sel===f.chave;
+      return `<div ${clicavel?`onclick="devolSelecionarSetor('${f.chave}')" role="button" title="Clique para filtrar os motivos deste setor"`:''} style="display:flex;align-items:flex-start;gap:8px;padding:3px 6px;margin:0 -6px;border-radius:6px;font-size:.8rem;color:${ativo?'var(--text-primary)':'var(--text-secondary)'};${ativo?'font-weight:700;background:var(--bg-hover);':''}line-height:1.3;${clicavel?'cursor:pointer;':''}">
+      <span style="width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:3px;background:${f.cor}"></span><span style="min-width:0">${escapeHtml(f.nome)}</span></div>`;
+    }).join('');
+  const legSetor = document.getElementById('devol-leg-setor');   if(legSetor)  legSetor.innerHTML  = legenda('Setor', fatiasSetor, true);
+  const legMotivo = document.getElementById('devol-leg-motivo'); if(legMotivo) legMotivo.innerHTML = legenda('Motivo', fatiasMotivo, false);
 
   // Legendas em forma de tabela (identidade nunca só por cor): nome em tinta de texto,
-  // quadradinho colorido ao lado.
-  const linha = (cor, nome, n, destaque) => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--border);font-size:.84rem">
+  // quadradinho colorido ao lado. As linhas de setor também são clicáveis.
+  const linha = (cor, nome, n, t, opc = {}) => `<div ${opc.chave?`onclick="devolSelecionarSetor('${opc.chave}')" role="button" title="Clique para filtrar os motivos deste setor"`:''} style="display:flex;align-items:center;gap:10px;padding:6px ${opc.chave?'6px':'0'};${opc.chave?'margin:0 -6px;':''}border-top:1px solid var(--border);font-size:.84rem;${opc.ativo?'background:var(--bg-hover);border-radius:6px;':''}${opc.chave?'cursor:pointer;':''}">
       <span style="width:12px;height:12px;border-radius:3px;flex-shrink:0;background:${cor||'transparent'};${cor?'':'border:1px dashed var(--text-muted);'}"></span>
-      <span style="flex:1;min-width:0;color:var(--text-primary);${destaque?'font-weight:700':''}">${escapeHtml(nome)}</span>
+      <span style="flex:1;min-width:0;color:var(--text-primary);font-weight:700">${escapeHtml(nome)}</span>
       <span style="color:var(--text-primary);font-weight:700;min-width:34px;text-align:right">${n}</span>
-      <span style="color:var(--text-secondary);min-width:52px;text-align:right">${fmtPct(n)}</span>
+      <span style="color:var(--text-secondary);min-width:52px;text-align:right">${fmtPct(n,t)}</span>
     </div>`;
   const elSetor = document.getElementById('devol-legenda-setor');
-  if(elSetor) elSetor.innerHTML = fatiasSetor.map(f=>linha(f.cor, f.nome, f.n, true)).join('');
+  if(elSetor) elSetor.innerHTML = fatiasSetor.map(f=>linha(f.cor, f.nome, f.n, total, { chave:f.chave, ativo:sel===f.chave })).join('');
   const elMotivo = document.getElementById('devol-legenda-motivo');
   if(elMotivo){
     // Tabela completa: os motivos mostrados na rosca (com a cor) e, abaixo, os que ficaram em "Outros".
-    elMotivo.innerHTML = fatiasMotivo.filter(f=>f.nome!=='Outros').map(f=>linha(f.cor, f.nome, f.n, true)).join('')
-      + (somaResto ? linha(cinza, 'Outros ('+resto.length+' motivos)', somaResto, true)
+    elMotivo.innerHTML = fatiasMotivo.filter(f=>f.nome!=='Outros').map(f=>linha(f.cor, f.nome, f.n, totalMotivo)).join('')
+      + (somaResto ? linha(cinza, 'Outros ('+resto.length+' motivos)', somaResto, totalMotivo)
           + resto.map(([k,n])=>`<div style="display:flex;align-items:center;gap:10px;padding:4px 0 4px 22px;font-size:.78rem;color:var(--text-secondary)">
-              <span style="flex:1;min-width:0">${escapeHtml(k)}</span><span style="min-width:34px;text-align:right">${n}</span><span style="min-width:52px;text-align:right">${fmtPct(n)}</span></div>`).join('')
+              <span style="flex:1;min-width:0">${escapeHtml(k)}</span><span style="min-width:34px;text-align:right">${n}</span><span style="min-width:52px;text-align:right">${fmtPct(n,totalMotivo)}</span></div>`).join('')
         : '');
   }
 }

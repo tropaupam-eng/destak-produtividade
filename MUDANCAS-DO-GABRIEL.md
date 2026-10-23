@@ -21,6 +21,21 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-24, Gabriel: Dashboard Devolução — clicar num setor filtra os motivos de devolução
+Onde: `index.html`: `renderDashDevolucao` reescrita (mesma tela, agora com seleção), funções novas
+`devolSelecionarSetor` e `devolLimparSetor`, estado `_devolSetorSel`; no markup, título/subtítulo dinâmicos e o
+botão "Limpar filtros" do card "Motivos de devolução". `version.json` e `APP_VERSION` 4.89.73 → 4.89.74.
+Por quê: pedido do Gabriel. Clicar numa fatia de "Motivos por setor" (ou na legenda, ou na linha da tabela) mostra
+no gráfico "Motivos de devolução" só os motivos daquele setor; o título vira "Motivos de devolução — Comercial",
+o subtítulo diz quantas ocorrências são do setor, e as porcentagens passam a ser sobre o total do setor (somam
+100%). A rosca de setor continua com todos os setores: a fatia escolhida sai do anel e as outras esmaecem. Clicar
+de novo na mesma fatia, ou em "Limpar filtros", volta ao total. "Sem motivo" também seleciona. A seleção convive
+com o filtro de datas (se o setor não tem ocorrência no período novo, a seleção é solta) e zera ao reabrir a aba.
+Cada motivo mantém a mesma cor com e sem filtro. Só leitura: nenhuma consulta nova, nenhum dado alterado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
+real e dados reais, com clique de verdade na fatia.
+
 ## 2026-10-23, Gabriel: nova aba "Dashboard Devolução" em Análise (duas roscas)
 Onde: `index.html`: item novo no menu Análise (`data-page="dash-devolucao"`, depois do Gerot); página
 `page-dash-devolucao`; `showPage` (rota nova); funções novas `carregarDashDevolucao`, `renderDashDevolucao`,
