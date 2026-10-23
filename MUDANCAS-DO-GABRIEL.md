@@ -43,11 +43,14 @@ Cores: paleta categórica validada (script de validação passou nos dois temas,
 cada setor tem sempre a mesma cor; rosca com no máximo 6 fatias.
 Só LEITURA: lê `ocorrencias_distribuicao` (id, motivo_id, motivo_nome, criado_em) e `motivos_devolucao` (id, nome,
 setor). Nenhuma coluna nova, nenhum dado alterado, sem dinheiro.
-Observação de dado: existe uma ocorrência com a data de registro no ano 0026 (erro de digitação); ela aparece como
-um período "out/0026" no filtro e conta em "Todo o período". Não corrigi (seria alterar dado de produção).
-Como desfazer: `git revert` do commit desta entrada.
-Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Perfis com permissão customizada em
-Cadastro › Perfis podem precisar marcar a página nova.
+Observação de dado: existe uma ocorrência com a data de registro no ano 0026 (erro de digitação); com data no
+filtro ela fica de fora, e sem filtro conta no total. Não corrigi (seria alterar dado de produção).
+Publicado na `main` em 2026-10-23 (commits ee4a596, b4f7b42, cba7d26, fc55717), versão 4.89.73. Antes: revisão do
+diff (só a aba nova, a versão e as 3 listas de perfis; nenhum padrão de risco, todo texto do banco passa por
+`escapeHtml`), `node check.js` ok, testes de lógica com dados reais e teste visual do Gabriel em localhost. Depois:
+deploy do Pages concluído com sucesso e `index.html` do site idêntico, byte a byte, ao do commit fc55717.
+Como desfazer: `git revert fc55717 cba7d26 b4f7b42 ee4a596` (nessa ordem) e subir `version.json`/`APP_VERSION`.
+Pendente/risco: perfis com permissão customizada em Cadastro › Perfis podem precisar marcar a página nova.
 
 ## 2026-10-21, Gabriel: Ocorrências (Distribuição) — selo em destaque mostra o setor do motivo
 Onde: `index.html`: `_renderOcorrenciasGeneric` (selo ao lado de "Pedido #..."), `carregarOcorrenciasDistrib`
