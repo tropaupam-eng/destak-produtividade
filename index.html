@@ -817,6 +817,10 @@ svg.si-icon,.si-icon svg,[data-feather]{width:17px;height:17px;stroke-width:2;di
   word-break:break-word;
 }
 .exp-card:hover{box-shadow:0 6px 20px rgba(0,0,0,.22);border-color:var(--border-med)}
+/* Cargas Pendentes (Comercial): seleção de cards com Ctrl+clique para somar valores */
+body.cp-ctrl .cp-card, body.cp-selmode .cp-card{cursor:pointer;user-select:none}
+.cp-card.cp-sel{outline:2px solid #3b82f6;outline-offset:-2px;background:rgba(59,130,246,.10) !important}
+#cargpend-selbar{display:none;position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:800;width:min(860px,calc(100vw - 40px));background:var(--bg-card);border:1px solid var(--border-med);border-top:3px solid #3b82f6;border-radius:12px;padding:14px 18px;box-shadow:0 12px 40px rgba(0,0,0,.45)}
 .exp-card-top{padding:16px 16px 4px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .exp-card-info{flex:1;min-width:0}
 .exp-card-rota{font-size:1rem;font-weight:800;color:var(--text-primary);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3708,6 +3712,7 @@ body.light-theme{
     </div>
     <div style="display:flex;gap:8px">
       <button onclick="toggleCargPendModo()" id="cargpend-btn-modo" style="display:none;background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">📊 Ver % da Meta</button>
+      <button onclick="toggleCargPendModoSel()" id="cargpend-btn-sel" title="Também dá para selecionar segurando CTRL e clicando nos cards" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">☑ Selecionar cargas</button>
       <button onclick="carregarCargasPendentesComercial()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600">🔄 Atualizar</button>
     </div>
   </div>
@@ -3716,9 +3721,11 @@ body.light-theme{
     <div class="kpi-card" id="cargpend-kpi-valor-card" style="display:none;border-top-color:#f59e0b"><div class="kpi-label">Valor Total Pendente</div><div class="kpi-value" id="cargpend-kpi-valor" style="font-size:1.3rem">—</div></div>
     <div class="kpi-card" style="border-top-color:var(--green)"><div class="kpi-label">Pedidos nas Cargas Pendentes</div><div class="kpi-value" id="cargpend-kpi-pedidos">—</div></div>
   </div>
+  <p style="font-size:.76rem;color:var(--text-muted);margin:-8px 0 12px">Dica: segure <b>CTRL</b> e clique nos cards para selecionar e somar os valores das cargas escolhidas (Esc limpa a seleção).</p>
   <div id="cargpend-container">
     <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
   </div>
+  <div id="cargpend-selbar"></div>
 </div></div>
 
 <!-- ══ COMERCIAL — VENDEDOR ══ -->
@@ -9578,7 +9585,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.74';
+const APP_VERSION = '4.89.75';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -48202,6 +48209,104 @@ function toggleCargPendModo(){
   _renderCargasPendentesComercial();
 }
 
+// ── Seleção de cargas (Ctrl+clique) ─────────────────────────────────
+// Pedido do usuário, 2026-10-24: segurar CTRL e clicar nos cards para
+// escolher várias cargas e ver a soma dos valores. Só soma o que a tela já
+// mostra (demandas_rota.valor_total e meta da rota) — não recalcula nada.
+// Quem não é admin continua sem ver valor em R$: vê só % da meta.
+const _cargPendSel = new Set();
+let _cargPendModoSel = false;
+const _cpChave = c => (c.carga||'')+'|'+(c.rota||'');
+
+function toggleCargPendModoSel(){
+  _cargPendModoSel = !_cargPendModoSel;
+  document.body.classList.toggle('cp-selmode', _cargPendModoSel);
+  const btn = document.getElementById('cargpend-btn-sel');
+  if(btn){
+    btn.textContent = _cargPendModoSel ? '✔ Selecionando (clique nos cards)' : '☑ Selecionar cargas';
+    btn.style.borderColor = _cargPendModoSel ? '#3b82f6' : 'var(--border)';
+    btn.style.color = _cargPendModoSel ? '#3b82f6' : 'var(--text-secondary)';
+  }
+}
+
+function _cargPendLimparSel(){
+  _cargPendSel.clear();
+  _cargPendAtualizarSel();
+}
+
+function _cargPendAtualizarSel(){
+  document.querySelectorAll('#cargpend-container .cp-card').forEach(el=>{
+    el.classList.toggle('cp-sel', _cargPendSel.has(el.dataset.cpKey));
+  });
+  const bar = document.getElementById('cargpend-selbar');
+  if(!bar) return;
+  const sel = _cargPendCache ? _cargPendCache.cargas.filter(c=>_cargPendSel.has(_cpChave(c))) : [];
+  if(!sel.length){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
+
+  const fmtR = v => (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  const podeValor = _cargPendPodeVerValor();
+  const metas = _cargPendCache.rotasValorMeta || {};
+  let totVal = 0, totPed = 0, totMeta = 0, valComMeta = 0, semMeta = 0;
+  sel.forEach(c=>{
+    const v = Number(c.valor_total)||0;
+    const m = metas[(c.rota||'').trim().toUpperCase()] || 0;
+    totVal += v; totPed += Number(c.quantidade_pedidos)||0;
+    // Quem não vê valor em R$ também não pode deduzir o excedente pelo %: cada
+    // carga entra limitada à própria meta (igual ao card, que trava em 100%).
+    if(m > 0){ totMeta += m; valComMeta += podeValor ? v : Math.min(v, m); } else { semMeta++; }
+  });
+  const pct = totMeta > 0 ? Math.round(valComMeta/totMeta*100) : null;
+  const corPct = pct==null ? 'var(--text-muted)' : pct >= 100 ? 'var(--green)' : pct >= 80 ? '#f59e0b' : '#ef4444';
+  const subSemMeta = semMeta ? semMeta+' sem meta cadastrada' : '';
+
+  const kpi = (rotulo, valor, cor, sub) => `<div style="min-width:0">
+    <div style="font-size:.66rem;font-weight:700;letter-spacing:.8px;color:var(--text-muted);text-transform:uppercase">${rotulo}</div>
+    <div style="font-size:1.25rem;font-weight:800;color:${cor||'var(--text-primary)'};white-space:nowrap">${valor}</div>
+    ${sub?`<div style="font-size:.7rem;color:var(--text-muted)">${sub}</div>`:''}
+  </div>`;
+
+  const chips = sel.map(c=>{
+    const v = Number(c.valor_total)||0;
+    const m = metas[(c.rota||'').trim().toUpperCase()] || 0;
+    const detalhe = podeValor ? fmtR(v) : (m>0 ? Math.min(100,Math.round(v/m*100))+'%' : '—');
+    return `<span style="background:var(--bg-card2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:.72rem;color:var(--text-secondary);white-space:nowrap">${escapeHtml(c.rota||'—')} <b style="color:var(--text-muted)">#${escapeHtml(String(c.carga||'—'))}</b> · ${detalhe}</span>`;
+  }).join('');
+
+  bar.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;gap:26px;flex-wrap:wrap">
+        ${kpi('Cargas selecionadas', sel.length, '#3b82f6')}
+        ${podeValor ? kpi('Valor total', fmtR(totVal)) : ''}
+        ${podeValor && totMeta>0 ? kpi('Meta somada', fmtR(totMeta), 'var(--text-secondary)', subSemMeta) : ''}
+        ${pct!=null ? kpi('% da meta', pct+'%', corPct, podeValor ? '' : subSemMeta) : ''}
+        ${kpi('Pedidos', totPed)}
+      </div>
+      <button onclick="_cargPendLimparSel()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:.78rem;cursor:pointer;font-weight:700;white-space:nowrap">✕ Limpar seleção</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;max-height:84px;overflow-y:auto">${chips}</div>`;
+  bar.style.display = 'block';
+}
+
+// Um único conjunto de ouvintes (delegação): Ctrl/⌘+clique no card alterna a seleção;
+// botões dentro do card (ℹ️) continuam funcionando normalmente.
+document.addEventListener('click', e=>{
+  const card = e.target.closest ? e.target.closest('#cargpend-container .cp-card') : null;
+  if(!card) return;
+  if(!(e.ctrlKey || e.metaKey || _cargPendModoSel)) return;
+  if(e.target.closest('button,a,input,select,textarea')) return;
+  e.preventDefault();
+  const k = card.dataset.cpKey;
+  if(_cargPendSel.has(k)) _cargPendSel.delete(k); else _cargPendSel.add(k);
+  _cargPendAtualizarSel();
+});
+document.addEventListener('keydown', e=>{
+  if(e.key==='Control' || e.key==='Meta') document.body.classList.add('cp-ctrl');
+  if(e.key==='Escape' && _cargPendSel.size && document.getElementById('page-comercial-cargas-pendentes')?.classList.contains('active')) _cargPendLimparSel();
+});
+document.addEventListener('keyup', e=>{
+  if(e.key==='Control' || e.key==='Meta') document.body.classList.remove('cp-ctrl');
+});
+window.addEventListener('blur', ()=>document.body.classList.remove('cp-ctrl'));
+
 async function carregarCargasPendentesComercial(){
   const container = document.getElementById('cargpend-container');
   if(!container) return;
@@ -48356,7 +48461,7 @@ function _renderCargasPendentesComercial(){
       }
     }
 
-    return `<div style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
+    return `<div class="cp-card${_cargPendSel.has(_cpChave(c))?' cp-sel':''}" data-cp-key="${escapeHtml(_cpChave(c))}" style="background:var(--bg-card);border:1px solid var(--border);border-top:4px solid ${cfg.cor};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
         <div style="font-size:1.05rem;font-weight:800;color:var(--text-primary);line-height:1.2">${c.rota||'—'}</div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
@@ -48391,6 +48496,10 @@ function _renderCargasPendentesComercial(){
     </div>`;
   }
   container.innerHTML = html;
+  // Cargas que saíram da lista (mudaram de status ou foram concluídas) deixam de contar na seleção
+  const _chavesVivas = new Set(cargas.map(_cpChave));
+  [..._cargPendSel].forEach(k=>{ if(!_chavesVivas.has(k)) _cargPendSel.delete(k); });
+  _cargPendAtualizarSel();
 }
 
 // Botão "ℹ️" dos cards "Em Formação" — mostra quem são os vendedores
