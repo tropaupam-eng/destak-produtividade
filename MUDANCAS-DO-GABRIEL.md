@@ -21,6 +21,30 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-27, Gabriel: Dashboard Devolução — gráfico de linha "Devoluções por dia" (caixas)
+Onde: `index.html`: no markup, linha nova `devol-grid3` (largura toda) com o gráfico, o botão duplo "Caixas / Todos
+os volumes" e uma nota; em `carregarDashDevolucao` (busca dos itens devolvidos e da unidade de venda de cada item);
+em `renderDashDevolucao` (agrupamento por dia e desenho); estado/funções novas `_devolItens`, `_devolRefPorPedido`,
+`_devolPedidosRef`, `_devolMedida`, `_devolEhCaixa`, `devolMedida`. Mesma versão (4.89.74, ainda não publicada).
+Por quê: pedido do Gabriel: gráfico de linha com a quantidade de devoluções em caixas por dia. Cada dia soma a
+quantidade devolvida das ocorrências daquele dia (dia = data da ocorrência, fuso de Brasília). Respeita o filtro de
+datas; não depende do setor clicado nas roscas. Eixo contínuo do primeiro ao último dia (dias vazios = 0). Só o dia
+de pico leva o número escrito; o balão mostra data, quantidade e nº de ocorrências.
+O que é "caixa" (decisão minha, a confirmar com o Gabriel): no Cronos, "volume" de um pedido é a SOMA das
+quantidades dos itens, qualquer que seja a unidade (nas devoluções totais, soma dos itens = volume do pedido em
+39 de 42 casos). A unidade vem da referência do item no ERP (pedidos_itens_erp.referencia: "CX C/16PCT", "SC
+C/20KG", "PCT C/5KG", "FD C/2PCT"...). Padrão do gráfico = "Caixas": só itens cuja referência começa com CX ou
+CAIXA. Botão "Todos os volumes" = soma de tudo. Na leitura de 27/10: 8.216 caixas contra 31.915 volumes no total
+(sacos 16.650, caixas 8.216, pacotes 3.628, fardos 2.963...). Item sem referência encontrada não conta como caixa.
+Ocorrência sem itens detalhados (3, as antigas) fica de fora de "Caixas" e entra por quantidade resumida em
+"Todos os volumes". Ocorrência com data impossível (ano 0026) não entra no eixo; a nota embaixo avisa.
+Dados (só leitura): ocorrencias_distribuicao_itens (ocorrencia_id, produto, quantidade) e pedidos_itens_erp (pedido,
+descricao, referencia), esta última em lotes de 60 pedidos e guardada na sessão (reabrir a aba não busca de novo).
+Nenhuma coluna nova, nenhum dado alterado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Falta o Gabriel confirmar se "caixas" é só
+CX ou todos os volumes. A busca de referências cresce com o nº de ocorrências (cache de sessão ajuda).
+
 ## 2026-10-26, Gabriel: Dashboard Devolução — barras por conferente (Armazém) e por vendedor
 Onde: `index.html`: no markup, nova linha `devol-grid2` com 2 cards; em `carregarDashDevolucao` (colunas novas na
 leitura de ocorrências + busca do vendedor dos pedidos); em `renderDashDevolucao` (desenho das barras); estado
