@@ -21,6 +21,67 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-26, Gabriel: publicação do Dashboard Devolução (setor + barras), SEM os gráficos de linha — v4.89.76
+Onde: `index.html` e `version.json` (4.89.75 → 4.89.76; `APP_VERSION` igual). Entram: clique no setor filtra os
+motivos, correção do erro no clique da rosca, tabelas removidas de baixo das roscas, barras por conferente (Armazém) e
+por vendedor (entradas já registradas abaixo, de 24/10 e 26/10).
+Por quê: decisão do Gabriel: os gráficos de linha (por dia e por tipo de unidade) ficam em stand by, precisam de mais
+trabalho. Eles continuam só na branch `gabriel/dashboard-devolucao-filtro-setor` (commits 7d36f5b, e1338b1, 7bd77c5) e
+as entradas de 27/10 delas NÃO foram publicadas; ao retomar, mesclar essa branch de novo na main.
+Método: branch nova `gabriel/devolucao-sem-linhas` a partir da main (já com 4.89.75 do Cargas Pendentes), mesclando o
+commit 989b4cc; único conflito foi a versão (resolvido para 4.89.76). `node check.js` ok; conferido que o código das
+linhas não está no arquivo.
+Como desfazer: `git revert` do commit de mesclagem desta entrada.
+Pendente/risco: conferir o site publicado depois do deploy do Pages.
+## 2026-10-26, Gabriel: Dashboard Devolução — barras por conferente (Armazém) e por vendedor
+Onde: `index.html`: no markup, nova linha `devol-grid2` com 2 cards; em `carregarDashDevolucao` (colunas novas na
+leitura de ocorrências + busca do vendedor dos pedidos); em `renderDashDevolucao` (desenho das barras); estado
+novo `_devolPedVend`, `_devolNomeVend`, `DEVOL_MOTIVOS_VENDEDOR`, `_devolEhMotivoVendedor`. Mesma versão (4.89.74,
+ainda não publicada).
+Por quê: pedido do Gabriel. (1) "Erros por conferente": barras HORIZONTAIS com as ocorrências cujo motivo é do
+setor Armazém (Falta no Carregamento, Inversão no Carregamento, Sobra de Produto), por conferente. (2) "Erros por
+vendedor": barras VERTICAIS só das ocorrências com os motivos Forma de Pagamento Incorreto, Pedido Digitado com a
+Quantidade Incorreta e Pedido Duplicado - Comercial (comparados pelo nome do motivo), por vendedor do pedido.
+Ambos respeitam o filtro de datas; clicar num setor nas roscas NÃO mexe neles. Número escrito no fim de cada barra;
+o balão do vendedor detalha por motivo. Mais de 15 vendedores: 14 maiores + "Outros (n vendedores)" em cinza.
+De onde vêm os dados (só leitura): conferente = coluna `conferente` da própria ocorrência (as buscas de reserva
+por pedido em `conferencia_pedidos` e por carga em `atribuicoes_armazem` não acharam nada nas ocorrências do
+Armazém); vendedor = `pedidos_info_erp.vendedor` (código; reserva `base_data.vendedor_cod`) e o nome vem de
+`usuarios` (perfil vendedor, `codigo_vendedor`). Buscas só dos pedidos dos 3 motivos, em lotes de 150. Nenhuma
+coluna nova e nenhum dado alterado.
+Atenção aos dados (leitura de 26/10): das 16 ocorrências do Armazém, só 6 têm conferente gravado (3 de Jacson Alves
+da S. Lima, 3 de Jaqueline Lopes da Silva); as outras 10 aparecem como "Sem conferente registrado" (barra cinza).
+Os 21 pedidos dos 3 motivos têm vendedor (12 vendedores, todos com nome no cadastro).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
+real e dados reais.
+
+## 2026-10-24, Gabriel: Dashboard Devolução — clicar num setor filtra os motivos de devolução
+Onde: `index.html`: `renderDashDevolucao` reescrita (mesma tela, agora com seleção), funções novas
+`devolSelecionarSetor` e `devolLimparSetor`, estado `_devolSetorSel`; no markup, título/subtítulo dinâmicos e o
+botão "Limpar filtros" do card "Motivos de devolução". `version.json` e `APP_VERSION` 4.89.73 → 4.89.74.
+Por quê: pedido do Gabriel. Clicar numa fatia de "Motivos por setor" (ou na legenda, ou na linha da tabela) mostra
+no gráfico "Motivos de devolução" só os motivos daquele setor; o título vira "Motivos de devolução — Comercial",
+o subtítulo diz quantas ocorrências são do setor, e as porcentagens passam a ser sobre o total do setor (somam
+100%). A rosca de setor continua com todos os setores: a fatia escolhida sai do anel e as outras esmaecem. Clicar
+de novo na mesma fatia, ou em "Limpar filtros", volta ao total. "Sem motivo" também seleciona. A seleção convive
+com o filtro de datas (se o setor não tem ocorrência no período novo, a seleção é solta) e zera ao reabrir a aba.
+Cada motivo mantém a mesma cor com e sem filtro. Só leitura: nenhuma consulta nova, nenhum dado alterado.
+Como desfazer: `git revert` do commit desta entrada.
+Erro meu, achado no teste local do Gabriel e corrigido antes de publicar (nunca foi pra `main`): o 1º commit desta
+entrada (9ac4e33) redesenhava as roscas DENTRO do onClick do próprio gráfico; o Chart.js seguia tratando o clique
+num gráfico já destruído e lançava "Cannot read properties of undefined (reading 'handleEvent')", que o Log de Erros
+registrou como "Script error." (JS Error, página dash-devolucao, usuário Gabriel, 23/10 10:57 e 10:58, versão
+4.89.74, localhost:8080). Correção: o redesenho roda depois do clique (setTimeout 0). Conferido no navegador com
+clique de verdade: sem nenhum erro. Esses 2 registros no Log de Erros são do teste; o Gabriel pode marcá-los como
+resolvidos pelo botão da própria tela.
+Também (pedido do Gabriel, pra aproveitar o espaço): saíram as tabelas com quantidade e % que ficavam embaixo das
+duas roscas, e o gráfico ficou mais alto (280 → 340 px). A % continua escrita em cada fatia e a quantidade aparece
+no balão ao passar o mouse; a seleção de setor segue pela fatia e pela legenda à direita. Efeito conhecido: os
+motivos que ficam dentro de "Outros" deixaram de aparecer listados em algum lugar (antes estavam na tabela).
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
+real e dados reais, com clique de verdade na fatia.
+
 ## 2026-10-23, Gabriel: nova aba "Dashboard Devolução" em Análise (duas roscas)
 Onde: `index.html`: item novo no menu Análise (`data-page="dash-devolucao"`, depois do Gerot); página
 `page-dash-devolucao`; `showPage` (rota nova); funções novas `carregarDashDevolucao`, `renderDashDevolucao`,
