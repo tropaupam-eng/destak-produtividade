@@ -21,6 +21,26 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-26, Gabriel: botão "Editar" nas ocorrências de Distribuição (Lançamento) — v4.89.79
+Onde: `index.html`: `renderOcorrenciasLanc` (botão "✏️ Editar" abaixo de "Marcar Resolvida", também nas resolvidas) e
+funções novas `_podeEditarOcorrencia`, `editarOcorrenciaLanc`, `salvarEditarOcorrencia`, `fecharEditarOcorrencia`,
+`_eoDiaBRT` (logo antes de "ABAS LANÇAMENTO"). `APP_VERSION` e `version.json`: 4.89.78 → 4.89.79.
+Por quê: pedido do Gabriel: poder editar ocorrências já lançadas. Quem vê o botão: usuários admin e o perfil
+"Devolução" (chave `devolu__o`, hoje 1 usuário). Os outros perfis não veem.
+O que edita (janela própria, tema claro/escuro): motivo, rota, observação, data da ocorrência e a QUANTIDADE de cada
+produto devolvido. NÃO troca pedido, nem total/parcial, nem produtos (primeira versão, "aos poucos"). Só envia ao banco o
+que mudou: motivo novo atualiza `motivo_id`, `motivo_nome` e `tipo` (mesma regra do registro: vem do impacto no OTIF do
+motivo); data nova grava meio-dia de Brasília; quantidade nova atualiza o item, a `quantidade` da ocorrência e, só se os
+itens tiverem valor unitário, `valor_total`/`valor_devolvido` (os lançados desde 18/09 não têm preço: não mexe). Se
+falhar no meio, os itens já alterados voltam à quantidade original.
+Dados em produção: faz PATCH em `ocorrencias_distribuicao` e `ocorrencias_distribuicao_itens` (só linhas da ocorrência
+aberta; nenhum DELETE, nenhuma coluna/tabela nova). NÃO há histórico do valor anterior (guardar "editado por/em" exigiria
+coluna nova: precisa falar com o Daniel antes). A permissão é só da tela (tabelas sem RLS, como o resto do sistema).
+Testes: `node check.js` ok; 30 testes de lógica (permissões, botões, só o que mudou vai ao banco, validações, desfazer em
+caso de falha) e regressão passando. Não testado com login real (não tenho acesso): teste visual do Gabriel.
+Como desfazer: `git revert` do commit desta entrada (edições já salvas pelo botão ficam como estão no banco).
+Pendente/risco: teste visual em localhost (como admin e, se possível, com o usuário do perfil Devolução); decidir se
+entra edição de pedido/total-parcial/produtos e se o Daniel aprova guardar quem editou e quando.
 ## 2026-10-26, Gabriel: gráfico de linhas por tipo de unidade volta ao Dashboard Devolução, com balão protegido — v4.89.78
 Onde: `index.html` e `version.json` (4.89.77 → 4.89.78). Mescla a branch `gabriel/dashboard-devolucao-filtro-setor`
 (commits 7d36f5b, e1338b1, 7bd77c5: gráfico "Devoluções por tipo de unidade", 4 linhas + "Outros", botões Dia/Semana,

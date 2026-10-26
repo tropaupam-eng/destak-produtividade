@@ -9618,7 +9618,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.78';
+const APP_VERSION = '4.89.79';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18502,6 +18502,177 @@ async function editarPedidoOcorrencia(id, pedidoAtual){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
+// ── EDITAR OCORRÊNCIA (aba Lançamento) — pedido do Gabriel, 2026-10-26 ─────────────────────────
+// Botão "Editar" abaixo de "Marcar Resolvida", só para admin e para o perfil "Devolução" (chave devolu__o).
+// Edita: motivo, rota, observação, data da ocorrência e a quantidade de cada item devolvido. NÃO troca pedido,
+// nem total/parcial, nem produtos (isso continua sendo feito apagando/lançando de novo ou pelo "Editar" do admin
+// na aba de Expedição, que só troca o número do pedido). Só envia ao banco o que realmente mudou. A permissão é
+// só da tela (as tabelas não têm RLS, como o resto do sistema).
+function _podeEditarOcorrencia(){
+  const p = USUARIO_LOGADO?.perfil || '';
+  return USUARIO_LOGADO?.tipo === 'admin' || p === 'admin' || p === 'devolu__o';
+}
+
+let _editOcorr = null;   // { o, itens:[{id,produto,quantidade,valor_unitario}] } da ocorrência aberta no modal
+
+function _eoDiaBRT(iso){
+  const t = new Date(iso).getTime();
+  return isNaN(t) ? '' : new Date(t - 3*3600e3).toISOString().slice(0,10);
+}
+
+async function editarOcorrenciaLanc(id){
+  if(!_podeEditarOcorrencia()){ showToast('Sem permissão para editar ocorrências','warning'); return; }
+  const o = (_ocorrenciasDistribCache||[]).find(x => String(x.id) === String(id));
+  if(!o){ showToast('Ocorrência não encontrada — atualize a lista','warning'); return; }
+  let itens = [];
+  try{
+    itens = await supaFetch(`ocorrencias_distribuicao_itens?ocorrencia_id=eq.${encodeURIComponent(o.id)}&select=id,produto,quantidade,valor_unitario&order=criado_em.asc`) || [];
+  }catch(e){ showToast('Erro ao carregar os itens: '+e.message,'warning'); return; }
+  if(!_ocorrMotivosCache.length){ try{ await _ocorrCarregarMotivosSelect(); }catch(e){} }
+  _editOcorr = { o, itens };
+
+  const estiloCampo = 'width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box';
+  const rotulo = t => `<label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">${t}</label>`;
+
+  // motivo agrupado por setor; motivo atual inativo (não está na lista de ativos) entra como opção extra pra não ser trocado sem querer
+  const porSetor = {};
+  _ocorrMotivosCache.forEach(m => { (porSetor[m.setor] = porSetor[m.setor]||[]).push(m); });
+  const atualNaLista = _ocorrMotivosCache.some(m => m.id === o.motivo_id);
+  const optMotivo = (o.motivo_id && !atualNaLista ? `<option value="${escapeHtml(o.motivo_id)}" selected>${escapeHtml(o.motivo_nome||'Motivo atual')} (inativo)</option>` : '')
+    + '<option value="">Selecione...</option>'
+    + Object.keys(MOTIVO_DEVOLUCAO_SETOR_LABEL).filter(s => porSetor[s]?.length).map(s =>
+        `<optgroup label="${MOTIVO_DEVOLUCAO_SETOR_LABEL[s]}">` +
+        porSetor[s].map(m => `<option value="${m.id}"${m.id===o.motivo_id?' selected':''}>${escapeHtml(m.nome)}</option>`).join('') +
+        '</optgroup>').join('');
+
+  // rota: mesmas opções do formulário de registro; a rota atual entra se não estiver lá
+  const rotaAtual = (o.rota||'').toUpperCase();
+  let rotas = [...document.querySelectorAll('#l-ocorr-rota option')].map(op => op.value).filter(Boolean);
+  if(rotaAtual && !rotas.includes(rotaAtual)) rotas.unshift(rotaAtual);
+  const optRota = '<option value="">— sem rota —</option>' + rotas.map(r => `<option value="${escapeHtml(r)}"${r===rotaAtual?' selected':''}>${escapeHtml(r)}</option>`).join('');
+
+  const linhasItens = itens.length
+    ? itens.map((it,i) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;font-size:.82rem;color:var(--text-primary)">
+        <span style="flex:1">${escapeHtml(it.produto||'Produto')}</span>
+        <input type="number" class="eo-item-qtd" data-idx="${i}" min="0" step="any" value="${it.quantidade!=null?it.quantidade:''}"
+          style="width:90px;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:.8rem;background:var(--bg-card);color:var(--text-primary)">
+      </label>`).join('')
+    : '<div style="font-size:.8rem;color:var(--text-muted);padding:8px">Esta ocorrência não tem itens detalhados (lançamento antigo).</div>';
+
+  let modal = document.getElementById('modal-editar-ocorrencia');
+  if(modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'modal-editar-ocorrencia';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:700;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+    <div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-size:1.05rem;font-weight:800">✏️ Editar ocorrência</div>
+        <div style="font-size:.78rem;color:var(--text-muted)">Pedido #${escapeHtml(String(o.pedido||''))}${o.carga?' · Carga #'+o.carga:''}${o.tipo_devolucao?' · '+(o.tipo_devolucao==='total'?'Devolução total':'Devolução parcial'):''}</div>
+      </div>
+      <button type="button" onclick="fecharEditarOcorrencia()" style="background:var(--bg-card2);border:none;color:var(--text-secondary);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:.85rem">✕</button>
+    </div>
+    <div style="padding:18px 20px;display:flex;flex-direction:column;gap:12px">
+      <div>${rotulo('Motivo de devolução *')}<select id="eo-motivo" style="${estiloCampo};cursor:pointer">${optMotivo}</select></div>
+      <div>${rotulo('Rota')}<select id="eo-rota" style="${estiloCampo};cursor:pointer">${optRota}</select></div>
+      <div>${rotulo('Observação')}<input id="eo-descricao" type="text" value="${escapeHtml(o.descricao||'')}" placeholder="Detalhe (opcional)" style="${estiloCampo}"></div>
+      <div>${rotulo('Data da ocorrência')}<input id="eo-data" type="date" value="${_eoDiaBRT(o.criado_em)}" style="${estiloCampo}"></div>
+      <div>
+        ${rotulo('Quantidade devolvida por produto')}
+        <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px">${linhasItens}</div>
+      </div>
+      <div style="font-size:.74rem;color:var(--text-muted)">Pedido, devolução total/parcial e produtos não mudam aqui.</div>
+    </div>
+    <div style="padding:14px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--border)">
+      <button type="button" onclick="fecharEditarOcorrencia()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 18px;font-size:.85rem;font-weight:600;cursor:pointer">Cancelar</button>
+      <button type="button" id="eo-salvar" onclick="salvarEditarOcorrencia()" style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:8px;padding:8px 22px;font-size:.85rem;font-weight:700;cursor:pointer">Salvar alterações</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function fecharEditarOcorrencia(){
+  document.getElementById('modal-editar-ocorrencia')?.remove();
+  _editOcorr = null;
+}
+
+async function salvarEditarOcorrencia(){
+  if(!_editOcorr) return;
+  if(!_podeEditarOcorrencia()){ showToast('Sem permissão para editar ocorrências','warning'); return; }
+  const { o, itens } = _editOcorr;
+  const btn = document.getElementById('eo-salvar');
+  const motivoId = document.getElementById('eo-motivo')?.value || '';
+  const rota     = (document.getElementById('eo-rota')?.value || '').trim().toUpperCase();
+  const desc     = (document.getElementById('eo-descricao')?.value || '').trim();
+  const dataSel  = document.getElementById('eo-data')?.value || '';
+  if(!motivoId){ showToast('Selecione o motivo da devolução','warning'); return; }
+
+  // só o que mudou vai pro banco
+  const mudou = {};
+  if(motivoId !== (o.motivo_id||'')){
+    const m = _ocorrMotivosCache.find(x => x.id === motivoId);
+    if(!m){ showToast('Motivo inválido — escolha um motivo da lista','warning'); return; }
+    mudou.motivo_id = m.id; mudou.motivo_nome = m.nome;
+    mudou.tipo = m.tipo_otif || 'outro';          // mesma regra do registro: o tipo vem do impacto no OTIF do motivo
+  }
+  if(rota !== (o.rota||'').toUpperCase()) mudou.rota = rota || null;
+  if(desc !== (o.descricao||'').trim()) mudou.descricao = desc || null;
+  if(dataSel && dataSel !== _eoDiaBRT(o.criado_em)) mudou.criado_em = `${dataSel}T12:00:00-03:00`;   // meio-dia de Brasília, como no registro
+
+  // quantidades dos itens
+  const itensMudados = [];
+  const novasQtd = itens.map(it => it.quantidade);
+  let qtdInvalida = false;
+  document.querySelectorAll('.eo-item-qtd').forEach(inp => {
+    const i = Number(inp.dataset.idx), it = itens[i];
+    if(!it) return;
+    if(inp.value === '') { if(it.quantidade != null) qtdInvalida = true; return; }
+    const q = Number(inp.value);
+    if(!isFinite(q) || q < 0){ qtdInvalida = true; return; }
+    if(q !== Number(it.quantidade)){ itensMudados.push({ it, q }); novasQtd[i] = q; }
+  });
+  if(qtdInvalida){ showToast('Quantidade inválida — use número maior ou igual a zero','warning'); return; }
+  if(itensMudados.length){
+    mudou.quantidade = novasQtd.reduce((s,q) => s + (Number(q)||0), 0) || null;
+    // valor devolvido: só recalcula quando os itens têm valor unitário (os lançados desde 18/09 não têm — aí não mexe)
+    if(itens.some(it => it.valor_unitario != null)){
+      mudou.valor_devolvido = itens.reduce((s,it,i) => s + (Number(novasQtd[i])||0) * (Number(it.valor_unitario)||0), 0) || null;
+    }
+  }
+  if(!Object.keys(mudou).length && !itensMudados.length){ showToast('Nenhuma alteração foi feita','info'); return; }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
+  const feitos = [];   // itens já gravados, pra desfazer se algo falhar no meio
+  try{
+    for(const { it, q } of itensMudados){
+      const corpo = { quantidade: q };
+      if(it.valor_unitario != null) corpo.valor_total = q * Number(it.valor_unitario);
+      await supaFetch(`ocorrencias_distribuicao_itens?id=eq.${encodeURIComponent(it.id)}`, { method:'PATCH', body:JSON.stringify(corpo) });
+      feitos.push(it);
+    }
+    if(Object.keys(mudou).length){
+      await supaFetch(`ocorrencias_distribuicao?id=eq.${encodeURIComponent(o.id)}`, { method:'PATCH', body:JSON.stringify(mudou) });
+    }
+  }catch(e){
+    // volta os itens já alterados à quantidade original, pra não ficar item novo com ocorrência antiga
+    for(const it of feitos){
+      try{
+        const corpo = { quantidade: it.quantidade };
+        if(it.valor_unitario != null && it.quantidade != null) corpo.valor_total = Number(it.quantidade) * Number(it.valor_unitario);
+        await supaFetch(`ocorrencias_distribuicao_itens?id=eq.${encodeURIComponent(it.id)}`, { method:'PATCH', body:JSON.stringify(corpo) });
+      }catch(e2){}
+    }
+    showToast('Erro ao salvar (nada foi alterado): '+e.message,'warning');
+    if(btn){ btn.disabled = false; btn.textContent = 'Salvar alterações'; }
+    return;
+  }
+  fecharEditarOcorrencia();
+  showToast('✅ Ocorrência atualizada — Pedido '+o.pedido,'success');
+  await carregarOcorrenciasDistrib();
+  renderOcorrenciasLanc();
+  renderDemandasCards();
+}
+
 // ── ABAS LANÇAMENTO (DISTRIBUIÇÃO) ─────────────────────────────────────────
 let _ocorrFiltroLanc = 'pendente';
 
@@ -18822,10 +18993,21 @@ function ocorrFiltrarLanc(filtro){
 
 function renderOcorrenciasLanc(){
   _renderOcorrenciasGeneric('l-ocorrencias-lista', _ocorrFiltroLanc, 'l-ocorr-total-label', (o, isPend) => {
-    return isPend ? `<button onclick="resolverOcorrenciaDistrib('${o.id}')"
+    let html = '';
+    if(isPend){
+      html += `<button onclick="resolverOcorrenciaDistrib('${o.id}')"
       style="background:#d1fae5;color:#065f46;border:1px solid #a7f3d0;border-radius:8px;padding:7px 14px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap">
       Marcar Resolvida
-    </button>` : '';
+    </button>`;
+    }
+    // Editar fica abaixo de "Marcar Resolvida"; só admin e perfil Devolução
+    if(_podeEditarOcorrencia()){
+      html += `<button onclick="editarOcorrenciaLanc('${o.id}')"
+      style="background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;border-radius:8px;padding:7px 14px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap">
+      ✏️ Editar
+    </button>`;
+    }
+    return html;
   });
 }
 
