@@ -21,6 +21,22 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-26, Gabriel: proteção dos balões (tooltip) dos gráficos de barras contra lista vazia — v4.89.77
+Onde: `index.html`: Dashboard Devolução, função `barras()` (callbacks `title` e `afterLabel` do balão); mesma proteção em
+dois balões de outras telas que assumiam `items[0]`: gráfico de pedidos por placa (`title` e `footer`, `totaisPorPlaca`)
+e o footer "Atendimento" (`semData`). Só retornam texto vazio quando não há item; nada mais mudou. `APP_VERSION` e
+`version.json`: 4.89.76 → 4.89.77.
+Por quê: Log de Erros (dash-devolucao, 26/10, 4 ocorrências no localhost): "Cannot read properties of undefined
+(reading 'dataIndex')" no `title` do balão, que assumia que a lista do balão nunca vem vazia.
+Reprodução: NÃO consegui reproduzir. Numa página isolada (Chart.js 4.4.1, mesmas opções, mouse parado sobre a barra,
+gráfico redesenhado com menos itens e com zero itens) o erro não aparece, nem com o código antigo. A linha do erro
+(25904) não bate com a main, então o gatilho provável é um rascunho local não enviado. Confirmado só que o callback
+antigo estoura com lista vazia e o novo devolve texto vazio. Por isso NÃO adiei o redesenho com `setTimeout` (só se a
+reprodução apontasse para isso). Se o erro voltar no site publicado, anotar aqui e investigar o gatilho.
+Dados: nada no Supabase foi lido ou alterado; erros do Log não foram marcados como resolvidos.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost (passar o mouse nas barras, mudar datas, clicar na rosca,
+Limpar filtros) e conferir o Log de Erros antes de publicar.
 ## 2026-10-26, Gabriel: publicação do Dashboard Devolução (setor + barras), SEM os gráficos de linha — v4.89.76
 Onde: `index.html` e `version.json` (4.89.75 → 4.89.76; `APP_VERSION` igual). Entram: clique no setor filtra os
 motivos, correção do erro no clique da rosca, tabelas removidas de baixo das roscas, barras por conferente (Armazém) e
