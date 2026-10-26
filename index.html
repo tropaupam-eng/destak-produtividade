@@ -3342,6 +3342,24 @@ body.light-theme{
       <div id="devol-wrap-vend" style="position:relative;height:340px"><canvas id="devol-chart-vend" role="img" aria-label="Gráfico de barras verticais: erros por vendedor"></canvas></div>
     </div>
   </div>
+  <div id="devol-grid3" style="margin-top:20px">
+    <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="min-width:0;flex:1 1 320px">
+          <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Devoluções por tipo de unidade</div>
+          <div id="devol-sub-linha" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 10px"></div>
+        </div>
+        <div role="group" aria-label="Agrupar por" style="display:flex;gap:4px;background:var(--bg-hover);border-radius:8px;padding:3px">
+          <button type="button" id="devol-gran-dia" onclick="devolGranul('dia')" title="Um ponto por dia" style="border:none;border-radius:6px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer;color:var(--text-primary);background:transparent">Dia</button>
+          <button type="button" id="devol-gran-sem" onclick="devolGranul('sem')" title="Um ponto por semana (segunda a domingo)" style="border:none;border-radius:6px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer;color:var(--text-primary);background:transparent">Semana</button>
+        </div>
+      </div>
+      <div id="devol-leg-linha" style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 6px"></div>
+      <div id="devol-msg-linha" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
+      <div id="devol-wrap-linha" style="position:relative;height:320px"><canvas id="devol-chart-linha" role="img" aria-label="Gráfico de linhas: devoluções por tipo de unidade"></canvas></div>
+      <div id="devol-nota-linha" style="font-size:.74rem;color:var(--text-muted);margin-top:10px"></div>
+    </div>
+  </div>
 </div></div>
 
 <!-- ══ DASHBOARD INTERNA ══ -->
@@ -9600,7 +9618,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.77';
+const APP_VERSION = '4.89.78';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -25439,6 +25457,28 @@ const DEVOL_SETORES = {   // slot fixo por setor: a cor acompanha o setor, não 
 let _devolOcorr = [];
 let _devolMotivos = { id:{}, nome:{} };
 let _devolCharts = { setor:null, motivo:null };
+let _devolItens = {};        // id da ocorrência -> [{produto, quantidade}] (itens devolvidos)
+let _devolRefPorPedido = {}; // pedido -> [{d: descrição em maiúsculas, r: referência}] (unidade de venda dos itens do ERP)
+let _devolPedidosRef = new Set();   // pedidos cujas referências já foram buscadas (cache da sessão: não busca de novo)
+let _devolGranul = 'dia';    // gráfico por tipo de unidade: 'dia' = um ponto por dia; 'sem' = um ponto por semana
+// Tipo de unidade de venda a partir da referência do item no ERP: ela começa com o tipo da embalagem
+// ("CX C/16PCT" = caixa, "SC C/20KG" = saco, "FD C/2PCT" = fardo...). Mesmas regras da aba Regras do Excel
+// "Devolucoes_por_tipo_de_unidade". Trecho que não está aqui = "Não classificado" (cai em "Outros" no gráfico).
+const DEVOL_UNID_TRECHO = {
+  CX:'Caixa', CAIXA:'Caixa', FD:'Fardo', FARDO:'Fardo', SC:'Saco', SACO:'Saco',
+  PCT:'Pacote', PACOTE:'Pacote', PCTC:'Pacote', PT:'Pacote', PC:'Pacote',
+  MILHEIRO:'Milheiro', MLH:'Milheiro', UNIDADE:'Unidade', UN:'Unidade', UND:'Unidade', KG:'Quilo', KILO:'Quilo',
+  DP:'Display', DSP:'Display', DISP:'Display', DISPLAY:'Display', BD:'Balde', RL:'Rolo', CARTELA:'Cartela'
+};
+function _devolTipoUnidade(ref){
+  const t = String(ref||'').trim().toUpperCase().split(/[\s\-\/.,]+/).filter(Boolean);
+  if(!t.length) return 'Não classificado';
+  const trecho = (t[0] === 'P' && t[1]) ? t[1] : t[0];       // "P/KILO", "P/UNIDADE": vale o que vem depois do "P/" (= por)
+  return DEVOL_UNID_TRECHO[trecho] || 'Não classificado';
+}
+// Os 4 tipos que somam ~99% da quantidade devolvida têm linha própria (cor fixa); os demais entram em "Outros".
+const DEVOL_SERIES_UNID = ['Saco', 'Caixa', 'Pacote', 'Fardo'];
+function devolGranul(g){ _devolGranul = (g==='sem') ? 'sem' : 'dia'; renderDashDevolucao(); }
 let _devolPedVend = {};      // pedido -> código do vendedor (só dos pedidos com os 3 motivos de "Erros por vendedor")
 let _devolNomeVend = {};     // código do vendedor -> nome
 // Motivos que entram em "Erros por vendedor" (comparados por nome, sem diferenciar maiúsculas/espaços).
@@ -25451,10 +25491,11 @@ async function carregarDashDevolucao(){
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
   const grid2 = document.getElementById('devol-grid2');
+  const grid3 = document.getElementById('devol-grid3');
   if(msg){ msg.style.display=''; msg.textContent='Carregando...'; }
-  if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none';
+  if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none'; if(grid3) grid3.style.display='none';
   try{
-    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,conferente,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000') || [];
+    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,conferente,quantidade,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000') || [];
     const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
     _devolMotivos = { id:{}, nome:{} };
     motivos.forEach(m=>{
@@ -25489,6 +25530,22 @@ async function carregarDashDevolucao(){
       const vendedores = await supaFetch('usuarios?perfil=eq.vendedor&select=nome,codigo_vendedor&limit=1000',{_quiet:true}) || [];
       vendedores.forEach(v=>{ if(v.codigo_vendedor!=null) _devolNomeVend[String(v.codigo_vendedor).trim()] = v.nome; });
     }catch(e){ console.warn('Dashboard Devolução: não consegui o vendedor dos pedidos:', e.message); }
+
+    // Itens devolvidos de cada ocorrência (quantidade por produto) e a unidade de venda de cada item no ERP
+    // (referência: "CX C/16PCT", "SC C/20KG", "PCT C/5KG"...), pro gráfico "Devoluções por dia". As
+    // referências são buscadas por pedido, em lotes, e guardadas na sessão (não repete a busca ao reabrir a aba).
+    _devolItens = {};
+    try{
+      const itens = await supaFetch('ocorrencias_distribuicao_itens?select=ocorrencia_id,produto,quantidade&limit=5000',{_quiet:true}) || [];
+      itens.forEach(i=>{ (_devolItens[i.ocorrencia_id] = _devolItens[i.ocorrencia_id] || []).push({ produto:i.produto, quantidade:Number(i.quantidade)||0 }); });
+      const pedidosRef = [...new Set(_devolOcorr.filter(o=>_devolItens[o.id]).map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p) && !_devolPedidosRef.has(p)))];
+      for(let i=0;i<pedidosRef.length;i+=60){
+        const lote = pedidosRef.slice(i,i+60);
+        const rows = await supaFetch('pedidos_itens_erp?pedido=in.('+lote.join(',')+')&select=pedido,descricao,referencia&limit=5000',{_quiet:true}) || [];
+        lote.forEach(p=>{ _devolPedidosRef.add(p); _devolRefPorPedido[p] = []; });
+        rows.forEach(r=>{ const p = String(r.pedido).trim(); (_devolRefPorPedido[p] = _devolRefPorPedido[p] || []).push({ d:String(r.descricao||'').trim().toUpperCase(), r:r.referencia }); });
+      }
+    }catch(e){ console.warn('Dashboard Devolução: não consegui os itens devolvidos:', e.message); }
     renderDashDevolucao();
   }catch(e){
     if(msg){ msg.style.display=''; msg.textContent='Erro ao carregar as ocorrências: '+e.message; }
@@ -25515,6 +25572,7 @@ function renderDashDevolucao(){
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
   const grid2 = document.getElementById('devol-grid2');
+  const grid3 = document.getElementById('devol-grid3');
   const totalEl = document.getElementById('devol-total');
   // Período = data inicial e/ou final (inclusive nas duas pontas); campo vazio = sem limite.
   const iniEl = document.getElementById('devol-data-ini'), fimEl = document.getElementById('devol-data-fim');
@@ -25525,7 +25583,7 @@ function renderDashDevolucao(){
   if(ini && fim && ini > fim){
     if(totalEl) totalEl.textContent = '';
     if(msg){ msg.style.display=''; msg.textContent='A data inicial é maior que a data final. Ajuste o período.'; }
-    if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none';
+    if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none'; if(grid3) grid3.style.display='none';
     return;
   }
   // Com data no filtro, ocorrência de data impossível (ex.: registrada em 0026 por erro de digitação) fica
@@ -25537,11 +25595,11 @@ function renderDashDevolucao(){
   if(totalEl) totalEl.textContent = total + ' ocorrência' + (total===1?'':'s');
   if(!total){
     if(msg){ msg.style.display=''; msg.textContent='Nenhuma ocorrência de devolução no período selecionado.'; }
-    if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none';
+    if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none'; if(grid3) grid3.style.display='none';
     return;
   }
   if(msg) msg.style.display='none';
-  if(grid) grid.style.display='grid'; if(grid2) grid2.style.display='grid';
+  if(grid) grid.style.display='grid'; if(grid2) grid2.style.display='grid'; if(grid3) grid3.style.display='';
   if(typeof Chart==='undefined'){
     if(msg){ msg.style.display=''; msg.textContent='A biblioteca de gráficos ainda não carregou. Atualize a página.'; }
     return;
@@ -25760,6 +25818,113 @@ function renderDashDevolucao(){
   if(subVend) subVend.textContent = 'Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial: ' + dadosVend.length + ' ocorrência' + (dadosVend.length===1?'':'s');
   mostrarBarras('devol-wrap-vend', 'devol-msg-vend', itensVend.length > 0, 'Nenhuma ocorrência desses motivos no período.');
   if(itensVend.length) barras('vend', 'devol-chart-vend', itensVend, false, cores[2]);
+
+
+  // ── Devoluções por tipo de unidade (linhas) — pedido do usuário, 2026-10-27 ──────────────────
+  // Uma linha por tipo de unidade de venda (Saco, Caixa, Pacote, Fardo; o resto em "Outros"), cada uma na SUA
+  // unidade: não soma sacos com caixas. Dia ou semana (segunda a domingo). Respeita só as datas do topo (não
+  // depende do setor clicado nas roscas). Períodos sem devolução entram com zero.
+  const chaveGran = dia => {
+    if(_devolGranul === 'dia') return dia;
+    const t = Date.parse(dia + 'T00:00:00Z'), dow = (new Date(t).getUTCDay() + 6) % 7;   // 0 = segunda
+    return new Date(t - dow*86400000).toISOString().slice(0,10);
+  };
+  const porPeriodo = {};
+  let semItens = 0, dataInvalida = 0, semTipo = 0;
+  dados.forEach(o => {
+    if(!(o.dia >= '2000-01-01')){ dataInvalida++; return; }    // data impossível (ex.: ano 0026) não entra no eixo
+    const itens = _devolItens[o.id];
+    if(!itens || !itens.length){ semItens++; return; }          // sem itens não dá pra saber a unidade
+    const refs = _devolRefPorPedido[String(o.pedido||'').trim()] || [];
+    const k = chaveGran(o.dia);
+    const p = porPeriodo[k] || (porPeriodo[k] = { tipos:{}, ocorr:new Set() });
+    itens.forEach(it => {
+      const ref = (refs.find(r => r.d === String(it.produto||'').trim().toUpperCase()) || {}).r;
+      const tipo = _devolTipoUnidade(ref);
+      if(tipo === 'Não classificado') semTipo++;
+      p.tipos[tipo] = (p.tipos[tipo]||0) + it.quantidade;
+    });
+    p.ocorr.add(o.id);
+  });
+  const chaves = Object.keys(porPeriodo).sort();
+  const subLinha = document.getElementById('devol-sub-linha'), notaLinha = document.getElementById('devol-nota-linha');
+  const legLinha = document.getElementById('devol-leg-linha');
+  const wrapLinha = document.getElementById('devol-wrap-linha'), msgLinha = document.getElementById('devol-msg-linha');
+  [['devol-gran-dia','dia'],['devol-gran-sem','sem']].forEach(([id,g]) => { const b = document.getElementById(id); if(b){ b.style.background = _devolGranul===g ? 'var(--bg-card2)' : 'transparent'; b.style.color = _devolGranul===g ? 'var(--text-primary)' : 'var(--text-secondary)'; } });
+  if(!chaves.length){
+    if(wrapLinha) wrapLinha.style.display = 'none';
+    if(legLinha) legLinha.innerHTML = '';
+    if(msgLinha){ msgLinha.style.display = ''; msgLinha.textContent = 'Nenhuma devolução com itens detalhados e data válida no período.'; }
+    if(subLinha) subLinha.textContent = '';
+    if(notaLinha) notaLinha.textContent = semItens ? (semItens + ' ocorrência' + (semItens===1?'':'s') + ' sem itens detalhados não entram no gráfico') : '';
+    if(_devolCharts.linha){ _devolCharts.linha.destroy(); _devolCharts.linha = null; }
+  } else {
+    if(wrapLinha) wrapLinha.style.display = '';
+    if(msgLinha) msgLinha.style.display = 'none';
+    // eixo contínuo do primeiro ao último período com devolução (períodos vazios = 0)
+    const passo = _devolGranul === 'dia' ? 86400000 : 7*86400000;
+    const eixo = []; const fimTs = Date.parse(chaves[chaves.length-1] + 'T00:00:00Z');
+    for(let t = Date.parse(chaves[0] + 'T00:00:00Z'); t <= fimTs && eixo.length < 800; t += passo) eixo.push(new Date(t).toISOString().slice(0,10));
+    const lista = eixo.length < 800 ? eixo : chaves;           // intervalo enorme: só os períodos com dado
+    const fmtNum = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits:1 });
+    const fmtDia = d => d.slice(8,10) + '/' + d.slice(5,7);
+    const fmtDiaCompleto = d => d.slice(8,10) + '/' + d.slice(5,7) + '/' + d.slice(0,4);
+    const fimSemana = d => new Date(Date.parse(d + 'T00:00:00Z') + 6*86400000).toISOString().slice(0,10);
+    const tituloDe = d => _devolGranul === 'dia' ? fmtDiaCompleto(d) : 'Semana de ' + fmtDia(d) + ' a ' + fmtDiaCompleto(fimSemana(d));
+    // séries: 4 tipos com linha própria + "Outros" (soma dos demais; o balão mostra quais)
+    const outrosDe = d => Object.entries((porPeriodo[d] || { tipos:{} }).tipos).filter(([t]) => !DEVOL_SERIES_UNID.includes(t)).sort((a,b) => b[1]-a[1]);
+    const series = DEVOL_SERIES_UNID.map((t, i) => ({ nome:t, cor:cores[i], valores:lista.map(d => (porPeriodo[d] ? (porPeriodo[d].tipos[t]||0) : 0)) }));
+    series.push({ nome:'Outros', cor:cinza, outros:true, valores:lista.map(d => outrosDe(d).reduce((s,[,q]) => s+q, 0)) });
+    series.forEach(s => { s.total = s.valores.reduce((a,b) => a+b, 0); });
+    const ativas = series.filter(s => s.total > 0);             // tipo sem nenhuma devolução no período não aparece
+    const totalGeral = ativas.reduce((a,s) => a + s.total, 0);
+    const nOcorr = lista.map(d => (porPeriodo[d] ? porPeriodo[d].ocorr.size : 0));
+    const diasComDado = chaves.length, unidadeTempo = _devolGranul === 'dia' ? 'dia' : 'semana';
+    if(subLinha) subLinha.textContent = fmtNum(totalGeral) + ' unidades devolvidas em ' + diasComDado + ' ' + unidadeTempo + (diasComDado===1?'':'s') + ' com devolução. Cada linha está na unidade do seu tipo (sacos, caixas...), então as alturas não se comparam entre linhas.';
+    if(legLinha) legLinha.innerHTML = ativas.map(s => `<span style="display:inline-flex;align-items:center;gap:7px;font-size:.8rem;color:var(--text-secondary)"><span style="width:18px;height:3px;border-radius:2px;background:${s.cor}"></span><span style="color:var(--text-primary);font-weight:700">${escapeHtml(s.nome)}</span><span>${fmtNum(s.total)}</span></span>`).join('');
+    const notas = [];
+    if(semItens) notas.push(semItens + ' ocorrência' + (semItens===1?'':'s') + ' sem itens detalhados não entram (não dá pra saber a unidade)');
+    if(dataInvalida) notas.push(dataInvalida + ' ocorrência' + (dataInvalida===1?'':'s') + ' com data inválida fora do gráfico');
+    if(semTipo) notas.push(semTipo + ' ite' + (semTipo===1?'m':'ns') + ' sem tipo de unidade classificado (referência vazia ou fora da lista) entram em "Outros"');
+    if(notaLinha) notaLinha.textContent = notas.join(' · ');
+
+    const canvasL = document.getElementById('devol-chart-linha');
+    if(canvasL){
+      if(_devolCharts.linha){ _devolCharts.linha.destroy(); _devolCharts.linha = null; }
+      canvasL.setAttribute('aria-label', 'Gráfico de linhas por tipo de unidade, ' + (_devolGranul==='dia'?'por dia':'por semana') + '. Totais: ' + ativas.map(s => s.nome + ' ' + fmtNum(s.total)).join('; '));
+      let maxV = 0, maxI = 0, maxS = 0;
+      ativas.forEach((s, si) => s.valores.forEach((v, i) => { if(v > maxV){ maxV = v; maxI = i; maxS = si; } }));
+      // só o ponto mais alto de todos leva o número escrito (um rótulo em cada ponto poluiria o gráfico)
+      const rotuloPico = {
+        id:'devolRotuloPico',
+        afterDatasetsDraw(chart){
+          if(!(maxV > 0)) return;
+          const pt = chart.getDatasetMeta(maxS).data[maxI]; if(!pt) return;
+          const { ctx } = chart; ctx.save(); ctx.font = '700 12px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillStyle = tinta; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+          ctx.fillText(fmtNum(maxV), pt.x, pt.y - 8); ctx.restore();
+        }
+      };
+      const poucosPontos = lista.length <= 120;
+      _devolCharts.linha = new Chart(canvasL, {
+        type:'line',
+        data:{ labels:lista.map(fmtDia), datasets:ativas.map(s => ({ label:s.nome, data:s.valores, borderColor:s.cor, backgroundColor:s.cor, borderWidth:2, tension:0, pointRadius:poucosPontos?3:0, pointHoverRadius:6, pointBackgroundColor:s.cor, pointBorderColor:superficie, pointBorderWidth:1 })) },
+        options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false },
+          layout:{ padding:{ top:24, right:12 } },
+          scales:{
+            x:{ ticks:{ color:tintaSec, font:{size:11}, maxRotation:0, autoSkip:true, maxTicksLimit:14 }, grid:{ display:false }, border:{ color:grade } },
+            y:{ beginAtZero:true, ticks:{ color:tintaSec, font:{size:11}, precision:0 }, grid:{ color:grade }, border:{ display:false },
+                title:{ display:true, text:'Quantidade devolvida (na unidade de cada tipo)', color:tintaSec, font:{size:11} } } },
+          plugins:{ legend:{display:false},
+            tooltip:{ filter: item => item.raw > 0,
+              callbacks:{
+                title: c => (c && c[0] && lista[c[0].dataIndex]) ? tituloDe(lista[c[0].dataIndex]) : '',
+                label: c => ' ' + c.dataset.label + ': ' + fmtNum(c.raw),
+                afterLabel: c => (c.dataset.label === 'Outros' && lista[c.dataIndex]) ? outrosDe(lista[c.dataIndex]).map(([t,q]) => '      ' + t + ': ' + fmtNum(q)) : [],
+                footer: c => (c && c[0] && nOcorr[c[0].dataIndex]) ? nOcorr[c[0].dataIndex] + ' ocorrência' + (nOcorr[c[0].dataIndex]===1?'':'s') : '' } } } },
+        plugins:[rotuloPico]
+      });
+    }
+  }
 }
 
 // ══ GERENCIAR PERFIS CUSTOMIZADOS ═══════════════════

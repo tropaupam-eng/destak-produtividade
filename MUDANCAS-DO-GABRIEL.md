@@ -21,6 +21,22 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-26, Gabriel: gráfico de linhas por tipo de unidade volta ao Dashboard Devolução, com balão protegido — v4.89.78
+Onde: `index.html` e `version.json` (4.89.77 → 4.89.78). Mescla a branch `gabriel/dashboard-devolucao-filtro-setor`
+(commits 7d36f5b, e1338b1, 7bd77c5: gráfico "Devoluções por tipo de unidade", 4 linhas + "Outros", botões Dia/Semana,
+detalhes na entrada de 27/10 logo abaixo) sobre a main com a proteção dos balões da v4.89.77. Único conflito: este
+arquivo de registro (mantidas as duas entradas).
+Causa do erro do Log ("Cannot read properties of undefined (reading 'dataIndex')"): ACHADA e REPRODUZIDA com mouse real
+no Chart.js 4.4.1. O gráfico de linhas esconde do balão os valores zero (`filter: item.raw > 0`); ao passar o mouse
+num dia sem nenhuma devolução, a lista do balão vem VAZIA e `title: c => ...c[0].dataIndex` estoura. Esse era o
+gatilho que eu não tinha achado na v4.89.77 (que só protegeu as barras).
+Correção: `title`, `afterLabel` e `footer` do gráfico de linhas devolvem texto vazio quando não há item. Testado: o
+código sem proteção gera o erro ao passar o mouse nos dias zerados; o protegido não gera nenhum.
+Testes: `node check.js` ok; testes de lógica e de dados reais do dashboard (linhas, barras, setor, datas) e de
+regressão passando.
+Como desfazer: `git revert` do commit desta entrada (volta a v4.89.77, sem o gráfico de linhas).
+Pendente/risco: teste visual do Gabriel em localhost (passar o mouse em dias com e sem devolução, Dia/Semana, trocar
+datas, clicar na rosca) e conferir o Log de Erros antes de publicar.
 ## 2026-10-26, Gabriel: proteção dos balões (tooltip) dos gráficos de barras contra lista vazia — v4.89.77
 Onde: `index.html`: Dashboard Devolução, função `barras()` (callbacks `title` e `afterLabel` do balão); mesma proteção em
 dois balões de outras telas que assumiam `items[0]`: gráfico de pedidos por placa (`title` e `footer`, `totaisPorPlaca`)
@@ -49,6 +65,28 @@ commit 989b4cc; único conflito foi a versão (resolvido para 4.89.76). `node ch
 linhas não está no arquivo.
 Como desfazer: `git revert` do commit de mesclagem desta entrada.
 Pendente/risco: conferir o site publicado depois do deploy do Pages.
+## 2026-10-27, Gabriel: Dashboard Devolução — gráfico de linhas "Devoluções por tipo de unidade"
+Onde: `index.html`: no markup, linha `devol-grid3` (largura toda) com o gráfico, legenda própria, botões "Dia / Semana"
+e nota; em `carregarDashDevolucao` (busca dos itens devolvidos e da unidade de venda de cada item); em
+`renderDashDevolucao` (agrupamento e desenho); estado/funções `_devolItens`, `_devolRefPorPedido`, `_devolPedidosRef`,
+`_devolGranul`, `DEVOL_UNID_TRECHO`, `_devolTipoUnidade`, `DEVOL_SERIES_UNID`, `devolGranul`. Mesma versão (4.89.74,
+ainda não publicada).
+Por quê: pedido do Gabriel: uma linha para cada tipo de unidade (Saco, Caixa, Pacote, Fardo), no lugar do gráfico
+"Devoluções por dia". Os demais tipos (Milheiro, Quilo, Unidade, não classificados...) entram numa linha cinza
+"Outros"; o balão mostra quais. Cada linha está na unidade do seu tipo (sacos, caixas...), então as alturas não se
+comparam entre linhas. Dia = data da ocorrência (fuso de Brasília); "Semana" agrupa de segunda a domingo. Eixo
+contínuo (períodos vazios = 0). Respeita o filtro de datas; não depende do setor clicado nas roscas. Só o ponto mais
+alto leva o número escrito; o balão mostra o período, as quantidades e o nº de ocorrências.
+Classificação: a unidade vem da referência do item no ERP (pedidos_itens_erp.referencia), pelo primeiro trecho
+("CX C/16PCT" = Caixa, "SC C/20KG" = Saco, "FD C/2PCT" = Fardo, "PCT..." = Pacote; "P/X" vale X). Mesmas regras da aba
+Regras do Excel "Devolucoes_por_tipo_de_unidade" entregue ao Gabriel. Ocorrência sem itens detalhados (as antigas) e
+com data impossível (ano 0026) ficam fora; a nota embaixo avisa. Removido o seletor antigo "Caixas / Todos os volumes".
+Dados (só leitura): ocorrencias_distribuicao_itens e pedidos_itens_erp (referências em lotes de 60 pedidos, guardadas
+na sessão). Nenhuma coluna nova, nenhum dado alterado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. A busca de referências cresce com o nº de
+ocorrências (o cache de sessão ajuda).
+
 ## 2026-10-26, Gabriel: Dashboard Devolução — barras por conferente (Armazém) e por vendedor
 Onde: `index.html`: no markup, nova linha `devol-grid2` com 2 cards; em `carregarDashDevolucao` (colunas novas na
 leitura de ocorrências + busca do vendedor dos pedidos); em `renderDashDevolucao` (desenho das barras); estado
