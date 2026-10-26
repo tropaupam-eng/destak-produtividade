@@ -21,27 +21,24 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-27, Gabriel: Dashboard Devolução — gráfico de linha "Devoluções por dia" (caixas)
-Onde: `index.html`: no markup, linha nova `devol-grid3` (largura toda) com o gráfico, o botão duplo "Caixas / Todos
-os volumes" e uma nota; em `carregarDashDevolucao` (busca dos itens devolvidos e da unidade de venda de cada item);
-em `renderDashDevolucao` (agrupamento por dia e desenho); estado/funções novas `_devolItens`, `_devolRefPorPedido`,
-`_devolPedidosRef`, `_devolMedida`, `_devolEhCaixa`, `devolMedida`. Mesma versão (4.89.74, ainda não publicada).
-Por quê: pedido do Gabriel: gráfico de linha com a quantidade de devoluções em caixas por dia. Cada dia soma a
-quantidade devolvida das ocorrências daquele dia (dia = data da ocorrência, fuso de Brasília). Respeita o filtro de
-datas; não depende do setor clicado nas roscas. Eixo contínuo do primeiro ao último dia (dias vazios = 0). Só o dia
-de pico leva o número escrito; o balão mostra data, quantidade e nº de ocorrências.
-O que é "caixa": no Cronos, "volume" de um pedido é a SOMA das quantidades dos itens, qualquer que seja a
-unidade (nas devoluções totais, soma dos itens = volume do pedido em 39 de 42 casos). A unidade vem da referência
-do item no ERP (pedidos_itens_erp.referencia: "CX C/16PCT", "SC C/20KG", "PCT C/5KG", "FD C/2PCT"...). O gráfico
-tem dois modos: "Caixas" (só itens cuja referência começa com CX ou CAIXA) e "Todos os volumes" (soma de tudo).
-DECISÃO DO GABRIEL (27/10): o padrão ao abrir é "Todos os volumes"; o botão "Caixas" continua disponível.
-Na leitura de 27/10: 8.216 caixas contra 31.915 volumes no total
-(sacos 16.650, caixas 8.216, pacotes 3.628, fardos 2.963...). Item sem referência encontrada não conta como caixa.
-Ocorrência sem itens detalhados (3, as antigas) fica de fora de "Caixas" e entra por quantidade resumida em
-"Todos os volumes". Ocorrência com data impossível (ano 0026) não entra no eixo; a nota embaixo avisa.
-Dados (só leitura): ocorrencias_distribuicao_itens (ocorrencia_id, produto, quantidade) e pedidos_itens_erp (pedido,
-descricao, referencia), esta última em lotes de 60 pedidos e guardada na sessão (reabrir a aba não busca de novo).
-Nenhuma coluna nova, nenhum dado alterado.
+## 2026-10-27, Gabriel: Dashboard Devolução — gráfico de linhas "Devoluções por tipo de unidade"
+Onde: `index.html`: no markup, linha `devol-grid3` (largura toda) com o gráfico, legenda própria, botões "Dia / Semana"
+e nota; em `carregarDashDevolucao` (busca dos itens devolvidos e da unidade de venda de cada item); em
+`renderDashDevolucao` (agrupamento e desenho); estado/funções `_devolItens`, `_devolRefPorPedido`, `_devolPedidosRef`,
+`_devolGranul`, `DEVOL_UNID_TRECHO`, `_devolTipoUnidade`, `DEVOL_SERIES_UNID`, `devolGranul`. Mesma versão (4.89.74,
+ainda não publicada).
+Por quê: pedido do Gabriel: uma linha para cada tipo de unidade (Saco, Caixa, Pacote, Fardo), no lugar do gráfico
+"Devoluções por dia". Os demais tipos (Milheiro, Quilo, Unidade, não classificados...) entram numa linha cinza
+"Outros"; o balão mostra quais. Cada linha está na unidade do seu tipo (sacos, caixas...), então as alturas não se
+comparam entre linhas. Dia = data da ocorrência (fuso de Brasília); "Semana" agrupa de segunda a domingo. Eixo
+contínuo (períodos vazios = 0). Respeita o filtro de datas; não depende do setor clicado nas roscas. Só o ponto mais
+alto leva o número escrito; o balão mostra o período, as quantidades e o nº de ocorrências.
+Classificação: a unidade vem da referência do item no ERP (pedidos_itens_erp.referencia), pelo primeiro trecho
+("CX C/16PCT" = Caixa, "SC C/20KG" = Saco, "FD C/2PCT" = Fardo, "PCT..." = Pacote; "P/X" vale X). Mesmas regras da aba
+Regras do Excel "Devolucoes_por_tipo_de_unidade" entregue ao Gabriel. Ocorrência sem itens detalhados (as antigas) e
+com data impossível (ano 0026) ficam fora; a nota embaixo avisa. Removido o seletor antigo "Caixas / Todos os volumes".
+Dados (só leitura): ocorrencias_distribuicao_itens e pedidos_itens_erp (referências em lotes de 60 pedidos, guardadas
+na sessão). Nenhuma coluna nova, nenhum dado alterado.
 Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. A busca de referências cresce com o nº de
 ocorrências (o cache de sessão ajuda).

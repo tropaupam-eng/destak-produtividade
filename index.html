@@ -3333,17 +3333,18 @@ body.light-theme{
   <div id="devol-grid3" style="margin-top:20px">
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-        <div>
-          <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Devoluções por dia</div>
-          <div id="devol-sub-linha" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px"></div>
+        <div style="min-width:0;flex:1 1 320px">
+          <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Devoluções por tipo de unidade</div>
+          <div id="devol-sub-linha" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 10px"></div>
         </div>
-        <div role="group" aria-label="O que contar" style="display:flex;gap:4px;background:var(--bg-hover);border-radius:8px;padding:3px">
-          <button type="button" id="devol-medida-cx" onclick="devolMedida('cx')" title="Soma das quantidades devolvidas dos itens vendidos em caixa (referência CX)" style="border:none;border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;cursor:pointer;color:var(--text-primary);background:transparent">Caixas</button>
-          <button type="button" id="devol-medida-vol" onclick="devolMedida('vol')" title="Soma de todas as quantidades devolvidas, de qualquer unidade (sacos, caixas, pacotes, fardos...)" style="border:none;border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;cursor:pointer;color:var(--text-primary);background:transparent">Todos os volumes</button>
+        <div role="group" aria-label="Agrupar por" style="display:flex;gap:4px;background:var(--bg-hover);border-radius:8px;padding:3px">
+          <button type="button" id="devol-gran-dia" onclick="devolGranul('dia')" title="Um ponto por dia" style="border:none;border-radius:6px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer;color:var(--text-primary);background:transparent">Dia</button>
+          <button type="button" id="devol-gran-sem" onclick="devolGranul('sem')" title="Um ponto por semana (segunda a domingo)" style="border:none;border-radius:6px;padding:5px 14px;font-size:.78rem;font-weight:700;cursor:pointer;color:var(--text-primary);background:transparent">Semana</button>
         </div>
       </div>
+      <div id="devol-leg-linha" style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 6px"></div>
       <div id="devol-msg-linha" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
-      <div id="devol-wrap-linha" style="position:relative;height:300px"><canvas id="devol-chart-linha" role="img" aria-label="Gráfico de linha: devoluções por dia"></canvas></div>
+      <div id="devol-wrap-linha" style="position:relative;height:320px"><canvas id="devol-chart-linha" role="img" aria-label="Gráfico de linhas: devoluções por tipo de unidade"></canvas></div>
       <div id="devol-nota-linha" style="font-size:.74rem;color:var(--text-muted);margin-top:10px"></div>
     </div>
   </div>
@@ -25443,10 +25444,25 @@ let _devolCharts = { setor:null, motivo:null };
 let _devolItens = {};        // id da ocorrência -> [{produto, quantidade}] (itens devolvidos)
 let _devolRefPorPedido = {}; // pedido -> [{d: descrição em maiúsculas, r: referência}] (unidade de venda dos itens do ERP)
 let _devolPedidosRef = new Set();   // pedidos cujas referências já foram buscadas (cache da sessão: não busca de novo)
-let _devolMedida = 'vol';    // o que o gráfico de linha conta: 'vol' (padrão, decisão do Gabriel) = todas as quantidades; 'cx' = só itens vendidos em caixa
-// Item vendido em caixa = referência do ERP começa com "CX" ou "CAIXA" (ex.: "CX C/16PCT", "CX-36PT").
-function _devolEhCaixa(ref){ return /^\s*(CX|CAIXA)\b/i.test(String(ref||'')); }
-function devolMedida(m){ _devolMedida = (m==='vol') ? 'vol' : 'cx'; renderDashDevolucao(); }
+let _devolGranul = 'dia';    // gráfico por tipo de unidade: 'dia' = um ponto por dia; 'sem' = um ponto por semana
+// Tipo de unidade de venda a partir da referência do item no ERP: ela começa com o tipo da embalagem
+// ("CX C/16PCT" = caixa, "SC C/20KG" = saco, "FD C/2PCT" = fardo...). Mesmas regras da aba Regras do Excel
+// "Devolucoes_por_tipo_de_unidade". Trecho que não está aqui = "Não classificado" (cai em "Outros" no gráfico).
+const DEVOL_UNID_TRECHO = {
+  CX:'Caixa', CAIXA:'Caixa', FD:'Fardo', FARDO:'Fardo', SC:'Saco', SACO:'Saco',
+  PCT:'Pacote', PACOTE:'Pacote', PCTC:'Pacote', PT:'Pacote', PC:'Pacote',
+  MILHEIRO:'Milheiro', MLH:'Milheiro', UNIDADE:'Unidade', UN:'Unidade', UND:'Unidade', KG:'Quilo', KILO:'Quilo',
+  DP:'Display', DSP:'Display', DISP:'Display', DISPLAY:'Display', BD:'Balde', RL:'Rolo', CARTELA:'Cartela'
+};
+function _devolTipoUnidade(ref){
+  const t = String(ref||'').trim().toUpperCase().split(/[\s\-\/.,]+/).filter(Boolean);
+  if(!t.length) return 'Não classificado';
+  const trecho = (t[0] === 'P' && t[1]) ? t[1] : t[0];       // "P/KILO", "P/UNIDADE": vale o que vem depois do "P/" (= por)
+  return DEVOL_UNID_TRECHO[trecho] || 'Não classificado';
+}
+// Os 4 tipos que somam ~99% da quantidade devolvida têm linha própria (cor fixa); os demais entram em "Outros".
+const DEVOL_SERIES_UNID = ['Saco', 'Caixa', 'Pacote', 'Fardo'];
+function devolGranul(g){ _devolGranul = (g==='sem') ? 'sem' : 'dia'; renderDashDevolucao(); }
 let _devolPedVend = {};      // pedido -> código do vendedor (só dos pedidos com os 3 motivos de "Erros por vendedor")
 let _devolNomeVend = {};     // código do vendedor -> nome
 // Motivos que entram em "Erros por vendedor" (comparados por nome, sem diferenciar maiúsculas/espaços).
@@ -25788,92 +25804,107 @@ function renderDashDevolucao(){
   if(itensVend.length) barras('vend', 'devol-chart-vend', itensVend, false, cores[2]);
 
 
-  // ── Devoluções por dia (linha) — pedido do usuário, 2026-10-26 ──────────────────────────────
-  // Quantidade devolvida por dia da ocorrência. "Caixas" = só os itens vendidos em caixa (referência CX do
-  // ERP); "Todos os volumes" = soma de todas as quantidades devolvidas, de qualquer unidade (sacos, pacotes,
-  // fardos...). Sem filtro de setor: respeita só as datas. Dias sem ocorrência entram com zero.
-  const medida = _devolMedida;
-  const porDia = {};
-  let semItens = 0, dataInvalida = 0;
+  // ── Devoluções por tipo de unidade (linhas) — pedido do usuário, 2026-10-27 ──────────────────
+  // Uma linha por tipo de unidade de venda (Saco, Caixa, Pacote, Fardo; o resto em "Outros"), cada uma na SUA
+  // unidade: não soma sacos com caixas. Dia ou semana (segunda a domingo). Respeita só as datas do topo (não
+  // depende do setor clicado nas roscas). Períodos sem devolução entram com zero.
+  const chaveGran = dia => {
+    if(_devolGranul === 'dia') return dia;
+    const t = Date.parse(dia + 'T00:00:00Z'), dow = (new Date(t).getUTCDay() + 6) % 7;   // 0 = segunda
+    return new Date(t - dow*86400000).toISOString().slice(0,10);
+  };
+  const porPeriodo = {};
+  let semItens = 0, dataInvalida = 0, semTipo = 0;
   dados.forEach(o => {
-    if(!(o.dia >= '2000-01-01')){ dataInvalida++; return; }   // data impossível (ex.: ano 0026) não entra no eixo
+    if(!(o.dia >= '2000-01-01')){ dataInvalida++; return; }    // data impossível (ex.: ano 0026) não entra no eixo
     const itens = _devolItens[o.id];
-    let cx = 0, vol = 0;
-    if(!itens || !itens.length){ semItens++; vol = Number(o.quantidade) || 0; }
-    else{
-      const refs = _devolRefPorPedido[String(o.pedido||'').trim()] || [];
-      itens.forEach(it => {
-        const ref = (refs.find(r => r.d === String(it.produto||'').trim().toUpperCase()) || {}).r;
-        vol += it.quantidade;
-        if(_devolEhCaixa(ref)) cx += it.quantidade;
-      });
-    }
-    const d = porDia[o.dia] || (porDia[o.dia] = { cx:0, vol:0, n:0 });
-    d.cx += cx; d.vol += vol; d.n++;
+    if(!itens || !itens.length){ semItens++; return; }          // sem itens não dá pra saber a unidade
+    const refs = _devolRefPorPedido[String(o.pedido||'').trim()] || [];
+    const k = chaveGran(o.dia);
+    const p = porPeriodo[k] || (porPeriodo[k] = { tipos:{}, ocorr:new Set() });
+    itens.forEach(it => {
+      const ref = (refs.find(r => r.d === String(it.produto||'').trim().toUpperCase()) || {}).r;
+      const tipo = _devolTipoUnidade(ref);
+      if(tipo === 'Não classificado') semTipo++;
+      p.tipos[tipo] = (p.tipos[tipo]||0) + it.quantidade;
+    });
+    p.ocorr.add(o.id);
   });
-  const diasComDado = Object.keys(porDia).sort();
-  const subLinha = document.getElementById('devol-sub-linha');
-  const notaLinha = document.getElementById('devol-nota-linha');
-  const btnCx = document.getElementById('devol-medida-cx'), btnVol = document.getElementById('devol-medida-vol');
-  [[btnCx,'cx'],[btnVol,'vol']].forEach(([b,m]) => { if(b){ b.style.background = medida===m ? 'var(--bg-card2)' : 'transparent'; b.style.color = medida===m ? 'var(--text-primary)' : 'var(--text-secondary)'; } });
+  const chaves = Object.keys(porPeriodo).sort();
+  const subLinha = document.getElementById('devol-sub-linha'), notaLinha = document.getElementById('devol-nota-linha');
+  const legLinha = document.getElementById('devol-leg-linha');
   const wrapLinha = document.getElementById('devol-wrap-linha'), msgLinha = document.getElementById('devol-msg-linha');
-  if(!diasComDado.length){
+  [['devol-gran-dia','dia'],['devol-gran-sem','sem']].forEach(([id,g]) => { const b = document.getElementById(id); if(b){ b.style.background = _devolGranul===g ? 'var(--bg-card2)' : 'transparent'; b.style.color = _devolGranul===g ? 'var(--text-primary)' : 'var(--text-secondary)'; } });
+  if(!chaves.length){
     if(wrapLinha) wrapLinha.style.display = 'none';
-    if(msgLinha){ msgLinha.style.display = ''; msgLinha.textContent = 'Nenhuma ocorrência com data válida no período.'; }
+    if(legLinha) legLinha.innerHTML = '';
+    if(msgLinha){ msgLinha.style.display = ''; msgLinha.textContent = 'Nenhuma devolução com itens detalhados e data válida no período.'; }
     if(subLinha) subLinha.textContent = '';
-    if(notaLinha) notaLinha.textContent = '';
+    if(notaLinha) notaLinha.textContent = semItens ? (semItens + ' ocorrência' + (semItens===1?'':'s') + ' sem itens detalhados não entram no gráfico') : '';
     if(_devolCharts.linha){ _devolCharts.linha.destroy(); _devolCharts.linha = null; }
   } else {
     if(wrapLinha) wrapLinha.style.display = '';
     if(msgLinha) msgLinha.style.display = 'none';
-    // eixo contínuo do primeiro ao último dia com ocorrência (dias vazios = 0)
-    const dias = []; const fimTs = Date.parse(diasComDado[diasComDado.length-1]+'T00:00:00Z');
-    for(let t = Date.parse(diasComDado[0]+'T00:00:00Z'); t <= fimTs && dias.length < 800; t += 86400000) dias.push(new Date(t).toISOString().slice(0,10));
-    const lista = dias.length < 800 ? dias : diasComDado;   // intervalo enorme: só os dias com dado
-    const valores = lista.map(d => (porDia[d] ? porDia[d][medida] : 0));
-    const nOcorr = lista.map(d => (porDia[d] ? porDia[d].n : 0));
-    const totalPeriodo = valores.reduce((a,b)=>a+b,0);
+    // eixo contínuo do primeiro ao último período com devolução (períodos vazios = 0)
+    const passo = _devolGranul === 'dia' ? 86400000 : 7*86400000;
+    const eixo = []; const fimTs = Date.parse(chaves[chaves.length-1] + 'T00:00:00Z');
+    for(let t = Date.parse(chaves[0] + 'T00:00:00Z'); t <= fimTs && eixo.length < 800; t += passo) eixo.push(new Date(t).toISOString().slice(0,10));
+    const lista = eixo.length < 800 ? eixo : chaves;           // intervalo enorme: só os períodos com dado
     const fmtNum = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits:1 });
-    const fmtDia = d => d.slice(8,10)+'/'+d.slice(5,7);
-    const fmtDiaCompleto = d => d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4);
-    const unidade = medida==='cx' ? 'caixa' : 'volume';
-    if(subLinha) subLinha.textContent = medida==='cx'
-      ? fmtNum(totalPeriodo) + ' caixas devolvidas em ' + diasComDado.length + ' dia' + (diasComDado.length===1?'':'s') + ' com ocorrência (só itens vendidos em caixa, referência CX)'
-      : fmtNum(totalPeriodo) + ' volumes devolvidos em ' + diasComDado.length + ' dia' + (diasComDado.length===1?'':'s') + ' com ocorrência (soma de todas as quantidades, de qualquer unidade)';
+    const fmtDia = d => d.slice(8,10) + '/' + d.slice(5,7);
+    const fmtDiaCompleto = d => d.slice(8,10) + '/' + d.slice(5,7) + '/' + d.slice(0,4);
+    const fimSemana = d => new Date(Date.parse(d + 'T00:00:00Z') + 6*86400000).toISOString().slice(0,10);
+    const tituloDe = d => _devolGranul === 'dia' ? fmtDiaCompleto(d) : 'Semana de ' + fmtDia(d) + ' a ' + fmtDiaCompleto(fimSemana(d));
+    // séries: 4 tipos com linha própria + "Outros" (soma dos demais; o balão mostra quais)
+    const outrosDe = d => Object.entries((porPeriodo[d] || { tipos:{} }).tipos).filter(([t]) => !DEVOL_SERIES_UNID.includes(t)).sort((a,b) => b[1]-a[1]);
+    const series = DEVOL_SERIES_UNID.map((t, i) => ({ nome:t, cor:cores[i], valores:lista.map(d => (porPeriodo[d] ? (porPeriodo[d].tipos[t]||0) : 0)) }));
+    series.push({ nome:'Outros', cor:cinza, outros:true, valores:lista.map(d => outrosDe(d).reduce((s,[,q]) => s+q, 0)) });
+    series.forEach(s => { s.total = s.valores.reduce((a,b) => a+b, 0); });
+    const ativas = series.filter(s => s.total > 0);             // tipo sem nenhuma devolução no período não aparece
+    const totalGeral = ativas.reduce((a,s) => a + s.total, 0);
+    const nOcorr = lista.map(d => (porPeriodo[d] ? porPeriodo[d].ocorr.size : 0));
+    const diasComDado = chaves.length, unidadeTempo = _devolGranul === 'dia' ? 'dia' : 'semana';
+    if(subLinha) subLinha.textContent = fmtNum(totalGeral) + ' unidades devolvidas em ' + diasComDado + ' ' + unidadeTempo + (diasComDado===1?'':'s') + ' com devolução. Cada linha está na unidade do seu tipo (sacos, caixas...), então as alturas não se comparam entre linhas.';
+    if(legLinha) legLinha.innerHTML = ativas.map(s => `<span style="display:inline-flex;align-items:center;gap:7px;font-size:.8rem;color:var(--text-secondary)"><span style="width:18px;height:3px;border-radius:2px;background:${s.cor}"></span><span style="color:var(--text-primary);font-weight:700">${escapeHtml(s.nome)}</span><span>${fmtNum(s.total)}</span></span>`).join('');
     const notas = [];
-    if(semItens) notas.push(semItens + ' ocorrência' + (semItens===1?'':'s') + ' sem itens detalhados ' + (medida==='cx' ? 'não entram na contagem de caixas' : 'entram pela quantidade resumida'));
+    if(semItens) notas.push(semItens + ' ocorrência' + (semItens===1?'':'s') + ' sem itens detalhados não entram (não dá pra saber a unidade)');
     if(dataInvalida) notas.push(dataInvalida + ' ocorrência' + (dataInvalida===1?'':'s') + ' com data inválida fora do gráfico');
+    if(semTipo) notas.push(semTipo + ' ite' + (semTipo===1?'m':'ns') + ' sem tipo de unidade classificado (referência vazia ou fora da lista) entram em "Outros"');
     if(notaLinha) notaLinha.textContent = notas.join(' · ');
 
     const canvasL = document.getElementById('devol-chart-linha');
     if(canvasL){
       if(_devolCharts.linha){ _devolCharts.linha.destroy(); _devolCharts.linha = null; }
-      canvasL.setAttribute('aria-label', 'Gráfico de linha: ' + unidade + 's devolvidos por dia. ' + lista.map((d,i)=> fmtDia(d)+' '+fmtNum(valores[i])).join('; '));
-      const maxV = Math.max(...valores);
-      // só o ponto mais alto leva o número escrito (um rótulo em cada ponto poluiria o gráfico)
+      canvasL.setAttribute('aria-label', 'Gráfico de linhas por tipo de unidade, ' + (_devolGranul==='dia'?'por dia':'por semana') + '. Totais: ' + ativas.map(s => s.nome + ' ' + fmtNum(s.total)).join('; '));
+      let maxV = 0, maxI = 0, maxS = 0;
+      ativas.forEach((s, si) => s.valores.forEach((v, i) => { if(v > maxV){ maxV = v; maxI = i; maxS = si; } }));
+      // só o ponto mais alto de todos leva o número escrito (um rótulo em cada ponto poluiria o gráfico)
       const rotuloPico = {
         id:'devolRotuloPico',
         afterDatasetsDraw(chart){
           if(!(maxV > 0)) return;
-          const pts = chart.getDatasetMeta(0).data; const i = valores.indexOf(maxV); if(!pts[i]) return;
+          const pt = chart.getDatasetMeta(maxS).data[maxI]; if(!pt) return;
           const { ctx } = chart; ctx.save(); ctx.font = '700 12px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillStyle = tinta; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-          ctx.fillText(fmtNum(maxV), pts[i].x, pts[i].y - 8); ctx.restore();
+          ctx.fillText(fmtNum(maxV), pt.x, pt.y - 8); ctx.restore();
         }
       };
+      const poucosPontos = lista.length <= 120;
       _devolCharts.linha = new Chart(canvasL, {
         type:'line',
-        data:{ labels:lista.map(fmtDia), datasets:[{ data:valores, borderColor:cores[0], backgroundColor:cores[0], borderWidth:2, tension:0, pointRadius:3, pointHoverRadius:6, pointBackgroundColor:cores[0], pointBorderColor:superficie, pointBorderWidth:1 }] },
+        data:{ labels:lista.map(fmtDia), datasets:ativas.map(s => ({ label:s.nome, data:s.valores, borderColor:s.cor, backgroundColor:s.cor, borderWidth:2, tension:0, pointRadius:poucosPontos?3:0, pointHoverRadius:6, pointBackgroundColor:s.cor, pointBorderColor:superficie, pointBorderWidth:1 })) },
         options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false },
           layout:{ padding:{ top:24, right:12 } },
           scales:{
             x:{ ticks:{ color:tintaSec, font:{size:11}, maxRotation:0, autoSkip:true, maxTicksLimit:14 }, grid:{ display:false }, border:{ color:grade } },
             y:{ beginAtZero:true, ticks:{ color:tintaSec, font:{size:11}, precision:0 }, grid:{ color:grade }, border:{ display:false },
-                title:{ display:true, text: medida==='cx' ? 'Caixas devolvidas' : 'Volumes devolvidos', color:tintaSec, font:{size:11} } } },
+                title:{ display:true, text:'Quantidade devolvida (na unidade de cada tipo)', color:tintaSec, font:{size:11} } } },
           plugins:{ legend:{display:false},
-            tooltip:{ callbacks:{
-              title: c => fmtDiaCompleto(lista[c[0].dataIndex]),
-              label: c => ' ' + fmtNum(c.raw) + ' ' + unidade + (c.raw===1?'':'s'),
-              afterLabel: c => nOcorr[c.dataIndex] ? '   ' + nOcorr[c.dataIndex] + ' ocorrência' + (nOcorr[c.dataIndex]===1?'':'s') : '   sem ocorrência' } } } },
+            tooltip:{ filter: item => item.raw > 0,
+              callbacks:{
+                title: c => tituloDe(lista[c[0].dataIndex]),
+                label: c => ' ' + c.dataset.label + ': ' + fmtNum(c.raw),
+                afterLabel: c => c.dataset.label === 'Outros' ? outrosDe(lista[c.dataIndex]).map(([t,q]) => '      ' + t + ': ' + fmtNum(q)) : [],
+                footer: c => nOcorr[c[0].dataIndex] ? nOcorr[c[0].dataIndex] + ' ocorrência' + (nOcorr[c[0].dataIndex]===1?'':'s') : '' } } } },
         plugins:[rotuloPico]
       });
     }
