@@ -9618,7 +9618,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.81';
+const APP_VERSION = '4.89.82';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -21009,6 +21009,22 @@ async function enviarCargaUnniflex(carga){
       return;
     }
     const pulados = data.pulados_sem_coordenada||[];
+    // Registra o envio (só conta como "integrado" se enviou ao menos 1 pedido e a Unniflex respondeu 2xx)
+    try{
+      const okEnvio = (data.enviados||0) > 0 && data.status_unniflex >= 200 && data.status_unniflex < 300;
+      await supaFetch('envios_unniflex',{
+        method:'POST', prefer:'return=minimal',
+        body: JSON.stringify({
+          carga: Number(carga), total_pedidos: data.total_pedidos ?? null, enviados: data.enviados ?? 0,
+          pulados_sem_coordenada: pulados.length, status_unniflex: data.status_unniflex ?? null,
+          ok: okEnvio, usuario_nome: USUARIO_LOGADO?.nome || null
+        })
+      });
+      if(okEnvio){
+        _enviosUnniflexCache[carga] = { carga: Number(carga), enviado_em: new Date().toISOString(), enviados: data.enviados, pulados_sem_coordenada: pulados.length };
+        if(typeof renderDemandasCards === 'function') renderDemandasCards();
+      }
+    }catch(eReg){ console.warn('Não registrou o envio Unniflex:', eReg.message); }
     corpo.innerHTML = `
       <div style="display:flex;gap:10px;margin-bottom:14px">
         <div style="flex:1;background:rgba(5,150,105,.1);border-left:3px solid #059669;border-radius:8px;padding:10px 12px">
@@ -22264,11 +22280,20 @@ function badgeOcorrencias(rota){
 }
 
 let _retornoVeiculosCache = []; // Cache global de retornos de veículos
+// Cargas já enviadas à Unniflex (rastreador): { [carga]: {enviado_em, enviados, pulados_sem_coordenada} }.
+// Só entra envio bem-sucedido (ok=true): o card da Expedição muda de cor quando a carga está aqui.
+let _enviosUnniflexCache = {};
 
 async function carregarRetornosVeiculos(){
   try{
     _retornoVeiculosCache = await supaFetch('retorno_veiculos?select=id,demanda_id,data_retorno_agendado&limit=2000').catch(()=>[]) || [];
   }catch(e){ console.error('Erro ao carregar retornos:', e); }
+  try{
+    const envios = await supaFetch('envios_unniflex?ok=eq.true&select=carga,enviado_em,enviados,pulados_sem_coordenada&order=enviado_em.desc&limit=3000').catch(()=>[]) || [];
+    const mapa = {};
+    envios.forEach(e=>{ if(!mapa[e.carga]) mapa[e.carga] = e; }); // já vem do mais recente pro mais antigo
+    _enviosUnniflexCache = mapa;
+  }catch(e){ console.error('Erro ao carregar envios Unniflex:', e); }
 }
 
 function _getDemandasStatusConfig(){
@@ -22383,6 +22408,21 @@ function renderDemandasCards(){
 
     const badgeOcorr = badgeOcorrencias(d.rota);
 
+    // Carga enviada ao Unniflex (rastreador): selo "Rastreada" na linha do veículo e barra do
+    // topo do card em verde-água (pedido do usuário, 2026-10-27). Só vale envio bem-sucedido.
+    const envioUnni = temCarga ? _enviosUnniflexCache[d.carga] : null;
+    const COR_RASTREADA = '#14b8a6';
+    const badgeRastreada = envioUnni
+      ? (()=>{
+          let quando = '';
+          try{ quando = new Date(envioUnni.enviado_em).toLocaleString('pt-BR',{timeZone:'America/Bahia',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(_){}
+          const sem = Number(envioUnni.pulados_sem_coordenada)||0;
+          const tip = 'Carga enviada ao Unniflex'+(quando?' em '+quando:'')+' — '+(envioUnni.enviados||0)+' pedido(s)'+(sem?' ('+sem+' sem coordenada ficaram de fora)':'');
+          return `<span class="exp-badge-mini" title="${tip}" style="background:#ccfbf1;color:#0f766e"><span data-feather="radio"></span>Rastreada</span>`;
+        })()
+      : '';
+    const corBarraTopo = envioUnni ? COR_RASTREADA : s.bar;
+
     const _alerta = d.carga ? _alertas[d.carga] : null;
     const badgeDup = isExtra && _alerta && (_alerta.veic?.length > 0 || _alerta.mot?.length > 0) ? (()=>{
       const lbStatus = {pendente:'Pendente',separacao:'Separação',carregamento:'Carregamento',aguardando_nf:'Ag.NF',aguardando_manifesto:'Ag.Manifesto',pronto_viagem:'Pronto',saiu:'Em Rota',fim_viagem:'Fim Viagem'};
@@ -22412,7 +22452,7 @@ function renderDemandasCards(){
       ontouchstart="_expCardTouchStart(event,'${d.id}')" ontouchmove="_expCardTouchMove()" ontouchend="_expCardTouchEnd(event)" ontouchcancel="_expCardTouchEnd(event)">
       <!-- Barra de progresso no topo -->
       <div class="exp-progress">
-        <div class="exp-progress-bar" style="width:${pct}%;background:${s.bar}"></div>
+        <div class="exp-progress-bar" style="width:${pct}%;background:${corBarraTopo}"></div>
       </div>
 
       <div class="exp-card-top">
@@ -22486,7 +22526,7 @@ function renderDemandasCards(){
         </div>
         <div>
           <span class="exp-meta-label">Veículo</span>
-          <div class="exp-card-veiculo" style="${d.veiculo==='A DEFINIR VEÍCULO'?'color:#f59e0b;font-weight:800':''}"><span data-feather="truck"></span><span>${d.veiculo||'—'}</span> ${badgePesoVeiculo(d.veiculo, d.carga, temCarga)} ${badgeRetorno}</div>
+          <div class="exp-card-veiculo" style="${d.veiculo==='A DEFINIR VEÍCULO'?'color:#f59e0b;font-weight:800':''}"><span data-feather="truck"></span><span>${d.veiculo||'—'}</span> ${badgePesoVeiculo(d.veiculo, d.carga, temCarga)} ${badgeRastreada} ${badgeRetorno}</div>
         </div>
         ${d.ajudante?`<div>
           <span class="exp-meta-label">Ajudante</span>
