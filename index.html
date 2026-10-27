@@ -9618,7 +9618,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.80';
+const APP_VERSION = '4.89.81';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20985,6 +20985,55 @@ async function verHistoricoCarga(carga){
   }
 }
 
+// Envia os pedidos de uma carga para a Unniflex (rastreamento de entregas),
+// via Edge Function (secret do token fica só no servidor — nunca no HTML
+// público). Pedidos de clientes sem latitude/longitude cadastrada em
+// geolocalizacao_clientes ficam de fora e aparecem na lista de "pulados".
+async function enviarCargaUnniflex(carga){
+  const modal  = document.getElementById('modal-unniflex-resultado');
+  const corpo  = document.getElementById('unniflex-resultado-corpo');
+  const titulo = document.getElementById('unniflex-resultado-titulo');
+  if(!modal||!corpo) return;
+  if(titulo) titulo.textContent = `📡 Envio para Unniflex — Carga ${carga}`;
+  corpo.innerHTML = '<p style="text-align:center;padding:24px;color:var(--text-muted)">⏳ Enviando...</p>';
+  modal.style.display = 'flex';
+  try{
+    const res = await fetch(SUPA_URL+'/functions/v1/enviar-unniflex', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SUPA_KEY},
+      body: JSON.stringify({carga})
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok || data.error){
+      corpo.innerHTML = `<p style="color:#ef4444;text-align:center;padding:24px">Erro: ${data.error||('HTTP '+res.status)}</p>`;
+      return;
+    }
+    const pulados = data.pulados_sem_coordenada||[];
+    corpo.innerHTML = `
+      <div style="display:flex;gap:10px;margin-bottom:14px">
+        <div style="flex:1;background:rgba(5,150,105,.1);border-left:3px solid #059669;border-radius:8px;padding:10px 12px">
+          <div style="font-size:1.3rem;font-weight:800;color:#059669">${data.enviados}</div>
+          <div style="font-size:.72rem;color:var(--text-muted)">com coordenada (enviados)</div>
+        </div>
+        <div style="flex:1;background:rgba(239,68,68,.08);border-left:3px solid #ef4444;border-radius:8px;padding:10px 12px">
+          <div style="font-size:1.3rem;font-weight:800;color:#ef4444">${pulados.length}</div>
+          <div style="font-size:.72rem;color:var(--text-muted)">sem coordenada (pulados)</div>
+        </div>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:10px">Total de pedidos na carga: <b>${data.total_pedidos}</b> · Status Unniflex: <b>${data.status_unniflex ?? '—'}</b></div>
+      ${pulados.length ? `
+        <div style="font-size:.72rem;color:var(--text-muted);font-weight:700;margin-bottom:6px">PEDIDOS SEM COORDENADA (não enviados):</div>
+        <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          ${pulados.map(p=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 12px;font-size:.78rem;border-bottom:1px solid var(--border)">
+            <span>#${p.pedido}</span><span style="color:var(--text-muted)">${p.cliente}</span>
+          </div>`).join('')}
+        </div>` : ''}
+    `;
+  }catch(e){
+    corpo.innerHTML = `<p style="color:#ef4444;text-align:center;padding:24px">Erro ao enviar: ${e.message}</p>`;
+  }
+}
+
 
 // ══════════════════════════════════════════════════════════════
 // GESTÃO DE FROTA — JS
@@ -22636,6 +22685,11 @@ function _buildExpMenuContent(d){
       style="${itemStyle};padding:7px 12px;font-size:.78rem;cursor:pointer;border-radius:6px;color:var(--text-secondary)"
       onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
       ${mi('upload-cloud')}Reenviar para nuvem
+    </div>`);
+    opcoes.push(`<div onclick="${close};enviarCargaUnniflex(${d.carga})"
+      style="${itemStyle};padding:7px 12px;font-size:.78rem;cursor:pointer;border-radius:6px;color:var(--text-secondary)"
+      onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''">
+      ${mi('radio')}Enviar para Unniflex
     </div>`);
   }
   if(['carregamento','separacao','pendente'].includes(d.status) && temCarga){
@@ -55573,6 +55627,16 @@ function _cftvRenderTable(data){
       <button onclick="document.getElementById('modal-historico-carga').style.display='none'" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:4px 10px;cursor:pointer;font-size:1rem">✕</button>
     </div>
     <div id="historico-carga-corpo" style="padding:16px;overflow-y:auto;flex:1"></div>
+  </div>
+</div>
+
+<div id="modal-unniflex-resultado" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:700;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--bg-card);border-radius:18px;width:100%;max-width:540px;max-height:85vh;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.35);display:flex;flex-direction:column">
+    <div style="background:linear-gradient(135deg,#1a2e4a,#0ea5e9);padding:18px 22px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <h3 id="unniflex-resultado-titulo" style="font-size:1rem;font-weight:800;margin:0">📡 Envio para Unniflex</h3>
+      <button onclick="document.getElementById('modal-unniflex-resultado').style.display='none'" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:4px 10px;cursor:pointer;font-size:1rem">✕</button>
+    </div>
+    <div id="unniflex-resultado-corpo" style="padding:16px;overflow-y:auto;flex:1"></div>
   </div>
 </div>
 
