@@ -4,18 +4,11 @@ import {
   gravarEmLotes, apagarPorPedido, apagarPedidosSemCarga,
   calcularMesAno, calcularSemanaMes, sincronizarDemandasRota,
   buscarRotasRI, calcularRire, buscarLancamentosPorCarga,
-  removerCanceladosDeBaseData,
+  removerCanceladosDeBaseData, removerPedidosQueSairamDaCarga,
 } from '../_shared/erp-comum.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-// CORRIGIDO 2026-09-19: removido o fallback hardcoded ('destak-erp-2026')
-// — mesmo problema achado em receber-pedidos-erp: literal num repo PÚBLICO
-// protegendo um endpoint com service_role. Segredo ausente deve derrubar a
-// função, nunca virar um default público. Usa a MESMA variável ERP_API_KEY
-// que as outras 3 funções do ERP (receber/detectar/registrar) — uma única
-// rotação cobre todas.
-//    supabase secrets set ERP_API_KEY=<valor novo e aleatório>
 const API_KEY = Deno.env.get('ERP_API_KEY');
 if (!API_KEY) {
   throw new Error('ERP_API_KEY não configurada. Defina com: supabase secrets set ERP_API_KEY=<valor>');
@@ -116,12 +109,25 @@ Deno.serve(async (req: Request) => {
   let pedidosCriados = 0;
   let pedidosMovidos = 0;
   let pedidosValorAtualizado = 0;
+  let pedidosRemovidosDaCarga = 0;
   const cargasAfetadas = new Set<number>();
 
   const numerosRecebidos = [...new Set(
     registros.map(r => Math.round(Number(r.numero_pedido_erp))).filter(Number.isFinite)
   )];
-  const { canceladosSet, pedidosCanceladosRemovidos } = await removerCanceladosDeBaseData(supabase, numerosRecebidos, LOTE);
+  let canceladosSet: Set<number>;
+  let pedidosCanceladosRemovidos: number;
+  try {
+    ({ canceladosSet, pedidosCanceladosRemovidos } = await removerCanceladosDeBaseData(supabase, numerosRecebidos, LOTE));
+  } catch (e) {
+    console.error('[atualizar-pedidos-erp] Falha ao checar cancelados, abortando por segurança:', (e as Error)?.message ?? e);
+    return json({
+      ok: false,
+      erro: 'Falha ao checar pedidos cancelados — requisição abortada por segurança para não recriar pedido cancelado. Tente novamente.',
+      total_recebidos: registros.length,
+      total_gravados: resultadoInfo.total,
+    }, 502);
+  }
 
   const comCarga = registros.filter(r =>
     r.carga_erp != null && r.carga_erp !== '' && typeof r.data_pedido === 'string' && REGEX_DATA.test(r.data_pedido as string)
@@ -260,6 +266,26 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  // Pedido que o ERP tirou da carga (carga_erp vazio) deixa de contar na carga do Cronos
+  // (só unidade 1 e só carga com card aberto na Expedição — regras em removerPedidosQueSairamDaCarga).
+  // Uma falha aqui nunca derruba a sincronização principal.
+  try {
+    const semCargaCD = [...new Set(
+      registros
+        .filter(r => (r.carga_erp == null || r.carga_erp === '') && r.unidade_erp === 1
+          && !canceladosSet.has(Math.round(Number(r.numero_pedido_erp))))
+        .map(r => Math.round(Number(r.numero_pedido_erp)))
+        .filter(Number.isFinite)
+    )];
+    if (semCargaCD.length) {
+      const resultadoSaiu = await removerPedidosQueSairamDaCarga(supabase, semCargaCD, LOTE);
+      pedidosRemovidosDaCarga = resultadoSaiu.removidos;
+      resultadoSaiu.cargasAfetadas.forEach(c => cargasAfetadas.add(c));
+    }
+  } catch (e) {
+    console.error('[atualizar-pedidos-erp] Falha ao remover pedidos que saíram da carga:', (e as Error)?.message ?? e);
+  }
+
   if (cargasAfetadas.size) {
     await sincronizarDemandasRota(supabase, [...cargasAfetadas]);
   }
@@ -274,6 +300,7 @@ Deno.serve(async (req: Request) => {
     pedidosMovidos,
     pedidosValorAtualizado,
     pedidosCancelados: pedidosCanceladosRemovidos,
+    pedidosRemovidosDaCarga,
   }, 200);
 });
 
