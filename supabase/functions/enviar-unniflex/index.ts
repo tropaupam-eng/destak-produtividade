@@ -88,10 +88,32 @@ Deno.serve(async (req: Request) => {
     const placaCarga = semPlaceholder(card?.veiculo);
     const motoristaCarga = semPlaceholder(card?.motorista);
 
-    // Ordem de entrega: o Cronos NÃO tem sequência de entrega por pedido ("ordem_carregamento" é a ordem de
-    // CARREGAMENTO, outra coisa, e quase não é usada). Por enquanto "ordem" = posição 1..N dos pedidos enviados,
-    // em ordem crescente do número do pedido — regra provisória, a ser trocada quando a ordem real existir.
-    pedidos.sort((a, b) => Number(a.pedido) - Number(b.pedido));
+    // Ordem de entrega = ORDEM DE CARREGAMENTO INVERTIDA (decisão do usuário, 2026-10-27): o que foi
+    // carregado por último sai primeiro. A ordem de carregamento é a definida pela Expedição/Admin na tela
+    // de Carregamento (tabela ordem_carregamento: carga, pedido, ordem 1..N). "ordem" enviada = posição 1..N
+    // dos pedidos que vão no pacote, do maior para o menor valor de ordem_carregamento.
+    // Pedido sem ordem de carregamento vai depois dos que têm (por número de pedido). Carga sem NENHUMA ordem
+    // de carregamento definida cai na regra provisória (número do pedido crescente) e a resposta avisa em
+    // "ordem_origem" — nunca é apresentada como se fosse a ordem real.
+    const { data: ordensCarregamento, error: errOrdem } = await supabase
+      .from('ordem_carregamento')
+      .select('pedido, ordem')
+      .eq('carga', carga);
+    if (errOrdem) throw errOrdem;
+    const ordemCarregamento = new Map<number, number>();
+    (ordensCarregamento || []).forEach(r => ordemCarregamento.set(Number(r.pedido), Number(r.ordem)));
+    const pedidosComOrdemCarregamento = pedidos.filter(p => ordemCarregamento.has(Number(p.pedido))).length;
+    const ordemOrigem = pedidosComOrdemCarregamento === 0
+      ? 'provisoria_por_numero_do_pedido'
+      : (pedidosComOrdemCarregamento === pedidos.length ? 'carregamento_invertida' : 'carregamento_invertida_parcial');
+    pedidos.sort((a, b) => {
+      const oa = ordemCarregamento.get(Number(a.pedido));
+      const ob = ordemCarregamento.get(Number(b.pedido));
+      if (oa != null && ob != null) return ob - oa;
+      if (oa != null) return -1;
+      if (ob != null) return 1;
+      return Number(a.pedido) - Number(b.pedido);
+    });
 
     // Coordenadas do cliente: primeiro pelo CÓDIGO do cliente (pedidos_info_erp.codigo_cliente ->
     // geolocalizacao_clientes.codigo_cliente) e só depois, como reserva, pelo NOME (maiúsculo/trim).
@@ -209,6 +231,8 @@ Deno.serve(async (req: Request) => {
       pulados_sem_coordenada: pulados,
       casados_por_codigo: casadosPorCodigo,
       casados_por_nome: casadosPorNome,
+      ordem_origem: ordemOrigem,
+      pedidos_sem_ordem_carregamento: pedidos.length - pedidosComOrdemCarregamento,
       status_unniflex: statusUnniflex,
       resposta_unniflex: corpoResposta,
       ...(simular ? { simulacao: true, payload: enviar } : {}),
