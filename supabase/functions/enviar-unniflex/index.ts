@@ -70,31 +70,100 @@ Deno.serve(async (req: Request) => {
       return json({ error: `Nenhum pedido encontrado pra carga ${carga}` }, 404);
     }
 
-    // Coordenadas por nome de cliente (mesmo critério de match usado em
-    // outras telas deste sistema: nome normalizado maiúsculo/trim). Filtro
-    // .in() só é aplicado quando há nomes — lista vazia gera "in.()",
-    // sintaxe inválida no PostgREST.
+    // Dados da carga que a Unniflex pede em cada item (contrato de 2026-10-27): rota, placa e motorista
+    // vêm do card da Expedição (demandas_rota). Se a carga tem mais de um card com esse número, vale o da
+    // unidade 1 (ou sem unidade) que não esteja cancelado. Placeholders ("A DEFINIR ...") NÃO são enviados.
+    const { data: cards, error: errCard } = await supabase
+      .from('demandas_rota')
+      .select('rota, veiculo, motorista, status, unidade')
+      .eq('carga', carga)
+      .neq('status', 'cancelado');
+    if (errCard) throw errCard;
+    const card = (cards || []).find(c => !String(c.unidade ?? '').trim() || String(c.unidade).trim().startsWith('1')) ?? (cards || [])[0];
+    const semPlaceholder = (v: unknown) => {
+      const t = String(v ?? '').trim();
+      return t && !t.toUpperCase().startsWith('A DEFINIR') ? t : '';
+    };
+    const rotaCarga = semPlaceholder(card?.rota);
+    const placaCarga = semPlaceholder(card?.veiculo);
+    const motoristaCarga = semPlaceholder(card?.motorista);
+
+    // Ordem de entrega: o Cronos NÃO tem sequência de entrega por pedido ("ordem_carregamento" é a ordem de
+    // CARREGAMENTO, outra coisa, e quase não é usada). Por enquanto "ordem" = posição 1..N dos pedidos enviados,
+    // em ordem crescente do número do pedido — regra provisória, a ser trocada quando a ordem real existir.
+    pedidos.sort((a, b) => Number(a.pedido) - Number(b.pedido));
+
+    // Coordenadas do cliente: primeiro pelo CÓDIGO do cliente (pedidos_info_erp.codigo_cliente ->
+    // geolocalizacao_clientes.codigo_cliente) e só depois, como reserva, pelo NOME (maiúsculo/trim).
+    // Pelo nome sozinho falhava quando o nome do pedido não era idêntico ao cadastrado (achado na
+    // carga 16145, 2026-10-27: ISRRAEL DO TEMPERO DA SILVA GONÇALVES tinha coordenada pelo código
+    // e foi pulado). Filtros .in() só são aplicados quando há valores — lista vazia gera "in.()",
+    // sintaxe inválida no PostgREST — e em lotes, pra não estourar o tamanho da URL.
+    const LOTE_IN = 150;
+
+    // pedido -> código do cliente
+    const codigoPorPedido = new Map<number, string>();
+    const numerosPedido = [...new Set(pedidos.map(p => Number(p.pedido)).filter(Number.isFinite))];
+    for (let i = 0; i < numerosPedido.length; i += LOTE_IN) {
+      const { data: infos, error: errInfo } = await supabase
+        .from('pedidos_info_erp')
+        .select('pedido, codigo_cliente')
+        .in('pedido', numerosPedido.slice(i, i + LOTE_IN));
+      if (errInfo) throw errInfo;
+      (infos || []).forEach(r => {
+        const cod = String(r.codigo_cliente ?? '').trim();
+        if (cod) codigoPorPedido.set(Number(r.pedido), cod);
+      });
+    }
+
+    // coordenadas por código
+    const geoPorCodigo = new Map<string, { lat: number; lng: number }>();
+    const codigos = [...new Set([...codigoPorPedido.values()])];
+    for (let i = 0; i < codigos.length; i += LOTE_IN) {
+      const { data: geoCod, error: errGeoCod } = await supabase
+        .from('geolocalizacao_clientes')
+        .select('codigo_cliente, latitude, longitude')
+        .in('codigo_cliente', codigos.slice(i, i + LOTE_IN));
+      if (errGeoCod) throw errGeoCod;
+      (geoCod || []).forEach(g => {
+        const cod = String(g.codigo_cliente ?? '').trim();
+        if (cod && g.latitude != null && g.longitude != null) {
+          geoPorCodigo.set(cod, { lat: Number(g.latitude), lng: Number(g.longitude) });
+        }
+      });
+    }
+
+    // reserva: coordenadas por nome
     const nomesClientes = [...new Set(pedidos.map(p => (p.cliente || '').trim().toUpperCase()).filter(Boolean))];
-    const { data: geo, error: errGeo } = nomesClientes.length
-      ? await supabase
-          .from('geolocalizacao_clientes')
-          .select('nome_cliente, latitude, longitude')
-          .in('nome_cliente', nomesClientes)
-      : { data: [] as Array<{ nome_cliente: string; latitude: number; longitude: number }>, error: null };
-    if (errGeo) throw errGeo;
     const geoPorNome = new Map<string, { lat: number; lng: number }>();
-    (geo || []).forEach(g => {
-      const nome = (g.nome_cliente || '').trim().toUpperCase();
-      if (nome && g.latitude != null && g.longitude != null) {
-        geoPorNome.set(nome, { lat: Number(g.latitude), lng: Number(g.longitude) });
-      }
-    });
+    for (let i = 0; i < nomesClientes.length; i += LOTE_IN) {
+      const { data: geo, error: errGeo } = await supabase
+        .from('geolocalizacao_clientes')
+        .select('nome_cliente, latitude, longitude')
+        .in('nome_cliente', nomesClientes.slice(i, i + LOTE_IN));
+      if (errGeo) throw errGeo;
+      (geo || []).forEach(g => {
+        const nome = (g.nome_cliente || '').trim().toUpperCase();
+        if (nome && g.latitude != null && g.longitude != null) {
+          geoPorNome.set(nome, { lat: Number(g.latitude), lng: Number(g.longitude) });
+        }
+      });
+    }
 
     const enviar: Array<Record<string, unknown>> = [];
     const pulados: Array<{ pedido: number; cliente: string }> = [];
+    let casadosPorCodigo = 0;
+    let casadosPorNome = 0;
     pedidos.forEach(p => {
       const nome = (p.cliente || '').trim().toUpperCase();
-      const coord = geoPorNome.get(nome);
+      const cod = codigoPorPedido.get(Number(p.pedido));
+      let coord = cod ? geoPorCodigo.get(cod) : undefined;
+      if (coord) {
+        casadosPorCodigo++;
+      } else {
+        coord = geoPorNome.get(nome);
+        if (coord) casadosPorNome++;
+      }
       if (!coord) {
         pulados.push({ pedido: p.pedido, cliente: p.cliente || '' });
         return;
@@ -103,18 +172,27 @@ Deno.serve(async (req: Request) => {
       // existem em nenhuma tabela deste sistema hoje — omitidos de
       // propósito (campos opcionais no contrato da Unniflex) em vez de
       // inventar um valor falso.
-      enviar.push({
+      const item: Record<string, unknown> = {
         numero_pedido: String(p.pedido),
-        tipo: 'entrega',
-        nome_destinatario: p.cliente || '',
-        destino_lat: coord.lat,
-        destino_lng: coord.lng,
-      });
+        carga: String(carga),
+      };
+      if (rotaCarga) item.rota = rotaCarga;
+      if (placaCarga) item.placa = placaCarga;
+      if (motoristaCarga) item.motorista = motoristaCarga;
+      item.ordem = enviar.length + 1;
+      item.tipo = 'entrega';
+      item.nome_destinatario = p.cliente || '';
+      item.destino_lat = coord.lat;
+      item.destino_lng = coord.lng;
+      enviar.push(item);
     });
+
+    // body.simular === true: monta o payload e devolve SEM chamar a Unniflex (conferência do formato).
+    const simular = body?.simular === true;
 
     let statusUnniflex: number | null = null;
     let corpoResposta: string | null = null;
-    if (enviar.length) {
+    if (enviar.length && !simular) {
       const resp = await fetch(UNNIFLEX_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -127,10 +205,13 @@ Deno.serve(async (req: Request) => {
     return json({
       carga,
       total_pedidos: pedidos.length,
-      enviados: enviar.length,
+      enviados: simular ? 0 : enviar.length,
       pulados_sem_coordenada: pulados,
+      casados_por_codigo: casadosPorCodigo,
+      casados_por_nome: casadosPorNome,
       status_unniflex: statusUnniflex,
       resposta_unniflex: corpoResposta,
+      ...(simular ? { simulacao: true, payload: enviar } : {}),
     });
   } catch (e) {
     return json({ error: String(e?.message || e) }, 500);
