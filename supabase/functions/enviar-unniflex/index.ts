@@ -24,25 +24,38 @@ if (!UNNIFLEX_WEBHOOK_URL) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
+// Resposta sempre com Access-Control-Allow-Origin, inclusive em erro — sem
+// isso o navegador bloqueia a leitura da resposta e o fetch() do index.html
+// falha com "Failed to fetch" (mascarando o erro real). Achado em produção,
+// carga 16145, 2026-10-27: o preflight OPTIONS respondia 200, mas o POST de
+// verdade nunca chegava a ser enviado pelo navegador, porque o preflight só
+// liberava o header Content-Type e o app sempre manda "apikey" também.
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, apikey, Authorization',
       },
     });
   }
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Método não permitido' }), { status: 405 });
+    return json({ error: 'Método não permitido' }, 405);
   }
 
   try {
     const body = await req.json().catch(() => ({}));
     const carga = Number(body?.carga);
     if (!carga || !Number.isInteger(carga) || carga <= 0) {
-      return new Response(JSON.stringify({ error: 'Informe "carga" (número inteiro válido)' }), { status: 400 });
+      return json({ error: 'Informe "carga" (número inteiro válido)' }, 400);
     }
 
     // Pedidos da carga — um destino por pedido (não por cliente: o mesmo
@@ -54,16 +67,20 @@ Deno.serve(async (req: Request) => {
       .eq('carga', carga);
     if (errPed) throw errPed;
     if (!pedidos || !pedidos.length) {
-      return new Response(JSON.stringify({ error: `Nenhum pedido encontrado pra carga ${carga}` }), { status: 404 });
+      return json({ error: `Nenhum pedido encontrado pra carga ${carga}` }, 404);
     }
 
     // Coordenadas por nome de cliente (mesmo critério de match usado em
-    // outras telas deste sistema: nome normalizado maiúsculo/trim).
+    // outras telas deste sistema: nome normalizado maiúsculo/trim). Filtro
+    // .in() só é aplicado quando há nomes — lista vazia gera "in.()",
+    // sintaxe inválida no PostgREST.
     const nomesClientes = [...new Set(pedidos.map(p => (p.cliente || '').trim().toUpperCase()).filter(Boolean))];
-    const { data: geo, error: errGeo } = await supabase
-      .from('geolocalizacao_clientes')
-      .select('nome_cliente, latitude, longitude')
-      .in('nome_cliente', nomesClientes);
+    const { data: geo, error: errGeo } = nomesClientes.length
+      ? await supabase
+          .from('geolocalizacao_clientes')
+          .select('nome_cliente, latitude, longitude')
+          .in('nome_cliente', nomesClientes)
+      : { data: [] as Array<{ nome_cliente: string; latitude: number; longitude: number }>, error: null };
     if (errGeo) throw errGeo;
     const geoPorNome = new Map<string, { lat: number; lng: number }>();
     (geo || []).forEach(g => {
@@ -107,15 +124,15 @@ Deno.serve(async (req: Request) => {
       corpoResposta = (await resp.text().catch(() => '')).slice(0, 2000);
     }
 
-    return new Response(JSON.stringify({
+    return json({
       carga,
       total_pedidos: pedidos.length,
       enviados: enviar.length,
       pulados_sem_coordenada: pulados,
       status_unniflex: statusUnniflex,
       resposta_unniflex: corpoResposta,
-    }), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e?.message || e) }), { status: 500 });
+    return json({ error: String(e?.message || e) }, 500);
   }
 });
