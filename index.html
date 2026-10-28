@@ -3336,7 +3336,10 @@ body.light-theme{
       <div id="devol-wrap-conf" style="position:relative;height:260px"><canvas id="devol-chart-conf" role="img" aria-label="Gráfico de barras horizontais: erros do Armazém por conferente"></canvas></div>
     </div>
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
-      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Erros por vendedor</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div id="devol-titulo-vend" style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Erros por vendedor</div>
+        <button type="button" id="devol-limpar-vend" onclick="devolSelecionarVend(null)" title="Remove a seleção do vendedor e mostra todos" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:3px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap">✕ Limpar vendedor</button>
+      </div>
       <div id="devol-sub-vend" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial</div>
       <div id="devol-msg-vend" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
       <div id="devol-wrap-vend" style="position:relative;height:340px"><canvas id="devol-chart-vend" role="img" aria-label="Gráfico de barras verticais: erros por vendedor"></canvas></div>
@@ -25773,10 +25776,16 @@ let _devolNomeVend = {};     // código do vendedor -> nome
 // Motivos que entram em "Erros por vendedor" (comparados por nome, sem diferenciar maiúsculas/espaços).
 const DEVOL_MOTIVOS_VENDEDOR = ['forma de pagamento incorreto', 'pedido digitado com a quantidade incorreta', 'pedido duplicado - comercial'];
 function _devolEhMotivoVendedor(o){ return DEVOL_MOTIVOS_VENDEDOR.includes(String(o.motivo_nome||'').trim().toLowerCase()); }
+let _devolVendSel = null;    // vendedor clicado em "Erros por vendedor" (filtra o dashboard todo)
+function _devolVendNome(o){
+  const cod = _devolPedVend[String(o.pedido||'').trim()];
+  return cod ? (_devolNomeVend[cod] || 'Vendedor cód. ' + cod) : 'Sem vendedor';
+}
+function devolSelecionarVend(nome){ _devolVendSel = (nome == null || _devolVendSel === nome) ? null : nome; renderDashDevolucao(); }
 let _devolSetorSel = null;   // setor clicado em "Motivos por setor" (filtra "Motivos de devolução")
 
 async function carregarDashDevolucao(){
-  _devolSetorSel = null;
+  _devolSetorSel = null; _devolVendSel = null;
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
   const grid2 = document.getElementById('devol-grid2');
@@ -25877,9 +25886,13 @@ function renderDashDevolucao(){
   }
   // Com data no filtro, ocorrência de data impossível (ex.: registrada em 0026 por erro de digitação) fica
   // de fora, em vez de cair em qualquer "até"; sem filtro, entra normalmente no total.
-  const dados = (ini || fim)
+  const dadosPeriodo = (ini || fim)
     ? _devolOcorr.filter(o => o.dia >= '2000-01-01' && (!ini || o.dia >= ini) && (!fim || o.dia <= fim))
     : _devolOcorr;
+  // Vendedor clicado em "Erros por vendedor": o dashboard todo passa a mostrar só as ocorrências dele
+  // (as barras de vendedor seguem usando o período inteiro, pra dar pra trocar de vendedor).
+  if(_devolVendSel && !dadosPeriodo.some(o => _devolEhMotivoVendedor(o) && _devolVendNome(o) === _devolVendSel)) _devolVendSel = null;
+  const dados = _devolVendSel ? dadosPeriodo.filter(o => _devolEhMotivoVendedor(o) && _devolVendNome(o) === _devolVendSel) : dadosPeriodo;
   const total = dados.length;
   if(totalEl) totalEl.textContent = total + ' ocorrência' + (total===1?'':'s');
   if(!total){
@@ -26043,7 +26056,7 @@ function renderDashDevolucao(){
       ctx.restore();
     }
   });
-  const barras = (chave, canvasId, itens, horizontal, cor) => {
+  const barras = (chave, canvasId, itens, horizontal, cor, clicavel) => {
     const canvas = document.getElementById(canvasId); if(!canvas) return;
     if(_devolCharts[chave]){ _devolCharts[chave].destroy(); _devolCharts[chave]=null; }
     canvas.setAttribute('aria-label', 'Gráfico de barras ' + (horizontal?'horizontais':'verticais') + ': ' + itens.map(f=>f.nome+' '+f.n).join('; '));
@@ -26051,8 +26064,11 @@ function renderDashDevolucao(){
     const eixoNome = { ticks:{ color:tinta, font:{size:11, weight:'600'}, autoSkip:false }, grid:{ display:false }, border:{ color:grade } };
     _devolCharts[chave] = new Chart(canvas, {
       type:'bar',
-      data:{ labels:itens.map(f=>quebrar(f.nome, horizontal?26:13)), datasets:[{ data:itens.map(f=>f.n), backgroundColor:itens.map(f=>f.cinza?cinza:cor), borderRadius:4, borderSkipped:false, maxBarThickness: horizontal?30:46 }] },
+      data:{ labels:itens.map(f=>quebrar(f.nome, horizontal?26:13)), datasets:[{ data:itens.map(f=>f.n), backgroundColor:itens.map(f=>{ const c = f.cinza?cinza:cor; return (clicavel && _devolVendSel && f.nome!==_devolVendSel) ? c+'4D' : c; }), borderRadius:4, borderSkipped:false, maxBarThickness: horizontal?30:46 }] },
       options:{ indexAxis: horizontal?'y':'x', responsive:true, maintainAspectRatio:false,
+        // redesenho fora do clique (setTimeout), pelo mesmo motivo da rosca de setor
+        onClick: clicavel ? (ev, els) => { if(els.length){ const it = itens[els[0].index]; if(it && !it.outros) setTimeout(() => devolSelecionarVend(it.nome), 0); } } : undefined,
+        onHover: clicavel ? (ev, els) => { if(ev.native && ev.native.target){ const it = els.length ? itens[els[0].index] : null; ev.native.target.style.cursor = (it && !it.outros) ? 'pointer' : 'default'; } } : undefined,
         layout:{ padding: horizontal ? { right:34 } : { top:22 } },
         scales: horizontal ? { x:eixoValor, y:eixoNome } : { x:eixoNome, y:eixoValor },
         plugins:{ legend:{display:false},
@@ -26087,11 +26103,10 @@ function renderDashDevolucao(){
   }
 
   // 4) Erros por vendedor — só os 3 motivos de pedido digitado/pagamento/duplicado; vendedor = vendedor do pedido.
-  const dadosVend = dados.filter(_devolEhMotivoVendedor);
+  const dadosVend = dadosPeriodo.filter(_devolEhMotivoVendedor);
   const porVend = {};
   dadosVend.forEach(o => {
-    const cod = _devolPedVend[String(o.pedido||'').trim()];
-    const nome = cod ? (_devolNomeVend[cod] || 'Vendedor cód. ' + cod) : 'Sem vendedor';
+    const nome = _devolVendNome(o);
     const v = porVend[nome] || (porVend[nome] = { nome, n:0, motivos:{} });
     v.n++; const m = String(o.motivo_nome||'').trim(); v.motivos[m] = (v.motivos[m]||0)+1;
   });
@@ -26101,12 +26116,14 @@ function renderDashDevolucao(){
   if(itensVend.length > 15){
     const topo = itensVend.filter(v=>!v.cinza).slice(0, 14), resto = itensVend.filter(v => !topo.includes(v));
     const det = {}; resto.forEach(v => v.detalhe.forEach(([m,q]) => { det[m] = (det[m]||0)+q; }));
-    itensVend = [...topo, { nome:'Outros ('+resto.length+' vendedores)', n:resto.reduce((a,v)=>a+v.n,0), cinza:true, detalhe:Object.entries(det).sort((a,b)=>b[1]-a[1]) }];
+    itensVend = [...topo, { nome:'Outros ('+resto.length+' vendedores)', n:resto.reduce((a,v)=>a+v.n,0), cinza:true, outros:true, detalhe:Object.entries(det).sort((a,b)=>b[1]-a[1]) }];
   }
   const subVend = document.getElementById('devol-sub-vend');
-  if(subVend) subVend.textContent = 'Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial: ' + dadosVend.length + ' ocorrência' + (dadosVend.length===1?'':'s');
+  if(subVend) subVend.textContent = 'Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial: ' + dadosVend.length + ' ocorrência' + (dadosVend.length===1?'':'s') + ' · clique numa barra para ver só os números do vendedor';
   mostrarBarras('devol-wrap-vend', 'devol-msg-vend', itensVend.length > 0, 'Nenhuma ocorrência desses motivos no período.');
-  if(itensVend.length) barras('vend', 'devol-chart-vend', itensVend, false, cores[2]);
+  if(itensVend.length) barras('vend', 'devol-chart-vend', itensVend, false, cores[2], true);
+  const tVend = document.getElementById('devol-titulo-vend'); if(tVend) tVend.textContent = _devolVendSel ? 'Erros por vendedor — ' + _devolVendSel : 'Erros por vendedor';
+  const bVend = document.getElementById('devol-limpar-vend'); if(bVend) bVend.style.display = _devolVendSel ? '' : 'none';
 
 
   // ── Devoluções por tipo de unidade (linhas) — pedido do usuário, 2026-10-27 ──────────────────
