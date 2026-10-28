@@ -3057,6 +3057,9 @@ body.light-theme{
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('produtividade')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="produtividade">
       <span data-feather="award" style="width:15px;height:15px"></span> Produtividade
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('otif-ano')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="otif-ano">
+      <span data-feather="target" style="width:15px;height:15px"></span> OTIF — Visão Ano
+    </button>
   </div>
 
   <!-- ABA 1a: Absenteísmo Expedição -->
@@ -3102,6 +3105,14 @@ body.light-theme{
   <!-- ABA: Produtividade Motoristas e Ajudantes (visão anual, só valores) -->
   <div id="aba-produtividade" class="painel-ind-aba" style="display:none">
     <div id="painel-ind-produtividade-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Calculando produtividade do ano...</p></div>
+  </div>
+
+  <!-- ABA: OTIF — Visão Ano (pedido do usuário, 2026-10-28). Só a visão anual mesmo — não
+       existe aba de OTIF mês-a-mês aqui porque o Painel de Indicadores já tem o OTIF do
+       mês na página "OTIF Diário" própria (menu lateral); esta aba cobre só a lacuna da
+       visão anual, reaproveitando a fonte única de cálculo (_carregarOtifMes). -->
+  <div id="aba-otif-ano" class="painel-ind-aba" style="display:none">
+    <div id="painel-ind-otif-ano-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Calculando OTIF do ano...</p></div>
   </div>
 
   <!-- ABA 4: Cargas Conferidas no Prazo -->
@@ -9621,7 +9632,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.84';
+const APP_VERSION = '4.89.85';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -32251,6 +32262,7 @@ function mudarAbaIndicadores(aba){
   else if(aba === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
   else if(aba === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
   else if(aba === 'produtividade') { carregarPainelProdutividadeAno(); }
+  else if(aba === 'otif-ano') { carregarPainelOtifAno(); }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -32834,6 +32846,7 @@ function _recarregarAbaAtivaPainelIndicadores(){
   // existia.
   else if(abaAtiva === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
   else if(abaAtiva === 'produtividade') { carregarPainelProdutividadeAno(); }
+  else if(abaAtiva === 'otif-ano') { carregarPainelOtifAno(); }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -34940,6 +34953,58 @@ async function carregarPainelConferenciaPrazoAno(){
     });
   } catch(e){
     console.error('Erro ao carregar liberação no prazo (ano):', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
+  }
+}
+
+// ── OTIF — Visão Ano: reaproveita a fonte única de OTIF (_carregarOtifMes/
+// _computeOtifStats, mesma usada pelo Dashboard Interno, TV e OTIF Diário)
+// em vez de recalcular prazo/entrega do zero — só agrega mês a mês do ano
+// selecionado, mesmo padrão de _calcNoPrazoAno (Liberação/Carregamento no
+// Prazo). Meta 95% e invertido=true (mais é melhor) seguem o mesmo corte já
+// usado em todo o sistema pra colorir OTIF/OTD (ver corOtif, linha ~30144).
+// Pedido do usuário, 2026-10-28: "no final coloque uma aba da visão ano do OTIF".
+async function _calcOtifAno(anoSel, undSel, rireSel){
+  const bMes = Array(12).fill(null);
+  let okTotal = 0, totalGeral = 0;
+  const mesAtualStr = new Date().toISOString().slice(0,7);
+  for(let m=1;m<=12;m++){
+    const mesStr = anoSel+'-'+String(m).padStart(2,'0');
+    if(mesStr > mesAtualStr) break;
+    const r = await _carregarOtifMes(mesStr, undSel).catch(()=>null);
+    if(!r) continue;
+    const st = r.stats;
+    const ok  = rireSel==='RI' ? st.otifRI : rireSel==='RE' ? st.otifRE : st.otifG;
+    const tot = rireSel==='RI' ? st.entRI  : rireSel==='RE' ? st.entRE  : st.entG;
+    if(tot>0) bMes[m-1] = ok/tot*100;
+    okTotal += ok;
+    totalGeral += tot;
+  }
+  const pctAnual = totalGeral>0 ? (okTotal/totalGeral*100) : 0;
+  return { bMes, okTotal, totalGeral, pctAnual };
+}
+
+async function carregarPainelOtifAno(){
+  const container = document.getElementById('painel-ind-otif-ano-container');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Calculando OTIF do ano...</p>';
+  try{
+    const anoSel = _anoSelPainelIndicadores();
+    const undSel = window._painelIndUndSel || '';
+    const rireSel = window._painelIndRireSel || '';
+    const { bMes, okTotal, totalGeral, pctAnual } = await _calcOtifAno(anoSel, undSel, rireSel);
+    const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
+    container.innerHTML = _renderCardVisaoAnualPercentual({
+      indicador: 'OTIF'+eyebrowRire, titulo: 'OTIF', area: 'OPERAÇÕES / DISTRIBUIÇÃO',
+      anoSel, pctAnual, metaNum: 95, invertido: true, bMes,
+      composicaoItems: [
+        {label:'DENTRO DO OTIF', valor: okTotal, desc:'Pedido entregue até o prazo, sem ocorrência, corte ou troca de mercadoria pós-romaneio.'},
+        {label:'FORA DO OTIF', valor: totalGeral-okTotal, desc:'Pedido atrasado, com ocorrência de devolução, corte ou troca após entrar em romaneio.'},
+      ],
+      baseTxt: `${totalGeral} pedidos no ano`
+    });
+  } catch(e){
+    console.error('Erro ao carregar OTIF (ano):', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">⚠️ Erro ao carregar dados: '+e.message+'</p>';
   }
 }
