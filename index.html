@@ -5159,12 +5159,22 @@ body.light-theme{
   <div id="arm-tabs-bar" style="display:flex;gap:4px;background:var(--bg-card2);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:20px;flex-wrap:wrap">
     <button class="arm-tab active" id="arm-tab-demandas" onclick="switchArmTab('demandas',this)">📋 Hoje no armazém</button>
     <button class="arm-tab" id="arm-tab-concluido" onclick="switchArmTab('concluido',this)">✅ Concluídas</button>
+    <button class="arm-tab" id="arm-tab-quadro" onclick="switchArmTab('quadro',this)">📊 Quadro por rota</button>
   </div>
 
   <!-- Painel Demandas (pré-cargas + conferentes) -->
   <div class="arm-panel active" id="arm-painel-demandas">
     <div id="arm-demandas-container"><p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p></div>
     <div id="arm-conf-container"><p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p></div>
+  </div>
+
+  <!-- Painel Quadro por rota: uma linha por carga com as etapas Pendente → Separação → Carregamento → Pronto -->
+  <div class="arm-panel" id="arm-painel-quadro">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <p style="font-size:.78rem;color:var(--text-secondary);margin:0">Em que etapa está cada rota, com o andamento da separação e do carregamento e quem é o responsável. Só mostra cargas que ainda não saíram.</p>
+      <button onclick="renderArmQuadro()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:.78rem;cursor:pointer;font-weight:600">🔄 Atualizar quadro</button>
+    </div>
+    <div id="arm-quadro-container"><p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
   <!-- Painel Concluídas -->
@@ -9057,6 +9067,7 @@ body.light-theme{
        usuário, 2026-10-09 — ficava sempre em 0% e não agregava nada. -->
   <div id="tv-rotas-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;padding:20px 40px 24px;min-height:0">
     <div id="tv-rotas-pipeline" style="flex:1;display:flex;align-items:stretch;gap:0;min-height:0"></div>
+    <div id="tv-rotas-rodape" style="flex-shrink:0;margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1);display:flex;align-items:center;gap:22px;flex-wrap:wrap;font-size:.8rem;color:rgba(255,255,255,.55)"></div>
   </div>
 
   <!-- Main grid -->
@@ -9632,7 +9643,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.85';
+const APP_VERSION = '4.89.86';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -45332,6 +45343,85 @@ function switchArmTab(tab, btn){
   const painel = document.getElementById('arm-painel-'+tab);
   if(painel) painel.classList.add('active');
   if(tab==='abastecimento') renderAbastecimentoLoja().catch(e=>console.warn('abastecimento:',e));
+  if(tab==='quadro') renderArmQuadro().catch(e=>console.warn('quadro por rota:',e));
+}
+
+// ── Armazém › Quadro por rota ─────────────────────────────────────────
+// Layout C escolhido pelo usuário (2026-10-28): uma linha por carga, com as
+// quatro etapas em colunas — Pendente → Separação → Carregamento → Pronto p/
+// viajar. Etapas já cumpridas ganham ✔, a etapa atual mostra o andamento (% da
+// separação/carregamento, mesmos cálculos da Sala Comum da TV) ou a etiqueta,
+// e a última coluna traz o responsável (conferente) ou veículo + motorista.
+// Só cargas que ainda não saíram. Prontos aparecem no topo.
+async function renderArmQuadro(){
+  const box = document.getElementById('arm-quadro-container');
+  if(!box) return;
+  box.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p>';
+  const ETAPAS = [
+    {key:'pendente',      label:'Pendente',     cor:'#f59e0b'},
+    {key:'separacao',     label:'Separação',    cor:'#3b82f6'},
+    {key:'carregamento',  label:'Carregamento', cor:'#8b5cf6'},
+    {key:'pronto_viagem', label:'Pronto',       cor:'#22c55e'},
+  ];
+  const idxEtapa = {}; ETAPAS.forEach((e,i)=>{ idxEtapa[e.key] = i; });
+  try{
+    const undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+    const undQ = undUsr ? `&unidade=eq.${encodeURIComponent(undUsr)}` : '';
+    const dems = await supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento","pronto_viagem")&select=carga,rota,status,data_saida,quantidade_pedidos,motorista,veiculo,unidade&order=data_saida.asc&limit=200${undQ}`) || [];
+    if(!dems.length){
+      box.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga em Pendente, Separação, Carregamento ou Pronto no momento.</p>';
+      return;
+    }
+    const cargasSep = dems.filter(d=>d.status==='separacao'&&d.carga).map(d=>d.carga);
+    const cargasCar = dems.filter(d=>d.status==='carregamento'&&d.carga).map(d=>d.carga);
+    const qtdPorCarga = {}; dems.forEach(d=>{ if(d.carga) qtdPorCarga[d.carga] = d.quantidade_pedidos||0; });
+    const [pctSep, pctCar, confPorCarga] = await Promise.all([
+      _tvCalcPctSeparacao(cargasSep),
+      _tvCalcPctCarregamento(cargasCar, qtdPorCarga),
+      _tvCalcConferentePorCarga([...cargasSep, ...cargasCar]),
+    ]);
+
+    const fmtD = d => { if(!d) return '—'; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}); }catch(e){ return '—'; } };
+    const semPlaceholder = v => { const t = String(v||'').trim(); return t && !t.toUpperCase().startsWith('A DEFINIR') ? t : ''; };
+    const ordem = {pronto_viagem:0, carregamento:1, separacao:2, pendente:3};
+    const linhas = [...dems].sort((a,b)=> (ordem[a.status]-ordem[b.status]) || String(a.data_saida||'').localeCompare(String(b.data_saida||'')));
+
+    const COLS = 'minmax(0,1.5fr) 58px repeat(4,minmax(0,1fr)) minmax(0,1.5fr)';
+    const barra = (pct, cor) => `<div><div style="font-size:.7rem;font-weight:800;color:${cor}">${pct!=null?pct+'%':'—'}</div><div style="height:5px;background:var(--bg-hover,rgba(128,128,128,.2));border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct||0}%;background:${cor}"></div></div></div>`;
+    const celula = (d, etapa) => {
+      const cur = idxEtapa[d.status], i = idxEtapa[etapa.key];
+      if(i < cur) return `<span style="text-align:center;color:#22c55e;font-weight:900">✔</span>`;
+      if(i > cur) return `<span style="text-align:center;color:var(--text-muted)">—</span>`;
+      if(etapa.key==='pendente') return `<span style="text-align:center;background:${etapa.cor};color:#451a03;border-radius:10px;font-size:.66rem;font-weight:800;padding:1px 0">NA FILA</span>`;
+      if(etapa.key==='pronto_viagem') return `<span style="text-align:center;background:${etapa.cor};color:#052e16;border-radius:10px;font-size:.66rem;font-weight:800;padding:1px 0">PRONTO</span>`;
+      return barra(etapa.key==='separacao' ? pctSep[d.carga] : pctCar[d.carga], etapa.cor);
+    };
+    const responsavel = d => {
+      const placa = semPlaceholder(d.veiculo), mot = semPlaceholder(d.motorista);
+      if(d.status==='pronto_viagem') return `${placa?`<b style="font-family:monospace;letter-spacing:.5px">${_escapeHtml(placa)}</b>`:'—'}${mot?` · ${_escapeHtml(mot)}`:''}`;
+      if(d.status==='carregamento') return confPorCarga[d.carga]?.carregamento ? `👷 ${_escapeHtml(confPorCarga[d.carga].carregamento)}` : '<span style="color:var(--text-muted)">sem conferente</span>';
+      if(d.status==='separacao') return confPorCarga[d.carga]?.separador ? `👷 ${_escapeHtml(confPorCarga[d.carga].separador)}` : '<span style="color:var(--text-muted)">sem conferente</span>';
+      return placa || mot ? `${placa?_escapeHtml(placa):''}${placa&&mot?' · ':''}${mot?_escapeHtml(mot):''}` : '<span style="color:var(--text-muted)">a definir</span>';
+    };
+
+    const contagem = ETAPAS.map(e=>`<span style="display:inline-flex;align-items:center;gap:6px;font-size:.78rem;color:var(--text-secondary)"><span style="width:9px;height:9px;border-radius:50%;background:${e.cor};display:inline-block"></span>${e.label}: <b style="color:${e.cor}">${dems.filter(d=>d.status===e.key).length}</b></span>`).join('');
+    box.innerHTML = `
+      <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">${contagem}</div>
+      <div style="overflow-x:auto"><div style="min-width:820px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:${COLS};gap:8px;padding:9px 14px;font-size:.68rem;font-weight:800;letter-spacing:.5px;color:var(--text-muted);text-transform:uppercase;border-bottom:1px solid var(--border);background:var(--bg-card2)">
+          <span>Rota</span><span>Saída</span>${ETAPAS.map(e=>`<span style="text-align:center;color:${e.cor}">${e.label}</span>`).join('')}<span>Responsável / veículo</span>
+        </div>
+        ${linhas.map(d=>`
+          <div style="display:grid;grid-template-columns:${COLS};gap:8px;align-items:center;padding:9px 14px;font-size:.82rem;border-bottom:1px solid var(--border);${d.status==='pronto_viagem'?'background:rgba(34,197,94,.08)':''}">
+            <span style="font-weight:800;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="Carga ${d.carga||'—'}">${_escapeHtml(d.rota||'—')} <span style="font-weight:500;font-size:.68rem;color:var(--text-muted)">#${d.carga||'—'}</span></span>
+            <span style="color:var(--text-secondary);font-size:.78rem">${fmtD(d.data_saida)}</span>
+            ${ETAPAS.map(e=>celula(d,e)).join('')}
+            <span style="color:var(--text-secondary);font-size:.76rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${responsavel(d)}</span>
+          </div>`).join('')}
+      </div></div>`;
+  }catch(e){
+    box.innerHTML = `<p style="text-align:center;padding:30px;color:#ef4444">Erro ao carregar o quadro: ${_escapeHtml(e.message||String(e))}</p>`;
+  }
 }
 
 async function direcionarSeparador(demandaId, carga){
@@ -53586,6 +53676,7 @@ const _TV_ROTAS_STATUS_CFG = {
   pendente:{label:'Pendente',icone:'⏳',cor:'#f59e0b'},
   separacao:{label:'Separação',icone:'📦',cor:'#3b82f6'},
   carregamento:{label:'Carregamento',icone:'🚛',cor:'#8b5cf6'},
+  pronto_viagem:{label:'Pronto p/ viajar',icone:'🚚',cor:'#22c55e'},
 };
 
 // % de separação por carga — mesmo critério do portal do conferente
@@ -53675,7 +53766,7 @@ function _tvRenderRotasView(pendSepCarRows, pctSepMap, pctCarMap, confPorCarga){
   const fmtD = d => { if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}); }catch(e){ return null; } };
 
   // ── Pipeline: uma coluna por status, com seta entre elas ──
-  const porStatus = { pendente:[], separacao:[], carregamento:[] };
+  const porStatus = { pendente:[], separacao:[], carregamento:[], pronto_viagem:[] };
   (pendSepCarRows||[]).forEach(d=>{ if(porStatus[d.status]) porStatus[d.status].push(d); });
   const statusKeys = Object.keys(_TV_ROTAS_STATUS_CFG);
   pipelineEl.innerHTML = statusKeys.map((key,idx)=>{
@@ -53688,6 +53779,18 @@ function _tvRenderRotasView(pendSepCarRows, pctSepMap, pctCarMap, confPorCarga){
     const chips = rows.length
       ? rows.map(d=>{
           const dataTxt = fmtD(d.data_saida);
+          if(key==='pronto_viagem'){
+            const semPlaceholder = v => { const t = String(v||'').trim(); return t && !t.toUpperCase().startsWith('A DEFINIR') ? t : ''; };
+            const placa = semPlaceholder(d.veiculo), mot = semPlaceholder(d.motorista);
+            return `<div style="background:${cfg.cor}14;border:1px solid ${cfg.cor}60;border-radius:10px;padding:10px 14px;display:flex;flex-direction:column;gap:5px">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                <span style="font-size:.92rem;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_escapeHtml(d.rota||'—')}</span>
+                <span style="font-size:.74rem;color:${cfg.cor};font-weight:700;white-space:nowrap">${dataTxt?`📅 ${dataTxt}`:'—'}</span>
+              </div>
+              <div style="font-size:1.25rem;font-weight:900;letter-spacing:2px;color:#fff;font-family:monospace">${placa?_escapeHtml(placa):'—'}</div>
+              <div style="font-size:.72rem;color:rgba(255,255,255,.6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🧑 ${mot?_escapeHtml(mot):'sem motorista'}</div>
+            </div>`;
+          }
           const temProgresso = key==='separacao' || key==='carregamento';
           const pct = key==='separacao' ? pctSepMap?.[d.carga] : key==='carregamento' ? pctCarMap?.[d.carga] : null;
           const confNome = key==='separacao' ? confPorCarga?.[d.carga]?.separador : key==='carregamento' ? confPorCarga?.[d.carga]?.carregamento : null;
@@ -53720,6 +53823,15 @@ function _tvRenderRotasView(pendSepCarRows, pctSepMap, pctCarMap, confPorCarga){
       : '';
     return col + arrow;
   }).join('');
+
+  // Rodapé: totais por etapa (ocupa a faixa de baixo da tela, antes vazia)
+  const rodape = document.getElementById('tv-rotas-rodape');
+  if(rodape){
+    rodape.innerHTML = statusKeys.map(k=>{
+      const c = _TV_ROTAS_STATUS_CFG[k];
+      return `<span style="display:flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-radius:50%;background:${c.cor};display:inline-block"></span>${c.label}: <b style="color:${c.cor};font-size:.95rem">${porStatus[k].length}</b></span>`;
+    }).join('') + `<span style="margin-left:auto;font-size:.72rem;color:rgba(255,255,255,.35)">Atualiza a cada 60 s</span>`;
+  }
 }
 
 // Unidade do Painel de TV — cada TV física fica com um computador logado e a
@@ -53763,7 +53875,7 @@ async function carregarTV(){
       supaFetch(`entrega_datas?mes_ano=eq.${mesStr}&select=pedido,data_saida,data_entrega`).catch(()=>[]),
       supaFetch(`lancamentos?ts=gte.${mesStr}-01T00:00:00-03:00&ts=lt.${_prox}-01T00:00:00-03:00&select=carga,ts${undSelTV?`&und=eq.${encodeURIComponent(undSelTV)}`:''}`).catch(()=>[]),
       supaFetch(`demandas_rota?ts_saiu=gte.${mesStr}-01T00:00:00-03:00&ts_saiu=lt.${_prox}-01T00:00:00-03:00&select=carga,ts_saiu${_undQTV}`).catch(()=>[]),
-      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento")&select=carga,rota,status,data_saida,quantidade_pedidos&order=data_saida.asc&limit=100${_undQTV}`).catch(()=>[]),
+      supaFetch(`demandas_rota?status=in.("pendente","separacao","carregamento","pronto_viagem")&select=carga,rota,status,data_saida,quantidade_pedidos,motorista,veiculo&order=data_saida.asc&limit=100${_undQTV}`).catch(()=>[]),
     ]);
 
     // 2ª fase: base_data filtrado pelas cargas que saíram no mês
