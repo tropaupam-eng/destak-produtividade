@@ -21,10 +21,10 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-29, Gabriel: Painel de Indicadores — "Baixar imagem" e apresentação usam bem menos memória — v4.89.107
+## 2026-10-29, Gabriel: Painel de Indicadores — "Baixar imagem" e apresentação usam bem menos memória — v4.89.111
 Onde: `index.html`: função nova `_escalaCapturaSlide`; `_capturarNodeComo1920x1080` (usada por "Baixar Imagem" de cada card
 e pela apresentação de slides), `baixarImagemVeiculos` e `gerarApresentacaoPainelIndicadores`. `APP_VERSION` e `version.json`:
-4.89.106 → 4.89.107.
+4.89.110 → 4.89.111 (esta mudança nasceu na 4.89.107 e foi mesclada com a main).
 Por quê: o Gabriel notou instabilidade no Cronos, principalmente ao baixar as imagens do Painel de Indicadores. Nenhum erro
 de JavaScript foi registrado para essa tela (Log de Erros), então não é falha de código e sim peso: o html2canvas capturava
 todo card a 2x ou mais, mesmo sendo o PNG final sempre 1920x1080 com o card dentro de uma margem de 8%. Num card alto (como a
@@ -34,7 +34,7 @@ devolver a memória. Medido numa página de teste com o código real: card 1140x
 O que mudou: (1) a escala agora é a que o slide aproveita (1,5x o tamanho em que o card vai aparecer, mínimo 1x, nunca mais
 que a escala antiga); (2) o canvas grande é zerado (`width=0`) logo depois de desenhado no slide; (3) na apresentação, o
 canvas do slide também é zerado depois de virar PNG. A imagem final continua 1920x1080 com marca d'água e mesmo enquadramento.
-Testes: `node check.js` ok; escala conferida em 5 tamanhos de card; o código real rodado com o html2canvas verdadeiro em 4
+Daniel corrigiu o mesmo travamento em paralelo (v4.89.108, #498): teto de 3x na escala, que resolvia o card ESTREITO (400px = 6,3x). Esta mudança é complementar (card ALTO e liberação de memória) e foi mesclada MANTENDO o teto dele, dentro de `_escalaCapturaSlide`. QUALIDADE conferida lado a lado com a versão da main no mesmo card: card largo e baixo sai idêntico (diferença 0); nos demais a diferença média é menor que 1 em 255 níveis (texto e barras iguais a olho, ampliados 3x). Testes: `node check.js` ok; escala conferida em 5 tamanhos de card; o código real rodado com o html2canvas verdadeiro em 4
 tamanhos de card (saída sempre 1920x1080). NÃO testado com o Painel real (precisa de login): teste do Gabriel.
 Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: se a instabilidade continuar, o próximo suspeito é o carregamento de dados de cada slide da apresentação
