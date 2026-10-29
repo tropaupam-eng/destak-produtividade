@@ -21,11 +21,11 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.100 (NÃO publicar antes da tabela)
+## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.101 (PUBLICADA; tabela ainda pendente)
 Onde: `index.html`: item novo no menu Distribuição (`data-page="credito-manual"`, só `admin` por padrão), página
 `page-credito-manual` (antes de `page-geral`), rota em `showPage`, entradas em `PAGINAS` e `PAGINAS_GRUPOS` (para liberar
 a outros perfis pela tela de Perfis) e o bloco de funções `cm*` / `carregarCreditoManual` / `renderCreditoManual` (antes de
-`renderFrotaStatus`). `APP_VERSION` e `version.json`: 4.89.95 → 4.89.100 (97 = aviso de pedido cancelado; 98 = evidência por foto; 99 = ícone do calendário claro; 100 = linha clara antes do ícone).
+`renderFrotaStatus`). `APP_VERSION` e `version.json`: 4.89.95 → 4.89.101 (97 = aviso de pedido cancelado; 98 = evidência por foto; 99 = ícone do calendário claro; 100 = linha clara antes do ícone; 101 = só a mescla com a main).
 Por quê: pedido do Gabriel: aba para lançar crédito manual por pedido. Digitados: pedido, valor do crédito manual e peso
 faltante (kg). Preenchidos pelo ERP a partir do pedido, e editáveis: código do cliente, valor do pedido, data de emissão
 da nota e número da nota (`pedidos_info_erp`: codigo_cliente, valor, emissao, nota_fiscal; se o pedido não estiver lá,
@@ -36,7 +36,7 @@ TABELA NOVA (ESTRUTURA DE BANCO, quem cria é o Daniel; sem RLS): `credito_manua
   not null, valor_pedido numeric(12,2), data_emissao date, numero_nota text, peso_faltante numeric(12,3),
   criado_em timestamptz not null default now(), criado_por text, evidencia_foto boolean.
   (se a tabela JÁ foi criada sem a última coluna: alter table public.credito_manual_historico add column evidencia_foto boolean;)
-Sem a tabela, a aba abre e avisa "tabela ainda não existe"; salvar mostra aviso claro. Nada foi gravado no banco.
+Publicada em 29/10 por decisão do Gabriel, com a tabela ainda NÃO encontrada no banco na hora da publicação (a aba só aparece para admin). Sem a tabela, a aba abre e avisa "tabela ainda não existe"; salvar mostra aviso claro. Nada foi gravado no banco.
 Dinheiro: lança valores de crédito (só registro/histórico, sem pagamento nem cálculo financeiro). Avisar o Daniel antes de
 publicar (estrutura de banco + valores em R$).
 Testes: `node check.js` ok; 43 testes de lógica (parser de valores, preenchimento automático, corrida de buscas, validações,
