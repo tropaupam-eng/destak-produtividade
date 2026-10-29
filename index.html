@@ -9874,7 +9874,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.105';
+const APP_VERSION = '4.89.106';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33969,7 +33969,14 @@ window._absAnoMesSelPorPrefixo = window._absAnoMesSelPorPrefixo || {};
 window._absAnoMesAncoraPorPrefixo = window._absAnoMesAncoraPorPrefixo || {};
 function _toggleMesAbsAno(prefix, idx, reloadFn, ev, limpar){
   _absSelToggle(window._absAnoMesSelPorPrefixo, window._absAnoMesAncoraPorPrefixo, prefix, idx, ev, limpar);
-  reloadFn();
+  // Só a seleção mudou: reaproveita o cálculo dos 12 meses já feito. Antes cada clique refazia tudo (~15 s) sem nenhum
+  // aviso, e um segundo clique desmarcava o mês. Pedido do usuário, 2026-10-29: "setembro estou apertando e não está indo".
+  window._absAnoReusar = true;
+  const cont = document.getElementById(`painel-ind-${prefix}-container-ano`);
+  if(cont){ cont.style.opacity = '.55'; cont.style.pointerEvents = 'none'; }
+  const p = reloadFn();
+  window._absAnoReusar = false; // a parte síncrona do recarregamento já leu o aviso
+  Promise.resolve(p).finally(()=>{ if(cont){ cont.style.opacity = ''; cont.style.pointerEvents = ''; } });
 }
 function _toggleMesAbsAno_abs_armazem(idx, ev, limpar){ return _toggleMesAbsAno('abs-armazem', idx, carregarPainelAbsArmazemAno, ev, limpar); }
 function _toggleMesAbsAno_abs_exp(idx, ev, limpar){ return _toggleMesAbsAno('abs-exp', idx, carregarPainelAbsExpAno, ev, limpar); }
@@ -34005,7 +34012,10 @@ function _absResumoMesesSel(porMes, idxs, anoSel){
 // já é uma bateria de queries por conta própria (mesma fonte oficial usada no
 // mês) — 12x mais pesado que o card mensal, aceitável numa aba de painel
 // executivo aberta ocasionalmente, não em polling.
-async function _calcAbsenteismoAno(calcFn, anoSel, undSel){
+async function _calcAbsenteismoAno(calcFn, anoSel, undSel, chaveCache){
+  const reusar = window._absAnoReusar; window._absAnoReusar = false; // lido na 1ª linha (síncrona) para ser do clique certo
+  const emCache = chaveCache && reusar && window._absAnoCache && window._absAnoCache[chaveCache];
+  if(emCache && Date.now() - emCache.ts < 15*60*1000) return emCache.dados;
   const bMes = Array(12).fill(null);
   // porMes: dado bruto de cada mês (faltas/atestados/% e dia-da-semana
   // daquele mês isolado) — usado quando o usuário seleciona um mês na
@@ -34042,7 +34052,9 @@ async function _calcAbsenteismoAno(calcFn, anoSel, undSel){
   for(let i=2;i<=6;i++){ if(porDiaSemanaAno[i]>maxVal){ maxVal=porDiaSemanaAno[i]; maxIdx=i; } }
   const topDiaSemana = (totalDiaSemana>0 && maxVal>0) ? { dia: DIAS_SEMANA_PT[maxIdx], idx: maxIdx, qtd: maxVal, pct: maxVal/totalDiaSemana*100 } : null;
   const diaMaisOcorrAno = { porDiaSemana: porDiaSemanaAno, total: totalDiaSemana, top: topDiaSemana };
-  return { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno };
+  const dados = { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno };
+  if(chaveCache){ window._absAnoCache = window._absAnoCache || {}; window._absAnoCache[chaveCache] = { ts: Date.now(), dados }; }
+  return dados;
 }
 
 async function carregarPainelAbsAreaAno(area, prefix, metaTipo, indicadorLabel, areaLabel){
@@ -34051,7 +34063,7 @@ async function carregarPainelAbsAreaAno(area, prefix, metaTipo, indicadorLabel, 
   try {
     const anoSel = _anoSelPainelIndicadores();
     const calcFn = (mesStr, filtros) => _calcularAbsenteismoArmazem(mesStr, {...filtros, area});
-    const { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno } = await _calcAbsenteismoAno(calcFn, anoSel, window._painelIndUndSel||'');
+    const { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno } = await _calcAbsenteismoAno(calcFn, anoSel, window._painelIndUndSel||'', `area|${prefix}|${anoSel}|${window._painelIndUndSel||''}`);
     const totalOcorrencias = totFalta+totAtes; // folga não conta como ocorrência de absenteísmo
     const metaNum = _getMetaAbs(metaTipo);
     // Meses selecionados (Ctrl/Shift+clique soma vários); índices sem dado são descartados.
@@ -34671,10 +34683,11 @@ async function carregarPainelAbsDistribuicaoAno(){
   if(!container) return;
   try {
     const anoSel = _anoSelPainelIndicadores();
-    const { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno } = await _calcAbsenteismoAno(_calcularAbsenteismoDistribuicao, anoSel, window._painelIndUndSel||'');
+    const { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno } = await _calcAbsenteismoAno(_calcularAbsenteismoDistribuicao, anoSel, window._painelIndUndSel||'', `dist|${anoSel}|${window._painelIndUndSel||''}`);
     const totalOcorrencias = totFalta+totAtes; // folga não conta como ocorrência de absenteísmo
     const metaNum = _getMetaAbs('dist');
-    const mesSelIdx = window._absAnoMesSelPorPrefixo['abs-distribuicao'] ?? null;
+    const _selDist = _absSelArr(window._absAnoMesSelPorPrefixo['abs-distribuicao']);
+    const mesSelIdx = _selDist.length ? _selDist[0] : null;
     const mesSel = (mesSelIdx!=null && porMes[mesSelIdx]) ? porMes[mesSelIdx] : null;
     const mesSelLabel = mesSel ? `${NOMES_MES_PT_ABREV[mesSelIdx]}/${anoSel}` : null;
     const viewOcorr = mesSel ? (mesSel.faltas+mesSel.atestados) : totalOcorrencias;
