@@ -21,6 +21,24 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: Painel de Indicadores — "Baixar imagem" e apresentação usam bem menos memória — v4.89.107
+Onde: `index.html`: função nova `_escalaCapturaSlide`; `_capturarNodeComo1920x1080` (usada por "Baixar Imagem" de cada card
+e pela apresentação de slides), `baixarImagemVeiculos` e `gerarApresentacaoPainelIndicadores`. `APP_VERSION` e `version.json`:
+4.89.106 → 4.89.107.
+Por quê: o Gabriel notou instabilidade no Cronos, principalmente ao baixar as imagens do Painel de Indicadores. Nenhum erro
+de JavaScript foi registrado para essa tela (Log de Erros), então não é falha de código e sim peso: o html2canvas capturava
+todo card a 2x ou mais, mesmo sendo o PNG final sempre 1920x1080 com o card dentro de uma margem de 8%. Num card alto (como a
+Visão Anual) isso gerava um canvas de ~16 megapixels (~65 MB) por captura, e a apresentação faz isso uma vez por slide, sem
+devolver a memória. Medido numa página de teste com o código real: card 1140x2710 capturava a 2,21x (16 MP) e agora a 1x
+(3 MP), ~5x menos memória; card largo e baixo (1260x600) segue a 2x, igual a antes (mesma qualidade onde importa).
+O que mudou: (1) a escala agora é a que o slide aproveita (1,5x o tamanho em que o card vai aparecer, mínimo 1x, nunca mais
+que a escala antiga); (2) o canvas grande é zerado (`width=0`) logo depois de desenhado no slide; (3) na apresentação, o
+canvas do slide também é zerado depois de virar PNG. A imagem final continua 1920x1080 com marca d'água e mesmo enquadramento.
+Testes: `node check.js` ok; escala conferida em 5 tamanhos de card; o código real rodado com o html2canvas verdadeiro em 4
+tamanhos de card (saída sempre 1920x1080). NÃO testado com o Painel real (precisa de login): teste do Gabriel.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: se a instabilidade continuar, o próximo suspeito é o carregamento de dados de cada slide da apresentação
+(`s.carregar`), que não foi mexido; me diga o que acontece (trava, fecha a aba, mensagem de erro).
 ## 2026-10-29, Gabriel: crédito manual — data de emissão da nota sem calendário e sem a linha — v4.89.104
 Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-semcal` e a classe do campo `cm-emissao` (era `cm-data`).
 `APP_VERSION` e `version.json`: 4.89.103 → 4.89.104.
