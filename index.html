@@ -3217,6 +3217,13 @@ body.light-theme{
     </div>
   </div>
 
+  <!-- Frescor dos dados: quando o painel carregou e, nas abas que leem o ERP, a idade da última carga do ERP -->
+  <div id="painel-ind-frescor" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:-12px 0 14px;font-size:.78rem;color:var(--text-muted)">
+    <span id="painel-ind-carregado-as"></span>
+    <span id="painel-ind-erp-frescor" style="display:none"></span>
+    <button onclick="_painelAtualizarTudo()" title="Recarrega os indicadores desta aba agora" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:4px 10px;font-size:.75rem;font-weight:700;color:var(--text-secondary);cursor:pointer"><span data-feather="refresh-cw" style="width:12px;height:12px"></span> Atualizar</button>
+  </div>
+
   <!-- Abas de Navegação -->
   <div style="display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);overflow-x:auto">
     <button class="painel-ind-tab active" onclick="mudarAbaIndicadores('abs-expedicao')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-primary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="abs-expedicao">
@@ -9913,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.115';
+const APP_VERSION = '4.89.116';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -32939,6 +32946,171 @@ async function renderOtifDiario(){
 }
 
 // ── Painel de Indicadores ──
+// ═════════════════════════════════════════════════════════════════════
+// CASCO DO PAINEL DE INDICADORES — uma porta só para carregar cada card.
+// Pedido do usuário, 2026-10-29 ("faça tudo da melhor forma"):
+//  • falha de leitura aparece como aviso "dado incompleto" + botão "Tentar de novo" (antes virava 0%/100% sem avisar);
+//  • duas cargas do mesmo card nunca se atropelam: a resposta velha não sobrescreve a nova;
+//  • o card fica esmaecido enquanto atualiza; "Carregado às HH:MM"; idade da última carga do ERP nas abas que leem ERP;
+//  • o filtro Interna/Externa fica desabilitado nas abas em que ele não faz nada.
+// Não muda nenhuma conta: só o que acontece em volta dela.
+// ═════════════════════════════════════════════════════════════════════
+const _PAINEL_RIRE_ABAS = ['conferencia-prazo','carregamento-prazo','pedidos-rotas','otif-ano'];
+const _PAINEL_ERP_ABAS  = ['pedidos-rotas','otif-ano','prazo-formacao'];
+
+// [id do container, função que carrega] de cada card da aba. Cards sem container fixo usam null.
+function _painelIndTarefas(aba){
+  switch(aba){
+    case 'abs-armazem':                 return [[null, carregarPainelAbsArmazem], [null, carregarPainelAbsArmazemAno]];
+    case 'abs-expedicao':               return [['painel-ind-abs-exp-container', carregarPainelAbsExp], ['painel-ind-abs-exp-container-ano', carregarPainelAbsExpAno]];
+    case 'abs-recebimento-armazenagem': return [['painel-ind-abs-rec-container', carregarPainelAbsRec], ['painel-ind-abs-rec-container-ano', carregarPainelAbsRecAno]];
+    case 'abs-distribuicao':            return [['painel-ind-abs-distribuicao-container', carregarPainelAbsDistribuicao], ['painel-ind-abs-distribuicao-container-ano', carregarPainelAbsDistribuicaoAno]];
+    case 'disponibilidade':             return [['painel-ind-disponibilidade-container', carregarPainelDisponibilidade], ['painel-ind-disponibilidade-container-ano', carregarPainelDisponibilidadeAno]];
+    case 'conferencia-prazo':           return [['painel-ind-conferencia-prazo-container', carregarPainelConferenciaPrazo], ['painel-ind-conferencia-prazo-container-ano', carregarPainelConferenciaPrazoAno]];
+    case 'carregamento-prazo':          return [['painel-ind-carregamento-prazo-container', carregarPainelCarregamentoPrazo], ['painel-ind-conferencia-motivos-container', carregarMotivosLiberacaoPrazo], ['painel-ind-carregamento-prazo-container-ano', carregarPainelCarregamentoPrazoAno]];
+    case 'pedidos-rotas':               return [['painel-ind-pedidos-rotas-container', carregarPainelPedidosRotas], ['painel-ind-pedidos-rotas-container-ano', carregarPainelPedidosRotasAno], ['painel-ind-acompanhamento-mes-container', carregarPainelAcompanhamentoMes], ['painel-ind-acompanhamento-container', carregarPainelAcompanhamentoAnual]];
+    case 'custo-armazem':               return [['pica-container', ()=>renderCustoArmazem('pica')], ['pica-container-ano', ()=>renderCustoArmazemAno('pica')]];
+    case 'receita-armazem':             return [['pira-container', ()=>renderReceitaArmazem('pira')], ['pira-container-ano', ()=>renderReceitaArmazemAno('pira')]];
+    case 'descarrego':                  return [['painel-ind-descarrego-container', carregarPainelDescarrego]];
+    case 'prazo-formacao':              return [['pf-container', renderPrazoFormacao], ['pf-container-ano', renderPrazoFormacaoAno]];
+    case 'produtividade':               return [['painel-ind-produtividade-container', carregarPainelProdutividadeAno]];
+    case 'otif-ano':                    return [['painel-ind-otif-ano-container', carregarPainelOtifAno]];
+    default:                            return [];
+  }
+}
+
+window._painelRun = window._painelRun || {};
+// Roda a carga de um card. Se já há uma carga desse mesmo card em andamento, refaz UMA vez quando ela acabar
+// (com os filtros de então), em vez de deixar as duas correrem e a mais lenta vencer.
+async function _painelRodar(containerId, fn){
+  if(!containerId){ try{ await fn(); }catch(e){ console.error('[painel]', e); } return; }
+  const st = window._painelRun[containerId] || (window._painelRun[containerId] = { rodando:false, pendente:false, fn:null });
+  st.fn = fn;
+  if(st.rodando){ st.pendente = true; return; }
+  st.rodando = true;
+  try{
+    do{
+      st.pendente = false;
+      await _painelRodarUma(containerId, st.fn);
+    }while(st.pendente);
+  } finally { st.rodando = false; }
+}
+
+async function _painelRodarUma(containerId, fn){
+  const cont = document.getElementById(containerId);
+  const seq0 = window._supaFalhaSeq || 0;
+  const jaTinhaCard = !!(cont && cont.querySelector('.abs-report'));
+  if(cont && jaTinhaCard){ cont.style.opacity = '.55'; cont.style.pointerEvents = 'none'; }
+  try{ await fn(); }
+  catch(e){
+    console.error('[painel] erro ao carregar', containerId, e);
+    (window._supaFalhas = window._supaFalhas || []).push({ seq: ++window._supaFalhaSeq, ts: Date.now(), tabela: '(erro ao montar o card)', msg: String((e && e.message) || e).slice(0,160) });
+  }
+  finally{ if(cont){ cont.style.opacity = ''; cont.style.pointerEvents = ''; } }
+  _painelAplicarAviso(containerId, seq0);
+  _painelMarcarCarregado();
+}
+
+function _painelLimparCaches(){
+  try{ _otifCacheMap.clear(); _otifPromiseMap.clear(); }catch(e){}
+  window._absAnoCache = {};
+}
+
+// Se alguma leitura falhou durante a carga, mostra o aviso no topo do card (fora do .abs-report, então não sai na imagem).
+function _painelAplicarAviso(containerId, seq0){
+  const cont = document.getElementById(containerId);
+  if(!cont) return;
+  cont.querySelectorAll(':scope > .painel-aviso-falha').forEach(e=>e.remove());
+  const falhas = (window._supaFalhas || []).filter(f => f.seq > seq0);
+  if(!falhas.length) return;
+  _painelLimparCaches(); // resultado incompleto não pode ficar guardado como se estivesse certo
+  const tabelas = [...new Set(falhas.map(f=>f.tabela))].slice(0,4).join(', ');
+  cont.insertAdjacentHTML('afterbegin',
+    `<div class="painel-aviso-falha" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.5);color:#f59e0b;border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:.85rem;font-weight:600">
+      ${_ic('alert-triangle',15)}
+      <span style="flex:1;min-width:220px">Parte dos dados não carregou (${escapeHtml(tabelas)}). Os números abaixo podem estar incompletos.</span>
+      <button onclick="_painelTentarDeNovo('${containerId}')" style="background:transparent;border:1px solid rgba(245,158,11,.7);color:#f59e0b;border-radius:8px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer">Tentar de novo</button>
+    </div>`);
+}
+
+function _painelTentarDeNovo(containerId){
+  const st = window._painelRun[containerId];
+  if(!st || !st.fn) return;
+  _painelLimparCaches();
+  _painelRodar(containerId, st.fn);
+}
+
+function _painelMarcarCarregado(){
+  const el = document.getElementById('painel-ind-carregado-as');
+  if(!el) return;
+  const h = new Date().toLocaleTimeString('pt-BR', { timeZone:'America/Bahia', hour:'2-digit', minute:'2-digit' });
+  el.textContent = 'Carregado às ' + h;
+}
+
+// Idade da última carga do ERP (só nas abas que leem dados do ERP). Fato lido do banco, sem suposição:
+// atualizado_em NÃO é batimento de coração (a carga do ERP é em lote e tem pausas normais de 20 h), então
+// aqui só se mostra a hora e a idade; o destaque em âmbar é só para pausa fora do comum.
+async function _painelFrescorErp(aba){
+  const el = document.getElementById('painel-ind-erp-frescor');
+  if(!el) return;
+  if(!_PAINEL_ERP_ABAS.includes(aba)){ el.style.display = 'none'; return; }
+  el.style.display = '';
+  try{
+    const [a, b] = await Promise.all([
+      supaFetch('pedidos_info_erp?select=atualizado_em&order=atualizado_em.desc&limit=1', {_quiet:true}),
+      supaFetch('pedidos_alteracoes_erp?select=detectado_em&order=detectado_em.desc&limit=1', {_quiet:true}).catch(()=>null),
+    ]);
+    const tsA = a && a[0] && a[0].atualizado_em ? new Date(a[0].atualizado_em).getTime() : 0;
+    const tsB = b && b[0] && b[0].detectado_em ? new Date(b[0].detectado_em).getTime() : 0;
+    const ts = Math.max(tsA, tsB);
+    if(!ts){ el.textContent = 'Última carga do ERP: sem registro'; return; }
+    const quando = new Date(ts).toLocaleString('pt-BR', { timeZone:'America/Bahia', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }).replace(',', '');
+    const horas = (Date.now() - ts) / 3600000;
+    const idade = horas < 1 ? 'há ' + Math.max(1, Math.round(horas*60)) + ' min' : (horas < 48 ? 'há ' + Math.round(horas) + ' h' : 'há ' + Math.floor(horas/24) + ' dias');
+    el.textContent = 'Última carga do ERP: ' + quando + ' (' + idade + ')';
+    const velho = horas > 30;
+    el.style.color = velho ? '#f59e0b' : '';
+    el.style.fontWeight = velho ? '700' : '';
+    el.title = velho ? 'Mais de 30 horas sem nova carga do ERP: pedidos novos podem não estar aparecendo.' : 'Hora da última atualização de pedidos vinda do ERP.';
+  }catch(e){
+    el.textContent = 'Última carga do ERP: não foi possível consultar';
+    el.style.color = '#f59e0b';
+  }
+}
+
+// Interna/Externa só vale em 4 abas; "Todas as unidades" para quem não é admin é a unidade dele nas abas de Absenteísmo.
+function _painelIndAtualizarFiltros(aba){
+  const rire = document.getElementById('painel-ind-rire-sel');
+  if(rire){
+    const vale = _PAINEL_RIRE_ABAS.includes(aba);
+    rire.disabled = !vale;
+    rire.style.opacity = vale ? '' : '.45';
+    rire.title = vale ? 'Interna/Externa — vale para Liberação no Prazo, Carregamento no Prazo, Pedidos & Rotas e OTIF Ano.'
+                      : 'Esta aba não usa o filtro Interna/Externa.';
+  }
+  const und = document.getElementById('painel-ind-und-sel');
+  if(und && und.options.length){
+    const minha = /^abs-/.test(aba) && window._painelUndUsuario;
+    und.options[0].textContent = minha ? 'Minha unidade (' + window._painelUndUsuario + ')' : 'Todas as unidades';
+    und.options[0].title = minha ? 'Nas abas de Absenteísmo, quem não é administrador vê só a própria unidade.' : '';
+  }
+  if(window._painelUndUsuario === undefined && typeof _getUnidadeUsuario === 'function'){
+    window._painelUndUsuario = '';
+    _getUnidadeUsuario().then(u=>{ window._painelUndUsuario = u || ''; _painelIndAtualizarFiltros(aba); }).catch(()=>{});
+  }
+}
+
+function _painelIndCarregarAba(aba){
+  _painelIndAtualizarFiltros(aba);
+  _painelIndTarefas(aba).forEach(([id, fn]) => { _painelRodar(id, fn); });
+  _painelFrescorErp(aba);
+}
+
+function _painelAtualizarTudo(){
+  _painelLimparCaches();
+  _recarregarAbaAtivaPainelIndicadores();
+}
+
 function mudarAbaIndicadores(aba){
   if(aba === 'motivos-prazo') aba = 'carregamento-prazo'; // a análise por motivo agora mora na aba Carregamento no Prazo
   document.querySelectorAll('.painel-ind-aba').forEach(el => el.style.display = 'none');
@@ -32958,20 +33130,7 @@ function mudarAbaIndicadores(aba){
     tabBtn.style.borderBottom = '2px solid var(--blue)';
   }
 
-  if(aba === 'abs-armazem') { carregarPainelAbsArmazem(); carregarPainelAbsArmazemAno(); }
-  else if(aba === 'abs-expedicao') { carregarPainelAbsExp(); carregarPainelAbsExpAno(); }
-  else if(aba === 'abs-recebimento-armazenagem') { carregarPainelAbsRec(); carregarPainelAbsRecAno(); }
-  else if(aba === 'abs-distribuicao') { carregarPainelAbsDistribuicao(); carregarPainelAbsDistribuicaoAno(); }
-  else if(aba === 'disponibilidade') { carregarPainelDisponibilidade(); carregarPainelDisponibilidadeAno(); }
-  else if(aba === 'conferencia-prazo') { carregarPainelConferenciaPrazo(); carregarPainelConferenciaPrazoAno(); }
-  else if(aba === 'carregamento-prazo') { carregarPainelCarregamentoPrazo(); carregarMotivosLiberacaoPrazo(); carregarPainelCarregamentoPrazoAno(); }
-  else if(aba === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); carregarPainelAcompanhamentoMes(); carregarPainelAcompanhamentoAnual(); }
-  else if(aba === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
-  else if(aba === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
-  else if(aba === 'descarrego') { carregarPainelDescarrego(); }
-  else if(aba === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
-  else if(aba === 'produtividade') { carregarPainelProdutividadeAno(); }
-  else if(aba === 'otif-ano') { carregarPainelOtifAno(); }
+  _painelIndCarregarAba(aba); // uma porta só: falha visível, sem atropelo entre cargas (ver _painelIndTarefas)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -33450,9 +33609,9 @@ function _prodPainelSelecionarMes(i){
   det.innerHTML = `
     <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:#8a8a8a;margin-bottom:12px">PEDIDOS NA BONIFICAÇÃO · ${_PROD_MESES_NOME[i].toUpperCase()} / ${d.ano}</div>
     <div style="display:flex;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #1a1a1a"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">PEDIDOS INTERNOS</div><div style="font-size:2.24rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px">${n(m.interna)}</div></div>
-      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #6b6b6b"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">PEDIDOS EXTERNOS</div><div style="font-size:2.24rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px">${n(m.externa)}</div></div>
-      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #c4c4c4"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">TOTAL NA BONIFICAÇÃO</div><div style="font-size:2.24rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px">${n(m.interna+m.externa)}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #1a1a1a"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">PEDIDOS INTERNOS</div><div style="font-size:2.24rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px;color:#1a1a1a">${n(m.interna)}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #6b6b6b"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">PEDIDOS EXTERNOS</div><div style="font-size:2.24rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px;color:#1a1a1a">${n(m.externa)}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border-radius:10px;padding:16px 20px;border-top:3px solid #c4c4c4"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:#8a8a8a">TOTAL NA BONIFICAÇÃO</div><div style="font-size:2.24rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px;color:#1a1a1a">${n(m.interna+m.externa)}</div></div>
     </div>
     <div style="font-size:.72rem;color:#8a8a8a;margin-top:10px">Internos: pedidos de rota interna entregues sem ocorrência que pagam bonificação ao motorista (e ao ajudante, quando há). Externos: pedidos de rota externa com ajudante, que pagam R$ 0,75.</div>`;
 }
@@ -33541,23 +33700,8 @@ async function carregarPainelProdutividadeAno(){
 
 function _recarregarAbaAtivaPainelIndicadores(){
   const abaAtiva = document.querySelector('.painel-ind-tab.active')?.dataset.aba || 'abs-expedicao';
-  if(abaAtiva === 'abs-armazem') { carregarPainelAbsArmazem(); carregarPainelAbsArmazemAno(); }
-  else if(abaAtiva === 'abs-expedicao') { carregarPainelAbsExp(); carregarPainelAbsExpAno(); }
-  else if(abaAtiva === 'abs-recebimento-armazenagem') { carregarPainelAbsRec(); carregarPainelAbsRecAno(); }
-  else if(abaAtiva === 'abs-distribuicao') { carregarPainelAbsDistribuicao(); carregarPainelAbsDistribuicaoAno(); }
-  else if(abaAtiva === 'disponibilidade') { carregarPainelDisponibilidade(); carregarPainelDisponibilidadeAno(); }
-  else if(abaAtiva === 'conferencia-prazo') { carregarPainelConferenciaPrazo(); carregarPainelConferenciaPrazoAno(); }
-  else if(abaAtiva === 'carregamento-prazo') { carregarPainelCarregamentoPrazo(); carregarMotivosLiberacaoPrazo(); carregarPainelCarregamentoPrazoAno(); }
-  else if(abaAtiva === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); carregarPainelAcompanhamentoMes(); carregarPainelAcompanhamentoAnual(); }
-  else if(abaAtiva === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
-  else if(abaAtiva === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
-  // "Prazo Formação→Entrega" não tinha filtro de unidade nenhum (nem o
-  // seletor global, nem um próprio) — mudar unidade/R.I.-R.E. no topo não
-  // recarregava essa aba, dava a impressão de que o filtro simplesmente não
-  // existia.
-  else if(abaAtiva === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
-  else if(abaAtiva === 'produtividade') { carregarPainelProdutividadeAno(); }
-  else if(abaAtiva === 'otif-ano') { carregarPainelOtifAno(); }
+  // Todas as abas (inclusive Descarrego e Prazo Formação→Entrega) recarregam ao trocar unidade/mês/Interna-Externa.
+  _painelIndCarregarAba(abaAtiva);
 }
 
 // ══ GERAR APRESENTAÇÃO (Painel de Indicadores → PowerPoint) ═══════════
@@ -34097,6 +34241,7 @@ function _absResumoMesesSel(porMes, idxs, anoSel){
 // executivo aberta ocasionalmente, não em polling.
 async function _calcAbsenteismoAno(calcFn, anoSel, undSel, chaveCache){
   const reusar = window._absAnoReusar; window._absAnoReusar = false; // lido na 1ª linha (síncrona) para ser do clique certo
+  const falhaSeq0 = window._supaFalhaSeq || 0;
   const emCache = chaveCache && reusar && window._absAnoCache && window._absAnoCache[chaveCache];
   if(emCache && Date.now() - emCache.ts < 15*60*1000) return emCache.dados;
   const bMes = Array(12).fill(null);
@@ -34144,7 +34289,7 @@ async function _calcAbsenteismoAno(calcFn, anoSel, undSel, chaveCache){
   const topDiaSemana = (totalDiaSemana>0 && maxVal>0) ? { dia: DIAS_SEMANA_PT[maxIdx], idx: maxIdx, qtd: maxVal, pct: maxVal/totalDiaSemana*100 } : null;
   const diaMaisOcorrAno = { porDiaSemana: porDiaSemanaAno, total: totalDiaSemana, top: topDiaSemana };
   const dados = { bMes, porMes, totFalta, totAtes, totFolga, pctAnual, diaMaisOcorrAno };
-  if(chaveCache){ window._absAnoCache = window._absAnoCache || {}; window._absAnoCache[chaveCache] = { ts: Date.now(), dados }; }
+  if(chaveCache && (window._supaFalhaSeq || 0) === falhaSeq0){ window._absAnoCache = window._absAnoCache || {}; window._absAnoCache[chaveCache] = { ts: Date.now(), dados }; } // com falha no meio, não guarda
   return dados;
 }
 
@@ -34292,6 +34437,10 @@ function _h2cSanearCoresModernas(doc){
   });
 }
 async function _html2canvasSeguro(node, opts){
+  // Sempre captura no tema escuro: o fundo do slide é escuro, e no tema claro o texto (#0f172a) sumia nele.
+  const _opts0 = opts || {};
+  const _temaEscuro = (doc)=>{ try{ doc.body.classList.remove('light-theme'); }catch(e){} };
+  opts = { ..._opts0, onclone:(doc, el)=>{ _temaEscuro(doc); if(_opts0.onclone) _opts0.onclone(doc, el); } };
   try{ return await html2canvas(node, opts); }
   catch(e){
     if(!/unsupported (color|image) function/i.test((e && e.message) || '')) throw e;
@@ -48031,6 +48180,17 @@ function _proximoMes(mesStr){
   return m===12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
 }
 
+// Registro das falhas de LEITURA (GET): o Painel de Indicadores usa isso para avisar "dado incompleto"
+// em vez de mostrar 0%/100%/vazio como se fosse resultado.
+window._supaFalhaSeq = window._supaFalhaSeq || 0;
+window._supaFalhas = window._supaFalhas || [];
+function _supaRegistrarFalha(path, restOpts, e){
+  const metodo = String((restOpts && restOpts.method) || 'GET').toUpperCase();
+  if(metodo !== 'GET') return;
+  window._supaFalhas.push({ seq: ++window._supaFalhaSeq, ts: Date.now(), tabela: String(path||'').split('?')[0], msg: String((e && e.message) || e || '').slice(0,160) });
+  if(window._supaFalhas.length > 200) window._supaFalhas.splice(0, 100);
+}
+
 // supaFetch com timeout, retry automático e loading global
 const _supaFetchOrig = supaFetch;
 async function supaFetch(path, opts={}, _tentativa=1){
@@ -48041,9 +48201,8 @@ async function supaFetch(path, opts={}, _tentativa=1){
   // ERR_NAME_NOT_RESOLVED / ERR_INTERNET_DISCONNECTED no console do navegador.
   // Permite apenas chamadas _quiet (ping do monitor de conexão).
   if(!_quiet){
-    if(!navigator.onLine) throw new Error('Sem conexão com a internet');
-    if(typeof _connStatus !== 'undefined' && _connStatus === 'offline')
-      throw new Error('Sem conexão com o banco de dados');
+    if(!navigator.onLine){ _supaRegistrarFalha(path, restOpts, 'Sem conexão com a internet'); throw new Error('Sem conexão com a internet'); }
+    if(typeof _connStatus !== 'undefined' && _connStatus === 'offline'){ _supaRegistrarFalha(path, restOpts, 'Sem conexão com o banco de dados'); throw new Error('Sem conexão com o banco de dados'); }
   }
 
   const controller = new AbortController();
@@ -48085,8 +48244,10 @@ async function supaFetch(path, opts={}, _tentativa=1){
         // finally já chama _loadingHide() — não chamar aqui para evitar duplo decremento
         return supaFetch(path, opts, 2);
       }
+      _supaRegistrarFalha(path, restOpts, 'Timeout na query');
       throw new Error('Timeout na query: '+path.slice(0,120));
     }
+    _supaRegistrarFalha(path, restOpts, e);
     throw e;
   }finally{
     clearTimeout(tid);
