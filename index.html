@@ -3246,6 +3246,9 @@ body.light-theme{
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('receita-armazem')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="receita-armazem">
       <span data-feather="trending-up" style="width:15px;height:15px"></span> Receitas Armazém
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('descarrego')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="descarrego">
+      <span data-feather="archive" style="width:15px;height:15px"></span> Descarrego
+    </button>
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('prazo-formacao')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="prazo-formacao">
       <span data-feather="clock" style="width:15px;height:15px"></span> Prazo Formação→Entrega
     </button>
@@ -3347,6 +3350,11 @@ body.light-theme{
   <div id="aba-receita-armazem" class="painel-ind-aba" style="display:none">
     <div id="pira-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
     <div id="pira-container-ano" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+  </div>
+
+  <!-- ABA 7c: Descarrego — custo de "serviço de chapa" no destino (categoria "Chapas" de despesas_armazem). Sem comparação ano a ano (sem dado de 2025) — compara com o mês anterior. Usa Mês/Unidade globais. -->
+  <div id="aba-descarrego" class="painel-ind-aba" style="display:none">
+    <div id="painel-ind-descarrego-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
   <!-- ABA 8: Prazo Formação→Entrega — desde a criação da carga (formação) até a entrega, contra prazo fixo de 8 dias. Métrica distinta do OTIF oficial (que conta desde a saída do veículo) — mede o tempo de armazém + transporte juntos. -->
@@ -9904,7 +9912,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.109';
+const APP_VERSION = '4.89.110';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -32924,6 +32932,7 @@ function mudarAbaIndicadores(aba){
   else if(aba === 'pedidos-rotas') { carregarPainelPedidosRotas(); carregarPainelPedidosRotasAno(); carregarPainelAcompanhamentoMes(); carregarPainelAcompanhamentoAnual(); }
   else if(aba === 'custo-armazem') { renderCustoArmazem('pica'); renderCustoArmazemAno('pica'); }
   else if(aba === 'receita-armazem') { renderReceitaArmazem('pira'); renderReceitaArmazemAno('pira'); }
+  else if(aba === 'descarrego') { carregarPainelDescarrego(); }
   else if(aba === 'prazo-formacao') { renderPrazoFormacao(); renderPrazoFormacaoAno(); }
   else if(aba === 'produtividade') { carregarPainelProdutividadeAno(); }
   else if(aba === 'otif-ano') { carregarPainelOtifAno(); }
@@ -53725,6 +53734,138 @@ async function renderCustoArmazemAno(prefixo){
     _featherReplace();
   }catch(e){
     console.error('Erro ao carregar Custo Armazém (ano):', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
+    _featherReplace();
+  }
+}
+
+// ── Descarrego (serviço de chapa no destino) ──────────────────────────
+// Pedido do usuário, 2026-10-29: card dedicado pro custo de descarrego,
+// visto num relatório externo que a empresa monta à mão (comparação ano a
+// ano, Julho 2025 × Julho 2026). Não dá pra reproduzir essa comparação
+// aqui: o sistema só tem despesas_armazem a partir de 2026 (achado,
+// 2026-10-29: tabela sem nenhum registro de 2025). Por isso o card compara
+// com o MÊS ANTERIOR em vez do mesmo mês do ano passado.
+// Fonte: despesas_armazem, filtrado pela categoria "Chapas" (tipos_despesa)
+// — é literalmente o serviço de descarrego no destino citado no relatório
+// original ("menos serviço de chapa"). Não usa o grupo 'temp' inteiro de
+// _CA_GRUPOS (que também inclui Diaristas/Temporários) de propósito: esses
+// cobrem outras funções do armazém, não só descarrego.
+function _descarregoMesAnterior(mes){
+  const [ano, m] = (mes||'').split('-').map(Number);
+  const d = new Date(ano, (m||1)-2, 1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+async function carregarPainelDescarrego(){
+  const container = document.getElementById('painel-ind-descarrego-container');
+  if(!container) return;
+  const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  try{
+    const despesas = await supaFetch(`despesas_armazem?tipo_despesa_nome=eq.Chapas&select=valor,data_referencia,unidade`).catch(()=>[]) || [];
+    const mesSel = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const undSel = window._painelIndUndSel || '';
+    const mesAnt = _descarregoMesAnterior(mesSel);
+
+    let dados = despesas;
+    if(undSel) dados = dados.filter(d=>d.unidade===undSel);
+
+    const doMes  = mes => dados.filter(d=>(d.data_referencia||'').startsWith(mes));
+    const somaMes = mes => doMes(mes).reduce((a,d)=>a+Number(d.valor||0),0);
+
+    const atual = somaMes(mesSel);
+    const anterior = somaMes(mesAnt);
+    const qtdAtual = doMes(mesSel).length;
+    const variacao = anterior>0 ? ((atual-anterior)/anterior*100) : (atual>0 ? 100 : 0);
+    const aumentou = variacao > 0;
+    const diffValor = Math.abs(atual-anterior);
+
+    const NOMES_MES_LONGO = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+    const [anoSelN, mesSelN] = mesSel.split('-').map(Number);
+    const [anoAntN, mesAntN] = mesAnt.split('-').map(Number);
+    const mesAtualLabel = NOMES_MES_LONGO[mesSelN-1]+' '+anoSelN;
+    const mesAnteriorLabel = NOMES_MES_LONGO[mesAntN-1]+' '+anoAntN;
+    const undLabel = undSel ? undSel : 'todas as unidades';
+
+    const maxBarra = Math.max(atual, anterior, 1);
+    const pctAtual = Math.max(10, (atual/maxBarra)*100);
+    const pctAnterior = Math.max(10, (anterior/maxBarra)*100);
+    const corVar = aumentou ? '#dc2626' : '#16a34a';
+
+    container.innerHTML = `
+      <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
+        <div style="font-size:.81rem;font-weight:700;letter-spacing:2px;color:var(--text-muted)">INDICADOR 10 · ARMAZÉM · ${mesAtualLabel.toUpperCase()} × MÊS ANTERIOR</div>
+        <h2 style="font-size:2.69rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Descarrego</h2>
+        <div style="width:56px;height:3px;background:var(--red);margin:18px 0 28px"></div>
+
+        <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:stretch">
+          <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid ${corVar}">
+            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">VARIAÇÃO MÊS A MÊS</div>
+            <div style="display:flex;align-items:center;gap:14px;margin-top:10px">
+              <span style="font-size:1.6rem;color:${corVar}">${aumentou?'▲':'▼'}</span>
+              <div style="font-size:2.9rem;font-weight:700;line-height:1">${Math.abs(variacao).toFixed(1).replace('.',',')}%</div>
+            </div>
+            <div style="font-size:.82rem;font-weight:700;color:${corVar};margin-top:2px">${aumentou?'MAIOR':'MENOR'} QUE ${mesAnteriorLabel.toUpperCase()}</div>
+
+            <div style="border-top:1px solid var(--border);margin-top:20px;padding-top:16px">
+              <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:4px">${aumentou?'AUMENTO':'REDUÇÃO'} EM VALOR</div>
+              <div style="font-size:1.3rem;font-weight:700">${fv(diffValor)}</div>
+            </div>
+
+            <div style="border-top:1px solid var(--border);margin-top:20px;padding-top:18px">
+              <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:12px">COMPARATIVO</div>
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <div>
+                  <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:4px">${mesAnteriorLabel.toUpperCase()}</div>
+                  <div style="background:var(--border);border-radius:6px;height:34px;display:flex;align-items:center;padding:0 12px;width:${pctAnterior}%;min-width:fit-content">
+                    <span style="font-size:.85rem;font-weight:700;white-space:nowrap">${fv(anterior)}</span>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:4px">${mesAtualLabel.toUpperCase()}</div>
+                  <div style="background:${corVar};border-radius:6px;height:34px;display:flex;align-items:center;padding:0 12px;width:${pctAtual}%;min-width:fit-content">
+                    <span style="font-size:.85rem;font-weight:700;color:#fff;white-space:nowrap">${fv(atual)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="border-top:1px solid var(--border);margin-top:20px;padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+              <span style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">STATUS</span>
+              <span style="font-size:.87rem;font-weight:700;color:${corVar}">${aumentou?'AUMENTO · RESULTADO NEGATIVO':'REDUÇÃO · RESULTADO POSITIVO'}</span>
+            </div>
+          </div>
+
+          <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
+            <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">LEITURA</div>
+            <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">O QUE O NÚMERO MOSTRA</div>
+            <div style="margin-top:14px;display:flex;flex-direction:column;gap:14px">
+              <div>
+                <div style="font-size:1.3rem;font-weight:700">${fv(anterior)}</div>
+                <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-top:1px">${mesAnteriorLabel.toUpperCase()}</div>
+                <div style="font-size:.78rem;color:var(--text-secondary)">Base de comparação</div>
+              </div>
+              <div style="border-top:1px solid var(--border);padding-top:14px">
+                <div style="font-size:1.3rem;font-weight:700">${fv(atual)}</div>
+                <div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-top:1px">${mesAtualLabel.toUpperCase()}</div>
+                <div style="font-size:.78rem;color:var(--text-secondary)">${qtdAtual} lançamento${qtdAtual===1?'':'s'} · ${undLabel}</div>
+              </div>
+              <div style="border-top:1px solid var(--border);padding-top:14px">
+                <div style="font-size:.78rem;color:var(--text-secondary);line-height:1.5">Categoria "Chapas" (despesas de armazém) — menor valor indica melhora: menos serviço de chapa no destino.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
+          <span>PAINEL DE CUSTOS · ACOMPANHAMENTO MENSAL</span>
+          <span>OPERAÇÕES / LOGÍSTICA</span>
+        </div>
+      </div>
+    `;
+    _featherReplace();
+  }catch(e){
+    console.error('Erro ao carregar Descarrego:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
     _featherReplace();
   }
