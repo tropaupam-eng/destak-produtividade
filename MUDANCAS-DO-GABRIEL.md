@@ -21,6 +21,17 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: crédito manual — data de emissão da nota sem calendário e sem a linha — v4.89.104
+Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-semcal` e a classe do campo `cm-emissao` (era `cm-data`).
+`APP_VERSION` e `version.json`: 4.89.103 → 4.89.104.
+Por quê: pedido do Gabriel: como a data de emissão vem do ERP, tirar o ícone do calendário e a linha branca antes dele. O
+campo continua sendo do tipo data: quando o ERP não traz a emissão (pedido sem nota) dá para digitar a data à mão
+(dd/mm/aaaa), só não há mais o seletor de calendário. O campo de data da janela "Editar ocorrência" continua com calendário
+e linha (classe `cm-data`, inalterada). A regra de calendário claro + linha vale para campos de data que a pessoa preenche;
+este é a exceção por ser automático.
+Testes: `node check.js` ok; 63 testes de lógica passando; conferido visualmente numa página de teste. Nenhum dado tocado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel.
 ## 2026-10-29, Gabriel: crédito manual — campos de preenchimento MANUAL mais claros e destacados — v4.89.103
 Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-manual` (variáveis `--cm-realce` / `--cm-fundo`), marcação dos
 campos pedido, valor do crédito e peso faltante, contorno dos botões Sim/Não, `_cmTravar` e `_cmDestravarAuto`.
