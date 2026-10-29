@@ -20,6 +20,18 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-29 — Cargas Pendentes: liberar o valor em R$ para usuário específico, sem virar admin (v4.89.95)
+
+Até aqui o R$ da tela Comercial › Cargas Pendentes (KPI de valor e botão "Ver Valor") só aparecia para `admin`. O Rafael pediu
+para o MATHUES TUPINA (`matheustupina2@gmail.com`, perfil `comercial_indicadores`) ver os valores das cargas, e promover ele a admin
+abriria cadastro, pagamento e perfis. Agora `_cargPendPodeVerValor()` aceita admin **ou** e-mail presente na lista
+`configuracoes.chave='cargas_pendentes_ver_valor'` (array JSON de e-mails, lida ao abrir a página). Linha criada com o e-mail dele.
+Para liberar outra pessoa: acrescentar o e-mail nesse array; para tirar, remover. Admin continua igual.
+Junto: o modo inicial (valor ou %) passou a ser decidido no primeiro carregamento da página, quando o usuário já é conhecido
+(antes era calculado no carregamento do script, possivelmente antes do login).
+
+---
+
 ## 2026-10-28 — Dashboard Devolução: tocar no vendedor filtra o painel só para ele (`7d73d90`)
 
 Na aba Dashboard › Devoluções, a tabela "Erros por vendedor" passou a ser clicável: tocar num vendedor mostra só os números
