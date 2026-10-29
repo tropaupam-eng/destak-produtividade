@@ -20,6 +20,17 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-28 — Dashboard Devolução: tocar no vendedor filtra o painel só para ele (`7d73d90`)
+
+Na aba Dashboard › Devoluções, a tabela "Erros por vendedor" passou a ser clicável: tocar num vendedor mostra só os números
+dele no dashboard inteiro; tocar de novo volta para todos. Só tela, sem mudança de banco nem de cálculo. Pedido do Rafael.
+
+**Leitura pelo CRM (para a IA do Daniel saber):** desde 28–29/10 o CRM do Rafael lê com a chave anon, uma vez por dia, as tabelas
+`ocorrencias_distribuicao`, `motivos_devolucao`, `pedidos_info_erp`, `base_data` (só `vendedor_cod`) e `pedidos_alteracoes_erp`.
+Só leitura, nada é escrito aqui. Se alguma dessas tabelas mudar de nome ou de coluna, ou ganhar RLS, o CRM para de mostrar as
+devoluções com motivo e os avisos de item cortado (ele registra o erro e não grava nada). Proposta em aberto: uma edge function
+irmã da `api-crm-cargas` para essas leituras.
+
 ## 2026-10-13 — painel MFV: o que agrega valor, NF medida, caso à parte (4.89.47)
 
 Decisões do Rafael, só na aba MFV:
