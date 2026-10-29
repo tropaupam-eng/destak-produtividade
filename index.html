@@ -895,6 +895,11 @@ body.cp-ctrl .cp-card, body.cp-selmode .cp-card{cursor:pointer;user-select:none}
   z-index:9998;
 }
 .loading-overlay.hidden{display:none}
+/* Barra fina no topo para os carregamentos automáticos (não bloqueia cliques) — 2026-10-28 */
+#loading-bar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9998;pointer-events:none;overflow:hidden;display:none}
+#loading-bar.on{display:block}
+#loading-bar::before{content:'';position:absolute;top:0;bottom:0;left:0;width:35%;background:linear-gradient(90deg,transparent,#9085E8,#B8B2F0,transparent);animation:loading-bar-slide 1s ease-in-out infinite}
+@keyframes loading-bar-slide{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
 .spinner{display:none}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulse-txt{0%,100%{opacity:.5}50%{opacity:1}}
@@ -1722,6 +1727,7 @@ body.light-theme{
   </div>
 </div>
 
+<div id="loading-bar" aria-hidden="true"></div>
 <!-- APP WRAPPER -->
 
 <div id='app-wrapper' style='display:none'>
@@ -12935,7 +12941,7 @@ async function carregarCSV(file) {
 async function onFileSelected(event) {
   const file = event.target.files[0];
   if(!file) return;
-  _loadingShow('Processando planilha...');
+  _loadingBloqueioShow('Processando planilha...');
   try {
     const ext = file.name.split('.').pop().toLowerCase();
     const novosRecords = ext === 'csv' ? await carregarCSV(file) : await carregarPlanilha(file);
@@ -12970,7 +12976,7 @@ async function onFileSelected(event) {
     try{
       await pushBaseData(candidateBASE);
     }catch(e){
-      _loadingHide();
+      _loadingBloqueioHide();
       try{ await supaFetch('erros_sistema',{method:'POST',body:JSON.stringify({
         mensagem:'Falha ao importar planilha (onFileSelected): '+e.message,
         contexto:JSON.stringify({arquivo:file.name, registros:recordsNovos.length}),
@@ -13046,7 +13052,7 @@ async function onFileSelected(event) {
     showToast('Erro ao ler planilha: ' + err.message, 'error');
     console.error(err);
   } finally {
-    _loadingHide();
+    _loadingBloqueioHide();
     event.target.value = '';
   }
 }
@@ -46815,7 +46821,7 @@ const _ut=document.getElementById('update-time'); if(_ut) _ut.textContent='Atual
 // ── SISTEMA ANTI-TELA BRANCA ────────────────────────────
 // Wrapper que adiciona timeout, retry e loading para qualquer função async
 async function safeLoad(fn, label, timeoutMs=15000){
-  _loadingShow(label||'Carregando...');
+  _loadingBloqueioShow(label||'Carregando...');
   try{
     const resultado = await Promise.race([
       fn(),
@@ -46836,7 +46842,7 @@ async function safeLoad(fn, label, timeoutMs=15000){
       throw e2;
     }
   }finally{
-    _loadingHide();
+    _loadingBloqueioHide();
   }
 }
 
@@ -46852,6 +46858,12 @@ let _loadingWatchdog = null;
 // Suprime o relógio para refreshes automáticos de background (não iniciados pelo usuário)
 let _supaLoadingQuiet = false;
 function _loadingForceHide(){
+  _barCount = 0;
+  clearTimeout(_barShowTimer); _barShowTimer = null;
+  clearTimeout(_barHideTimer); _barHideTimer = null;
+  clearTimeout(_barWatchdog);  _barWatchdog  = null;
+  _barVisible = false;
+  document.getElementById('loading-bar')?.classList.remove('on');
   _loadingCount = 0;
   clearTimeout(_loadingShowTimer);  _loadingShowTimer = null;
   clearTimeout(_loadingHideTimer);  _loadingHideTimer = null;
@@ -46859,7 +46871,41 @@ function _loadingForceHide(){
   _loadingVisible = false;
   document.getElementById('loading')?.classList.add('hidden');
 }
-function _loadingShow(txt){
+// Carregamento AUTOMÁTICO (toda consulta do supaFetch): só uma barra fina no topo, sem escurecer
+// nem travar a tela, e some logo que termina (antes: tela inteira escura + 600 ms de espera extra
+// depois de cada clique — pedido do usuário, 2026-10-28). A tela cheia continua só nas ações
+// explícitas que passam texto (ex.: "Processando planilha..."), via _loadingBloqueioShow/Hide.
+let _barCount = 0, _barShowTimer = null, _barHideTimer = null, _barVisible = false, _barWatchdog = null;
+function _loadingShow(){
+  _barCount++;
+  clearTimeout(_barHideTimer); _barHideTimer = null;
+  if(!_barVisible && !_barShowTimer){
+    _barShowTimer = setTimeout(()=>{
+      _barShowTimer = null;
+      if(_barCount > 0){
+        _barVisible = true;
+        document.getElementById('loading-bar')?.classList.add('on');
+        clearTimeout(_barWatchdog);
+        _barWatchdog = setTimeout(()=>{ if(_barCount > 0){ console.warn('[loading] barra presa em', _barCount, '— resetando'); _loadingForceHide(); } }, 40000);
+      }
+    }, 120);
+  }
+}
+function _loadingHide(){
+  _barCount = Math.max(0, _barCount - 1);
+  if(_barCount === 0){
+    clearTimeout(_barShowTimer); _barShowTimer = null;
+    clearTimeout(_barWatchdog);  _barWatchdog  = null;
+    if(_barVisible){
+      _barHideTimer = setTimeout(()=>{
+        _barHideTimer = null;
+        if(_barCount === 0){ _barVisible = false; document.getElementById('loading-bar')?.classList.remove('on'); }
+      }, 120);
+    }
+  }
+}
+// Tela cheia (bloqueante) — só para ações explícitas, com texto.
+function _loadingBloqueioShow(txt){
   _loadingCount++;
   clearTimeout(_loadingHideTimer); _loadingHideTimer = null;
   const loadTxt = document.getElementById('loading-text');
@@ -46882,7 +46928,7 @@ function _loadingShow(txt){
     }, 150);
   }
 }
-function _loadingHide(){
+function _loadingBloqueioHide(){
   _loadingCount = Math.max(0, _loadingCount - 1);
   if(_loadingCount === 0){
     clearTimeout(_loadingShowTimer); _loadingShowTimer = null;
