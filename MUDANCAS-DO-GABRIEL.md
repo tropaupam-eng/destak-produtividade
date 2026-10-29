@@ -21,6 +21,19 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: crédito manual — campos de preenchimento MANUAL mais claros e destacados — v4.89.103
+Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-manual` (variáveis `--cm-realce` / `--cm-fundo`), marcação dos
+campos pedido, valor do crédito e peso faltante, contorno dos botões Sim/Não, `_cmTravar` e `_cmDestravarAuto`.
+`APP_VERSION` e `version.json`: 4.89.102 → 4.89.103.
+Por quê: pedido do Gabriel, invertendo a decisão da v4.89.102: os campos que se preenchem à mão ficam mais claros (contorno
+e fundo claros no tema escuro; contorno azul com fundo branco no tema claro) e os automáticos continuam como estavam
+(escuros e travados). Destacados: Nº do pedido, valor do crédito, peso faltante e os botões Sim/Não. Um campo que o ERP
+costuma preencher mas não trouxe (pedido sem nota, não encontrado) também fica destacado, para mostrar que é preciso
+digitar. Nada mudou na lógica de gravar nem nos dados.
+Testes: `node check.js` ok; 60 testes de lógica passando; conferido visualmente numa página de teste.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel; a main andou (v4.89.102 de outra mudança), então a publicação pede mesclar e
+subir a versão.
 ## 2026-10-29, Gabriel: crédito manual — campos do ERP travados, com contorno escuro, e sem o texto azul — v4.89.102
 Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-auto`, estado `_cmPedidoBuscado`, ajudantes `_cmTravar` /
 `_cmDestravarAuto`, `cmAutoPreencher` e `cmLimparForm`. `APP_VERSION` e `version.json`: 4.89.101 → 4.89.102.
