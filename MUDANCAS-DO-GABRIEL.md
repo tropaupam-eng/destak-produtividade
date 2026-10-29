@@ -21,25 +21,27 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-29, Gabriel: Absenteísmo (card mensal) no mesmo padrão do Custo/Receita — acumulado do ano + resultado do mês — v4.89.115
-Onde: `index.html`: `renderRelatorioAbsenteismo` (card mensal usado pelas abas Armazém, Expedição, Recebimento e
-Distribuição), função nova `_absPreencherAcumuladoAno` e os dois chamadores (`carregarPainelAbsArea`,
-`carregarPainelAbsDistribuicao`). `APP_VERSION` e `version.json`: 4.89.114 → 4.89.115.
-Por quê: pedido do Gabriel ("absenteísmo não está com esse padrão"). O número grande deixa de ser "ACUMULADO NO MÊS" e passa
-a ser "ACUMULADO NO ANO" (faltas + atestados ÷ dias trabalhados do ano, na unidade filtrada). Ao lado entra "RESULTADO DE
-<MÊS>/<ANO>" com o % do mês (sempre o mês inteiro; a semana clicada continua só filtrando composição, colaboradores e
-gráfico), e a META DEFINIDA continua. A composição (Faltas/Atestados) já tinha ficado 1, 2 em ordem decrescente (v4.89.114).
-Como o ano precisa dos 12 meses: o card mensal aparece na hora com "…" no número grande e o acumulado do ano entra assim
-que ficar pronto. Usa o MESMO cálculo e a MESMA chave de cache (15 min) da Visão Anual de Absenteísmo, então abrir mensal e
-anual em seguida não repete as consultas.
-RISCO: o primeiro acesso ao card mensal passa a disparar o cálculo do ano em segundo plano (mesmo custo de abrir a Visão
-Anual: 12 meses, 3 por vez, ~15 s), a cada 15 min e por aba/unidade. Se pesar no Supabase, dá para trocar por "mostrar só
-se a Visão Anual já foi aberta".
+## 2026-10-29, Gabriel: Painel de Indicadores — padrão "acumulado do ano + resultado do mês" só nas VISÕES ANUAIS; mensais voltam ao acumulado do mês — v4.89.115
+Onde: `index.html`: `renderCustoArmazem` e `renderReceitaArmazem` (mensais), `_renderCardVisaoAnualPercentual` (cartão anual em %:
+Absenteísmo Armazém/Expedição/Recebimento/Distribuição, OTIF, prazos, disponibilidade...) e `renderRelatorioAbsenteismo` (mensal).
+`APP_VERSION` e `version.json`: 4.89.115 (main estava em 4.89.114; mesclada, conflito só de versão).
+Por quê: correção de um erro meu. O pedido do Gabriel tinha sido feito olhando as VISÕES ANUAIS e eu apliquei também nas mensais.
+Ele corrigiu: "na visão mensal está acumulado do ano mas é acumulado do mês" e "a visão anual do Absenteísmo ainda está errada".
+Agora:
+- Visão ANUAL (Custo, Receita, Absenteísmo e os demais cartões em %): número grande = ACUMULADO NO ANO; ao lado "RESULTADO DE
+  <MÊS>/<ANO>" (mês clicado nas barras ou, sem clique, o mês do filtro do Painel; "—" se o mês não tem dado) e a META DEFINIDA.
+  No cartão em %, o "RESULTADO" que ficava embaixo da composição saiu (virou o bloco ao lado do número grande, com a etiqueta
+  DENTRO/FORA DA META do mês). Composição 1, 2, 3 em ordem decrescente (já da v4.89.114).
+- Visão MENSAL: número grande = ACUMULADO NO MÊS (ou da semana clicada), como era. Custo e Receita mensais: o antigo "MAIOR
+  CATEGORIA" saiu e no lugar fica "ACUMULADO NO ANO" (suposição minha; confirmar com o Gabriel). Absenteísmo mensal: voltou ao
+  original (acumulado do mês + meta) e o cálculo do ano em segundo plano que eu tinha incluído SAIU (sem custo extra).
+Substitui os itens 2 (mensais) da entrada da v4.89.114 logo abaixo e a entrada de Absenteísmo mensal da v4.89.115 anterior
+(nunca publicadas).
 Dados: nada gravado; só leitura. Nenhuma coluna nova.
-Testes: `node check.js` ok; 10 testes novos (rótulos, resultado do mês, semana clicada, preenchimento assíncrono, erro e
-elemento fora da tela) e regressão igual à da main (falhas de ambiente `_ic`).
+Testes: `node check.js` ok; 20 testes de Custo/Receita (anual e mensal), 11 do cartão em % (resultado do mês, mês clicado, sem
+dado, sem meta, invertido) e regressão igual à da main (falhas antigas de ambiente: `_ic` não existe no teste).
 Como desfazer: `git revert` do commit desta entrada.
-Pendente/risco: teste visual do Gabriel em localhost (as 4 abas de Absenteísmo mensal).
+Pendente/risco: teste visual do Gabriel nas visões anual e mensal de Absenteísmo, Custo e Receita.
 ## 2026-10-29, Gabriel: Painel de Indicadores — composição 1, 2, 3 em ordem decrescente e cartões de Custo/Receita com acumulado do ano + resultado do mês — v4.89.114
 Onde: `index.html`, Painel de Indicadores: `renderCustoArmazem`, `renderCustoArmazemAno`, `renderReceitaArmazem`,
 `renderReceitaArmazemAno` (cartões de Custo e Receitas Armazém, mensal e anual); `_renderCardVisaoAnualPercentual`

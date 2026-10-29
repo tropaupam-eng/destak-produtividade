@@ -33851,6 +33851,14 @@ function _renderCardVisaoAnualPercentual({indicador, titulo, area, anoSel, pctAn
   const pctResultado = temMesSel && pctView!=null ? pctView : pctAnual;
   const dentroDaMetaResultado = metaNum==null ? null : (temMesSel && dentroDaMetaView!=null ? dentroDaMetaView : dentroDaMeta);
 
+  // Resultado do mês (pedido do Gabriel, 2026-10-29): o mês clicado nas barras ou, sem clique, o mês do filtro do Painel.
+  const _mesFiltroIdx = Math.min(11, Math.max(0, Number((window._painelIndMesSel || new Date().toISOString().slice(0,7)).slice(5,7)) - 1));
+  const _NOMES_MES_LONGO = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+  const _pctMesRes = temMesSel ? pctResultado : (Array.isArray(bMes) ? bMes[_mesFiltroIdx] : null);
+  const _temMesRes = _pctMesRes != null && isFinite(Number(_pctMesRes));
+  const _rotMesRes = temMesSel ? mesSelLabel : (_NOMES_MES_LONGO[_mesFiltroIdx] + '/' + anoSel);
+  const _dentroMetaMesRes = metaNum==null ? null : (temMesSel ? dentroDaMetaResultado : (_temMesRes ? (invertido ? Number(_pctMesRes) >= metaNum : Number(_pctMesRes) <= metaNum) : null));
+
   const composicao = composicaoItems.slice().sort((a,b)=>(Number(b.valor)||0)-(Number(a.valor)||0)).map((item,i)=>`
     <div style="padding:16px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;gap:14px;align-items:baseline">
@@ -33874,6 +33882,11 @@ function _renderCardVisaoAnualPercentual({indicador, titulo, area, anoSel, pctAn
           <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO NO ANO</div>
           <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
             <div style="display:flex;align-items:baseline"><span style="font-size:3.58rem;font-weight:700;line-height:1">${pctAnual.toFixed(2).replace('.',',')}</span><span style="font-size:1.57rem;font-weight:700;margin-left:2px">%</span></div>
+            <div>
+              <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">RESULTADO DE ${_rotMesRes}</div>
+              <div style="font-size:1.12rem;font-weight:700">${_temMesRes ? Number(_pctMesRes).toFixed(2).replace('.',',')+'%' : '—'}</div>
+              ${_dentroMetaMesRes==null ? '' : `<div style="font-size:.76rem;color:${_dentroMetaMesRes?'#34d399':'#ef4444'};font-weight:700;margin-top:2px">${_dentroMetaMesRes?'DENTRO DA META':'FORA DA META'}</div>`}
+            </div>
             ${metaNum!=null ? `
             <div>
               <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">META DEFINIDA</div>
@@ -33905,11 +33918,6 @@ function _renderCardVisaoAnualPercentual({indicador, titulo, area, anoSel, pctAn
             ${temMesSel ? `<span onclick="${onMesClick}(${selIdxsAno[0]}, null, true)" style="font-size:.76rem;font-weight:700;color:var(--text-muted);cursor:pointer;text-decoration:underline;white-space:nowrap">✕ ver ano inteiro</span>` : ''}
           </div>
           <div style="margin-top:6px">${composicao}</div>
-          <div style="margin-top:8px">
-            <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">RESULTADO</div>
-            <div style="font-size:2.46rem;font-weight:700;margin-top:4px">${pctResultado.toFixed(2).replace('.',',')}%</div>
-            <div style="font-size:.81rem;font-weight:700;letter-spacing:.5px;color:var(--text-muted);margin-top:2px">${titulo.toUpperCase()} ${temMesSel?('EM '+periodoLabelView):'NO ANO'}${metaNum!=null?(' · '+(dentroDaMetaResultado?'DENTRO DA META':'FORA DA META')):''}</div>
-          </div>
         </div>
       </div>
 
@@ -33979,7 +33987,6 @@ async function carregarPainelAbsArea(area, prefix, metaTipo, indicadorLabel, are
       reloadFn: reloadFnName
     });
     _featherReplace();
-    _absPreencherAcumuladoAno(container, (mesStr, filtros) => _calcularAbsenteismoArmazem(mesStr, {...filtros, area}), mesAtual, `area|${prefix}|${mesAtual.slice(0,4)}|${window._painelIndUndSel||''}`);
   } catch(e){
     console.error(`Erro ao carregar absenteísmo (${prefix}):`, e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+escapeHtml(e.message)+'</p>';
@@ -34504,29 +34511,11 @@ async function _listarColaboradoresOcorrenciaAbs(mesRef, nomesPermitidosSet, sem
   return ocorrencias.map(o=>({ id:o.id, nome:o.nome, data:o.data, status:o.status, entrevista: entMap[o.id]||null }));
 }
 
-// Número grande do card mensal de Absenteísmo = ACUMULADO NO ANO (pedido do Gabriel, 2026-10-29: mesmo padrão
-// dos outros dashboards do Painel). O cálculo do ano é o mesmo da Visão Anual (12 meses, 3 por vez) e usa a
-// MESMA chave de cache (15 min), então abrir mensal e anual em seguida não repete as consultas. Roda DEPOIS do
-// card aparecer: o card mensal não espera o ano, e o número entra assim que ele fica pronto.
-async function _absPreencherAcumuladoAno(container, calcFn, mesAtual, chaveCache){
-  const el = container && container.querySelector('[data-abs-acum-ano]');
-  if(!el) return;
-  try{
-    window._absAnoReusar = true;   // lido na 1ª linha de _calcAbsenteismoAno: reaproveita o ano já calculado
-    const { pctAnual } = await _calcAbsenteismoAno(calcFn, mesAtual.slice(0,4), window._painelIndUndSel||'', chaveCache);
-    if(el.isConnected) el.textContent = pctAnual.toFixed(2);
-  }catch(e){
-    window._absAnoReusar = false;
-    if(el.isConnected) el.textContent = '—';
-  }
-}
-
 function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, semanasPrecalc, meta, semanaSelIdx, onSemanaClick, diaMaisOcorr, colaboradoresOcorr, reloadFn}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
   const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(ultimoDia)}/${fmtBR(mes)}`;
-  const rotMesRes = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'][mes-1] + '/' + ano;
   const metaNum = meta != null ? meta : 2; // meta mensal padrão do sistema (ou meta configurável do módulo oficial, quando informada)
 
   const semanasView = semanasPrecalc.map(s => ({
@@ -34671,13 +34660,9 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
 
       <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:20px;align-items:start">
         <div style="background:var(--bg-card2);border-radius:10px;padding:22px 26px;border-top:3px solid var(--red)">
-          <div style="font-size:1rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO NO ANO</div>
+          <div style="font-size:1rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO NO MÊS</div>
           <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
-            <div style="display:flex;align-items:baseline"><span data-abs-acum-ano="1" title="Acumulado do ano: faltas + atestados ÷ dias trabalhados" style="font-size:3.58rem;font-weight:700;line-height:1">…</span><span style="font-size:1.57rem;font-weight:700;margin-left:2px">%</span></div>
-            <div>
-              <div style="font-size:1rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">RESULTADO DE ${rotMesRes}</div>
-              <div style="font-size:1.45rem;font-weight:700">${stats.percentual}</div>
-            </div>
+            <div style="display:flex;align-items:baseline"><span style="font-size:3.58rem;font-weight:700;line-height:1">${stats.percentual.replace('%','')}</span><span style="font-size:1.57rem;font-weight:700;margin-left:2px">%</span></div>
             <div>
               <div style="font-size:1rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">META DEFINIDA</div>
               <div style="font-size:1.45rem;font-weight:600">${metaNum.toFixed(2)}%</div>
@@ -34824,7 +34809,6 @@ async function carregarPainelAbsDistribuicao(){
       reloadFn: 'carregarPainelAbsDistribuicao'
     });
     _featherReplace();
-    _absPreencherAcumuladoAno(container, _calcularAbsenteismoDistribuicao, mesAtual, `dist|${mesAtual.slice(0,4)}|${window._painelIndUndSel||''}`);
   } catch(e){
     console.error('Erro ao carregar absenteísmo distribuição:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+escapeHtml(e.message)+'</p>';
@@ -53666,8 +53650,6 @@ async function renderCustoArmazem(prefixo){
     const [anoP, mesP] = mesSel.split('-').map(Number);
     const ultimoDiaP = new Date(anoP, mesP, 0).getDate();
     const periodoTxt = `01/${String(mesP).padStart(2,'0')} A ${String(ultimoDiaP).padStart(2,'0')}/${String(mesP).padStart(2,'0')}`;
-    const rotMesRes = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'][mesP-1] + '/' + anoP;
-    const somaMesRes = somaTotalMes;   // resultado do mês inteiro (a semana clicada só filtra a composição)
 
     container.innerHTML = `
       <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
@@ -53678,12 +53660,12 @@ async function renderCustoArmazem(prefixo){
 
         <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:stretch">
           <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--red)">
-            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO NO ANO${linkMesInteiro}</div>
+            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO ${rotPeriodoNo}${linkMesInteiro}</div>
             <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
-              <div style="display:flex;align-items:baseline;font-size:2.35rem;font-weight:700;line-height:1">${fv(somaAno)}</div>
+              <div style="display:flex;align-items:baseline;font-size:2.35rem;font-weight:700;line-height:1">${fv(somaTotal)}</div>
               <div>
-                <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">RESULTADO DE ${rotMesRes}</div>
-                <div style="font-size:1.12rem;font-weight:700">${fv(somaMesRes)}</div>
+                <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">ACUMULADO NO ANO</div>
+                <div style="font-size:1.12rem;font-weight:700">${fv(somaAno)}</div>
               </div>
               <div>
                 <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">MÉDIA POR LANÇAMENTO</div>
@@ -54121,8 +54103,6 @@ async function renderReceitaArmazem(prefixo){
     const [anoP, mesP] = mesSel.split('-').map(Number);
     const ultimoDiaP = new Date(anoP, mesP, 0).getDate();
     const periodoTxt = `01/${String(mesP).padStart(2,'0')} A ${String(ultimoDiaP).padStart(2,'0')}/${String(mesP).padStart(2,'0')}`;
-    const rotMesRes = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'][mesP-1] + '/' + anoP;
-    const somaMesRes = somaTotalMes;   // resultado do mês inteiro (a semana clicada só filtra a composição)
 
     container.innerHTML = `
       <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
@@ -54133,12 +54113,12 @@ async function renderReceitaArmazem(prefixo){
 
         <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:stretch">
           <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--red)">
-            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO NO ANO${linkMesInteiro}</div>
+            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO ${rotPeriodoNo}${linkMesInteiro}</div>
             <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
-              <div style="display:flex;align-items:baseline;font-size:2.35rem;font-weight:700;line-height:1">${fv(somaAno)}</div>
+              <div style="display:flex;align-items:baseline;font-size:2.35rem;font-weight:700;line-height:1">${fv(somaTotal)}</div>
               <div>
-                <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">RESULTADO DE ${rotMesRes}</div>
-                <div style="font-size:1.12rem;font-weight:700">${fv(somaMesRes)}</div>
+                <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">ACUMULADO NO ANO</div>
+                <div style="font-size:1.12rem;font-weight:700">${fv(somaAno)}</div>
               </div>
               <div>
                 <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">MÉDIA POR LANÇAMENTO</div>
