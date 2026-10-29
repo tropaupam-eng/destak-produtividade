@@ -21,6 +21,28 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.96 (NÃO publicar antes da tabela)
+Onde: `index.html`: item novo no menu Distribuição (`data-page="credito-manual"`, só `admin` por padrão), página
+`page-credito-manual` (antes de `page-geral`), rota em `showPage`, entradas em `PAGINAS` e `PAGINAS_GRUPOS` (para liberar
+a outros perfis pela tela de Perfis) e o bloco de funções `cm*` / `carregarCreditoManual` / `renderCreditoManual` (antes de
+`renderFrotaStatus`). `APP_VERSION` e `version.json`: 4.89.95 → 4.89.96.
+Por quê: pedido do Gabriel: aba para lançar crédito manual por pedido. Digitados: pedido, valor do crédito manual e peso
+faltante (kg). Preenchidos pelo ERP a partir do pedido, e editáveis: código do cliente, valor do pedido, data de emissão
+da nota e número da nota (`pedidos_info_erp`: codigo_cliente, valor, emissao, nota_fiscal; se o pedido não estiver lá,
+usa o valor de `base_data`). Pedido sem nota (cancelado, DI...) ou anterior a 01/05/2026 fica para preencher à mão; a tela
+avisa. Lista o histórico (500 mais recentes) com total de crédito.
+TABELA NOVA (ESTRUTURA DE BANCO, quem cria é o Daniel; sem RLS): `credito_manual_historico`
+  id uuid primary key default gen_random_uuid(), codigo_cliente text, pedido text not null, valor_credito numeric(12,2)
+  not null, valor_pedido numeric(12,2), data_emissao date, numero_nota text, peso_faltante numeric(12,3),
+  criado_em timestamptz not null default now(), criado_por text.
+Sem a tabela, a aba abre e avisa "tabela ainda não existe"; salvar mostra aviso claro. Nada foi gravado no banco.
+Dinheiro: lança valores de crédito (só registro/histórico, sem pagamento nem cálculo financeiro). Avisar o Daniel antes de
+publicar (estrutura de banco + valores em R$).
+Testes: `node check.js` ok; 30 testes de lógica (parser de valores, preenchimento automático, corrida de buscas, validações,
+payload do POST, tabela inexistente, lista, escape de HTML). Testes antigos t3/t4/r/t6 falham igual na main (faltava o
+`_ic` no ambiente de teste), não por esta mudança. Sem teste com a tabela real (ainda não existe).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: Daniel criar a tabela; teste visual do Gabriel em localhost; decidir quem mais vê a aba (hoje só admin).
 ## 2026-10-26, Gabriel: botão "Editar" nas ocorrências de Distribuição (Lançamento) — v4.89.79
 Onde: `index.html`: `renderOcorrenciasLanc` (botão "✏️ Editar" abaixo de "Marcar Resolvida", também nas resolvidas) e
 funções novas `_podeEditarOcorrencia`, `editarOcorrenciaLanc`, `salvarEditarOcorrencia`, `fecharEditarOcorrencia`,
