@@ -21,6 +21,23 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: rosca "Motivos de devolução" mostra todos os motivos, sem "Outros" — v4.89.96
+Onde: `index.html`, Dashboard Devolução, `renderDashDevolucao` (rosca de motivos), `DEVOL_CORES` (paleta), subtítulo
+do gráfico (markup e texto dinâmico) e largura da legenda `devol-leg-motivo` (190 → 240 px).
+Por quê: pedido do Gabriel: não quer a fatia "Outros". Antes, com mais de 6 motivos diferentes, a rosca mostrava os 5
+maiores e juntava o resto em "Outros" (regra existente desde 23/10; hoje são 12 fatias: 11 motivos + "Sem motivo").
+Agora todos os motivos aparecem, do mais frequente ao menos. A paleta ganhou 4 cores (9ª a 12ª, claro e escuro) só no
+fim do vetor, então as cores já usadas pelos 8 primeiros e pelas outras roscas/barras não mudam; passando de 12
+motivos, os últimos ficam cinza (cenário improvável). Subtítulo: "Todos os motivos, do mais frequente ao menos
+frequente". Não mexe no "Outros" do gráfico de linhas por tipo de unidade (é outro gráfico).
+Observação: com 12 fatias, os rótulos de % das fatias pequenas (1 a 3 ocorrências) ficam juntos no topo, ligados por
+linha; conferido visualmente com dados reais (claro de ler, sem erro no console).
+Dados: nada gravado; só leitura para o teste. Nenhuma coluna nova.
+Testes: `node check.js` ok; testes do dashboard (setor, datas) passando. Falhas que aparecem também na main SEM esta
+mudança (conferido): testes de absenteísmo (`_ic` não existe no ambiente de teste, helper de ícones do redesenho do
+Daniel), legenda do gráfico de linhas (espera total de sacos de 26/10; os dados mudaram) e ordem das barras de vendedor.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost.
 ## 2026-10-26, Gabriel: botão "Editar" nas ocorrências de Distribuição (Lançamento) — v4.89.79
 Onde: `index.html`: `renderOcorrenciasLanc` (botão "✏️ Editar" abaixo de "Marcar Resolvida", também nas resolvidas) e
 funções novas `_podeEditarOcorrencia`, `editarOcorrenciaLanc`, `salvarEditarOcorrencia`, `fecharEditarOcorrencia`,
