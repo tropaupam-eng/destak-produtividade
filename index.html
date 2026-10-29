@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.117';
+const APP_VERSION = '4.89.118';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36168,13 +36168,16 @@ async function carregarMotivosLiberacaoPrazo(){
 
     container.innerHTML = `
       <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:30px 34px;color:var(--text-primary);position:relative">
-        <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:185px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
+        <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:355px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
             <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">LIBERAÇÃO NO PRAZO · ${und||'TODAS AS UNIDADES'}</div>
             <div style="font-size:1.18rem;font-weight:700;margin-top:4px">Análise por Motivo</div>
           </div>
-          <button onclick="abrirModalLancarMotivosPrazo()" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer;z-index:2;position:relative">${_ic('edit-2',13)} Lançar Motivos</button>
+          <div style="display:flex;gap:8px;z-index:2;position:relative">
+            <button onclick="importarPlanilhaMotivosPrazo()" title="Ler a planilha de Rotas Externas e preencher os motivos do mês" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer">${_ic('upload',13)} Importar planilha</button>
+            <button onclick="abrirModalLancarMotivosPrazo()" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer">${_ic('edit-2',13)} Lançar Motivos</button>
+          </div>
         </div>
         <div style="margin-top:18px;display:flex;flex-direction:column;gap:12px">
           ${linhas.map(l=>{
@@ -36198,6 +36201,200 @@ async function carregarMotivosLiberacaoPrazo(){
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
     _featherReplace();
   }
+}
+
+// ── Planilha "Rotas externas" → Análise por Motivo + % do Carregamento no Prazo (pedido do Gabriel, 2026-10-29) ──────────
+// A planilha de acompanhamento das rotas externas tem uma aba por mês ("Acomp. Rotas Outubro") com o bloco
+// "Análise por motivo" (Atraso no carregamento, Falta de Veículo, Atraso do motorista, Valor abaixo da meta, Carregamento
+// ok, Rota Extra), que é o que já se lança à mão em "Lançar Motivos". O botão "Importar planilha" lê esse bloco, mostra
+// o que vai mudar e só grava depois de confirmar (mesma tabela liberacao_prazo_motivos_mes do "Lançar Motivos").
+// Regra do % de Carregamento no Prazo nos meses que têm essa planilha: no prazo = "Carregamento ok";
+// fora do prazo = todos os outros motivos, exceto "Rota Extra" (sem prazo definido, não entra na conta).
+const _MESES_PT_PLANILHA = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+const _semAcentoPl = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();
+
+// Lê uma aba como matriz de textos. Aceita o objeto XLSX da biblioteca (sheet_to_json header:1).
+function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
+  const resultado = [];
+  const anoArq = ((String(nomeArquivo||'').match(/(20\d\d)/)||[])[1]) || String(anoPadrao);
+  wb.SheetNames.forEach(aba => {
+    const nAba = _semAcentoPl(aba);
+    const idxMes = _MESES_PT_PLANILHA.findIndex(m => nAba.includes(_semAcentoPl(m)));
+    if(idxMes < 0) return;                                              // aba que não é de um mês: ignora
+    const m = XLSX.utils.sheet_to_json(wb.Sheets[aba], { header:1, defval:'', raw:false }).map(l => l.map(c => String(c==null?'':c).trim()));
+    const mesAno = anoArq + '-' + String(idxMes+1).padStart(2,'0');
+    const avisos = [];
+
+    // 1) bloco "Análise por motivo": título, depois a linha com os nomes e a linha com as quantidades
+    let bloco = null;
+    for(let r=0; r<Math.min(m.length, 20) && !bloco; r++){
+      for(let c=0; c<m[r].length; c++){
+        if(/analise por motivo/.test(_semAcentoPl(m[r][c]))){
+          const nomes = m[r+1] || [], qtds = m[r+2] || [];
+          const motivos = {};
+          for(let k=c; k<nomes.length && nomes[k]; k++){
+            const q = parseInt(String(qtds[k]||'').replace(/\D/g,''), 10);
+            motivos[nomes[k]] = isNaN(q) ? 0 : q;
+          }
+          if(Object.keys(motivos).length){ bloco = motivos; }
+          break;
+        }
+      }
+    }
+    // 2) conferência: conta a coluna "Rota no prazo" (a classificação de cada rota, linha a linha)
+    let porLinha = null;
+    for(let r=0; r<Math.min(m.length, 12) && !porLinha; r++){
+      const c = m[r].findIndex(t => _semAcentoPl(t) === 'rota no prazo');
+      if(c >= 0){
+        porLinha = {};
+        for(let k=r+1; k<m.length; k++){ const v = m[k][c]; if(v) porLinha[v] = (porLinha[v]||0) + 1; }
+      }
+    }
+    let motivos = bloco, origem = 'bloco "Análise por motivo"';
+    if(!motivos && porLinha){ motivos = porLinha; origem = 'contagem da coluna "Rota no prazo"'; avisos.push('Não achei o bloco "Análise por motivo"; usei a contagem linha a linha da coluna "Rota no prazo".'); }
+    if(!motivos){ avisos.push('Não achei "Análise por motivo" nem a coluna "Rota no prazo" nesta aba: ignorada.'); resultado.push({ aba, mesAno, motivos:null, avisos }); return; }
+    if(bloco && porLinha){
+      const dif = Object.keys(bloco).filter(n => (bloco[n]||0) !== (porLinha[n]||0));
+      if(dif.length) avisos.push('A contagem linha a linha difere do bloco em: ' + dif.map(n => n + ' (bloco ' + (bloco[n]||0) + ', linhas ' + (porLinha[n]||0) + ')').join('; ') + '. Usei o bloco.');
+    }
+    resultado.push({ aba, mesAno, motivos, origem, avisos });
+  });
+  return resultado;
+}
+
+// Sem unidade (= "Todas") não dá pra saber onde gravar: a prévia obriga a escolher. Padrão: a unidade do filtro do Painel
+// ou, sem filtro, "1 - CD" (onde o Setembro já foi lançado).
+let _impMotivosPrazo = null;   // { abas:[{aba, mesAno, motivos, avisos, atual:{nome:qtd}}], unidades:[...] }
+
+function importarPlanilhaMotivosPrazo(){
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.xlsx,.xlsm,.xls';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0]; if(!f) return;
+    try{
+      if(typeof XLSX === 'undefined') throw new Error('biblioteca de planilha não carregou — recarregue a página');
+      const wb = XLSX.read(await f.arrayBuffer(), { type:'array' });
+      const abas = _parseRotasExternasXlsx(wb, f.name, _anoSelPainelIndicadores());
+      if(!abas.length){ showToast('Não achei abas de mês nessa planilha (ex.: "Acomp. Rotas Outubro")','warning'); return; }
+      const opcoes = [...document.querySelectorAll('#painel-ind-und-sel option')].map(o => o.value).filter(Boolean);
+      _impMotivosPrazo = { abas, unidades: opcoes.length ? opcoes : ['1 - CD'], arquivo: f.name,
+        und: window._painelIndUndSel || (opcoes.includes('1 - CD') ? '1 - CD' : (opcoes[0] || '1 - CD')) };
+      await _impCarregarAtuais();
+      _impMostrarPrevia();
+    }catch(e){ showToast('Erro ao ler a planilha: ' + e.message, 'warning'); }
+  };
+  inp.click();
+}
+
+async function _impCarregarAtuais(){
+  const { abas, und } = _impMotivosPrazo;
+  for(const a of abas){
+    a.atual = null;
+    if(!a.motivos) continue;
+    const rows = await supaFetch(`liberacao_prazo_motivos_mes?mes_ano=eq.${a.mesAno}&unidade=eq.${encodeURIComponent(und)}&select=motivo_nome,quantidade`, { _quiet:true }).catch(() => []) || [];
+    a.atual = {}; rows.forEach(r => { a.atual[r.motivo_nome] = Number(r.quantidade)||0; });
+  }
+}
+
+function _impMostrarPrevia(){
+  const { abas, unidades, und, arquivo } = _impMotivosPrazo;
+  const NOMES_MES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  const cadastrados = new Set((_motivosLiberacaoPrazoCache||[]).map(x => _semAcentoPl(x.nome)));
+  const th = 'text-align:left;font-size:.72rem;color:var(--text-muted);font-weight:700;padding:4px 8px';
+  const td = 'padding:4px 8px;font-size:.84rem';
+  const blocos = abas.map((a, i) => {
+    if(!a.motivos) return `<div style="padding:10px 0;border-top:1px solid var(--border);color:#ef4444;font-size:.82rem"><b>${escapeHtml(a.aba)}</b> — ${a.avisos.map(escapeHtml).join(' ')}</div>`;
+    const nomes = Object.keys(a.motivos);
+    const iguais = nomes.every(n => (a.atual && a.atual[n]) === a.motivos[n]) && a.atual && Object.keys(a.atual).length >= nomes.length;
+    const [ano, mes] = a.mesAno.split('-');
+    const linhas = nomes.map(n => {
+      const antes = a.atual && n in a.atual ? a.atual[n] : null;
+      const mudou = antes !== a.motivos[n];
+      return `<tr><td style="${td}">${escapeHtml(n)}${cadastrados.has(_semAcentoPl(n)) ? '' : ' <span style="color:#d97706;font-size:.7rem">(motivo novo: será cadastrado)</span>'}</td>
+        <td style="${td};color:var(--text-muted)">${antes == null ? '—' : antes}</td>
+        <td style="${td};font-weight:700;${mudou ? 'color:#2563eb' : ''}">${a.motivos[n]}</td></tr>`;
+    }).join('');
+    return `<div style="padding:12px 0;border-top:1px solid var(--border)">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:.92rem;cursor:pointer">
+        <input type="checkbox" class="imp-mp-chk" data-i="${i}" ${iguais ? '' : 'checked'}> ${NOMES_MES[Number(mes)-1]} de ${ano} <span style="font-weight:600;color:var(--text-muted);font-size:.76rem">(aba "${escapeHtml(a.aba)}")</span>
+        ${iguais ? '<span style="font-size:.72rem;color:#059669;font-weight:700">já está igual no sistema</span>' : ''}
+      </label>
+      <table style="border-collapse:collapse;margin-top:6px;width:100%"><tr><th style="${th}">Motivo</th><th style="${th}">Hoje no sistema</th><th style="${th}">Da planilha</th></tr>${linhas}</table>
+      ${a.avisos.map(v => `<div style="font-size:.74rem;color:#d97706;margin-top:4px">⚠ ${escapeHtml(v)}</div>`).join('')}
+    </div>`;
+  }).join('');
+
+  let modal = document.getElementById('modal-import-motivos-prazo'); if(modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'modal-import-motivos-prazo';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:710;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;width:100%;max-width:620px;max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4)">
+    <div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+      <div><div style="font-size:1.05rem;font-weight:800">Importar planilha de Rotas Externas</div>
+      <div style="font-size:.76rem;color:var(--text-muted)">${escapeHtml(arquivo)} — confira os números antes de gravar</div></div>
+      <button type="button" onclick="_impFechar()" style="background:var(--bg-card2);border:none;color:var(--text-secondary);border-radius:8px;padding:6px 12px;cursor:pointer">✕</button>
+    </div>
+    <div style="padding:14px 20px">
+      <label style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Gravar na unidade</label>
+      <select id="imp-mp-und" onchange="_impTrocarUnidade(this.value)" style="width:100%;margin:4px 0 10px;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary)">
+        ${unidades.map(u => `<option value="${escapeHtml(u)}"${u===und?' selected':''}>${escapeHtml(u)}</option>`).join('')}
+      </select>
+      ${blocos}
+      <div style="font-size:.74rem;color:var(--text-muted);margin-top:10px">Gravar substitui os números do mês/unidade marcados. "Carregamento ok" vira o % no prazo do indicador; "Rota Extra" não entra na conta.</div>
+    </div>
+    <div style="padding:14px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--border)">
+      <button type="button" onclick="_impFechar()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 18px;font-size:.85rem;font-weight:600;cursor:pointer">Cancelar</button>
+      <button type="button" id="imp-mp-gravar" onclick="_impGravar()" style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:8px;padding:8px 22px;font-size:.85rem;font-weight:700;cursor:pointer">Gravar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function _impFechar(){ document.getElementById('modal-import-motivos-prazo')?.remove(); _impMotivosPrazo = null; }
+async function _impTrocarUnidade(u){ if(!_impMotivosPrazo) return; _impMotivosPrazo.und = u; await _impCarregarAtuais(); _impMostrarPrevia(); }
+
+async function _impGravar(){
+  if(!_impMotivosPrazo) return;
+  const { abas, und } = _impMotivosPrazo;
+  const marcadas = [...document.querySelectorAll('.imp-mp-chk:checked')].map(c => abas[Number(c.dataset.i)]).filter(a => a && a.motivos);
+  if(!marcadas.length){ showToast('Nenhum mês marcado para gravar','info'); return; }
+  const btn = document.getElementById('imp-mp-gravar'); if(btn){ btn.disabled = true; btn.textContent = 'Gravando...'; }
+  try{
+    // motivos que ainda não existem no cadastro entram como novos (mesmo POST do "Novo motivo..." do Lançar Motivos)
+    let cad = await supaFetch('motivos_liberacao_prazo?order=nome.asc', { _quiet:true }).catch(() => []) || [];
+    const faltam = [...new Set(marcadas.flatMap(a => Object.keys(a.motivos)))].filter(n => !cad.some(c => _semAcentoPl(c.nome) === _semAcentoPl(n)));
+    for(const nome of faltam) await supaFetch('motivos_liberacao_prazo', { method:'POST', body:JSON.stringify({ nome }) });
+    if(faltam.length) cad = await supaFetch('motivos_liberacao_prazo?order=nome.asc', { _quiet:true }) || [];
+    const idPorNome = {}; cad.forEach(c => { idPorNome[_semAcentoPl(c.nome)] = { id:c.id, nome:c.nome }; });
+    const agora = new Date().toISOString();
+    const registros = marcadas.flatMap(a => Object.entries(a.motivos).map(([n, q]) => {
+      const c = idPorNome[_semAcentoPl(n)];
+      return { mes_ano:a.mesAno, unidade:und, motivo_id:c ? c.id : null, motivo_nome:c ? c.nome : n, quantidade:Math.max(0, q|0), atualizado_em:agora };
+    }));
+    await supaFetch('liberacao_prazo_motivos_mes', { method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify(registros) });
+    _motivosLiberacaoPrazoCache = [];
+    showToast('✅ Planilha importada: ' + marcadas.map(a => a.mesAno).join(', ') + ' (' + und + ')', 'success');
+    _impFechar();
+    carregarMotivosLiberacaoPrazo(); carregarPainelCarregamentoPrazo(); carregarPainelCarregamentoPrazoAno();
+  }catch(e){
+    showToast('Erro ao gravar (nada foi confirmado): ' + e.message, 'warning');
+    if(btn){ btn.disabled = false; btn.textContent = 'Gravar'; }
+  }
+}
+
+// % de Carregamento no Prazo a partir dos motivos lançados/importados da planilha. Sem lançamento do mês (ou sem
+// "Carregamento ok"), devolve null e o indicador segue calculado pelo sistema, como sempre foi. R.I./R.E. não existe
+// na planilha: com esse filtro ligado também volta ao cálculo do sistema (quem chama não pergunta aqui).
+async function _carregPrazoDaPlanilha(mes, undSel){
+  const filtroUnd = undSel ? `&unidade=eq.${encodeURIComponent(undSel)}` : '';
+  const rows = await supaFetch(`liberacao_prazo_motivos_mes?mes_ano=eq.${mes}${filtroUnd}&select=motivo_nome,quantidade`, { _quiet:true }).catch(() => []) || [];
+  let ok = 0, fora = 0, temOk = false;
+  rows.forEach(r => {
+    const q = Number(r.quantidade) || 0, n = _semAcentoPl(r.motivo_nome);
+    if(n === 'carregamento ok'){ ok += q; temOk = true; }
+    else if(n !== 'rota extra') fora += q;
+  });
+  return (temOk && ok + fora > 0) ? { noPrazo: ok, fora } : null;
 }
 
 async function abrirModalLancarMotivosPrazo(){
@@ -36343,8 +36540,22 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const mes = mesSelecionado || window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const [anoC, numMesC] = mes.split('-').map(Number);
     const proxMesC = numMesC===12 ? (anoC+1)+'-01' : anoC+'-'+String(numMesC+1).padStart(2,'0');
-    const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
     const rireSel = window._painelIndRireSel || '';
+
+    // Mês com planilha de Rotas Externas lançada/importada: o % vem dela (R.I./R.E. não existe na planilha: nesse
+    // filtro segue o cálculo do sistema). Sem lançamento, nada muda.
+    const dePlanilha = rireSel ? null : await _carregPrazoDaPlanilha(mes, window._painelIndUndSel||'');
+    if(dePlanilha){
+      container.innerHTML = renderRelatorioNoPrazoSimples({
+        indicadorNum:'04', titulo:'Carregamento no Prazo', eyebrow:'ROTAS EXTERNAS · PLANILHA', area:'OPERAÇÕES / ARMAZÉM',
+        mesRef: mes, metaPct: 90, noPrazoCount: dePlanilha.noPrazo, foraCount: dePlanilha.fora,
+        noPrazoDesc: 'Carregamento ok (planilha de Rotas Externas)',
+        foraDesc: 'Valor abaixo da meta, falta de veículo e atrasos (planilha de Rotas Externas; Rota Extra não entra)'
+      });
+      _featherReplace();
+      return;
+    }
+    const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
 
     // Universo completo do indicador: TODA carga que já passou pela conferência
     // do armazém no mês — antes não filtrava status nenhum, então contava
@@ -36434,6 +36645,7 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
 async function _calcCarregamentoNoPrazoMes(mes, undSel, rireSel){
   const [anoC, numMesC] = mes.split('-').map(Number);
   const proxMesC = numMesC===12 ? (anoC+1)+'-01' : anoC+'-'+String(numMesC+1).padStart(2,'0');
+  if(!rireSel){ const dePlanilha = await _carregPrazoDaPlanilha(mes, undSel); if(dePlanilha) return dePlanilha; }   // mês com planilha de Rotas Externas
   const cargasUnidade = await _cargasDaUnidadeNoMes(mes, undSel);
 
   const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&status=not.in.(cancelado,pendente,separacao,carregamento,formacao)&select=carga,data_saida,rota&limit=5000`) || [];
@@ -36492,8 +36704,8 @@ async function carregarPainelCarregamentoPrazoAno(){
       indicador: 'INDICADOR 04 · CONFERÊNCIA DO ARMAZÉM'+eyebrowRire, titulo: 'Carregamento no Prazo', area: 'OPERAÇÕES / ARMAZÉM',
       anoSel, pctAnual, metaNum: 90, invertido: true, bMes,
       composicaoItems: [
-        {label:'NO PRAZO', valor: noPrazoTotal, desc:'Conferência concluída até a data de saída.'},
-        {label:'FORA DO PRAZO', valor: foraTotal, desc:'Conferência depois da saída, ou sem conferência "ok" registrada.'},
+        {label:'NO PRAZO', valor: noPrazoTotal, desc:'Conferência concluída até a data de saída. Meses com planilha de Rotas Externas usam o "Carregamento ok" dela.'},
+        {label:'FORA DO PRAZO', valor: foraTotal, desc:'Conferência depois da saída, ou sem conferência "ok" registrada. Na planilha: valor abaixo da meta, falta de veículo e atrasos (Rota Extra não entra).'},
       ],
       baseTxt: `${noPrazoTotal+foraTotal} registros no ano`
     });
