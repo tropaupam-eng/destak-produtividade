@@ -21,7 +21,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/feather-icons/4.29.0/feather.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css">
@@ -9912,7 +9912,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.110';
+const APP_VERSION = '4.89.111';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -34204,6 +34204,50 @@ function _desenharMarcaDaguaSlide(sctx, img, W, H){
 // sem extrair, a apresentação de vários slides reimplementaria essa composição
 // uma segunda vez, arriscando desalinhar com o que o botão "📷 Baixar Imagem"
 // de cada card já produz hoje).
+// html2canvas 1.4.1 só entende rgb/hsl/hex: qualquer cor moderna no estilo
+// computado (color-mix(), oklch(), lab(), color(srgb …)) derruba a captura inteira com
+// "Attempting to parse an unsupported color function" — reproduzido em teste,
+// 2026-10-29 ("Baixar Imagem" dando erro). Como o relatório pode ganhar cor
+// assim a qualquer momento (basta alguém usar color-mix num card), a captura
+// tenta normal primeiro (sem custo) e, só se falhar por isso, refaz sobre o
+// clone convertendo essas cores pra rgba().
+const _H2C_PROPS_COR = ['color','background-color','border-top-color','border-right-color','border-bottom-color','border-left-color','outline-color','text-decoration-color','caret-color','column-rule-color','fill','stroke'];
+const _H2C_COR_MODERNA = /(color-mix|oklch|oklab|\blab|\blch|\bcolor)\(/i;
+let _h2cCanvasCor = null;
+function _h2cCorParaRgba(valor){
+  if(!_h2cCanvasCor){ _h2cCanvasCor = document.createElement('canvas'); _h2cCanvasCor.width = _h2cCanvasCor.height = 1; }
+  const x = _h2cCanvasCor.getContext('2d', {willReadFrequently:true});
+  x.clearRect(0,0,1,1);
+  x.fillStyle = '#010203'; x.fillStyle = valor;
+  if(x.fillStyle === '#010203') return 'transparent'; // valor que o navegador não aceitou
+  x.fillRect(0,0,1,1);
+  const d = x.getImageData(0,0,1,1).data;
+  return 'rgba('+d[0]+','+d[1]+','+d[2]+','+(d[3]/255).toFixed(3)+')';
+}
+function _h2cSanearCoresModernas(doc){
+  const win = doc.defaultView; if(!win) return;
+  doc.querySelectorAll('*').forEach(el=>{
+    let cs; try{ cs = win.getComputedStyle(el); }catch(e){ return; }
+    for(const p of _H2C_PROPS_COR){
+      const v = cs.getPropertyValue(p);
+      if(v && _H2C_COR_MODERNA.test(v)) el.style.setProperty(p, _h2cCorParaRgba(v), 'important');
+    }
+    // gradiente/sombra com cor moderna dentro: sem conversão segura, descarta só esse efeito
+    for(const p of ['background-image','box-shadow','text-shadow']){
+      const v = cs.getPropertyValue(p);
+      if(v && v !== 'none' && _H2C_COR_MODERNA.test(v)) el.style.setProperty(p, 'none', 'important');
+    }
+  });
+}
+async function _html2canvasSeguro(node, opts){
+  try{ return await html2canvas(node, opts); }
+  catch(e){
+    if(!/unsupported (color|image) function/i.test((e && e.message) || '')) throw e;
+    console.warn('html2canvas: cor moderna no card, refazendo com cores convertidas:', e.message);
+    return await html2canvas(node, {...opts, onclone:(doc, el)=>{ _h2cSanearCoresModernas(doc); if(opts.onclone) opts.onclone(doc, el); }});
+  }
+}
+
 async function _capturarNodeComo1920x1080(node, opts={}){
   if(typeof html2canvas === 'undefined') throw new Error('Biblioteca de imagem ainda carregando, tente de novo em instantes.');
   // Escala a captura pra compensar janela/notebook estreito, sem mexer no
@@ -34224,7 +34268,7 @@ async function _capturarNodeComo1920x1080(node, opts={}){
   // slide de PowerPoint (3× de 1260px = 3780px de largura).
   const scale = Math.min(3, Math.max(2, (LARGURA_DESKTOP * 2) / larguraAtual));
   const corFundo = opts.semFundo ? null : (opts.corFundo || '#16161f');
-  const canvas = await html2canvas(node, {
+  const canvas = await _html2canvasSeguro(node, {
     backgroundColor: corFundo,
     scale,
     useCORS: true,
@@ -34307,7 +34351,7 @@ async function baixarImagemVeiculos(btnEl){
     // Mesmo teto de _capturarNodeComo1920x1080() — tela estreita sem limite
     // máximo gerava canvas gigante e travava o navegador.
     const scale = Math.min(3, Math.max(2, (LARGURA_DESKTOP * 2) / larguraAtual));
-    const canvas = await html2canvas(area, {
+    const canvas = await _html2canvasSeguro(area, {
       backgroundColor: bgColor,
       scale,
       useCORS: true,
