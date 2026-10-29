@@ -21,6 +21,27 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: Painel de Indicadores — composição 1, 2, 3 em ordem decrescente e cartões de Custo/Receita com acumulado do ano + resultado do mês — v4.89.114
+Onde: `index.html`, Painel de Indicadores: `renderCustoArmazem`, `renderCustoArmazemAno`, `renderReceitaArmazem`,
+`renderReceitaArmazemAno` (cartões de Custo e Receitas Armazém, mensal e anual); `_renderCardVisaoAnualPercentual`
+(cartão em % de OTIF, prazos, disponibilidade, absenteísmo anual etc.) e a lista de composição do Absenteísmo mensal.
+`APP_VERSION` e `version.json`: 4.89.113 → 4.89.114 (já em cima da main com a v4.89.113).
+Por quê: pedido do Gabriel, "em todos os dashboards do Painel de Indicadores":
+1) Composição em ordem decrescente de valor e numerada "1, 2, 3" (antes "01, 02, 03"). Custo/Receita já vinham
+   ordenados por valor; nos cartões em % (e Absenteísmo mensal) agora também ordena do maior para o menor (empate
+   mantém a ordem original). Atenção: em Disponibilidade os itens ALTA/MÉDIA/BAIXA passam a seguir a quantidade.
+2) Custo e Receitas Armazém (mensal e anual): o número grande é SEMPRE o "ACUMULADO NO ANO" (mesma unidade filtrada),
+   não muda ao escolher mês ou semana. O bloco "MAIOR CATEGORIA" (nome + valor) saiu e no lugar entra "RESULTADO DE
+   <MÊS>/<ANO>" com o total do mês: o mês clicado nas barras (anual) ou, sem clique, o mês do filtro do Painel. Na
+   visão mensal é o mês inteiro (a semana clicada continua filtrando só a composição). Em Receita mensal o
+   "ACUMULADO NO ANO" pequeno foi removido (virou o número grande). O link "ver ano inteiro/mês inteiro" continua.
+Os cartões em % já tinham o acumulado do ano fixo e o bloco "RESULTADO" do mês: só receberam a numeração e a ordem.
+Dados: nada gravado; só leitura. Nenhuma coluna nova.
+Testes: `node check.js` ok; 19 testes de lógica novos (ano, mês, unidade, mês clicado, semana clicada, mês sem dados,
+ordem e numeração nos 4 cartões) + cartão em %; conferido visualmente com dados fictícios. Regressão igual à da main
+(falhas antigas de ambiente: `_ic` não existe no teste).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost (Custo e Receita, mensal e anual, com e sem mês/semana clicados).
 ## 2026-10-29, Gabriel: crédito manual — data de emissão da nota sem calendário e sem a linha — v4.89.104
 Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-semcal` e a classe do campo `cm-emissao` (era `cm-data`).
 `APP_VERSION` e `version.json`: 4.89.103 → 4.89.104.
