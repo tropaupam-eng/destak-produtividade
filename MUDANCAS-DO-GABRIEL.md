@@ -21,39 +21,37 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-29, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (semanas + motivos) — v4.89.119
+## 2026-10-29, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (linha a linha) — v4.89.120
 Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funções novas (antes de `abrirModalLancarMotivosPrazo`):
-`_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`, `_impCarregarAtuais`,
-`_impMostrarPrevia`, `_impTrocarUnidade`, `_impGravar`, `_impFechar`, `_carregPrazoDaPlanilha`, `_renderCarregPrazoPlanilha`.
-Alterados: cabeçalho do cartão "Análise por Motivo" (botão "Importar planilha"; "Baixar Imagem" deslocado),
-`carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições da
-composição anual. `APP_VERSION` e `version.json`: 4.89.117 → 4.89.119 (a 4.89.118 não foi publicada; esta entrada a substitui).
-Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Na 1ª versão usei um
-denominador errado (motivos, sem as rotas previstas) e não mostrei os gráficos. Ele corrigiu com a memória de cálculo e o slide:
-% no prazo da semana = rotas no prazo ÷ total de rotas previstas da semana; o do mês é a "Média" da planilha (média dos % semanais:
-Set 69,3%, Out 57,4%). O slide tem 3 gráficos: % no prazo por semana, análise por motivo (% sobre o total, com Rota Extra) e
-quantidade de rotas por semana.
-O que faz agora:
-1) "Importar planilha" lê cada aba de mês: a TABELA SEMANAL (Semana / Total de Rotas Previstas / Realizadas no Prazo) e o bloco
-   "Análise por motivo". Mostra prévia (semanas e % calculado, motivos hoje × planilha), com a unidade a gravar (a do filtro do
-   Painel ou "1 - CD"), avisos (ex.: semana ainda sem realizado) e só grava ao clicar em Gravar. Mês já igual vem desmarcado.
-2) Grava: motivos em `liberacao_prazo_motivos_mes` (mesma tabela do "Lançar Motivos", upsert) e a tabela semanal em
+`_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_dataPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`,
+`_impCarregarAtuais`, `_impMostrarPrevia`, `_impTrocarUnidade`, `_impGravar`, `_impFechar`, `_carregPrazoDaPlanilha`,
+`_renderCarregPrazoPlanilha`. Alterados: cabeçalho do cartão "Análise por Motivo" (botão "Importar planilha"; "Baixar Imagem"
+deslocado), `carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições
+da composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.120 (as 4.89.118 e 4.89.119 nunca foram publicadas; esta entrada
+substitui as duas).
+Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Duas versões minhas saíram erradas
+(denominador de motivos; depois a tabela SEM 1..5 da planilha, que é DIGITADA À MÃO, não é fórmula). Regra dele, aplicada agora:
+CADA LINHA DA PLANILHA É UM CARREGAMENTO. Total = nº de linhas classificadas na coluna "Rota no prazo" (Rota Extra incluída); no prazo
+= as marcadas "Carregamento ok"; % = no prazo ÷ total, por semana e no mês. Semana = a do mês pela data da linha (domingo a sábado; a
+1ª vai até o primeiro sábado). Linha sem classificação (carregamento ainda não realizado) não conta. Linha com data de outro mês
+(provável erro de digitação: 15/9 e 16/9 na aba de outubro; 4/8 na de setembro) conta no mês da aba, na semana da linha anterior, e a
+prévia avisa. Resultado: Setembro 36 de 85 = 42,4%; Outubro 31 de 63 = 49,2% (iguais ao % "Carregamento ok" do bloco "Análise por motivo").
+O que faz:
+1) "Importar planilha" lê as abas de mês (biblioteca XLSX já usada no sistema), calcula como acima, mostra PRÉVIA (por semana e mês, motivos
+   hoje × planilha, avisos) e só grava ao clicar em Gravar; unidade a gravar: a do filtro do Painel ou "1 - CD"; mês igual ao que já
+   está no sistema vem desmarcado; motivo que não existe no cadastro é cadastrado.
+2) Grava motivos em `liberacao_prazo_motivos_mes` (upsert, mesma tabela do "Lançar Motivos") e as semanas {sem,total,noPrazo} em
    `configuracoes` (JSON, chave `carregamento_prazo_semanas_<ano>_<mes>_<unidade>`; PATCH se existir, senão POST). Sem tabela/coluna
-   nova e sem DELETE. NÃO guarda o valor anterior (a prévia mostra "hoje no sistema").
-3) Mês com semanas importadas: o cartão mensal vira "Carregamento no Prazo · Rotas Externas" (acumulado no mês = média das semanas,
-   meta 90%, barras de % por semana com "x de y", quantidade de rotas previstas por semana, no prazo/fora/total). Na Visão Anual o
-   % do mês é o dele. Mês SEM importação, ou com filtro R.I./R.E. (a planilha não tem), segue o cálculo do sistema como antes.
-   Sem unidade ("Todas"): soma as unidades que têm planilha no mês, semana a semana.
-Atenção: (a) Setembro já tinha motivos lançados mas não as semanas: por isso a prévia vem com Setembro marcado; até importar, Setembro
-continua pelo cálculo do sistema. (b) A SEM 5 de Outubro tem 11 previstas e 0 realizadas (semana em andamento): entra com 0% na média
-(57,4%), igual à planilha; avisar o Gabriel se prefere tirar semanas sem realizado.
-Dados: nada gravado por mim; o Gabriel grava ao clicar em Gravar.
-Testes: `node check.js` ok; 22 testes do leitor e da memória de cálculo (planilha real: Set 71/75/83/67/50% e 7/12/12/12/8 rotas),
-5 de integração mensal/anual, leitura da planilha real com a biblioteca XLSX no navegador (prévia e gravação conferidas: 2 meses de
-motivos + 2 chaves em configuracoes) e regressão igual à da main.
-Como desfazer: `git revert` do commit desta entrada (dados já importados continuam no banco; sem planilha o indicador volta ao cálculo
-do sistema se as chaves `carregamento_prazo_semanas_*` forem removidas).
-Pendente/risco: teste visual do Gabriel em localhost (botão, prévia, Gravar, cartão mensal e visão anual).
+   nova, sem DELETE; NÃO guarda o valor anterior (a prévia mostra "hoje no sistema"). Nada gravado por mim: o Gabriel grava ao clicar.
+3) Mês com semanas importadas: cartão mensal "Carregamento no Prazo · Rotas Externas" (acumulado do mês, meta 90%, % por semana com "x de y",
+   quantidade de carregamentos por semana, no prazo/fora/total) e a Visão Anual usa o % do mês. Mês sem importação, ou com filtro
+   R.I./R.E. (a planilha não tem), segue o cálculo do sistema como antes. Sem unidade ("Todas"): soma as unidades com planilha no mês.
+Testes: `node check.js` ok; 22 testes do leitor/cálculo (cálculo independente por data e por linha, datas em serial/texto/ISO, erros e
+unidades), 5 de integração mensal/anual, planilha REAL lida com a biblioteca XLSX no navegador (prévia conferida) e regressão igual à da main.
+Como desfazer: `git revert` do commit desta entrada (dados importados continuam no banco; remover as chaves `carregamento_prazo_semanas_*`
+em `configuracoes` volta o indicador ao cálculo do sistema).
+Pendente/risco: teste visual do Gabriel em localhost (botão, prévia, Gravar, cartão mensal e visão anual); confirmar que Rota Extra entra
+no total, como ele descreveu.
 ## 2026-10-29, Gabriel: Painel de Indicadores — padrão "acumulado do ano + resultado do mês" só nas VISÕES ANUAIS; mensais voltam ao acumulado do mês — v4.89.115
 Onde: `index.html`: `renderCustoArmazem` e `renderReceitaArmazem` (mensais), `_renderCardVisaoAnualPercentual` (cartão anual em %:
 Absenteísmo Armazém/Expedição/Recebimento/Distribuição, OTIF, prazos, disponibilidade...) e `renderRelatorioAbsenteismo` (mensal).
