@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.118';
+const APP_VERSION = '4.89.119';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36093,7 +36093,7 @@ async function _calcNoPrazoAno(calcMesFn, anoSel, undSel, rireSel){
     const r = await calcMesFn(mesStr, undSel, rireSel).catch(()=>null);
     if(!r) continue;
     const total = r.noPrazo + r.fora;
-    if(total>0) bMes[m-1] = r.noPrazo/total*100;
+    if(total>0) bMes[m-1] = (r.pct != null ? r.pct : r.noPrazo/total*100);   // mês com planilha traz o próprio % (média das semanas)
     noPrazoTotal += r.noPrazo;
     foraTotal += r.fora;
   }
@@ -36203,20 +36203,36 @@ async function carregarMotivosLiberacaoPrazo(){
   }
 }
 
-// ── Planilha "Rotas externas" → Análise por Motivo + % do Carregamento no Prazo (pedido do Gabriel, 2026-10-29) ──────────
-// A planilha de acompanhamento das rotas externas tem uma aba por mês ("Acomp. Rotas Outubro") com o bloco
-// "Análise por motivo" (Atraso no carregamento, Falta de Veículo, Atraso do motorista, Valor abaixo da meta, Carregamento
-// ok, Rota Extra), que é o que já se lança à mão em "Lançar Motivos". O botão "Importar planilha" lê esse bloco, mostra
-// o que vai mudar e só grava depois de confirmar (mesma tabela liberacao_prazo_motivos_mes do "Lançar Motivos").
-// Regra do % de Carregamento no Prazo nos meses que têm essa planilha: no prazo = "Carregamento ok";
-// fora do prazo = todos os outros motivos, exceto "Rota Extra" (sem prazo definido, não entra na conta).
+// ── Planilha "Rotas externas" → Carregamento no Prazo (pedido do Gabriel, 2026-10-29) ───────────────────────────────────
+// A planilha de acompanhamento das rotas externas tem uma aba por mês ("Acomp. Rotas Outubro") com DUAS partes que o
+// sistema usa:
+//  1) tabela semanal (SEM 1..5): Total de Rotas Previstas e Realizadas no Prazo. Memória de cálculo (dada pelo Gabriel):
+//     % no prazo da semana = rotas no prazo ÷ total de rotas previstas da semana; o do mês é a "Média" da planilha
+//     (média dos % semanais). Alimenta o cartão Carregamento no Prazo (% por semana e quantidade de rotas por semana).
+//  2) bloco "Análise por motivo" (Atraso no carregamento, Falta de Veículo, Atraso do motorista, Valor abaixo da meta,
+//     Carregamento ok, Rota Extra): mesmos números do "Lançar Motivos", % sobre o total de rotas (inclui Rota Extra).
+// O botão "Importar planilha" lê as duas partes, mostra a prévia e só grava depois de confirmar. Motivos vão para
+// liberacao_prazo_motivos_mes (mesma tabela do "Lançar Motivos"); a tabela semanal vai para configuracoes (JSON, uma chave
+// por mês/unidade: carregamento_prazo_semanas_<ano>_<mes>_<unidade>), sem tabela nova.
 const _MESES_PT_PLANILHA = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 const _semAcentoPl = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();
+const _chaveSemanasCarreg = (mes, und) => 'carregamento_prazo_semanas_' + String(mes).replace('-','_') + '_' + (String(und||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'todas');
+
+// % de cada semana e do mês a partir das semanas [{sem, previstas, realizadas}] (memória de cálculo do Gabriel).
+function _calcCarregPlanilha(semanas){
+  const sem = (semanas||[]).map(s => ({ sem:s.sem, previstas:s.previstas|0, realizadas:s.realizadas|0,
+    pct: (s.previstas|0) > 0 ? (s.realizadas|0) / (s.previstas|0) * 100 : null }));
+  const comBase = sem.filter(s => s.pct != null);
+  const previstas = sem.reduce((a,s) => a + s.previstas, 0), realizadas = sem.reduce((a,s) => a + s.realizadas, 0);
+  return { semanas: sem, previstas, noPrazo: realizadas, fora: previstas - realizadas,
+    pct: comBase.length ? comBase.reduce((a,s) => a + s.pct, 0) / comBase.length : null };
+}
 
 // Lê uma aba como matriz de textos. Aceita o objeto XLSX da biblioteca (sheet_to_json header:1).
 function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
   const resultado = [];
   const anoArq = ((String(nomeArquivo||'').match(/(20\d\d)/)||[])[1]) || String(anoPadrao);
+  const inteiro = v => { const n = parseInt(String(v||'').replace(/\D/g,''), 10); return isNaN(n) ? 0 : n; };
   wb.SheetNames.forEach(aba => {
     const nAba = _semAcentoPl(aba);
     const idxMes = _MESES_PT_PLANILHA.findIndex(m => nAba.includes(_semAcentoPl(m)));
@@ -36225,23 +36241,42 @@ function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
     const mesAno = anoArq + '-' + String(idxMes+1).padStart(2,'0');
     const avisos = [];
 
-    // 1) bloco "Análise por motivo": título, depois a linha com os nomes e a linha com as quantidades
+    // 1) tabela semanal: cabeçalho "Semana | Meta | Total de Rotas Previstas | Realizadas no Prazo | % no Prazo"
+    let semanas = null, metaPct = null;
+    for(let r=0; r<Math.min(m.length, 15) && !semanas; r++){
+      const cSem = m[r].findIndex(t => _semAcentoPl(t) === 'semana');
+      const cPrev = m[r].findIndex(t => /total de rotas previstas/.test(_semAcentoPl(t)));
+      const cReal = m[r].findIndex(t => /realizadas no prazo/.test(_semAcentoPl(t)));
+      const cMeta = m[r].findIndex(t => _semAcentoPl(t) === 'meta');
+      if(cSem < 0 || cPrev < 0 || cReal < 0) continue;
+      semanas = [];
+      for(let k=r+1; k<Math.min(m.length, r+10); k++){
+        const rot = m[k][cSem];
+        if(!/^sem\s*\d+/i.test(rot)) { if(semanas.length) break; else continue; }
+        semanas.push({ sem: rot.replace(/\s+/g,' ').toUpperCase(), previstas: inteiro(m[k][cPrev]), realizadas: inteiro(m[k][cReal]) });
+        if(metaPct == null && cMeta >= 0 && m[k][cMeta]) metaPct = inteiro(m[k][cMeta]) || null;
+      }
+      if(!semanas.length) semanas = null;
+    }
+    if(semanas){
+      semanas.filter(s => s.realizadas > s.previstas).forEach(s => avisos.push(s.sem + ': realizadas (' + s.realizadas + ') maior que previstas (' + s.previstas + ').'));
+      semanas.filter(s => s.previstas > 0 && s.realizadas === 0).forEach(s => avisos.push(s.sem + ' está sem nenhuma rota realizada no prazo (semana ainda em andamento?): entra com 0% na média, como na planilha.'));
+    } else avisos.push('Não achei a tabela semanal (Semana / Total de Rotas Previstas / Realizadas no Prazo): o % do indicador não será atualizado por esta aba.');
+
+    // 2) bloco "Análise por motivo": título, depois a linha com os nomes e a linha com as quantidades
     let bloco = null;
     for(let r=0; r<Math.min(m.length, 20) && !bloco; r++){
       for(let c=0; c<m[r].length; c++){
         if(/analise por motivo/.test(_semAcentoPl(m[r][c]))){
           const nomes = m[r+1] || [], qtds = m[r+2] || [];
           const motivos = {};
-          for(let k=c; k<nomes.length && nomes[k]; k++){
-            const q = parseInt(String(qtds[k]||'').replace(/\D/g,''), 10);
-            motivos[nomes[k]] = isNaN(q) ? 0 : q;
-          }
+          for(let k=c; k<nomes.length && nomes[k]; k++) motivos[nomes[k]] = inteiro(qtds[k]);
           if(Object.keys(motivos).length){ bloco = motivos; }
           break;
         }
       }
     }
-    // 2) conferência: conta a coluna "Rota no prazo" (a classificação de cada rota, linha a linha)
+    // conferência: conta a coluna "Rota no prazo" (a classificação de cada rota, linha a linha)
     let porLinha = null;
     for(let r=0; r<Math.min(m.length, 12) && !porLinha; r++){
       const c = m[r].findIndex(t => _semAcentoPl(t) === 'rota no prazo');
@@ -36250,21 +36285,19 @@ function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
         for(let k=r+1; k<m.length; k++){ const v = m[k][c]; if(v) porLinha[v] = (porLinha[v]||0) + 1; }
       }
     }
-    let motivos = bloco, origem = 'bloco "Análise por motivo"';
-    if(!motivos && porLinha){ motivos = porLinha; origem = 'contagem da coluna "Rota no prazo"'; avisos.push('Não achei o bloco "Análise por motivo"; usei a contagem linha a linha da coluna "Rota no prazo".'); }
-    if(!motivos){ avisos.push('Não achei "Análise por motivo" nem a coluna "Rota no prazo" nesta aba: ignorada.'); resultado.push({ aba, mesAno, motivos:null, avisos }); return; }
+    let motivos = bloco;
+    if(!motivos && porLinha){ motivos = porLinha; avisos.push('Não achei o bloco "Análise por motivo"; usei a contagem linha a linha da coluna "Rota no prazo".'); }
+    if(!motivos) avisos.push('Não achei "Análise por motivo" nem a coluna "Rota no prazo" nesta aba: os motivos não serão atualizados.');
     if(bloco && porLinha){
       const dif = Object.keys(bloco).filter(n => (bloco[n]||0) !== (porLinha[n]||0));
       if(dif.length) avisos.push('A contagem linha a linha difere do bloco em: ' + dif.map(n => n + ' (bloco ' + (bloco[n]||0) + ', linhas ' + (porLinha[n]||0) + ')').join('; ') + '. Usei o bloco.');
     }
-    resultado.push({ aba, mesAno, motivos, origem, avisos });
+    resultado.push({ aba, mesAno, motivos, semanas, metaPct, avisos });
   });
   return resultado;
 }
 
-// Sem unidade (= "Todas") não dá pra saber onde gravar: a prévia obriga a escolher. Padrão: a unidade do filtro do Painel
-// ou, sem filtro, "1 - CD" (onde o Setembro já foi lançado).
-let _impMotivosPrazo = null;   // { abas:[{aba, mesAno, motivos, avisos, atual:{nome:qtd}}], unidades:[...] }
+let _impMotivosPrazo = null;   // { abas:[{aba, mesAno, motivos, semanas, avisos, atual, semanasAtual}], unidades, und, arquivo }
 
 function importarPlanilhaMotivosPrazo(){
   const inp = document.createElement('input');
@@ -36289,10 +36322,11 @@ function importarPlanilhaMotivosPrazo(){
 async function _impCarregarAtuais(){
   const { abas, und } = _impMotivosPrazo;
   for(const a of abas){
-    a.atual = null;
-    if(!a.motivos) continue;
+    a.atual = null; a.semanasAtual = null;
     const rows = await supaFetch(`liberacao_prazo_motivos_mes?mes_ano=eq.${a.mesAno}&unidade=eq.${encodeURIComponent(und)}&select=motivo_nome,quantidade`, { _quiet:true }).catch(() => []) || [];
     a.atual = {}; rows.forEach(r => { a.atual[r.motivo_nome] = Number(r.quantidade)||0; });
+    const cfg = await supaFetch(`configuracoes?chave=eq.${_chaveSemanasCarreg(a.mesAno, und)}&select=valor`, { _quiet:true }).catch(() => []) || [];
+    try{ a.semanasAtual = cfg[0] ? (JSON.parse(cfg[0].valor).semanas || null) : null; }catch(e){ a.semanasAtual = null; }
   }
 }
 
@@ -36303,23 +36337,31 @@ function _impMostrarPrevia(){
   const th = 'text-align:left;font-size:.72rem;color:var(--text-muted);font-weight:700;padding:4px 8px';
   const td = 'padding:4px 8px;font-size:.84rem';
   const blocos = abas.map((a, i) => {
-    if(!a.motivos) return `<div style="padding:10px 0;border-top:1px solid var(--border);color:#ef4444;font-size:.82rem"><b>${escapeHtml(a.aba)}</b> — ${a.avisos.map(escapeHtml).join(' ')}</div>`;
-    const nomes = Object.keys(a.motivos);
-    const iguais = nomes.every(n => (a.atual && a.atual[n]) === a.motivos[n]) && a.atual && Object.keys(a.atual).length >= nomes.length;
+    if(!a.motivos && !a.semanas) return `<div style="padding:10px 0;border-top:1px solid var(--border);color:#ef4444;font-size:.82rem"><b>${escapeHtml(a.aba)}</b> — ${a.avisos.map(escapeHtml).join(' ')}</div>`;
+    const nomes = a.motivos ? Object.keys(a.motivos) : [];
+    const motivosIguais = !a.motivos || (nomes.every(n => (a.atual && a.atual[n]) === a.motivos[n]) && Object.keys(a.atual||{}).length >= nomes.length);
+    const semanasIguais = !a.semanas || (a.semanasAtual && JSON.stringify(a.semanasAtual.map(s => [s.sem, s.previstas, s.realizadas])) === JSON.stringify(a.semanas.map(s => [s.sem, s.previstas, s.realizadas])));
+    const iguais = motivosIguais && semanasIguais;
     const [ano, mes] = a.mesAno.split('-');
-    const linhas = nomes.map(n => {
+    const linhasMot = nomes.map(n => {
       const antes = a.atual && n in a.atual ? a.atual[n] : null;
-      const mudou = antes !== a.motivos[n];
       return `<tr><td style="${td}">${escapeHtml(n)}${cadastrados.has(_semAcentoPl(n)) ? '' : ' <span style="color:#d97706;font-size:.7rem">(motivo novo: será cadastrado)</span>'}</td>
         <td style="${td};color:var(--text-muted)">${antes == null ? '—' : antes}</td>
-        <td style="${td};font-weight:700;${mudou ? 'color:#2563eb' : ''}">${a.motivos[n]}</td></tr>`;
+        <td style="${td};font-weight:700;${antes !== a.motivos[n] ? 'color:#2563eb' : ''}">${a.motivos[n]}</td></tr>`;
     }).join('');
+    const calc = a.semanas ? _calcCarregPlanilha(a.semanas) : null;
+    const linhasSem = calc ? calc.semanas.map(s => `<tr><td style="${td}">${escapeHtml(s.sem)}</td><td style="${td}">${s.previstas}</td><td style="${td}">${s.realizadas}</td>
+        <td style="${td};font-weight:700">${s.pct == null ? '—' : s.pct.toFixed(0) + '%'}</td></tr>`).join('') : '';
     return `<div style="padding:12px 0;border-top:1px solid var(--border)">
-      <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:.92rem;cursor:pointer">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:.92rem;cursor:pointer;flex-wrap:wrap">
         <input type="checkbox" class="imp-mp-chk" data-i="${i}" ${iguais ? '' : 'checked'}> ${NOMES_MES[Number(mes)-1]} de ${ano} <span style="font-weight:600;color:var(--text-muted);font-size:.76rem">(aba "${escapeHtml(a.aba)}")</span>
         ${iguais ? '<span style="font-size:.72rem;color:#059669;font-weight:700">já está igual no sistema</span>' : ''}
       </label>
-      <table style="border-collapse:collapse;margin-top:6px;width:100%"><tr><th style="${th}">Motivo</th><th style="${th}">Hoje no sistema</th><th style="${th}">Da planilha</th></tr>${linhas}</table>
+      ${calc ? `<div style="font-size:.74rem;font-weight:700;color:var(--text-muted);margin-top:8px">RESULTADO (rotas no prazo ÷ total de rotas previstas, por semana)</div>
+      <table style="border-collapse:collapse;width:100%"><tr><th style="${th}">Semana</th><th style="${th}">Previstas</th><th style="${th}">No prazo</th><th style="${th}">% no prazo</th></tr>${linhasSem}
+        <tr><td style="${td};font-weight:700">Mês</td><td style="${td}">${calc.previstas}</td><td style="${td}">${calc.noPrazo}</td><td style="${td};font-weight:700">${calc.pct == null ? '—' : calc.pct.toFixed(1).replace('.',',') + '% (média das semanas)'}</td></tr></table>` : ''}
+      ${a.motivos ? `<div style="font-size:.74rem;font-weight:700;color:var(--text-muted);margin-top:8px">ANÁLISE POR MOTIVO</div>
+      <table style="border-collapse:collapse;width:100%"><tr><th style="${th}">Motivo</th><th style="${th}">Hoje no sistema</th><th style="${th}">Da planilha</th></tr>${linhasMot}</table>` : ''}
       ${a.avisos.map(v => `<div style="font-size:.74rem;color:#d97706;margin-top:4px">⚠ ${escapeHtml(v)}</div>`).join('')}
     </div>`;
   }).join('');
@@ -36328,7 +36370,7 @@ function _impMostrarPrevia(){
   modal = document.createElement('div');
   modal.id = 'modal-import-motivos-prazo';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:710;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML = `<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;width:100%;max-width:620px;max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4)">
+  modal.innerHTML = `<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4)">
     <div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
       <div><div style="font-size:1.05rem;font-weight:800">Importar planilha de Rotas Externas</div>
       <div style="font-size:.76rem;color:var(--text-muted)">${escapeHtml(arquivo)} — confira os números antes de gravar</div></div>
@@ -36340,7 +36382,7 @@ function _impMostrarPrevia(){
         ${unidades.map(u => `<option value="${escapeHtml(u)}"${u===und?' selected':''}>${escapeHtml(u)}</option>`).join('')}
       </select>
       ${blocos}
-      <div style="font-size:.74rem;color:var(--text-muted);margin-top:10px">Gravar substitui os números do mês/unidade marcados. "Carregamento ok" vira o % no prazo do indicador; "Rota Extra" não entra na conta.</div>
+      <div style="font-size:.74rem;color:var(--text-muted);margin-top:10px">Gravar substitui os números do mês/unidade marcados (semanas e motivos). O % do Carregamento no Prazo dos meses importados vem das semanas da planilha.</div>
     </div>
     <div style="padding:14px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--border)">
       <button type="button" onclick="_impFechar()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 18px;font-size:.85rem;font-weight:600;cursor:pointer">Cancelar</button>
@@ -36356,45 +36398,131 @@ async function _impTrocarUnidade(u){ if(!_impMotivosPrazo) return; _impMotivosPr
 async function _impGravar(){
   if(!_impMotivosPrazo) return;
   const { abas, und } = _impMotivosPrazo;
-  const marcadas = [...document.querySelectorAll('.imp-mp-chk:checked')].map(c => abas[Number(c.dataset.i)]).filter(a => a && a.motivos);
+  const marcadas = [...document.querySelectorAll('.imp-mp-chk:checked')].map(c => abas[Number(c.dataset.i)]).filter(a => a && (a.motivos || a.semanas));
   if(!marcadas.length){ showToast('Nenhum mês marcado para gravar','info'); return; }
   const btn = document.getElementById('imp-mp-gravar'); if(btn){ btn.disabled = true; btn.textContent = 'Gravando...'; }
   try{
-    // motivos que ainda não existem no cadastro entram como novos (mesmo POST do "Novo motivo..." do Lançar Motivos)
-    let cad = await supaFetch('motivos_liberacao_prazo?order=nome.asc', { _quiet:true }).catch(() => []) || [];
-    const faltam = [...new Set(marcadas.flatMap(a => Object.keys(a.motivos)))].filter(n => !cad.some(c => _semAcentoPl(c.nome) === _semAcentoPl(n)));
-    for(const nome of faltam) await supaFetch('motivos_liberacao_prazo', { method:'POST', body:JSON.stringify({ nome }) });
-    if(faltam.length) cad = await supaFetch('motivos_liberacao_prazo?order=nome.asc', { _quiet:true }) || [];
-    const idPorNome = {}; cad.forEach(c => { idPorNome[_semAcentoPl(c.nome)] = { id:c.id, nome:c.nome }; });
-    const agora = new Date().toISOString();
-    const registros = marcadas.flatMap(a => Object.entries(a.motivos).map(([n, q]) => {
-      const c = idPorNome[_semAcentoPl(n)];
-      return { mes_ano:a.mesAno, unidade:und, motivo_id:c ? c.id : null, motivo_nome:c ? c.nome : n, quantidade:Math.max(0, q|0), atualizado_em:agora };
-    }));
-    await supaFetch('liberacao_prazo_motivos_mes', { method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify(registros) });
+    const comMotivos = marcadas.filter(a => a.motivos);
+    if(comMotivos.length){
+      // motivos que ainda não existem no cadastro entram como novos (mesmo POST do "Novo motivo..." do Lançar Motivos)
+      let cad = await supaFetch('motivos_liberacao_prazo?order=nome.asc', { _quiet:true }).catch(() => []) || [];
+      const faltam = [...new Set(comMotivos.flatMap(a => Object.keys(a.motivos)))].filter(n => !cad.some(c => _semAcentoPl(c.nome) === _semAcentoPl(n)));
+      for(const nome of faltam) await supaFetch('motivos_liberacao_prazo', { method:'POST', body:JSON.stringify({ nome }) });
+      if(faltam.length) cad = await supaFetch('motivos_liberacao_prazo?order=nome.asc', { _quiet:true }) || [];
+      const idPorNome = {}; cad.forEach(c => { idPorNome[_semAcentoPl(c.nome)] = { id:c.id, nome:c.nome }; });
+      const agora = new Date().toISOString();
+      const registros = comMotivos.flatMap(a => Object.entries(a.motivos).map(([n, q]) => {
+        const c = idPorNome[_semAcentoPl(n)];
+        return { mes_ano:a.mesAno, unidade:und, motivo_id:c ? c.id : null, motivo_nome:c ? c.nome : n, quantidade:Math.max(0, q|0), atualizado_em:agora };
+      }));
+      await supaFetch('liberacao_prazo_motivos_mes', { method:'POST', prefer:'return=minimal,resolution=merge-duplicates', body:JSON.stringify(registros) });
+    }
+    for(const a of marcadas.filter(x => x.semanas)){
+      const chave = _chaveSemanasCarreg(a.mesAno, und);
+      const valor = JSON.stringify({ mes:a.mesAno, unidade:und, metaPct:a.metaPct||90, semanas:a.semanas, importado_em:new Date().toISOString(), importado_por:(USUARIO_LOGADO && (USUARIO_LOGADO.nome||USUARIO_LOGADO.email)) || null });
+      const ex = await supaFetch(`configuracoes?chave=eq.${chave}&select=id`, { _quiet:true }).catch(() => []) || [];
+      if(ex.length) await supaFetch(`configuracoes?chave=eq.${chave}`, { method:'PATCH', body:JSON.stringify({ valor }) });
+      else await supaFetch('configuracoes', { method:'POST', body:JSON.stringify({ chave, valor }) });
+    }
     _motivosLiberacaoPrazoCache = [];
     showToast('✅ Planilha importada: ' + marcadas.map(a => a.mesAno).join(', ') + ' (' + und + ')', 'success');
     _impFechar();
     carregarMotivosLiberacaoPrazo(); carregarPainelCarregamentoPrazo(); carregarPainelCarregamentoPrazoAno();
   }catch(e){
-    showToast('Erro ao gravar (nada foi confirmado): ' + e.message, 'warning');
+    showToast('Erro ao gravar: ' + e.message + ' (confira a prévia e tente de novo)', 'warning');
     if(btn){ btn.disabled = false; btn.textContent = 'Gravar'; }
   }
 }
 
-// % de Carregamento no Prazo a partir dos motivos lançados/importados da planilha. Sem lançamento do mês (ou sem
-// "Carregamento ok"), devolve null e o indicador segue calculado pelo sistema, como sempre foi. R.I./R.E. não existe
-// na planilha: com esse filtro ligado também volta ao cálculo do sistema (quem chama não pergunta aqui).
+// Carregamento no Prazo de um mês a partir das semanas importadas da planilha; null = mês sem planilha (o indicador
+// segue calculado pelo sistema, como sempre foi). R.I./R.E. não existe na planilha: quem chama usa o sistema nesse filtro.
+// Sem unidade ("Todas"): soma as unidades que têm planilha no mês, semana a semana.
 async function _carregPrazoDaPlanilha(mes, undSel){
-  const filtroUnd = undSel ? `&unidade=eq.${encodeURIComponent(undSel)}` : '';
-  const rows = await supaFetch(`liberacao_prazo_motivos_mes?mes_ano=eq.${mes}${filtroUnd}&select=motivo_nome,quantidade`, { _quiet:true }).catch(() => []) || [];
-  let ok = 0, fora = 0, temOk = false;
+  const consulta = undSel
+    ? `configuracoes?chave=eq.${_chaveSemanasCarreg(mes, undSel)}&select=valor`
+    : `configuracoes?chave=like.${'carregamento_prazo_semanas_' + String(mes).replace('-','_')}_*&select=valor`;
+  const rows = await supaFetch(consulta, { _quiet:true }).catch(() => []) || [];
+  const porSem = {}; let meta = 90, achou = false;
   rows.forEach(r => {
-    const q = Number(r.quantidade) || 0, n = _semAcentoPl(r.motivo_nome);
-    if(n === 'carregamento ok'){ ok += q; temOk = true; }
-    else if(n !== 'rota extra') fora += q;
+    let o; try{ o = JSON.parse(r.valor); }catch(e){ return; }
+    if(!o || !Array.isArray(o.semanas)) return;
+    achou = true; meta = o.metaPct || meta;
+    o.semanas.forEach(s => { const x = porSem[s.sem] || (porSem[s.sem] = { sem:s.sem, previstas:0, realizadas:0 }); x.previstas += s.previstas|0; x.realizadas += s.realizadas|0; });
   });
-  return (temOk && ok + fora > 0) ? { noPrazo: ok, fora } : null;
+  if(!achou) return null;
+  const calc = _calcCarregPlanilha(Object.values(porSem).sort((a,b) => parseInt(a.sem.replace(/\D/g,''),10) - parseInt(b.sem.replace(/\D/g,''),10)));
+  return calc.previstas > 0 ? { ...calc, metaPct: meta } : null;
+}
+
+// Cartão do mês com planilha: o mesmo desenho do slide (% por semana, quantidade de rotas por semana) no padrão do Painel.
+function _renderCarregPrazoPlanilha({ mesRef, dados, eyebrowExtra }){
+  const [anoRef, numMes] = mesRef.split('-').map(Number);
+  const periodoTxt = `01/${String(numMes).padStart(2,'0')} A ${String(new Date(anoRef,numMes,0).getDate()).padStart(2,'0')}/${String(numMes).padStart(2,'0')}`;
+  const meta = dados.metaPct || 90, pct = dados.pct == null ? 0 : dados.pct;
+  const dentro = pct >= meta;
+  const maxPrev = Math.max(1, ...dados.semanas.map(s => s.previstas));
+  const barras = dados.semanas.map(s => {
+    const p = s.pct == null ? 0 : s.pct, abaixo = s.pct != null && s.pct < meta;
+    return `<div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;padding:6px 2px 4px">
+      <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-bottom:6px">${s.pct == null ? '—' : s.pct.toFixed(0) + '%'}</div>
+      <div style="position:relative;width:100%;max-width:64px;height:110px;display:flex;align-items:flex-end">
+        <div style="width:100%;height:${Math.max(p,1.5)}%;background:${abaixo ? '#E8000D' : 'rgba(255,255,255,.18)'};border-radius:2px 2px 0 0"></div>
+        <div style="position:absolute;left:-6px;right:-6px;bottom:${meta}%;border-top:1px dashed var(--red);opacity:.55"></div>
+      </div>
+      <div style="font-size:1rem;font-weight:700;color:var(--text-primary);margin-top:10px">${escapeHtml(s.sem.replace(/^SEM\s*/i,'S'))}</div>
+      <div style="font-size:.82rem;color:var(--text-muted);margin-top:2px">${s.realizadas} de ${s.previstas}</div>
+    </div>`;
+  }).join('');
+  // linha: quantidade de rotas previstas por semana (SVG simples, sem biblioteca)
+  const W = 320, H = 130, pad = 26, n = dados.semanas.length;
+  const px = i => n === 1 ? W/2 : pad + i * (W - 2*pad) / (n - 1), py = v => H - 22 - (v / maxPrev) * (H - 56);
+  const pontos = dados.semanas.map((s, i) => `${px(i).toFixed(1)},${py(s.previstas).toFixed(1)}`).join(' ');
+  const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Quantidade de rotas previstas por semana: ${dados.semanas.map(s => s.sem + ' ' + s.previstas).join(', ')}">
+    <polyline points="${pontos}" fill="none" stroke="#E8000D" stroke-width="2.5" stroke-linejoin="round"/>
+    ${dados.semanas.map((s, i) => `<circle cx="${px(i).toFixed(1)}" cy="${py(s.previstas).toFixed(1)}" r="3.5" fill="#E8000D"/>
+      <text x="${px(i).toFixed(1)}" y="${(py(s.previstas) - 9).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--text-primary)">${s.previstas}</text>
+      <text x="${px(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--text-muted)">${escapeHtml(s.sem.replace(/^SEM\s*/i,'S'))}</text>`).join('')}
+  </svg>`;
+  return `
+    <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
+      <div style="font-size:.81rem;font-weight:700;letter-spacing:2px;color:var(--text-muted)">INDICADOR 04 · ROTAS EXTERNAS${eyebrowExtra||''} · META ${meta}% · ${periodoTxt}</div>
+      <h2 style="font-size:2.69rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Carregamento no Prazo</h2>
+      <div style="width:56px;height:3px;background:var(--red);margin:18px 0 28px"></div>
+      <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;align-items:start">
+        <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--red)">
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">ACUMULADO NO MÊS</div>
+          <div style="display:flex;align-items:baseline;gap:24px;flex-wrap:wrap;margin-bottom:16px">
+            <div style="display:flex;align-items:baseline"><span style="font-size:3.58rem;font-weight:700;line-height:1">${pct.toFixed(1).replace('.',',')}</span><span style="font-size:1.57rem;font-weight:700;margin-left:2px">%</span></div>
+            <div>
+              <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">META DEFINIDA</div>
+              <div style="font-size:1.12rem;font-weight:600">${meta.toFixed(2).replace('.',',')}%</div>
+            </div>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:20px">
+            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:14px">% NO PRAZO POR SEMANA</div>
+            <div style="display:flex;gap:10px">${barras}</div>
+          </div>
+          <div style="border-top:1px solid var(--border);margin-top:22px;padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">BASE DE CÁLCULO</span>
+            <span style="font-size:.87rem;font-weight:600">${dados.noPrazo} no prazo de ${dados.previstas} rotas previstas · ${dentro ? 'Meta cumprida' : 'Meta não cumprida'}</span>
+          </div>
+        </div>
+        <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
+          <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">QUANTIDADE DE ROTAS POR SEMANA</div>
+          <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">ROTAS PREVISTAS NA SEMANA</div>
+          <div style="margin-top:10px">${svg}</div>
+          <div style="margin-top:14px">
+            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1">${dados.noPrazo}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">NO PRAZO</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Rotas com carregamento no prazo</div></div>
+            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1;color:#ef4444">${dados.fora}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">FORA DO PRAZO</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Previstas que não carregaram no prazo</div></div>
+            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1">${dados.previstas}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">TOTAL DE ROTAS PREVISTAS</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">% da semana = no prazo ÷ previstas; o do mês é a média das semanas</div></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
+        <span>PAINEL DE METAS · ACOMPANHAMENTO MENSAL</span><span>OPERAÇÕES / ARMAZÉM</span>
+      </div>
+    </div>`;
 }
 
 async function abrirModalLancarMotivosPrazo(){
@@ -36546,12 +36674,7 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     // filtro segue o cálculo do sistema). Sem lançamento, nada muda.
     const dePlanilha = rireSel ? null : await _carregPrazoDaPlanilha(mes, window._painelIndUndSel||'');
     if(dePlanilha){
-      container.innerHTML = renderRelatorioNoPrazoSimples({
-        indicadorNum:'04', titulo:'Carregamento no Prazo', eyebrow:'ROTAS EXTERNAS · PLANILHA', area:'OPERAÇÕES / ARMAZÉM',
-        mesRef: mes, metaPct: 90, noPrazoCount: dePlanilha.noPrazo, foraCount: dePlanilha.fora,
-        noPrazoDesc: 'Carregamento ok (planilha de Rotas Externas)',
-        foraDesc: 'Valor abaixo da meta, falta de veículo e atrasos (planilha de Rotas Externas; Rota Extra não entra)'
-      });
+      container.innerHTML = _renderCarregPrazoPlanilha({ mesRef: mes, dados: dePlanilha });
       _featherReplace();
       return;
     }
