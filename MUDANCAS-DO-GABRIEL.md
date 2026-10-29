@@ -21,6 +21,20 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-29, Gabriel: crédito manual — campos do ERP travados, com contorno escuro, e sem o texto azul — v4.89.102
+Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-auto`, estado `_cmPedidoBuscado`, ajudantes `_cmTravar` /
+`_cmDestravarAuto`, `cmAutoPreencher` e `cmLimparForm`. `APP_VERSION` e `version.json`: 4.89.101 → 4.89.102.
+Por quê: pedido do Gabriel: (1) tirar o texto azul "(preenchido automaticamente)"; (2) campos preenchidos pelo ERP com o
+contorno mais escuro; (3) esses campos travados. Os 4 campos (código do cliente, valor do pedido, data de emissão, número da
+nota) ficam somente leitura e escuros SÓ quando o ERP trouxe o dado; se não trouxe (pedido sem nota, não encontrado), o campo
+fica livre para digitar. Ao trocar o pedido, os dados travados do anterior somem na hora (não fica dado de outro pedido
+travado); sair do campo do pedido sem mudá-lo não refaz a busca nem apaga o que foi digitado; "Limpar" destrava tudo. Em
+tema claro o contorno é cinza-escuro. Mudança de decisão: antes os campos automáticos eram editáveis ("você pode corrigir");
+agora só se corrige o que o ERP não trouxe. Se um dado do ERP estiver errado, hoje não dá para corrigir na tela.
+Testes: `node check.js` ok; 54 testes de lógica (travamento, troca de pedido, blur, Limpar, erro e nova tentativa) passando;
+conferido visualmente o contorno escuro numa página de teste. Nenhum dado do banco foi tocado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel; decidir se algum campo travado deve poder ser destravado por admin.
 ## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.101 (PUBLICADA; tabela ainda pendente)
 Onde: `index.html`: item novo no menu Distribuição (`data-page="credito-manual"`, só `admin` por padrão), página
 `page-credito-manual` (antes de `page-geral`), rota em `showPage`, entradas em `PAGINAS` e `PAGINAS_GRUPOS` (para liberar

@@ -2579,6 +2579,10 @@ body.light-theme{
     /* linha clara separando o texto da data do ícone do calendário */
     .cm-data::-webkit-calendar-picker-indicator{cursor:pointer;border-left:1px solid rgba(255,255,255,.55);padding:2px 0 2px 10px;margin-left:8px;border-radius:0}
     body.light-theme .cm-data::-webkit-calendar-picker-indicator{border-left-color:rgba(0,0,0,.35)}
+    /* campo preenchido automaticamente pelo ERP: contorno mais escuro e travado */
+    .cm-auto{border-color:#000 !important;background:rgba(0,0,0,.3) !important;cursor:not-allowed}
+    input[type=date].cm-auto{pointer-events:none}
+    body.light-theme .cm-auto{border-color:#475569 !important;background:#eef0f4 !important}
   </style>
 
   <div style="margin-bottom:18px">
@@ -9806,7 +9810,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.101';
+const APP_VERSION = '4.89.102';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19300,6 +19304,18 @@ function renderOcorrenciasLanc(){
 // pelo número do pedido e continuam editáveis (pedido sem nota, ou anterior a 01/05/2026, que a integração não tem).
 // Tabela: credito_manual_historico (criada pelo Daniel no Supabase; colunas em MUDANCAS-DO-GABRIEL.md).
 let _cmAutoTimer = null;
+let _cmPedidoBuscado = '';        // último pedido consultado: sair do campo sem mudar o pedido não refaz a busca (nem apaga o que foi digitado)
+const CM_CAMPOS_AUTO = ['cm-codcliente','cm-valorpedido','cm-emissao','cm-nota'];
+function _cmTravar(id, valor){    // preenche e TRAVA o campo; se o ERP não trouxe o dado, o campo fica livre para digitar
+  const el = document.getElementById(id); if(!el) return;
+  const temDado = valor != null && String(valor).trim() !== '';
+  el.value = temDado ? String(valor) : '';
+  el.readOnly = temDado;
+  if(temDado) el.classList.add('cm-auto'); else el.classList.remove('cm-auto');
+}
+function _cmDestravarAuto(){
+  CM_CAMPOS_AUTO.forEach(id => { const el = document.getElementById(id); if(!el) return; el.value = ''; el.readOnly = false; el.classList.remove('cm-auto'); });
+}
 let _cmReqId = 0;                 // descarta resposta de busca antiga se o pedido mudou no meio
 let _cmLinhas = [];
 
@@ -19334,7 +19350,10 @@ function cmPedidoMudou(){
 async function cmAutoPreencher(){
   const ped = (document.getElementById('cm-pedido')?.value || '').trim();
   const aviso = document.getElementById('cm-aviso-pedido');
+  if(ped !== '' && ped === _cmPedidoBuscado) return;            // mesmo pedido já consultado
   const rid = ++_cmReqId;
+  _cmPedidoBuscado = /^\d+$/.test(ped) ? ped : '';
+  _cmDestravarAuto();                                             // pedido novo: some o que veio do pedido anterior
   ['cm-hint-cliente','cm-hint-valorpedido','cm-hint-emissao','cm-hint-nota'].forEach(id => _cmSetHint(id, ''));
   if(!/^\d+$/.test(ped)){ if(aviso) aviso.textContent = ped ? 'Digite só números do pedido' : ''; return; }
   if(aviso){ aviso.textContent = 'Buscando no ERP...'; aviso.style.color = '#2563eb'; aviso.style.fontWeight = ''; }
@@ -19346,18 +19365,17 @@ async function cmAutoPreencher(){
       const b = await supaFetch(`base_data?pedido=eq.${encodeURIComponent(ped)}&select=valor,cliente&limit=1`) || [];
       base = b[0] || null;
     }
-  }catch(e){ if(rid === _cmReqId && aviso) aviso.textContent = 'Erro ao buscar o pedido: ' + e.message; return; }
+  }catch(e){ if(rid === _cmReqId){ _cmPedidoBuscado = ''; if(aviso) aviso.textContent = 'Erro ao buscar o pedido: ' + e.message; } return; }
   if(rid !== _cmReqId) return;                                   // o pedido já mudou: ignora esta resposta
-  const set = (id, v) => { const el = document.getElementById(id); if(el) el.value = v == null ? '' : v; };
   if(!info && !base){
     if(aviso) aviso.textContent = 'Pedido não encontrado no ERP — preencha os campos à mão.';
     return;
   }
   const valor = info && info.valor != null ? info.valor : (base ? base.valor : null);
-  set('cm-codcliente', info ? info.codigo_cliente : '');
-  set('cm-valorpedido', valor != null ? String(valor).replace('.', ',') : '');
-  set('cm-emissao', info && info.emissao ? String(info.emissao).slice(0,10) : '');
-  set('cm-nota', info ? info.nota_fiscal : '');
+  _cmTravar('cm-codcliente', info ? info.codigo_cliente : '');
+  _cmTravar('cm-valorpedido', valor != null ? String(valor).replace('.', ',') : '');
+  _cmTravar('cm-emissao', info && info.emissao ? String(info.emissao).slice(0,10) : '');
+  _cmTravar('cm-nota', info ? info.nota_fiscal : '');
   const nome = (info && info.cliente) || (base && base.cliente) || '';
   // pedido cancelado no ERP (situação CA) só ganha um aviso: pode haver crédito em pedido faturado e depois cancelado, então NÃO bloqueia
   const cancelado = !!(info && String(info.situacao || '').toUpperCase() === 'CA');
@@ -19367,13 +19385,7 @@ async function cmAutoPreencher(){
     aviso.style.fontWeight = cancelado ? '700' : '';
   }
   if(info){
-    if(info.codigo_cliente) _cmSetHint('cm-hint-cliente', '(preenchido automaticamente)');
-    if(valor != null) _cmSetHint('cm-hint-valorpedido', '(preenchido automaticamente)');
-    if(info.emissao) _cmSetHint('cm-hint-emissao', '(preenchido automaticamente)');
-    if(info.nota_fiscal) _cmSetHint('cm-hint-nota', '(preenchido automaticamente)');
     if(!info.nota_fiscal || !info.emissao) _cmSetHint('cm-hint-nota', 'pedido sem nota no ERP' + (info.situacao ? ' (situação ' + info.situacao + ')' : '') + ' — preencha se tiver');
-  } else if(valor != null){
-    _cmSetHint('cm-hint-valorpedido', '(valor da base de cargas)');
   }
 }
 
@@ -19381,6 +19393,8 @@ function cmLimparForm(){
   ['cm-pedido','cm-codcliente','cm-valorpedido','cm-emissao','cm-nota','cm-credito','cm-peso'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
   ['cm-hint-cliente','cm-hint-valorpedido','cm-hint-emissao','cm-hint-nota','cm-aviso-pedido'].forEach(id => _cmSetHint(id, ''));
   cmSetEvidencia('');
+  _cmDestravarAuto();
+  _cmPedidoBuscado = '';
   _cmReqId++;
 }
 
