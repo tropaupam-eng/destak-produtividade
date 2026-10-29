@@ -21,16 +21,16 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.98 (NÃO publicar antes da tabela)
+## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.99 (NÃO publicar antes da tabela)
 Onde: `index.html`: item novo no menu Distribuição (`data-page="credito-manual"`, só `admin` por padrão), página
 `page-credito-manual` (antes de `page-geral`), rota em `showPage`, entradas em `PAGINAS` e `PAGINAS_GRUPOS` (para liberar
 a outros perfis pela tela de Perfis) e o bloco de funções `cm*` / `carregarCreditoManual` / `renderCreditoManual` (antes de
-`renderFrotaStatus`). `APP_VERSION` e `version.json`: 4.89.95 → 4.89.98 (97 = aviso de pedido cancelado; 98 = evidência por foto).
+`renderFrotaStatus`). `APP_VERSION` e `version.json`: 4.89.95 → 4.89.99 (97 = aviso de pedido cancelado; 98 = evidência por foto; 99 = ícone do calendário claro).
 Por quê: pedido do Gabriel: aba para lançar crédito manual por pedido. Digitados: pedido, valor do crédito manual e peso
 faltante (kg). Preenchidos pelo ERP a partir do pedido, e editáveis: código do cliente, valor do pedido, data de emissão
 da nota e número da nota (`pedidos_info_erp`: codigo_cliente, valor, emissao, nota_fiscal; se o pedido não estiver lá,
 usa o valor de `base_data`). Pedido sem nota (cancelado, DI...) ou anterior a 01/05/2026 fica para preencher à mão; a tela
-avisa. Campo OBRIGATÓRIO "Evidência enviada por foto? Sim/Não" (dois botões, nada marcado por padrão; grava evidencia_foto true/false; a lista mostra a coluna, — nos lançamentos sem o dado). Pedido CANCELADO no ERP (situação CA) mostra um aviso vermelho junto do nome do cliente, SEM bloquear (no ERP há 447 pedidos CA que já tinham nota emitida: pode haver crédito em pedido faturado e depois cancelado). Lista o histórico (500 mais recentes) com total de crédito.
+avisa. Campo de data com ícone do calendário claro no tema escuro (classe cm-data, mesmo padrão do devol-data; também no campo de data da janela Editar ocorrência). Campo OBRIGATÓRIO "Evidência enviada por foto? Sim/Não" (dois botões, nada marcado por padrão; grava evidencia_foto true/false; a lista mostra a coluna, — nos lançamentos sem o dado). Pedido CANCELADO no ERP (situação CA) mostra um aviso vermelho junto do nome do cliente, SEM bloquear (no ERP há 447 pedidos CA que já tinham nota emitida: pode haver crédito em pedido faturado e depois cancelado). Lista o histórico (500 mais recentes) com total de crédito.
 TABELA NOVA (ESTRUTURA DE BANCO, quem cria é o Daniel; sem RLS): `credito_manual_historico`
   id uuid primary key default gen_random_uuid(), codigo_cliente text, pedido text not null, valor_credito numeric(12,2)
   not null, valor_pedido numeric(12,2), data_emissao date, numero_nota text, peso_faltante numeric(12,3),
