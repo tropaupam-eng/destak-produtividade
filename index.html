@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.117';
+const APP_VERSION = '4.89.118';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -22887,6 +22887,14 @@ let _retornoVeiculosCache = []; // Cache global de retornos de veículos
 // Cargas já enviadas à Unniflex (rastreador): { [carga]: {enviado_em, enviados, pulados_sem_coordenada} }.
 // Só entra envio bem-sucedido (ok=true): o card da Expedição muda de cor quando a carga está aqui.
 let _enviosUnniflexCache = {};
+// Pares de carga marcados como "mesma viagem" (mesmo motorista/veículo de propósito,
+// não por engano) — pedido do usuário, 2026-10-30, a partir do badge "Duplo" já
+// existente (_buildDemandasAlerts), que só alertava e não tinha nenhuma ação. Carga →
+// Set de cargas vinculadas a ela (pensado pra permitir mais de 2 no mesmo grupo no
+// futuro, mesmo a UI hoje só oferecendo vincular 2 por vez). Não mexe em nenhum dado
+// de demandas_rota — só essa tabela nova (demandas_rota_vinculos), por decisão
+// explícita do usuário (risco de bagunçar OTIF/valor por carga se juntasse de verdade).
+let _cargasVinculadasCache = {};
 
 async function carregarRetornosVeiculos(){
   try{
@@ -22898,6 +22906,41 @@ async function carregarRetornosVeiculos(){
     envios.forEach(e=>{ if(!mapa[e.carga]) mapa[e.carga] = e; }); // já vem do mais recente pro mais antigo
     _enviosUnniflexCache = mapa;
   }catch(e){ console.error('Erro ao carregar envios Unniflex:', e); }
+  try{
+    const vinc = await supaFetch('demandas_rota_vinculos?select=carga_a,carga_b&limit=2000').catch(()=>[]) || [];
+    const mapa = {};
+    vinc.forEach(v=>{
+      (mapa[v.carga_a] = mapa[v.carga_a] || new Set()).add(v.carga_b);
+      (mapa[v.carga_b] = mapa[v.carga_b] || new Set()).add(v.carga_a);
+    });
+    _cargasVinculadasCache = mapa;
+  }catch(e){ console.error('Erro ao carregar vínculos de carga:', e); }
+}
+
+async function vincularCargas(cargaA, cargaB){
+  const a = Math.min(Number(cargaA), Number(cargaB));
+  const b = Math.max(Number(cargaA), Number(cargaB));
+  try{
+    await supaFetch('demandas_rota_vinculos', {
+      method:'POST', prefer:'return=minimal,resolution=merge-duplicates',
+      body: JSON.stringify({ carga_a:a, carga_b:b, usuario_nome:(USUARIO_LOGADO&&USUARIO_LOGADO.nome)||'' })
+    });
+    showToast('✅ Cargas vinculadas — mesma viagem.', 'success');
+    await carregarRetornosVeiculos();
+    renderDemandasCards();
+  }catch(e){ showToast('Erro ao vincular: '+e.message, 'error'); }
+}
+
+async function desvincularCargas(cargaA, cargaB){
+  const a = Math.min(Number(cargaA), Number(cargaB));
+  const b = Math.max(Number(cargaA), Number(cargaB));
+  if(!confirm('Desfazer o vínculo entre a carga '+a+' e a carga '+b+'?')) return;
+  try{
+    await supaFetch(`demandas_rota_vinculos?carga_a=eq.${a}&carga_b=eq.${b}`, { method:'DELETE' });
+    showToast('Vínculo desfeito.', 'success');
+    await carregarRetornosVeiculos();
+    renderDemandasCards();
+  }catch(e){ showToast('Erro ao desvincular: '+e.message, 'error'); }
 }
 
 function _getDemandasStatusConfig(){
@@ -23036,6 +23079,13 @@ function renderDemandasCards(){
     const corBarraTopo = envioUnni ? COR_RASTREADA : s.bar;
 
     const _alerta = d.carga ? _alertas[d.carga] : null;
+    // "Duplo" = mesmo motorista/veículo que outra carga ao mesmo tempo — pode ser
+    // erro OU uma viagem combinada de propósito (ex.: um caminhão levando 2 cargas
+    // pra rotas diferentes no mesmo trajeto). Pedido do usuário, 2026-10-30: se já
+    // foi confirmado como viagem combinada (vinculada em demandas_rota_vinculos),
+    // troca o alerta vermelho por um selo calmo "Viagem Combinada" com a opção de
+    // desvincular; se ainda não, e só tem UM outro candidato, oferece "Juntar"
+    // direto no badge — não mexe em nenhum dado de demandas_rota, só o vínculo.
     const badgeDup = isExtra && _alerta && (_alerta.veic?.length > 0 || _alerta.mot?.length > 0) ? (()=>{
       const lbStatus = {pendente:'Pendente',separacao:'Separação',carregamento:'Carregamento',aguardando_nf:'Ag.NF',aguardando_manifesto:'Ag.Manifesto',pronto_viagem:'Pronto',saiu:'Em Rota',fim_viagem:'Fim Viagem'};
       const hasVeic = _alerta.veic?.length > 0, hasMot = _alerta.mot?.length > 0;
@@ -23043,7 +23093,19 @@ function renderDemandasCards(){
       const tipParts = [];
       if(hasVeic && _alerta.veic) tipParts.push('Veículo: ' + _alerta.veic.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
       if(hasMot && _alerta.mot) tipParts.push('Motorista: ' + _alerta.mot.map(x=>`Carga ${x.carga} (${x.rota} — ${lbStatus[x.status]||x.status})`).join(', '));
-      return `<span class="exp-badge-mini" title="${tipParts.join(' | ')}" style="background:#fee2e2;color:#991b1b;cursor:default"><span data-feather="alert-triangle"></span>${label}</span>`;
+
+      const outrasCargas = [...new Set([...(_alerta.veic||[]).map(x=>x.carga), ...(_alerta.mot||[]).map(x=>x.carga)])].filter(Boolean);
+      const vinculadasAqui = _cargasVinculadasCache[d.carga] || new Set();
+      const parceiroVinculado = outrasCargas.find(c=>vinculadasAqui.has(c));
+
+      if(parceiroVinculado){
+        return `<span class="exp-badge-mini" title="Viagem combinada com a carga ${parceiroVinculado} — ${tipParts.join(' | ')}" onclick="event.stopPropagation();desvincularCargas(${d.carga},${parceiroVinculado})" style="background:#dbeafe;color:#1e40af;cursor:pointer"><span data-feather="link"></span>Viagem Combinada (${parceiroVinculado})</span>`;
+      }
+      const podeJuntar = outrasCargas.length === 1;
+      const acaoJuntar = podeJuntar
+        ? ` <span onclick="event.stopPropagation();vincularCargas(${d.carga},${outrasCargas[0]})" style="text-decoration:underline;cursor:pointer;margin-left:4px">Juntar</span>`
+        : '';
+      return `<span class="exp-badge-mini" title="${tipParts.join(' | ')}" style="background:#fee2e2;color:#991b1b;cursor:default"><span data-feather="alert-triangle"></span>${label}${acaoJuntar}</span>`;
     })() : '';
 
     const rotaUp = (d.rota||'').trim().toUpperCase();
