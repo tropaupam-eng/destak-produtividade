@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.125';
+const APP_VERSION = '4.89.126';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36147,6 +36147,7 @@ async function _calcLiberacaoNoPrazoMes(mes, undSel, rireSel){
 // Carregamento no Prazo (mesmo formato de retorno {noPrazo, fora}).
 async function _calcNoPrazoAno(calcMesFn, anoSel, undSel, rireSel){
   const bMes = Array(12).fill(null);
+  const porMes = Array(12).fill(null);   // {noPrazo, fora} de cada mês com dado (seleção de meses na barra)
   let noPrazoTotal=0, foraTotal=0;
   const mesAtualStr = new Date().toISOString().slice(0,7);
   for(let m=1;m<=12;m++){
@@ -36155,13 +36156,13 @@ async function _calcNoPrazoAno(calcMesFn, anoSel, undSel, rireSel){
     const r = await calcMesFn(mesStr, undSel, rireSel).catch(()=>null);
     if(!r) continue;
     const total = r.noPrazo + r.fora;
-    if(total>0) bMes[m-1] = (r.pct != null ? r.pct : r.noPrazo/total*100);   // mês com planilha traz o próprio % (média das semanas)
+    if(total>0){ bMes[m-1] = (r.pct != null ? r.pct : r.noPrazo/total*100); porMes[m-1] = { noPrazo: r.noPrazo, fora: r.fora }; }   // mês com planilha traz o próprio % (média das semanas)
     noPrazoTotal += r.noPrazo;
     foraTotal += r.fora;
   }
   const total = noPrazoTotal + foraTotal;
   const pctAnual = total>0 ? (noPrazoTotal/total*100) : 0;
-  return { bMes, noPrazoTotal, foraTotal, pctAnual };
+  return { bMes, porMes, noPrazoTotal, foraTotal, pctAnual };
 }
 
 async function carregarPainelConferenciaPrazoAno(){
@@ -36928,9 +36929,21 @@ async function _calcCarregamentoNoPrazoMes(mes, undSel, rireSel){
   return { noPrazo, fora };
 }
 
+// Clique numa barra de EVOLUÇÃO MENSAL do Carregamento no Prazo (Visão Anual): mesma regra do Absenteísmo
+// (clique = só esse mês, clique de novo desmarca, Ctrl+clique soma, Shift+clique intervalo, "limpar" volta ao ano).
+function _toggleMesCarregAno(idx, ev, limpar){
+  _absSelToggle(window._absAnoMesSelPorPrefixo, window._absAnoMesAncoraPorPrefixo, 'carreg-prazo', idx, ev, limpar);
+  window._carregAnoReusar = true;
+  const cont = document.getElementById('painel-ind-carregamento-prazo-container-ano');
+  if(cont){ cont.style.opacity = '.55'; cont.style.pointerEvents = 'none'; }
+  const p = carregarPainelCarregamentoPrazoAno();
+  window._carregAnoReusar = false;
+  Promise.resolve(p).finally(()=>{ if(cont){ cont.style.opacity = ''; cont.style.pointerEvents = ''; } });
+}
 async function carregarPainelCarregamentoPrazoAno(){
   const container = document.getElementById('painel-ind-carregamento-prazo-container-ano');
   if(!container) return;
+  const reusar = !!window._carregAnoReusar;   // lido antes de qualquer await (o clique zera a flag logo após chamar)
   try {
     const anoSel = _anoSelPainelIndicadores();
     const rireSel = window._painelIndRireSel || '';
@@ -36938,16 +36951,34 @@ async function carregarPainelCarregamentoPrazoAno(){
     // Mês depois do último importado da planilha fica em branco (não entra no acumulado nem mostra 100%)
     const ultimoMesPl = mesesPl.length ? Math.max(...mesesPl) : 0;
     const calcMesAno = async (mesStr, u, r) => (ultimoMesPl && +mesStr.slice(5,7) > ultimoMesPl) ? null : _calcCarregamentoNoPrazoMes(mesStr, u, r);
-    const { bMes, noPrazoTotal, foraTotal, pctAnual } = await _calcNoPrazoAno(calcMesAno, anoSel, window._painelIndUndSel||'', rireSel);
+    // Clique numa barra só muda a seleção: reaproveita o cálculo dos 12 meses já feito (mesmo ano/unidade/filtro R.I./R.E.).
+    const chaveCache = [anoSel, window._painelIndUndSel||'', rireSel, ultimoMesPl].join('|');
+    let dados = (reusar && window._carregAnoCache && window._carregAnoCache.chave === chaveCache) ? window._carregAnoCache.dados : null;
+    if(!dados){
+      dados = await _calcNoPrazoAno(calcMesAno, anoSel, window._painelIndUndSel||'', rireSel);
+      window._carregAnoCache = { chave: chaveCache, dados };
+    }
+    const { bMes, porMes, noPrazoTotal, foraTotal, pctAnual } = dados;
     const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
+    // Meses clicados nas barras (Ctrl+clique soma, Shift+clique faz intervalo); mês sem dado é descartado.
+    const mesSelIdx = _absSelArr(window._absAnoMesSelPorPrefixo['carreg-prazo']).filter(i => porMes[i]);
+    const msSel = mesSelIdx.map(i => porMes[i]);
+    const selNoPrazo = msSel.reduce((a,m)=>a+m.noPrazo,0), selFora = msSel.reduce((a,m)=>a+m.fora,0);
+    const temSel = msSel.length > 0;
+    const pctSel = temSel ? (mesSelIdx.length === 1 ? bMes[mesSelIdx[0]] : selNoPrazo/(selNoPrazo+selFora)*100) : null;
+    const nomesSel = mesSelIdx.map(i => NOMES_MES_PT_ABREV[i]);
+    const mesSelLabel = temSel ? ((nomesSel.length<=4 ? nomesSel.join(' + ') : nomesSel.length+' MESES')+'/'+anoSel) : null;
+    const vNoPrazo = temSel ? selNoPrazo : noPrazoTotal, vFora = temSel ? selFora : foraTotal;
     container.innerHTML = _renderCardVisaoAnualPercentual({
       indicador: 'INDICADOR 04 · CONFERÊNCIA DO ARMAZÉM'+eyebrowRire, titulo: 'Carregamento no Prazo', area: 'OPERAÇÕES / ARMAZÉM',
       anoSel, pctAnual, metaNum: 90, invertido: true, bMes,
       composicaoItems: [
-        {label:'NO PRAZO', valor: noPrazoTotal, desc:'Conferência concluída até a data de saída. Meses com planilha de Rotas Externas usam o "Carregamento ok" e a "Rota Extra" dela.'},
-        {label:'FORA DO PRAZO', valor: foraTotal, desc:'Conferência depois da saída, ou sem conferência "ok" registrada. Na planilha: valor abaixo da meta, falta de veículo e atrasos.'},
+        {label:'NO PRAZO', valor: vNoPrazo, desc:'Conferência concluída até a data de saída. Meses com planilha de Rotas Externas usam o "Carregamento ok" e a "Rota Extra" dela.'},
+        {label:'FORA DO PRAZO', valor: vFora, desc:'Conferência depois da saída, ou sem conferência "ok" registrada. Na planilha: valor abaixo da meta, falta de veículo e atrasos.'},
       ],
-      baseTxt: `${noPrazoTotal+foraTotal} registros no ano`
+      baseTxt: temSel ? `${vNoPrazo+vFora} registros ${mesSelIdx.length>1?'nos meses':'no mês'}` : `${noPrazoTotal+foraTotal} registros no ano`,
+      onMesClick: '_toggleMesCarregAno', mesSelIdx, mesSelLabel,
+      pctView: pctSel, dentroDaMetaView: temSel ? pctSel >= 90 : null
     });
     const NOMES_ABREV = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
     container.insertAdjacentHTML('afterbegin', _barraPlanilhaCarreg(rireSel === 'RI'

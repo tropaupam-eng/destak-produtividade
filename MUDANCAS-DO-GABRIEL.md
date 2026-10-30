@@ -21,6 +21,17 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-10-30, Gabriel: Carregamento no Prazo (Visão Anual): clique nas barras de EVOLUÇÃO MENSAL filtra o mês — v4.89.126
+Onde: `index.html`: `_toggleMesCarregAno` (nova), `carregarPainelCarregamentoPrazoAno` (passa `onMesClick`/`mesSelIdx`/`pctView` ao
+`_renderCardVisaoAnualPercentual`, que já existia) e `_calcNoPrazoAno` (devolve também `porMes` {noPrazo, fora}). Mesma regra do
+Absenteísmo: clique = só esse mês, clique de novo desmarca, Ctrl+clique soma, Shift+clique intervalo, "✕ Limpar filtros" volta ao ano. Com
+mês(es) marcado(s): "RESULTADO DE <MÊS>" e NO PRAZO/FORA DO PRAZO/registros passam a ser só dos meses marcados (vários meses = soma no
+prazo ÷ soma total). O número grande segue sendo o acumulado do ano. Clique só troca a seleção, sem recalcular os 12 meses (cache
+`window._carregAnoCache`, vale para o mesmo ano/unidade/filtro R.I./R.E.). A seleção usa o mesmo armazenamento do Absenteísmo
+(`_absAnoMesSelPorPrefixo['carreg-prazo']`), então zera ao trocar mês/unidade no topo. Não toca em dados do Supabase.
+Como desfazer: `git revert` deste commit (volta ao 4.89.125, só sem o clique).
+Pendente/risco: baixo; só visual/cliente.
+
 ## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.125
 Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funções novas (antes de `abrirModalLancarMotivosPrazo`):
 `_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_dataPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`,
