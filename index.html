@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.122';
+const APP_VERSION = '4.89.123';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36522,6 +36522,22 @@ async function _carregPrazoDaPlanilha(mes, undSel){
   return calc.total > 0 ? { ...calc, metaPct: meta } : null;
 }
 
+// Aviso com botão "Importar planilha" no topo dos cartões de Carregamento no Prazo (fora do cartão, então não vai na imagem
+// de "Baixar Imagem"): diz de onde vem o número e leva direto à importação. O botão antigo fica em "Análise por Motivo", mais embaixo.
+function _barraPlanilhaCarreg(texto){
+  return `<div data-barra-planilha="1" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:var(--bg-card2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:.82rem;color:var(--text-secondary)">
+    <span>${texto}</span>
+    <button type="button" onclick="importarPlanilhaMotivosPrazo()" style="background:var(--bg-hover);border:1px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.8rem;font-weight:700;color:var(--text-primary);cursor:pointer;white-space:nowrap">${_ic('upload',13)} Importar planilha</button>
+  </div>`;
+}
+// Meses (1-12) do ano que já têm planilha de Rotas Externas importada, em qualquer unidade.
+async function _mesesComPlanilhaCarreg(ano){
+  const rows = await supaFetch(`configuracoes?chave=like.carregamento_prazo_semanas_${ano}_*&select=chave`, { _quiet:true }).catch(() => []) || [];
+  const meses = new Set();
+  rows.forEach(r => { const m = /carregamento_prazo_semanas_\d{4}_(\d{2})_/.exec(r.chave || ''); if(m) meses.add(Number(m[1])); });
+  return [...meses].sort((a,b) => a - b);
+}
+
 // Cartão do mês com planilha: o mesmo desenho do slide (% por semana, quantidade por semana) no padrão do Painel.
 function _renderCarregPrazoPlanilha({ mesRef, dados, eyebrowExtra }){
   const [anoRef, numMes] = mesRef.split('-').map(Number);
@@ -36743,6 +36759,7 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const dePlanilha = rireSel === 'RI' ? null : await _carregPrazoDaPlanilha(mes, window._painelIndUndSel||'');   // a planilha é de ROTAS EXTERNAS: vale em "Todas" e em R.E.; em R.I. segue o sistema
     if(dePlanilha){
       container.innerHTML = _renderCarregPrazoPlanilha({ mesRef: mes, dados: dePlanilha });
+      container.insertAdjacentHTML('afterbegin', _barraPlanilhaCarreg('Este mês está pela <b>planilha de Rotas Externas</b> importada (cada linha = 1 carregamento; OK ÷ total).'));
       _featherReplace();
       return;
     }
@@ -36822,6 +36839,9 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
       noPrazoDesc: 'Conferência concluída até a data de saída',
       foraDesc: 'Conferência depois da saída, ou sem conferência "ok" registrada'
     });
+    container.insertAdjacentHTML('afterbegin', _barraPlanilhaCarreg(rireSel === 'RI'
+      ? 'Filtro <b>R.I.</b> (rota interna): número do sistema. A planilha de Rotas Externas só vale em R.E. ou Todas.'
+      : 'Este mês <b>ainda não tem planilha de Rotas Externas importada</b>: o número abaixo vem do cálculo do sistema (conferência do armazém).'));
     _featherReplace();
   } catch(e){
     console.error('Erro ao carregar carregamento no prazo:', e);
@@ -36890,6 +36910,7 @@ async function carregarPainelCarregamentoPrazoAno(){
     const anoSel = _anoSelPainelIndicadores();
     const rireSel = window._painelIndRireSel || '';
     const { bMes, noPrazoTotal, foraTotal, pctAnual } = await _calcNoPrazoAno(_calcCarregamentoNoPrazoMes, anoSel, window._painelIndUndSel||'', rireSel);
+    const mesesPl = rireSel === 'RI' ? [] : await _mesesComPlanilhaCarreg(anoSel);
     const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
     container.innerHTML = _renderCardVisaoAnualPercentual({
       indicador: 'INDICADOR 04 · CONFERÊNCIA DO ARMAZÉM'+eyebrowRire, titulo: 'Carregamento no Prazo', area: 'OPERAÇÕES / ARMAZÉM',
@@ -36900,6 +36921,12 @@ async function carregarPainelCarregamentoPrazoAno(){
       ],
       baseTxt: `${noPrazoTotal+foraTotal} registros no ano`
     });
+    const NOMES_ABREV = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
+    container.insertAdjacentHTML('afterbegin', _barraPlanilhaCarreg(rireSel === 'RI'
+      ? 'Filtro <b>R.I.</b> (rota interna): todos os meses vêm do sistema. A planilha de Rotas Externas só vale em R.E. ou Todas.'
+      : (mesesPl.length
+        ? 'Meses pela <b>planilha de Rotas Externas</b>: <b>' + mesesPl.map(m => NOMES_ABREV[m-1]).join(', ') + '</b>. Os demais meses vêm do cálculo do sistema (misturar os dois muda o acumulado do ano).'
+        : '<b>Nenhuma planilha de Rotas Externas importada em ' + anoSel + '</b>: todos os meses vêm do cálculo do sistema. Clique em Importar planilha para usar a planilha.')));
     _featherReplace();
   } catch(e){
     console.error('Erro ao carregar carregamento no prazo (ano):', e);
