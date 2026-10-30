@@ -21,13 +21,13 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.123
+## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.124
 Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funções novas (antes de `abrirModalLancarMotivosPrazo`):
 `_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_dataPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`,
 `_impCarregarAtuais`, `_impMostrarPrevia`, `_impTrocarUnidade`, `_impGravar`, `_impFechar`, `_carregPrazoDaPlanilha`,
 `_renderCarregPrazoPlanilha`. Alterados: cabeçalho do cartão "Análise por Motivo" (botão "Importar planilha"; "Baixar Imagem"
 deslocado), `carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições da
-composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.123 (as 4.89.118 a 4.89.122 nunca foram publicadas; esta entrada as
+composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.124 (as 4.89.118 a 4.89.123 nunca foram publicadas; esta entrada as
 substitui).
 Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Três versões minhas saíram erradas
 (denominador de motivos; tabela SEM 1..5 digitada à mão; Rota Extra fora do OK). REGRA FINAL (Gabriel, 30/10): cada linha da planilha é um
@@ -51,7 +51,14 @@ unidades com planilha no mês.
 Filtro R.I./R.E. (corrigido na 4.89.122): a planilha é de ROTAS EXTERNAS. Com o filtro R.I. (rota interna) o indicador segue o cálculo do
 sistema; com R.E. e com "Todas" os meses importados usam a planilha (antes eu ignorava a planilha em qualquer um dos dois filtros). Achado
 no print do Gabriel: filtro R.I. ligado e nada ainda importado no banco, então Set/Out apareciam 100% pelo sistema. Em "Todas" a planilha
-(só externas) substitui o número do mês inteiro: confirmar com o Gabriel se prefere só em R.E.Aviso com botão nos cartões (4.89.123): depois de dois prints "ainda errado" do Gabriel (Set/Out em 100% pelo sistema), a conferência no
+(só externas) substitui o número do mês inteiro: confirmar com o Gabriel se prefere só em R.E.Planilha nova (4.89.124): o Gabriel passou a usar só as colunas Data, Dia Semana, Nome da Rota e "Status de carregamento" (o arquivo
+"Rotas externas -2026 (1).xlsx" de 30/10 tem só a aba de Setembro; a de Outubro saiu dele). Conferido com o arquivo real: a aba é lida sem
+ajuste (cabeçalho em E3, bloco "Análise por motivo" em Q:V), Setembro = 85 carregamentos, 69 OK = 81,2%; os 4 status são escritos sempre
+igual (sem espaço sobrando). "Dia Semana" é fórmula da data, então não serve para achar data errada. Ajustes: (1) data digitada em mês
+VIZINHO (4/8, 17/8, 26/8 numa aba de setembro; 15/9 e 16/9 numa de outubro) passa a valer como o MESMO DIA do mês da aba só para definir a
+semana (antes herdava a semana da linha anterior, errando por ex. 26/8 → semana 5 em vez de 4); o total do mês não muda e a prévia avisa
+"vale corrigir na planilha"; dia inexistente (31/8 → 31/9) e datas muito fora herdam a semana anterior; (2) aba sem o nome do mês no título
+passa a usar o mês (e ano) mais frequente das datas, com aviso. Linha em vermelho (L14, Rota Extra 4/8) não é lida (a cor não conta).Aviso com botão nos cartões (4.89.123): depois de dois prints "ainda errado" do Gabriel (Set/Out em 100% pelo sistema), a conferência no
 banco mostrou que NADA tinha sido importado (nenhuma chave `carregamento_prazo_semanas_*`, nenhum motivo de Outubro): a tela estava certa
 para o que havia no banco, mas não dizia isso. Agora, no topo dos cartões mensal e anual de Carregamento no Prazo (FORA do cartão, não vai
 na imagem baixada), há um aviso com o botão "Importar planilha": "Nenhuma planilha de Rotas Externas importada em 2026", "Meses pela

@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.123';
+const APP_VERSION = '4.89.124';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36307,28 +36307,50 @@ function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
   const inteiro = v => { const n = parseInt(String(v||'').replace(/\D/g,''), 10); return isNaN(n) ? 0 : n; };
   wb.SheetNames.forEach(aba => {
     const nAba = _semAcentoPl(aba);
-    const idxMes = _MESES_PT_PLANILHA.findIndex(m => nAba.includes(_semAcentoPl(m)));
-    if(idxMes < 0) return;                                              // aba que não é de um mês: ignora
+    let idxMes = _MESES_PT_PLANILHA.findIndex(m => nAba.includes(_semAcentoPl(m))), anoAba = anoArq;
     const mr = XLSX.utils.sheet_to_json(wb.Sheets[aba], { header:1, defval:'', raw:true });        // valores crus (datas como número)
     const m = mr.map(l => l.map(c => String(c==null?'':c).trim()));                                // mesmos valores em texto
-    const mesNum = idxMes + 1, mesAno = anoArq + '-' + String(mesNum).padStart(2,'0');
-    const avisos = [];
-
-    // 1) linha a linha: cabeçalho "Data" + "Status de carregamento" (ou o nome antigo "Rota no prazo"); cada linha com status é um carregamento
-    let semanas = null, porLinha = null, foraDoMes = 0, exFora = '', metaPct = 90;
-    for(let r=0; r<Math.min(m.length, 15) && !porLinha; r++){
+    // cabeçalho das colunas que contam: "Data" e "Status de carregamento" (ou o nome antigo "Rota no prazo")
+    let cab = null;
+    for(let r=0; r<Math.min(m.length, 15) && !cab; r++){
       const cData = m[r].findIndex(t => _semAcentoPl(t) === 'data');
       const cCls = m[r].findIndex(t => ['status de carregamento', 'rota no prazo'].includes(_semAcentoPl(t)));
-      if(cData < 0 || cCls < 0) continue;
+      if(cData >= 0 && cCls >= 0) cab = { r, cData, cCls };
+    }
+    const avisos = [];
+    if(idxMes < 0){
+      // aba sem o nome do mês: vale o mês (e o ano) que mais aparece nas datas dos carregamentos
+      if(!cab) return;                                                    // aba que não é de um mês: ignora
+      const freq = {};
+      for(let k=cab.r+1; k<m.length; k++){ if(!m[k][cab.cCls]) continue; const d = _dataPlanilha(mr[k][cab.cData], anoArq); if(d){ const key = d.y + '-' + String(d.m).padStart(2,'0'); freq[key] = (freq[key]||0) + 1; } }
+      const top = Object.entries(freq).sort((a,b) => b[1] - a[1])[0];
+      if(!top || top[1] < 3) return;
+      anoAba = Number(top[0].slice(0,4)); idxMes = Number(top[0].slice(5)) - 1;
+      avisos.push('A aba "' + aba + '" não tem o nome do mês: usei o mês mais frequente nas datas (' + top[0].slice(5) + '/' + top[0].slice(0,4) + ').');
+    }
+    const mesNum = idxMes + 1, mesAno = anoAba + '-' + String(mesNum).padStart(2,'0');
+
+    // 1) linha a linha: cada linha com status é um carregamento
+    let semanas = null, porLinha = null, herdadas = 0, exHerdada = '', vizinhas = 0, exViz = '', exVizComo = '', metaPct = 90;
+    if(cab){
       porLinha = {}; const porSem = {};
-      const dow1 = new Date(Date.UTC(anoArq, mesNum - 1, 1)).getUTCDay();             // dia da semana do dia 1 (0 = domingo)
+      const dow1 = new Date(Date.UTC(anoAba, mesNum - 1, 1)).getUTCDay();             // dia da semana do dia 1 (0 = domingo)
+      const diasMes = new Date(Date.UTC(anoAba, mesNum, 0)).getUTCDate();
       let semAtual = null, maxSem = 0;
-      for(let k=r+1; k<m.length; k++){
-        const cls = m[k][cCls]; if(!cls) continue;                                      // linha sem classificação: ainda não é carregamento
+      for(let k=cab.r+1; k<m.length; k++){
+        const cls = m[k][cab.cCls]; if(!cls) continue;                                  // linha sem status: ainda não é carregamento
         porLinha[cls] = (porLinha[cls]||0) + 1;
-        const dt = _dataPlanilha(mr[k][cData], anoArq);
-        if(dt && dt.y === anoArq && dt.m === mesNum) semAtual = Math.floor((dt.d - 1 + dow1) / 7) + 1;
-        else { foraDoMes++; if(!exFora) exFora = dt ? (dt.d + '/' + dt.m) : 'sem data'; }  // data de outro mês/sem data: fica na semana da linha anterior
+        let dt = _dataPlanilha(mr[k][cab.cData], anoAba);
+        const noMes = dt && dt.y === anoAba && dt.m === mesNum;
+        if(dt && !noMes && Math.abs((dt.y * 12 + dt.m) - (anoAba * 12 + mesNum)) === 1 && dt.d <= diasMes){
+          // data digitada no mês vizinho (ex.: 4/8 numa aba de setembro): quase sempre é o mesmo dia do mês da aba
+          vizinhas++; if(!exViz){ exViz = dt.d + '/' + dt.m; exVizComo = dt.d + '/' + mesNum; }
+          dt = { y:anoAba, m:mesNum, d:dt.d };
+        } else if(!noMes){
+          herdadas++; if(!exHerdada) exHerdada = dt ? (dt.d + '/' + dt.m + '/' + dt.y) : 'sem data';   // sem como adivinhar: fica na semana da linha anterior
+          dt = null;
+        }
+        if(dt) semAtual = Math.floor((dt.d - 1 + dow1) / 7) + 1;
         const sn = semAtual || 1;
         const o = porSem[sn] || (porSem[sn] = { total:0, noPrazo:0 });
         o.total++; if(['carregamento ok', 'rota extra'].includes(_semAcentoPl(cls))) o.noPrazo++;   // Rota Extra = carregamento OK; o resto é NOK
@@ -36338,7 +36360,8 @@ function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
       if(!Object.keys(porLinha).length){ porLinha = null; semanas = null; }
     }
     if(!porLinha) avisos.push('Não achei as colunas "Data" e "Status de carregamento" com carregamentos nesta aba: o % do indicador não será atualizado por ela.');
-    if(foraDoMes) avisos.push(foraDoMes + ' linha(s) com data de outro mês ou sem data (ex.: ' + exFora + ' — provável erro de digitação): contadas na semana da linha anterior.');
+    if(vizinhas) avisos.push(vizinhas + ' linha(s) com a data digitada em mês vizinho (ex.: ' + exViz + '): contadas como o mesmo dia do mês da aba (' + exVizComo + ') só para definir a semana; o total do mês não muda. Vale corrigir na planilha.');
+    if(herdadas) avisos.push(herdadas + ' linha(s) com data muito fora do mês ou sem data (ex.: ' + exHerdada + '): contadas na semana da linha anterior.');
 
     // 2) bloco "Análise por motivo" (fórmula da planilha): título, linha com os nomes, linha com as quantidades
     let bloco = null;
