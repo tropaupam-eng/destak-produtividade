@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.118';
+const APP_VERSION = '4.89.119';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -58662,6 +58662,21 @@ async function carregarRetornoVeiculos(){
       return [];
     }) || [];
 
+    // Cargas vinculadas (mesmo motorista/veículo, "Juntar" na Expedição) — pedido do
+    // usuário, 2026-10-30: quando duas cargas da mesma viagem aparecem aqui, mostrar
+    // como UMA chegada só, não duas. Busca direto aqui (não depende de ter passado
+    // pela Expedição antes — _cargasVinculadasCache pode já estar populado por lá,
+    // mas essa tela tem que funcionar sozinha também).
+    try{
+      const vinc = await supaFetch('demandas_rota_vinculos?select=carga_a,carga_b&limit=2000').catch(()=>[]) || [];
+      const mapa = {};
+      vinc.forEach(v=>{
+        (mapa[v.carga_a] = mapa[v.carga_a] || new Set()).add(v.carga_b);
+        (mapa[v.carga_b] = mapa[v.carga_b] || new Set()).add(v.carga_a);
+      });
+      _cargasVinculadasCache = mapa;
+    }catch(e){ console.warn('[Monitoramento] vínculos de carga:', e.message); }
+
     // Buscar retornos agendados/reais
     const retornos = await supaFetch('retorno_veiculos?select=id,demanda_id,data_retorno_agendado,data_retorno_real&limit=2000').catch(()=>[]) || [];
     const retornosMap = {};
@@ -58715,6 +58730,36 @@ async function carregarRetornoVeiculos(){
       const dataChegada = ret?.data_retorno_real?.slice(0,10) || ret?.data_retorno_agendado?.slice(0,10) || 'sem-data';
       if(!gruposPorData[dataChegada]) gruposPorData[dataChegada] = [];
       gruposPorData[dataChegada].push(d);
+    });
+
+    // Cargas vinculadas (mesma viagem) dentro do MESMO grupo de data viram um card
+    // só — merge só dentro do grupo de propósito: se as duas tiverem chegada
+    // agendada/real em dias diferentes, continuam em cards separados (cada uma no
+    // seu dia), que é a informação certa nesse caso.
+    Object.keys(gruposPorData).forEach(data=>{
+      const lista = gruposPorData[data];
+      const porCarga = {}; lista.forEach(d=>{ if(d.carga) porCarga[d.carga] = d; });
+      const vistos = new Set();
+      const mesclado = [];
+      lista.forEach(d=>{
+        if(!d.carga || vistos.has(d.carga)) return;
+        vistos.add(d.carga);
+        const parceiroCarga = [...(_cargasVinculadasCache[d.carga]||[])].find(c=>porCarga[c] && !vistos.has(c));
+        if(parceiroCarga){
+          const parceiro = porCarga[parceiroCarga];
+          vistos.add(parceiro.carga);
+          mesclado.push({
+            ...d,
+            _cargasCombinadas: [d.carga, parceiro.carga],
+            carga: d.carga + ' + ' + parceiro.carga,
+            rota: [d.rota, parceiro.rota].filter(Boolean).join(' + '),
+            ajudante: d.ajudante || parceiro.ajudante,
+          });
+        } else {
+          mesclado.push(d);
+        }
+      });
+      gruposPorData[data] = mesclado;
     });
 
     // Ordenar datas (hoje primeiro, depois futuras)
