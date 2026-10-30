@@ -21,13 +21,13 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.121
+## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.122
 Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funções novas (antes de `abrirModalLancarMotivosPrazo`):
 `_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_dataPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`,
 `_impCarregarAtuais`, `_impMostrarPrevia`, `_impTrocarUnidade`, `_impGravar`, `_impFechar`, `_carregPrazoDaPlanilha`,
 `_renderCarregPrazoPlanilha`. Alterados: cabeçalho do cartão "Análise por Motivo" (botão "Importar planilha"; "Baixar Imagem"
 deslocado), `carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições da
-composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.121 (as 4.89.118 a 4.89.120 nunca foram publicadas; esta entrada as
+composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.122 (as 4.89.118 a 4.89.121 nunca foram publicadas; esta entrada as
 substitui).
 Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Três versões minhas saíram erradas
 (denominador de motivos; tabela SEM 1..5 digitada à mão; Rota Extra fora do OK). REGRA FINAL (Gabriel, 30/10): cada linha da planilha é um
@@ -48,7 +48,10 @@ y", quantidade de carregamentos por semana, no prazo/fora/total) e a Visão Anua
 R.I./R.E. (a planilha não tem), segue o cálculo do sistema como antes (decisão assumida: manter o sistema nos meses sem planilha; hoje
 isso mistura dois métodos no acumulado do ano: Jan a Ago 100% pelo sistema contra ~81% da planilha). Sem unidade ("Todas"): soma as
 unidades com planilha no mês.
-Observação sobre a planilha (auditoria, 30/10): o bloco "Análise por motivo" é fórmula e continua igual (conta a coluna de status); a
+Filtro R.I./R.E. (corrigido na 4.89.122): a planilha é de ROTAS EXTERNAS. Com o filtro R.I. (rota interna) o indicador segue o cálculo do
+sistema; com R.E. e com "Todas" os meses importados usam a planilha (antes eu ignorava a planilha em qualquer um dos dois filtros). Achado
+no print do Gabriel: filtro R.I. ligado e nada ainda importado no banco, então Set/Out apareciam 100% pelo sistema. Em "Todas" a planilha
+(só externas) substitui o número do mês inteiro: confirmar com o Gabriel se prefere só em R.E.Observação sobre a planilha (auditoria, 30/10): o bloco "Análise por motivo" é fórmula e continua igual (conta a coluna de status); a
 tabela SEM 1..5 é digitada à mão e não é usada.
 Testes: `node check.js` ok; 27 testes do leitor/cálculo (cálculo independente por data e por linha sobre os dados reais; layout novo de 4
 colunas; nome antigo e novo do cabeçalho; status desconhecido = NOK), 5 de integração mensal/anual, planilha real lida com a biblioteca XLSX
