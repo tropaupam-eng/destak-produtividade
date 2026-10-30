@@ -21,13 +21,13 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.124
+## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.125
 Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funções novas (antes de `abrirModalLancarMotivosPrazo`):
 `_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_dataPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`,
 `_impCarregarAtuais`, `_impMostrarPrevia`, `_impTrocarUnidade`, `_impGravar`, `_impFechar`, `_carregPrazoDaPlanilha`,
 `_renderCarregPrazoPlanilha`. Alterados: cabeçalho do cartão "Análise por Motivo" (botão "Importar planilha"; "Baixar Imagem"
 deslocado), `carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições da
-composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.124 (as 4.89.118 a 4.89.123 nunca foram publicadas; esta entrada as
+composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.125 (as 4.89.118 a 4.89.124 nunca foram publicadas; esta entrada as
 substitui).
 Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Três versões minhas saíram erradas
 (denominador de motivos; tabela SEM 1..5 digitada à mão; Rota Extra fora do OK). REGRA FINAL (Gabriel, 30/10): cada linha da planilha é um
@@ -51,7 +51,14 @@ unidades com planilha no mês.
 Filtro R.I./R.E. (corrigido na 4.89.122): a planilha é de ROTAS EXTERNAS. Com o filtro R.I. (rota interna) o indicador segue o cálculo do
 sistema; com R.E. e com "Todas" os meses importados usam a planilha (antes eu ignorava a planilha em qualquer um dos dois filtros). Achado
 no print do Gabriel: filtro R.I. ligado e nada ainda importado no banco, então Set/Out apareciam 100% pelo sistema. Em "Todas" a planilha
-(só externas) substitui o número do mês inteiro: confirmar com o Gabriel se prefere só em R.E.Planilha nova (4.89.124): o Gabriel passou a usar só as colunas Data, Dia Semana, Nome da Rota e "Status de carregamento" (o arquivo
+(só externas) substitui o número do mês inteiro: confirmar com o Gabriel se prefere só em R.E.Erro ao gravar (4.89.125): no 1º teste real do Gabriel o Gravar falhou com `duplicate key value violates unique constraint
+"liberacao_prazo_motivos_mes_mes_ano_unidade_motivo_nome"` (código 23505, chave (2026-09, 1 - CD, Atraso no carregamento)). Causa: o upsert
+(`Prefer: resolution=merge-duplicates`) não dizia ao PostgREST em quais colunas está o conflito; sem `?on_conflict=`, ele só considera a chave
+primária e tentava INSERIR de novo o mês que já existia (Setembro, lançado em 29/10). Correção: `liberacao_prazo_motivos_mes?on_conflict=mes_ano,unidade,motivo_nome`
+na importação (`_impGravar`) e, pelo mesmo motivo, em "Lançar Motivos" (`mlpSalvarTudo`: salvar de novo um mês existente dava o mesmo erro).
+Nada foi gravado na tentativa que falhou (o erro veio no 1º passo, antes das semanas). 7 testes novos do fluxo de gravação (upsert com
+on_conflict, motivo novo, POST/PATCH da configuração, erro sem efeito colateral). Não consegui testar contra o banco real sem gravar dado;
+se o Gravar ainda errar, mandar o print da mensagem.Planilha nova (4.89.124): o Gabriel passou a usar só as colunas Data, Dia Semana, Nome da Rota e "Status de carregamento" (o arquivo
 "Rotas externas -2026 (1).xlsx" de 30/10 tem só a aba de Setembro; a de Outubro saiu dele). Conferido com o arquivo real: a aba é lida sem
 ajuste (cabeçalho em E3, bloco "Análise por motivo" em Q:V), Setembro = 85 carregamentos, 69 OK = 81,2%; os 4 status são escritos sempre
 igual (sem espaço sobrando). "Dia Semana" é fórmula da data, então não serve para achar data errada. Ajustes: (1) data digitada em mês
