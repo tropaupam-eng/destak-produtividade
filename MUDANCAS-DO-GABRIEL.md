@@ -29,6 +29,9 @@ Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funçõ
 deslocado), `carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições da
 composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.125 (as 4.89.118 a 4.89.124 nunca foram publicadas; esta entrada as
 substitui).
+Ajuste (30/10, após teste do Gabriel): na Visão Anual, mês DEPOIS do último mês importado da planilha (ex.: OUT sem planilha) fica em
+branco: não mostra 100%, não entra no acumulado do ano nem nos totais (`carregarPainelCarregamentoPrazoAno`, wrapper `calcMesAno`).
+Meses antes do último importado seguem pelo sistema. Para desfazer: remover o wrapper e voltar a passar `_calcCarregamentoNoPrazoMes`.
 Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Três versões minhas saíram erradas
 (denominador de motivos; tabela SEM 1..5 digitada à mão; Rota Extra fora do OK). REGRA FINAL (Gabriel, 30/10): cada linha da planilha é um
 carregamento. Só contam as colunas Data, Dia da Semana, Nome da Rota e "Status de carregamento" (antes chamada "Rota no prazo": os dois
