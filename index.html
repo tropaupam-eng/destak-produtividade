@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.128';
+const APP_VERSION = '4.89.129';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33930,54 +33930,76 @@ async function gerarApresentacaoPainelIndicadores(){
     pptx.layout = 'SLIDE_16X9';
 
     const slides = PAINEL_IND_SLIDES;
+    const inicioGeral = Date.now();
+    const pulados = []; // títulos dos slides que não entraram (timeout em carregar ou captura)
     for(let i=0;i<slides.length;i++){
       const s = slides[i];
-      progTxt.textContent = `Gerando slide ${i+1} de ${slides.length} — ${s.titulo}...`;
       progBar.style.width = Math.round((i/slides.length)*100)+'%';
 
-      const abaEl = document.getElementById('aba-'+s.aba);
-      if(!abaEl) continue;
-      const displayOriginal = abaEl.style.display;
-      abaEl.style.display = 'block';
+      // Contador de segundos no slide atual — sem isso, um slide lento (rede
+      // ruim) deixa o texto "Gerando slide X de Y..." parado por dezenas de
+      // segundos com cara de travado, mesmo quando por baixo está tudo
+      // funcionando normalmente, só esperando a rede. Achado real do
+      // usuário, 2026-11-02: "continua lento, o que podemos fazer pra
+      // deixar mais rápido ou me diga o tempo pra gerar essa apresentação".
+      const inicioSlide = Date.now();
+      const tituloBase = `Gerando slide ${i+1} de ${slides.length} — ${s.titulo}...`;
+      progTxt.textContent = tituloBase + ' (0s)';
+      const ticker = setInterval(()=>{
+        progTxt.textContent = tituloBase + ' (' + Math.round((Date.now()-inicioSlide)/1000) + 's)';
+      }, 1000);
 
-      if(periodo==='semanal' && s.semanal && s.prepararSemana) s.prepararSemana(semanaIdx);
-      else if(s.limparSemana) s.limparSemana();
+      try{
+        const abaEl = document.getElementById('aba-'+s.aba);
+        if(!abaEl) continue;
+        const displayOriginal = abaEl.style.display;
+        abaEl.style.display = 'block';
 
-      // O timeout aqui é só pra "Gerar Apresentação" não ficar presa minutos
-      // num slide só — supaFetch já tenta de novo sozinho em caso de timeout
-      // (até ~70s por chamada, pra aguentar cold start do Supabase), e um
-      // carregar() pode fazer 2+ chamadas em sequência (ex: Absenteísmo
-      // Distribuição busca absenteismo, DEPOIS motoristas/ajudantes/conferentes),
-      // então numa rede ruim (achado real do usuário, 2026-11-02: travou
-      // "um bom tempo" no slide 1, parado na barra de progresso, mesmo já
-      // com o teto de 20s só na captura) um slide só já podia segurar a
-      // apresentação inteira por minutos sem nunca pular pro próximo.
-      try{ await _comTimeout(s.carregar(mes), 20000, 'Carregamento do slide demorou demais (20s), pulado.'); }catch(e){ console.warn('Falha ao carregar slide', s.titulo, e); }
-      // Dá um instante pro DOM assentar (gráficos Chart.js terminam de desenhar
-      // de forma assíncrona depois do innerHTML entrar) — sem isso, html2canvas
-      // às vezes captura o canvas do gráfico ainda em branco.
-      await new Promise(r=>setTimeout(r, 350));
+        if(periodo==='semanal' && s.semanal && s.prepararSemana) s.prepararSemana(semanaIdx);
+        else if(s.limparSemana) s.limparSemana();
 
-      const alvo = s.container ? document.getElementById(s.container) : abaEl;
-      if(alvo){
-        try{
-          const canvas = await _comTimeout(_capturarNodeComo1920x1080(alvo, {semFundo:false}), 20000, 'Captura do slide demorou demais (20s), pulado.');
-          pptx.addSlide().addImage({ data:canvas.toDataURL('image/png'), x:0, y:0, w:13.333, h:7.5 });
-        }catch(e){ console.warn('Falha ao capturar slide', s.titulo, e); }
+        // O timeout aqui é só pra "Gerar Apresentação" não ficar presa minutos
+        // num slide só — supaFetch já tenta de novo sozinho em caso de timeout
+        // (até ~70s por chamada, pra aguentar cold start do Supabase), e um
+        // carregar() pode fazer 2+ chamadas em sequência (ex: Absenteísmo
+        // Distribuição busca absenteismo, DEPOIS motoristas/ajudantes/conferentes
+        // — já otimizado pra rodar em paralelo, mas ainda depende da rede),
+        // então numa rede ruim um slide só já podia segurar a apresentação
+        // inteira por minutos sem nunca pular pro próximo.
+        let falhou = false;
+        try{ await _comTimeout(s.carregar(mes), 20000, 'Carregamento do slide demorou demais (20s), pulado.'); }
+        catch(e){ console.warn('Falha ao carregar slide', s.titulo, e); falhou = true; }
+        // Dá um instante pro DOM assentar (gráficos Chart.js terminam de desenhar
+        // de forma assíncrona depois do innerHTML entrar) — sem isso, html2canvas
+        // às vezes captura o canvas do gráfico ainda em branco.
+        await new Promise(r=>setTimeout(r, 350));
+
+        const alvo = s.container ? document.getElementById(s.container) : abaEl;
+        if(alvo){
+          try{
+            const canvas = await _comTimeout(_capturarNodeComo1920x1080(alvo, {semFundo:false}), 20000, 'Captura do slide demorou demais (20s), pulado.');
+            pptx.addSlide().addImage({ data:canvas.toDataURL('image/png'), x:0, y:0, w:13.333, h:7.5 });
+          }catch(e){ console.warn('Falha ao capturar slide', s.titulo, e); falhou = true; }
+        }
+        if(falhou) pulados.push(s.titulo);
+
+        if(s.limparSemana) s.limparSemana();
+        abaEl.style.display = displayOriginal;
+      } finally {
+        clearInterval(ticker);
       }
-
-      if(s.limparSemana) s.limparSemana();
-      abaEl.style.display = displayOriginal;
       await _respirar();
     }
 
+    const duracaoTotal = Math.round((Date.now()-inicioGeral)/1000);
     progTxt.textContent = 'Salvando arquivo...';
     progBar.style.width = '100%';
     const undLabel = (und || 'todas-unidades').replace(/[^a-zA-Z0-9]+/g,'-');
     const periodoLabel = periodo==='semanal' ? `semana${semanaIdx+1}` : 'mensal';
     await pptx.writeFile({ fileName: `Painel-Indicadores-${undLabel}-${mes}-${periodoLabel}.pptx` });
 
-    showToast('✅ Apresentação gerada!', 'success');
+    const msgPulados = pulados.length ? ` (${pulados.length} slide${pulados.length>1?'s':''} pulado${pulados.length>1?'s':''} por demora: ${pulados.join(', ')})` : '';
+    showToast(`✅ Apresentação gerada em ${duracaoTotal}s!${msgPulados}`, pulados.length ? 'warning' : 'success');
     fecharModalGerarApresentacao();
   }catch(e){
     console.error('Erro ao gerar apresentação:', e);
@@ -38403,7 +38425,6 @@ async function _calcularAbsenteismoDistribuicao(mes, filtros={}){
     const dataLimite = new Date(); dataLimite.setMonth(dataLimite.getMonth()+3);
     url += `&data=lte.${dataLimite.toISOString().split('T')[0]}`;
   }
-  const dados = await supaFetch(url) || [];
 
   // Buscar motoristas e ajudantes filtrando pela unidade do usuário logado
   const urlMots = undUsuario
@@ -38412,10 +38433,33 @@ async function _calcularAbsenteismoDistribuicao(mes, filtros={}){
   const urlAjs = undUsuario
     ? `ajudantes?select=nome,ativo,data_demissao,unidade&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}`
     : 'ajudantes?select=nome,ativo,data_demissao,unidade&order=nome.asc';
-  const [motoristasAll, ajudantesAll, conferentesAll] = await Promise.all([
-    supaFetch(urlMots) || [],
-    supaFetch(urlAjs) || [],
-    supaFetch('conferentes?select=nome').catch(()=>[]) || [],
+  // As 4 consultas abaixo são independentes — "dados" (absenteismo) não
+  // precisa esperar motoristas/ajudantes/conferentes nem vice-versa, mas
+  // rodavam em duas rodadas sequenciais sem necessidade. Rodar as 4 juntas
+  // corta praticamente pela metade o tempo de rede desta função. Achado em
+  // auditoria de performance do "Gerar Apresentação", 2026-11-02 (usuário:
+  // "continua lento, o que podemos fazer pra deixar mais rápido"). Também
+  // corrigido aqui: "supaFetch(...) || []" nas duas primeiras não fazia
+  // nada (a Promise em si é sempre truthy — o "|| []" só faria sentido
+  // depois do await), e só a 3ª tinha .catch() — agora as 3 têm, então uma
+  // falha de rede numa delas não derruba a função inteira sem necessidade.
+  // "concluidas" (preenchimento automático de dias em rota, mais abaixo) só
+  // depende de mesRef — não precisa esperar as 4 de cima terminarem pra ser
+  // disparada, então entra no mesmo Promise.all em vez de rodar depois.
+  // motUndRaw/ajUndRaw só são usados lá embaixo se "unidade" (filtro
+  // explícito, diferente de undUsuario) vier preenchido — mas a URL delas só
+  // depende desse parâmetro, disponível desde o início da função, então
+  // também entram aqui em vez de esperar tudo de cima terminar primeiro.
+  const [dados, motoristasAll, ajudantesAll, conferentesAll, concluidas, motUndRaw, ajUndRaw] = await Promise.all([
+    supaFetch(url).catch(()=>[]),
+    supaFetch(urlMots).catch(()=>[]),
+    supaFetch(urlAjs).catch(()=>[]),
+    supaFetch('conferentes?select=nome').catch(()=>[]),
+    mesRef
+      ? supaFetch(`demandas_rota?status=in.("concluido","fim_viagem")&data_saida=gte.${mesRef}-01&data_saida=lt.${_proximoMes(mesRef)}-01&select=motorista,data_saida,status`).catch(()=>[])
+      : Promise.resolve([]),
+    unidade ? supaFetch(`motoristas?unidade=eq.${encodeURIComponent(unidade)}&select=nome`).catch(()=>[]) : Promise.resolve([]),
+    unidade ? supaFetch(`ajudantes?unidade=eq.${encodeURIComponent(unidade)}&select=nome`).catch(()=>[]) : Promise.resolve([]),
   ]);
 
   // Nomes que estão em conferentes têm prioridade — pertencem ao armazém
@@ -38451,8 +38495,8 @@ async function _calcularAbsenteismoDistribuicao(mes, filtros={}){
   }
   if(nome) filtrados = filtrados.filter(d=>d.nome===nome);
   if(unidade){
-    const motUnd = (await supaFetch(`motoristas?unidade=eq.${encodeURIComponent(unidade)}&select=nome`) || []).map(m=>m.nome.trim().toUpperCase());
-    const ajUnd  = (await supaFetch(`ajudantes?unidade=eq.${encodeURIComponent(unidade)}&select=nome`) || []).map(a=>a.nome.trim().toUpperCase());
+    const motUnd = (motUndRaw||[]).map(m=>m.nome.trim().toUpperCase());
+    const ajUnd  = (ajUndRaw||[]).map(a=>a.nome.trim().toUpperCase());
     const pessoasUnd = new Set([...motUnd, ...ajUnd]);
     filtrados = filtrados.filter(d=>pessoasUnd.has((d.nome||'').trim().toUpperCase()));
   }
@@ -38538,11 +38582,9 @@ async function _calcularAbsenteismoDistribuicao(mes, filtros={}){
       if(!['saiu','fim_viagem'].includes(d.status)) return false;
       return d.data_saida.startsWith(mesRef);
     });
-    // Complementar com cargas concluídas do banco (para meses passados)
-    try{
-      const concluidas = await supaFetch(`demandas_rota?status=in.("concluido","fim_viagem")&data_saida=gte.${mesRef}-01&data_saida=lt.${_proximoMes(mesRef)}-01&select=motorista,data_saida,status`) || [];
-      concluidas.forEach(c=>{ if(c.motorista&&c.data_saida&&!demandasMes.find(d=>d.motorista===c.motorista&&d.data_saida===c.data_saida)) demandasMes.push(c); });
-    }catch(e){}
+    // Complementar com cargas concluídas do banco (para meses passados) —
+    // já buscado em paralelo com as outras 4 consultas, lá em cima.
+    (concluidas||[]).forEach(c=>{ if(c.motorista&&c.data_saida&&!demandasMes.find(d=>d.motorista===c.motorista&&d.data_saida===c.data_saida)) demandasMes.push(c); });
     for(const dem of demandasMes){
       const motorista = dem.motorista;
       if(!motorista) continue;
@@ -43333,17 +43375,33 @@ async function _calcularAbsenteismoArmazem(mes, filtros={}){
     ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade,area_armazem&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
     : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade,area_armazem&order=nome.asc&limit=500`;
   if(area) urlConfsBase += `&area_armazem=eq.${encodeURIComponent(area)}`;
-  const confsDB = await supaFetch(urlConfsBase) || [];
 
   // Período de referência — calculado aqui para filtrar demissões corretamente
   const mesRef = mes || new Date().toISOString().slice(0,7);
   const periodoInicio  = mesRef+'-01';
   const periodoFimExcl = _proximoMes(mesRef)+'-01';
 
+  // As 4 consultas abaixo são independentes entre si — nenhuma usa o
+  // resultado de outra pra montar sua própria URL (o nomesSet que filtra
+  // lançamentos/abastecimento só é usado DEPOIS que os dados já chegaram,
+  // não na query em si). Rodavam em sequência (conferentes primeiro, só
+  // depois as outras 3 juntas) sem necessidade, quase dobrando o tempo de
+  // rede desta função à toa. Achado em auditoria de performance do "Gerar
+  // Apresentação", 2026-11-02 (usuário: "continua lento, o que podemos
+  // fazer pra deixar mais rápido").
+  let url = 'absenteismo?select=nome,data,status&order=nome.asc,data.asc';
+  if(mes) url += `&mes_ano=eq.${mesRef}`;
+  const [confsDB, lancamentos, abastRows, confPedRows] = await Promise.all([
+    supaFetch(urlConfsBase),
+    supaFetch(url).catch(()=>[]),
+    supaFetch(`abastecimento_loja?data_saida=gte.${periodoInicio}&data_saida=lt.${periodoFimExcl}&select=conferente_nome,data_saida`).catch(()=>[]),
+    supaFetch(`conferencia_pedidos?conferido_em=gte.${periodoInicio}T00:00:00&conferido_em=lt.${periodoFimExcl}T00:00:00&status=eq.ok&select=conferente_nome,pedido`).catch(()=>[]),
+  ]);
+
   // Filtrar desligados fora do período
   // Inclui todos sem data_demissao (independente do flag ativo),
   // exclui apenas quem foi desligado antes do período filtrado
-  const confsAtivos = confsDB.filter(cf => {
+  const confsAtivos = (confsDB||[]).filter(cf => {
     if(cf.ativo !== false) return true;          // ativo: sempre incluir
     if(!cf.data_demissao) return true;           // sem demissão: ainda na empresa, incluir
     return cf.data_demissao >= periodoInicio;    // demitido antes do período: excluir
@@ -43356,15 +43414,7 @@ async function _calcularAbsenteismoArmazem(mes, filtros={}){
     return true;
   });
 
-  // Buscar lançamentos de absenteísmo + abastecimento + conferidos do período
   const nomesSet = new Set(confsFiltrados.map(cf=>cf.nome.trim().toUpperCase()));
-  let url = 'absenteismo?select=nome,data,status&order=nome.asc,data.asc';
-  if(mes) url += `&mes_ano=eq.${mesRef}`;
-  const [lancamentos, abastRows, confPedRows] = await Promise.all([
-    supaFetch(url).catch(()=>[]),
-    supaFetch(`abastecimento_loja?data_saida=gte.${periodoInicio}&data_saida=lt.${periodoFimExcl}&select=conferente_nome,data_saida`).catch(()=>[]),
-    supaFetch(`conferencia_pedidos?conferido_em=gte.${periodoInicio}T00:00:00&conferido_em=lt.${periodoFimExcl}T00:00:00&status=eq.ok&select=conferente_nome,pedido`).catch(()=>[]),
-  ]);
 
   // Agrupar lançamentos por nome (normalizado)
   const lancMap = {};
