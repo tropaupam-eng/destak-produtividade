@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.129';
+const APP_VERSION = '4.89.130';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33893,6 +33893,42 @@ function _respirar(){
   return new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
 }
 
+// A CAUSA REAL do "Página sem resposta" (achado por auditoria de
+// performance, 2026-11-02, depois que o usuário mandou print do diálogo do
+// Chrome com só ~2s decorridos no contador ao vivo — ou seja, bloqueio
+// síncrono de verdade, não demora de rede, que os tetos de 20s já tratam):
+// o html2canvas clona o DOCUMENTO INTEIRO antes de recortar só o card
+// pedido, não só o card em si. Este app tem ~9800 nós de DOM na tela o
+// tempo todo — 53 páginas (`.page`) e ~80 modais, todas escondidas (display:
+// none) menos a ativa, mas ainda presentes e clonadas de qualquer forma.
+// Medido: a mesma captura cai de ~7s pra ~1,1s só removendo temporariamente
+// as outras páginas/modais do DOM antes de capturar (e devolvendo tudo no
+// lugar exato de antes logo depois) — 6x mais rápido, em QUALQUER card,
+// independente de tamanho ou rede. (foreignObjectRendering:true foi tentado
+// antes e MEDIDO como pior, não melhor — revertido; a clonagem do documento
+// inteiro já é cara antes mesmo de qualquer modo de desenho entrar em jogo.)
+function _destacarOutrosParaCaptura(){
+  const ativa = document.querySelector('.page.active');
+  const refs = [];
+  document.querySelectorAll('.page').forEach(p=>{
+    if(p === ativa) return;
+    refs.push({el:p, parent:p.parentNode, next:p.nextSibling});
+    p.remove();
+  });
+  // modal-gerar-apresentacao fica: é a própria tela de progresso que a
+  // pessoa está vendo durante a geração — removê-la faria ela "sumir" da
+  // tela a cada slide.
+  document.querySelectorAll('[id^="modal-"]').forEach(m=>{
+    if(m.id === 'modal-gerar-apresentacao') return;
+    refs.push({el:m, parent:m.parentNode, next:m.nextSibling});
+    m.remove();
+  });
+  return refs;
+}
+function _restaurarAposCaptura(refs){
+  refs.forEach(r=>{ try{ r.parent.insertBefore(r.el, r.next); }catch(e){} });
+}
+
 async function gerarApresentacaoPainelIndicadores(){
   if(typeof PptxGenJS === 'undefined'){
     showToast('Biblioteca de apresentação ainda carregando, tente de novo em instantes.', 'warning');
@@ -33976,10 +34012,15 @@ async function gerarApresentacaoPainelIndicadores(){
 
         const alvo = s.container ? document.getElementById(s.container) : abaEl;
         if(alvo){
+          // Remove temporariamente as outras páginas/modais do DOM antes de
+          // capturar — é a clonagem do documento inteiro (não o tamanho
+          // deste card) que trava a aba (ver _destacarOutrosParaCaptura).
+          const refsDesanexados = _destacarOutrosParaCaptura();
           try{
             const canvas = await _comTimeout(_capturarNodeComo1920x1080(alvo, {semFundo:false}), 20000, 'Captura do slide demorou demais (20s), pulado.');
             pptx.addSlide().addImage({ data:canvas.toDataURL('image/png'), x:0, y:0, w:13.333, h:7.5 });
           }catch(e){ console.warn('Falha ao capturar slide', s.titulo, e); falhou = true; }
+          finally{ _restaurarAposCaptura(refsDesanexados); }
         }
         if(falhou) pulados.push(s.titulo);
 
