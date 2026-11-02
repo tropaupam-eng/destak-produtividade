@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.126';
+const APP_VERSION = '4.89.127';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33875,6 +33875,24 @@ function gaSelecionarPeriodo(tipo){
   if(semSel) semSel.style.display = tipo==='semanal' ? 'block' : 'none';
 }
 
+// Garante que um slide travado (card gigante, imagem externa lenta/bloqueada
+// dentro do html2canvas) não trave a geração inteira — descarta só aquele
+// slide e segue pros próximos, em vez de a aba inteira ficar "sem resposta"
+// esperando uma captura que nunca termina. Achado pelo usuário, 2026-11-02.
+function _comTimeout(promise, ms, mensagem){
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(mensagem)), ms))
+  ]);
+}
+// Devolve o controle ao navegador por um instante (deixa pintar a barra de
+// progresso e processar eventos) entre uma captura pesada e a próxima —
+// sem isso, 11 capturas html2canvas em sequência formam uma tarefa longa só,
+// e o Chrome mostra "Página sem resposta" mesmo quando no fim tudo termina.
+function _respirar(){
+  return new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+}
+
 async function gerarApresentacaoPainelIndicadores(){
   if(typeof PptxGenJS === 'undefined'){
     showToast('Biblioteca de apresentação ainda carregando, tente de novo em instantes.', 'warning');
@@ -33934,13 +33952,14 @@ async function gerarApresentacaoPainelIndicadores(){
       const alvo = s.container ? document.getElementById(s.container) : abaEl;
       if(alvo){
         try{
-          const canvas = await _capturarNodeComo1920x1080(alvo, {semFundo:false});
+          const canvas = await _comTimeout(_capturarNodeComo1920x1080(alvo, {semFundo:false}), 20000, 'Captura do slide demorou demais (20s), pulado.');
           pptx.addSlide().addImage({ data:canvas.toDataURL('image/png'), x:0, y:0, w:13.333, h:7.5 });
         }catch(e){ console.warn('Falha ao capturar slide', s.titulo, e); }
       }
 
       if(s.limparSemana) s.limparSemana();
       abaEl.style.display = displayOriginal;
+      await _respirar();
     }
 
     progTxt.textContent = 'Salvando arquivo...';
@@ -34498,6 +34517,29 @@ function _h2cSanearCoresModernas(doc){
     }
   });
 }
+// Escala de captura baseada em ÁREA (largura × altura), não só largura: um
+// card baixo (ex: KPI isolado) e um card alto (ex: Absenteísmo Visão Anual,
+// com 12 meses empilhados) tinham a MESMA escala antes (fórmula só olhava
+// largura) — o card alto virava um canvas gigante (ex: 2520×7500px = ~19M
+// pixels) e o html2canvas travava a aba por vários segundos nele sozinho.
+// Pior em "Gerar Apresentação" (11 capturas seguidas, uma trava daquelas
+// por slide) do que no "Baixar Imagem" avulso. Como a imagem final sempre
+// é encaixada dentro de um slide 1920×1080 (ver _capturarNodeComo1920x1080),
+// capturar mais pixels que isso não deixa a imagem mais nítida — só mais
+// lenta. TARGET_AREA_PX mantém o mesmo orçamento de pixels pra qualquer
+// card, então um card alto sai com escala menor (em vez de continuar em
+// 2x/3x e gerar um canvas enorme) e um card estreito ainda ganha reforço
+// de escala (igual antes) sem precisar de teto tão alto. Achado pelo
+// usuário, 2026-11-02: apresentação travando a página toda vez.
+const _H2C_TARGET_AREA_PX = 4000000; // ~2520×1587 — nítido o bastante pro slide, sem exagero
+const _H2C_ESCALA_MIN = 1.5;
+const _H2C_ESCALA_MAX = 2.4;
+function _calcEscalaCaptura(larguraPx, alturaPx){
+  const area = Math.max(1, (larguraPx||0) * (alturaPx||0));
+  const escalaIdeal = Math.sqrt(_H2C_TARGET_AREA_PX / area);
+  return Math.min(_H2C_ESCALA_MAX, Math.max(_H2C_ESCALA_MIN, escalaIdeal));
+}
+
 async function _html2canvasSeguro(node, opts){
   // Sempre captura no tema escuro: o fundo do slide é escuro, e no tema claro o texto (#0f172a) sumia nele.
   const _opts0 = opts || {};
@@ -34521,15 +34563,8 @@ async function _capturarNodeComo1920x1080(node, opts={}){
   // uniformemente os dois eixos, a imagem sai do tamanho de desktop cheio
   // (~1260px) sem esticar nada, e sem risco de cortar conteúdo em algum
   // ancestral com overflow-x:hidden.
-  const LARGURA_DESKTOP = 1260;
-  const larguraAtual = node.getBoundingClientRect().width || LARGURA_DESKTOP;
-  // Tela estreita (notebook, sidebar aberta) sem limite máximo aqui dava
-  // escala enorme (ex: card de 400px vira 6,3x) — canvas gigante, trava o
-  // navegador por vários segundos por card. Pior em "Gerar Apresentação"
-  // (12 capturas em sequência) do que no "Baixar Imagem" avulso (1 card só),
-  // achado pelo usuário, 2026-10-29. Teto de 3x já é nítido o bastante pra
-  // slide de PowerPoint (3× de 1260px = 3780px de largura).
-  const scale = Math.min(3, Math.max(2, (LARGURA_DESKTOP * 2) / larguraAtual));
+  const rect = node.getBoundingClientRect();
+  const scale = _calcEscalaCaptura(rect.width, rect.height);
   const corFundo = opts.semFundo ? null : (opts.corFundo || '#16161f');
   const canvas = await _html2canvasSeguro(node, {
     backgroundColor: corFundo,
@@ -34609,11 +34644,10 @@ async function baixarImagemVeiculos(btnEl){
   btnEl.innerHTML = '⏳ Gerando...';
   try{
     const bgColor = getComputedStyle(document.body).backgroundColor || '#0a0a0f';
-    const LARGURA_DESKTOP = 1260;
-    const larguraAtual = area.getBoundingClientRect().width || LARGURA_DESKTOP;
-    // Mesmo teto de _capturarNodeComo1920x1080() — tela estreita sem limite
-    // máximo gerava canvas gigante e travava o navegador.
-    const scale = Math.min(3, Math.max(2, (LARGURA_DESKTOP * 2) / larguraAtual));
+    // Mesma escala por área de _capturarNodeComo1920x1080() — card alto
+    // (muitos veículos na lista) não vira mais canvas gigante.
+    const rectV = area.getBoundingClientRect();
+    const scale = _calcEscalaCaptura(rectV.width, rectV.height);
     const canvas = await _html2canvasSeguro(area, {
       backgroundColor: bgColor,
       scale,
