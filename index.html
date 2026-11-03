@@ -9961,7 +9961,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.145';
+const APP_VERSION = '4.89.146';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -37382,7 +37382,10 @@ async function carregarMotivosLiberacaoPrazo(){
 // linhas classificadas; carregamento OK = "Carregamento ok" E "Rota Extra" (toda rota extra foi carregada OK); NOK = "Valor abaixo
 // da meta", "Falta de Veículo" e os atrasos; % no prazo = OK ÷ total (da semana e do mês; semana = a do mês pela data, domingo a
 // sábado, a 1ª cortada no dia 1).
-// A tabela "SEM 1..5" que existe na planilha é digitada à mão (não é fórmula) e NÃO é usada. O bloco "Análise por motivo"
+// ATUALIZAÇÃO (usuário, 2026-11-03, v4.89.146): a regra acima (linha a linha) NÃO vale mais para o %. Vale a tabela "Acompanhamento de
+// Rotas no Prazo" (SEM 1..n: rotas previstas e realizadas no prazo; digitada à mão na planilha) e o % da linha "Média" dela
+// (_lerTabelaSemanasPlanilha). A contagem linha a linha só é usada se a aba não tiver a tabela.
+// (Texto antigo:) A tabela "SEM 1..5" que existe na planilha é digitada à mão (não é fórmula) e NÃO é usada. O bloco "Análise por motivo"
 // (fórmula da própria planilha) tem os mesmos números e alimenta o "Lançar Motivos".
 // O botão "Importar planilha" lê as abas, mostra a prévia e só grava depois de confirmar: motivos em liberacao_prazo_motivos_mes
 // (mesma tabela do "Lançar Motivos") e as semanas em configuracoes (JSON por mês/unidade:
@@ -37392,10 +37395,44 @@ const _semAcentoPl = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').
 const _chaveSemanasCarreg = (mes, und) => 'carregamento_prazo_semanas_' + String(mes).replace('-','_') + '_' + (String(und||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'todas');
 
 // % de cada semana e do mês a partir de [{sem, total, noPrazo}]: no prazo ÷ total (memória de cálculo do Gabriel).
-function _calcCarregPlanilha(semanas){
+// mediaPct = o % da linha "Média" da própria tabela da planilha (quando veio dela); sem ele, fica no prazo ÷ total.
+function _calcCarregPlanilha(semanas, mediaPct){
   const sem = (semanas||[]).map(s => ({ sem:s.sem, total:s.total|0, noPrazo:s.noPrazo|0, pct: (s.total|0) > 0 ? (s.noPrazo|0) / (s.total|0) * 100 : null }));
   const total = sem.reduce((a,s) => a + s.total, 0), noPrazo = sem.reduce((a,s) => a + s.noPrazo, 0);
-  return { semanas: sem, total, noPrazo, fora: total - noPrazo, pct: total > 0 ? noPrazo / total * 100 : null };
+  const pctRazao = total > 0 ? noPrazo / total * 100 : null;
+  return { semanas: sem, total, noPrazo, fora: total - noPrazo, pct: (total > 0 && typeof mediaPct === 'number' && isFinite(mediaPct)) ? mediaPct : pctRazao };
+}
+
+// Tabela "Acompanhamento de Rotas no Prazo" da aba (Semana | [Meta] | Total de Rotas Previstas | Realizadas no Prazo | % no Prazo,
+// uma linha por SEM n e a linha "Média"). Decisão do usuário (2026-11-03): ESTA tabela é o número oficial do indicador
+// (o que a planilha mostra), não a contagem linha a linha. Devolve { semanas:[{sem,total,noPrazo}], mediaPct, totalMedia, noPrazoMedia } ou null.
+function _lerTabelaSemanasPlanilha(m, mr){
+  const num = v => { if(typeof v === 'number') return isFinite(v) ? v : null; const s = String(v == null ? '' : v).trim().replace('%','').replace(',','.'); if(s === '') return null; const n = parseFloat(s); return isNaN(n) ? null : n; };
+  for(let r = 0; r < Math.min(m.length, 30); r++){
+    const c = m[r].findIndex(t => _semAcentoPl(t) === 'semana');
+    if(c < 0) continue;
+    const cPrev = m[r].findIndex(t => _semAcentoPl(t).includes('previstas'));
+    const cReal = m[r].findIndex(t => _semAcentoPl(t).includes('realizadas'));
+    const cPct  = m[r].findIndex(t => _semAcentoPl(t).includes('% no prazo'));
+    if(cPrev < 0 || cReal < 0) continue;
+    const semanas = []; let mediaPct = null, totalMedia = null, noPrazoMedia = null, vazias = 0;
+    for(let k = r + 1; k < m.length && vazias < 3; k++){
+      const rotulo = [m[k][c], m[k][c+1]].map(_semAcentoPl);
+      if(rotulo.includes('media')){
+        totalMedia = num(mr[k][cPrev]); noPrazoMedia = num(mr[k][cReal]);
+        const p = cPct >= 0 ? num(mr[k][cPct]) : null; mediaPct = p == null ? null : (p <= 1.5 ? p * 100 : p);
+        break;
+      }
+      const mm = /^sem\s*(\d+)/.exec(rotulo[0]);
+      if(!mm){ vazias++; continue; }
+      vazias = 0;
+      const total = num(mr[k][cPrev]), real = num(mr[k][cReal]);
+      if(total == null && real == null) continue;                  // semana sem nada digitado ainda (ex.: SEM 5 de um mês de 4 semanas)
+      semanas.push({ sem:'SEM ' + mm[1], total:Math.max(0, Math.round(total || 0)), noPrazo:Math.max(0, Math.round(real || 0)) });
+    }
+    if(semanas.length) return { semanas, mediaPct, totalMedia, noPrazoMedia };
+  }
+  return null;
 }
 
 // Data de uma célula da planilha: número serial do Excel, Date, "d/m", "d/m/aa(aa)" ou "aaaa-mm-dd".
@@ -37468,9 +37505,22 @@ function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
       semanas = []; for(let n=1; n<=maxSem; n++) semanas.push({ sem:'SEM ' + n, total:(porSem[n]||{total:0}).total, noPrazo:(porSem[n]||{noPrazo:0}).noPrazo });
       if(!Object.keys(porLinha).length){ porLinha = null; semanas = null; }
     }
-    if(!porLinha) avisos.push('Não achei as colunas "Data" e "Status de carregamento" com carregamentos nesta aba: o % do indicador não será atualizado por ela.');
-    if(vizinhas) avisos.push(vizinhas + ' linha(s) com a data digitada em mês vizinho (ex.: ' + exViz + '): contadas como o mesmo dia do mês da aba (' + exVizComo + ') só para definir a semana; o total do mês não muda. Vale corrigir na planilha.');
-    if(herdadas) avisos.push(herdadas + ' linha(s) com data muito fora do mês ou sem data (ex.: ' + exHerdada + '): contadas na semana da linha anterior.');
+    // 1b) tabela de acompanhamento da planilha (SEM 1..n + Média): é o número oficial; a contagem linha a linha só entra se a aba não tiver a tabela
+    let mediaPct = null, origemSemanas = 'linhas';
+    const tab = _lerTabelaSemanasPlanilha(m, mr);
+    if(tab){
+      const linhasTot = semanas ? semanas.reduce((a,s) => a + s.total, 0) : 0, linhasOk = semanas ? semanas.reduce((a,s) => a + s.noPrazo, 0) : 0;
+      semanas = tab.semanas; mediaPct = tab.mediaPct; origemSemanas = 'tabela';
+      const somaTot = semanas.reduce((a,s) => a + s.total, 0), somaOk = semanas.reduce((a,s) => a + s.noPrazo, 0);
+      avisos.push('Usei a tabela "Acompanhamento de Rotas no Prazo" da planilha (SEM 1..' + semanas.length + '): ' + somaOk + ' no prazo de ' + somaTot + ' rotas previstas' + (mediaPct == null ? '' : ', média ' + mediaPct.toFixed(1).replace('.',',') + '% (linha Média da planilha)') + '.');
+      if(tab.totalMedia != null && (tab.totalMedia !== somaTot || (tab.noPrazoMedia != null && tab.noPrazoMedia !== somaOk))) avisos.push('A linha Média da planilha diz ' + tab.noPrazoMedia + ' de ' + tab.totalMedia + ' e a soma das semanas dá ' + somaOk + ' de ' + somaTot + ': conferir a tabela na planilha.');
+      if(porLinha) avisos.push('Para comparar: contando linha a linha (não usado no %) seriam ' + linhasOk + ' no prazo de ' + linhasTot + ' linhas (Carregamento ok + Rota Extra).');
+    } else {
+      if(!porLinha) avisos.push('Não achei a tabela de semanas nem as colunas "Data" e "Status de carregamento" com carregamentos nesta aba: o % do indicador não será atualizado por ela.');
+      else avisos.push('Esta aba não tem a tabela "Acompanhamento de Rotas no Prazo": usei a contagem linha a linha (Carregamento ok e Rota Extra = no prazo).');
+    }
+    if(!tab && vizinhas) avisos.push(vizinhas + ' linha(s) com a data digitada em mês vizinho (ex.: ' + exViz + '): contadas como o mesmo dia do mês da aba (' + exVizComo + ') só para definir a semana; o total do mês não muda. Vale corrigir na planilha.');
+    if(!tab && herdadas) avisos.push(herdadas + ' linha(s) com data muito fora do mês ou sem data (ex.: ' + exHerdada + '): contadas na semana da linha anterior.');
 
     // 2) bloco "Análise por motivo" (fórmula da planilha): título, linha com os nomes, linha com as quantidades
     let bloco = null;
@@ -37491,7 +37541,7 @@ function _parseRotasExternasXlsx(wb, nomeArquivo, anoPadrao){
       const dif = Object.keys(bloco).filter(n => (bloco[n]||0) !== (porLinha[n]||0));
       if(dif.length) avisos.push('A contagem linha a linha difere do bloco em: ' + dif.map(n => n + ' (bloco ' + (bloco[n]||0) + ', linhas ' + (porLinha[n]||0) + ')').join('; ') + '. Motivos: usei o bloco; o % do indicador usa as linhas.');
     }
-    resultado.push({ aba, mesAno, motivos, semanas, metaPct, avisos });
+    resultado.push({ aba, mesAno, motivos, semanas, mediaPct, origemSemanas, metaPct, avisos });
   });
   return resultado;
 }
@@ -37525,7 +37575,7 @@ async function _impCarregarAtuais(){
     const rows = await supaFetch(`liberacao_prazo_motivos_mes?mes_ano=eq.${a.mesAno}&unidade=eq.${encodeURIComponent(und)}&select=motivo_nome,quantidade`, { _quiet:true }).catch(() => []) || [];
     a.atual = {}; rows.forEach(r => { a.atual[r.motivo_nome] = Number(r.quantidade)||0; });
     const cfg = await supaFetch(`configuracoes?chave=eq.${_chaveSemanasCarreg(a.mesAno, und)}&select=valor`, { _quiet:true }).catch(() => []) || [];
-    try{ a.semanasAtual = cfg[0] ? (JSON.parse(cfg[0].valor).semanas || null) : null; }catch(e){ a.semanasAtual = null; }
+    try{ const o = cfg[0] ? JSON.parse(cfg[0].valor) : null; a.semanasAtual = o ? (o.semanas || null) : null; a.mediaPctAtual = o && typeof o.mediaPct === 'number' ? o.mediaPct : null; }catch(e){ a.semanasAtual = null; a.mediaPctAtual = null; }
   }
 }
 
@@ -37540,7 +37590,7 @@ function _impMostrarPrevia(){
     if(!a.motivos && !a.semanas) return `<div style="padding:10px 0;border-top:1px solid var(--border);color:#ef4444;font-size:.82rem"><b>${escapeHtml(a.aba)}</b> — ${a.avisos.map(escapeHtml).join(' ')}</div>`;
     const nomes = a.motivos ? Object.keys(a.motivos) : [];
     const motivosIguais = !a.motivos || (nomes.every(n => (a.atual && a.atual[n]) === a.motivos[n]) && Object.keys(a.atual||{}).length >= nomes.length);
-    const semanasIguais = !a.semanas || (a.semanasAtual && chaveSem(a.semanasAtual) === chaveSem(a.semanas));
+    const semanasIguais = !a.semanas || (a.semanasAtual && chaveSem(a.semanasAtual) === chaveSem(a.semanas) && (a.mediaPctAtual == null ? null : Math.round(a.mediaPctAtual * 1000)) === (a.mediaPct == null ? null : Math.round(a.mediaPct * 1000)));
     const iguais = motivosIguais && semanasIguais;
     const [ano, mes] = a.mesAno.split('-');
     const linhasMot = nomes.map(n => {
@@ -37549,7 +37599,7 @@ function _impMostrarPrevia(){
         <td style="${td};color:var(--text-muted)">${antes == null ? '—' : antes}</td>
         <td style="${td};font-weight:700;${antes !== a.motivos[n] ? 'color:#2563eb' : ''}">${a.motivos[n]}</td></tr>`;
     }).join('');
-    const calc = a.semanas ? _calcCarregPlanilha(a.semanas) : null;
+    const calc = a.semanas ? _calcCarregPlanilha(a.semanas, a.mediaPct) : null;
     const linhasSem = calc ? calc.semanas.map(s => `<tr><td style="${td}">${escapeHtml(s.sem)}</td><td style="${td}">${s.total}</td><td style="${td}">${s.noPrazo}</td>
         <td style="${td};font-weight:700">${s.pct == null ? '—' : s.pct.toFixed(0) + '%'}</td></tr>`).join('') : '';
     return `<div style="padding:12px 0;border-top:1px solid var(--border)">
@@ -37557,9 +37607,9 @@ function _impMostrarPrevia(){
         <input type="checkbox" class="imp-mp-chk" data-i="${i}" ${iguais ? '' : 'checked'}> ${NOMES_MES[Number(mes)-1]} de ${ano} <span style="font-weight:600;color:var(--text-muted);font-size:.76rem">(aba "${escapeHtml(a.aba)}")</span>
         ${iguais ? '<span style="font-size:.72rem;color:#059669;font-weight:700">já está igual no sistema</span>' : ''}
       </label>
-      ${calc ? `<div style="font-size:.74rem;font-weight:700;color:var(--text-muted);margin-top:8px">CARREGAMENTO NO PRAZO (cada linha = 1 carregamento; OK ÷ total)</div>
-      <table style="border-collapse:collapse;width:100%"><tr><th style="${th}">Semana</th><th style="${th}">Carregamentos</th><th style="${th}">No prazo</th><th style="${th}">% no prazo</th></tr>${linhasSem}
-        <tr><td style="${td};font-weight:700">Mês</td><td style="${td};font-weight:700">${calc.total}</td><td style="${td};font-weight:700">${calc.noPrazo}</td><td style="${td};font-weight:700">${calc.pct == null ? '—' : calc.pct.toFixed(1).replace('.',',') + '%'}</td></tr></table>` : ''}
+      ${calc ? `<div style="font-size:.74rem;font-weight:700;color:var(--text-muted);margin-top:8px">${a.origemSemanas === 'tabela' ? 'CARREGAMENTO NO PRAZO (tabela da planilha: realizadas no prazo ÷ rotas previstas)' : 'CARREGAMENTO NO PRAZO (cada linha = 1 carregamento; OK ÷ total)'}</div>
+      <table style="border-collapse:collapse;width:100%"><tr><th style="${th}">Semana</th><th style="${th}">${a.origemSemanas === 'tabela' ? 'Rotas previstas' : 'Carregamentos'}</th><th style="${th}">No prazo</th><th style="${th}">% no prazo</th></tr>${linhasSem}
+        <tr><td style="${td};font-weight:700">${a.origemSemanas === 'tabela' ? 'Média' : 'Mês'}</td><td style="${td};font-weight:700">${calc.total}</td><td style="${td};font-weight:700">${calc.noPrazo}</td><td style="${td};font-weight:700">${calc.pct == null ? '—' : calc.pct.toFixed(1).replace('.',',') + '%'}</td></tr></table>` : ''}
       ${a.motivos ? `<div style="font-size:.74rem;font-weight:700;color:var(--text-muted);margin-top:8px">ANÁLISE POR MOTIVO</div>
       <table style="border-collapse:collapse;width:100%"><tr><th style="${th}">Motivo</th><th style="${th}">Hoje no sistema</th><th style="${th}">Da planilha</th></tr>${linhasMot}</table>` : ''}
       ${a.avisos.map(v => `<div style="font-size:.74rem;color:#d97706;margin-top:4px">⚠ ${escapeHtml(v)}</div>`).join('')}
@@ -37582,7 +37632,7 @@ function _impMostrarPrevia(){
         ${unidades.map(u => `<option value="${escapeHtml(u)}"${u===und?' selected':''}>${escapeHtml(u)}</option>`).join('')}
       </select>
       ${blocos}
-      <div style="font-size:.74rem;color:var(--text-muted);margin-top:10px">Cálculo linha a linha, só pelas colunas Data e Status de carregamento: total = linhas com status; OK = "Carregamento ok" e "Rota Extra"; NOK = valor abaixo da meta, falta de veículo e atrasos. A tabela SEM 1..5 e as colunas de valor/meta não são usadas. Gravar substitui os números do mês/unidade marcados.</div>
+      <div style="font-size:.74rem;color:var(--text-muted);margin-top:10px">Os números do indicador vêm da tabela "Acompanhamento de Rotas no Prazo" de cada aba (SEM 1..n: rotas previstas e realizadas no prazo); o % do mês é o da linha Média da própria planilha. Os motivos vêm do bloco "Análise por motivo". Se a aba não tiver a tabela, vale a contagem linha a linha (Carregamento ok e Rota Extra = no prazo). Gravar substitui os números do mês/unidade marcados.</div>
     </div>
     <div style="padding:14px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--border)">
       <button type="button" onclick="_impFechar()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 18px;font-size:.85rem;font-weight:600;cursor:pointer">Cancelar</button>
@@ -37620,7 +37670,7 @@ async function _impGravar(){
     }
     for(const a of marcadas.filter(x => x.semanas)){
       const chave = _chaveSemanasCarreg(a.mesAno, und);
-      const valor = JSON.stringify({ mes:a.mesAno, unidade:und, metaPct:a.metaPct||90, semanas:a.semanas, importado_em:new Date().toISOString(), importado_por:(USUARIO_LOGADO && (USUARIO_LOGADO.nome||USUARIO_LOGADO.email)) || null });
+      const valor = JSON.stringify({ mes:a.mesAno, unidade:und, metaPct:a.metaPct||90, semanas:a.semanas, mediaPct:(typeof a.mediaPct === 'number' ? a.mediaPct : null), origem:(a.origemSemanas || 'linhas'), importado_em:new Date().toISOString(), importado_por:(USUARIO_LOGADO && (USUARIO_LOGADO.nome||USUARIO_LOGADO.email)) || null });
       const ex = await supaFetch(`configuracoes?chave=eq.${chave}&select=id`, { _quiet:true }).catch(() => []) || [];
       if(ex.length) await supaFetch(`configuracoes?chave=eq.${chave}`, { method:'PATCH', body:JSON.stringify({ valor }) });
       else await supaFetch('configuracoes', { method:'POST', body:JSON.stringify({ chave, valor }) });
@@ -37643,15 +37693,16 @@ async function _carregPrazoDaPlanilha(mes, undSel){
     ? `configuracoes?chave=eq.${_chaveSemanasCarreg(mes, undSel)}&select=valor`
     : `configuracoes?chave=like.${'carregamento_prazo_semanas_' + String(mes).replace('-','_')}_*&select=valor`;
   const rows = await supaFetch(consulta, { _quiet:true }).catch(() => []) || [];
-  const porSem = {}; let meta = 90, achou = false;
+  const porSem = {}; let meta = 90, achou = false, nUnid = 0, mediaUnica = null;
   rows.forEach(r => {
     let o; try{ o = JSON.parse(r.valor); }catch(e){ return; }
     if(!o || !Array.isArray(o.semanas)) return;
-    achou = true; meta = o.metaPct || meta;
+    achou = true; meta = o.metaPct || meta; nUnid++; mediaUnica = typeof o.mediaPct === 'number' ? o.mediaPct : null;
     o.semanas.forEach(s => { const x = porSem[s.sem] || (porSem[s.sem] = { sem:s.sem, total:0, noPrazo:0 }); x.total += s.total|0; x.noPrazo += s.noPrazo|0; });
   });
   if(!achou) return null;
-  const calc = _calcCarregPlanilha(Object.values(porSem).sort((a,b) => parseInt(a.sem.replace(/\D/g,''),10) - parseInt(b.sem.replace(/\D/g,''),10)));
+  // o % "Média" da planilha vale para uma unidade só; somando várias unidades volta a ser no prazo ÷ total
+  const calc = _calcCarregPlanilha(Object.values(porSem).sort((a,b) => parseInt(a.sem.replace(/\D/g,''),10) - parseInt(b.sem.replace(/\D/g,''),10)), nUnid === 1 ? mediaUnica : null);
   return calc.total > 0 ? { ...calc, metaPct: meta } : null;
 }
 
@@ -37722,17 +37773,17 @@ function _renderCarregPrazoPlanilha({ mesRef, dados, eyebrowExtra }){
           </div>
           <div style="border-top:1px solid var(--border);margin-top:22px;padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
             <span style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">BASE DE CÁLCULO</span>
-            <span style="font-size:.87rem;font-weight:600">${dados.noPrazo} no prazo de ${dados.total} carregamentos · ${dentro ? 'Meta cumprida' : 'Meta não cumprida'}</span>
+            <span style="font-size:.87rem;font-weight:600">${dados.noPrazo} no prazo de ${dados.total} rotas previstas · ${dentro ? 'Meta cumprida' : 'Meta não cumprida'}</span>
           </div>
         </div>
         <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
-          <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">QUANTIDADE DE CARREGAMENTOS</div>
-          <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">CARREGAMENTOS POR SEMANA</div>
+          <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">QUANTIDADE DE ROTAS</div>
+          <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">ROTAS PREVISTAS POR SEMANA</div>
           <div style="margin-top:10px">${svg}</div>
           <div style="margin-top:14px">
-            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1">${dados.noPrazo}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">NO PRAZO</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Carregamento ok e Rota Extra (carregamento OK)</div></div>
-            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1;color:#ef4444">${dados.fora}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">FORA DO PRAZO</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Valor abaixo da meta, falta de veículo e atrasos (carregamento NOK)</div></div>
-            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1">${dados.total}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">TOTAL DE CARREGAMENTOS</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Cada linha da planilha é um carregamento; % = no prazo (OK) ÷ total</div></div>
+            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1">${dados.noPrazo}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">NO PRAZO</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Realizadas no prazo, pela tabela de acompanhamento da planilha</div></div>
+            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1;color:#ef4444">${dados.fora}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">FORA DO PRAZO</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Rotas previstas que não foram realizadas no prazo</div></div>
+            <div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-size:1.9rem;font-weight:700;line-height:1">${dados.total}</div><div style="font-size:.85rem;font-weight:700;margin-top:4px">TOTAL DE ROTAS PREVISTAS</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:2px">Soma das semanas da tabela; o % do mês é o da linha Média da planilha</div></div>
           </div>
         </div>
       </div>
@@ -37915,7 +37966,7 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
     const dePlanilha = rireSel === 'RI' ? null : await _carregPrazoDaPlanilha(mes, window._painelIndUndSel||'');   // a planilha é de ROTAS EXTERNAS: vale em "Todas" e em R.E.; em R.I. segue o sistema
     if(dePlanilha){
       container.innerHTML = _renderCarregPrazoPlanilha({ mesRef: mes, dados: dePlanilha });
-      container.insertAdjacentHTML('afterbegin', _barraPlanilhaCarreg('Este mês está pela <b>planilha de Rotas Externas</b> importada (cada linha = 1 carregamento; OK ÷ total).'));
+      container.insertAdjacentHTML('afterbegin', _barraPlanilhaCarreg('Este mês está pela <b>planilha de Rotas Externas</b> importada (tabela de acompanhamento: realizadas no prazo ÷ rotas previstas).'));
       _featherReplace();
       return;
     }
@@ -38103,8 +38154,8 @@ async function carregarPainelCarregamentoPrazoAno(){
       indicador: 'INDICADOR 04 · CONFERÊNCIA DO ARMAZÉM'+eyebrowRire, titulo: 'Carregamento no Prazo', area: 'OPERAÇÕES / ARMAZÉM',
       anoSel, pctAnual, metaNum: 90, invertido: true, bMes,
       composicaoItems: [
-        {label:'NO PRAZO', valor: vNoPrazo, desc:'Conferência concluída até a data de saída. Meses com planilha de Rotas Externas usam o "Carregamento ok" e a "Rota Extra" dela.'},
-        {label:'FORA DO PRAZO', valor: vFora, desc:'Conferência depois da saída, ou sem conferência "ok" registrada. Na planilha: valor abaixo da meta, falta de veículo e atrasos.'},
+        {label:'NO PRAZO', valor: vNoPrazo, desc:'Conferência concluída até a data de saída. Meses com planilha de Rotas Externas usam as "Realizadas no Prazo" da tabela dela.'},
+        {label:'FORA DO PRAZO', valor: vFora, desc:'Conferência depois da saída, ou sem conferência "ok" registrada. Na planilha: rotas previstas que não foram realizadas no prazo.'},
       ],
       baseTxt: temSel ? `${vNoPrazo+vFora} registros ${mesSelIdx.length>1?'nos meses':'no mês'}` : `${noPrazoTotal+foraTotal} registros no ano`,
       onMesClick: '_toggleMesCarregAno', mesSelIdx, mesSelLabel,
