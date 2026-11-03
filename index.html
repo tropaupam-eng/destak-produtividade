@@ -3792,6 +3792,10 @@ body.light-theme{
       <div style="font-size:1.6rem;font-weight:900;color:#ef4444" id="agend-kpi-pend">—</div>
       <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-top:2px">Não saíram</div>
     </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;border-left:4px solid #7c3aed">
+      <div style="font-size:1.6rem;font-weight:900;color:#7c3aed" id="agend-kpi-rotas">—</div>
+      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-top:2px">Rotas diferentes</div>
+    </div>
   </div>
 
   <!-- Painel de motivos de não saída -->
@@ -9961,7 +9965,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.147';
+const APP_VERSION = '4.89.148';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -51517,17 +51521,51 @@ async function renderAgendamentos(){
   let demandasMes = [];
   try{
     const [_y,_m]=mesFiltro.split('-').map(Number);const _prox=_m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
-    demandasMes = await supaFetch('demandas_rota?select=id,carga,rota,data_saida,status&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
+    demandasMes = await supaFetch('demandas_rota?select=id,carga,rota,data_saida,status,valor_total,valor_meta,ts_separacao,ts_carregamento,ts_aguardando_nf,ts_saiu,ts_fim_viagem&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
   }catch(e){}
   // Agendamentos salvos gravam a rota normalizada (normalizarRota) no Supabase;
   // demandas_rota guarda a rota como veio da planilha/lançamento (ex.: "PETRO").
   const _rotaChave = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
   const extras = [];
 
+  // Tempos entre carimbos da carga (minutos corridos), formatação e histórico por rota (mediana das viagens concluídas, 180 dias)
+  function _minDiff(a,b){ if(!a||!b) return null; var m=(new Date(b)-new Date(a))/60000; return m>0?m:null; }
+  function _fmtMin(m){
+    if(m==null) return '—';
+    var h=Math.floor(m/60), mi=Math.round(m%60);
+    if(mi===60){ h++; mi=0; }
+    if(h>=48) return Math.floor(h/24)+'d '+(h%24)+'h';
+    return h? h+'h '+String(mi).padStart(2,'0')+'min' : mi+'min';
+  }
+  function _fmtBRL(v){ return 'R$ '+Number(v||0).toLocaleString('pt-BR',{maximumFractionDigits:0}); }
+  var _DSEM=['domingo','segunda','terça','quarta','quinta','sexta','sábado'];
+  var _histRota={};
+  try{
+    var _hc=window._agendHistCache;
+    if(_hc && Date.now()-_hc.ts<600000){ _histRota=_hc.map; }
+    else{
+      var _d0=new Date(); _d0.setDate(_d0.getDate()-180);
+      var _hist=await supaFetch('demandas_rota?select=rota,ts_separacao,ts_carregamento,ts_aguardando_nf,ts_saiu,ts_fim_viagem&ts_fim_viagem=not.is.null&status=not.in.(cancelado,formacao)&ts_saiu=gte.'+_d0.toISOString().slice(0,10)+'&limit=3000',{_quiet:true}) || [];
+      var _acc={};
+      _hist.forEach(function(d){
+        var k=_rotaChave(d.rota); if(!k) return;
+        var o=_acc[k]=_acc[k]||{sep:[],car:[],rota:[],n:0}; o.n++;
+        var s=_minDiff(d.ts_separacao,d.ts_carregamento), c=_minDiff(d.ts_carregamento,d.ts_aguardando_nf), r=_minDiff(d.ts_saiu,d.ts_fim_viagem);
+        if(s!=null) o.sep.push(s); if(c!=null) o.car.push(c); if(r!=null) o.rota.push(r);
+      });
+      var _med=function(v){ if(!v.length) return null; v=v.slice().sort(function(x,y){return x-y;}); var m=Math.floor(v.length/2); return v.length%2?v[m]:(v[m-1]+v[m])/2; };
+      Object.keys(_acc).forEach(function(k){ var o=_acc[k]; _histRota[k]={n:o.n,sep:_med(o.sep),car:_med(o.car),rota:_med(o.rota)}; });
+      window._agendHistCache={ts:Date.now(),map:_histRota};
+    }
+  }catch(e){}
+
   // ── 3. KPIs — mesma lógica de "saiu" do calendário ────────────────────────
   // Helper: rota saiu = realizado OU lancado OU pré-carga com status saiu/fim_viagem/concluido
   var _dMapKpi={};
   demandasMes.forEach(function(d){ _dMapKpi[_rotaChave(d.rota)+'|'+(d.data_saida||'')]=d.status; });
+  // todas as cargas da Expedição de cada saída (rota + data de saída) — detalhe do dia no Calendário de Saídas
+  var _demLista={};
+  demandasMes.forEach(function(d){ var k=_rotaChave(d.rota)+'|'+(d.data_saida||''); (_demLista[k]=_demLista[k]||[]).push(d); });
   const _saiuFn = a => { var ds=_dMapKpi[_rotaChave(a.rota)+'|'+a.data]; return a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(ds); };
 
   const total   = arr.length;
@@ -51537,6 +51575,7 @@ async function renderAgendamentos(){
   set('agend-kpi-total', total);
   set('agend-kpi-real',  totalR);
   set('agend-kpi-pend',  naoSaiu);
+  set('agend-kpi-rotas', new Set(arr.map(a=>(a.rota||'').trim().toUpperCase()).filter(Boolean)).size);
 
   renderCargasAbaixoValor(mesFiltro);
 
@@ -51641,6 +51680,11 @@ async function renderAgendamentos(){
   arr.forEach(function(a){ (_dayMap[a.data]=_dayMap[a.data]||[]).push(a); var df=_diasUteisAntes(a.data,2); (_fechMap[df]=_fechMap[df]||[]).push({a:a,saida:a.data}); });
   extras.forEach(function(d){ var dt=d.data_saida||''; (_extraMap[dt]=_extraMap[dt]||[]).push(d); });
 
+  // Filtro por rota (select no cabeçalho do Calendário de Saídas): as outras rotas ficam esmaecidas nos dois calendários
+  var _filtroRota=(window._agendFiltroRota||'').toUpperCase();
+  if(_filtroRota && !arr.some(function(a){ return (a.rota||'').trim().toUpperCase()===_filtroRota; })) _filtroRota='';
+  function _dimRota(r){ return !!_filtroRota && (r||'').trim().toUpperCase()!==_filtroRota; }
+
   // Estrutura do calendário deste mês
   var _priDia=new Date(mesFiltro+'-01T12:00:00');
   var _ultDia=new Date(_priDia.getFullYear(),_priDia.getMonth()+1,0).getDate();
@@ -51651,14 +51695,24 @@ async function renderAgendamentos(){
   function _mkCal(mapDia, tipo){
     var s='<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">';
     // Header dias
-    s+='<div style="display:grid;grid-template-columns:repeat(7,1fr);background:var(--bg-card2);border-bottom:1px solid var(--border)">';
+    s+='<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) 64px;background:var(--bg-card2);border-bottom:1px solid var(--border)">';
     _DS.forEach(function(d,i){ var wk=i===0||i===6; s+='<div style="text-align:center;padding:9px 4px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:'+(wk?'rgba(248,113,113,.75)':'var(--text-muted)')+'">'+d+'</div>'; });
+    s+='<div style="text-align:center;padding:9px 4px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Sem.</div>';
     s+='</div>';
     // Grid
-    s+='<div style="display:grid;grid-template-columns:repeat(7,1fr)">';
+    s+='<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) 64px">';
+    // Total de cada semana: fecha a linha de 7 células com uma célula "Sem."
+    var _ci=0,_wt=0;
+    function _fimSem(){
+      _ci++;
+      if(_ci%7===0){
+        s+='<div style="min-height:72px;border-bottom:1px solid var(--border);background:var(--bg-card2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px"><span style="font-size:1.05rem;font-weight:800;color:var(--text-primary)">'+_wt+'</span><span style="font-size:.58rem;color:var(--text-muted);text-transform:uppercase">'+(tipo==='saida'?'saídas':'fech.')+'</span></div>';
+        _wt=0;
+      }
+    }
     // Células vazias iniciais
     for(var bi=0;bi<_iniSem;bi++){
-      var _c0=bi; s+='<div style="min-height:72px;'+(_c0<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);background:rgba(0,0,0,.025)"></div>';
+      var _c0=bi; s+='<div style="min-height:72px;'+(_c0<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);background:rgba(0,0,0,.025)"></div>'; _fimSem();
     }
     // Dias do mês
     for(var dia=1;dia<=_ultDia;dia++){
@@ -51669,7 +51723,7 @@ async function renderAgendamentos(){
       var numSt=eH
         ?'display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:#2563eb;color:#fff;border-radius:50%;font-size:.72rem;font-weight:800'
         :'font-size:.72rem;font-weight:700;color:'+(wknd?'rgba(239,68,68,.55)':'var(--text-muted)');
-      s+='<div style="min-height:72px;padding:5px 4px;'+(col<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);'+(eH?'background:rgba(37,99,235,.04);':'')+(wknd&&!eH?'background:rgba(0,0,0,.02);':'')+'">';
+      s+='<div '+(tipo==='saida'?'data-dia="'+dStr+'" onclick="_agendSelDia(\''+dStr+'\',event)" ':'')+'style="'+(tipo==='saida'?'cursor:pointer;':'')+'min-height:72px;padding:5px 4px;'+(col<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);'+(eH?'background:rgba(37,99,235,.04);':'')+(wknd&&!eH?'background:rgba(0,0,0,.02);':'')+'">';
       s+='<div style="text-align:right;margin-bottom:4px"><span style="'+numSt+'">'+dia+'</span></div>';
 
       if(tipo==='saida'){
@@ -51693,7 +51747,7 @@ async function renderAgendamentos(){
             if(mKey) mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\'\')" style="background:rgba(107,114,128,.1);color:#9ca3af;border:1px solid rgba(107,114,128,.2);border-radius:4px;padding:2px 7px;font-size:.62rem;cursor:pointer">✕</button>';
           }
           var podeToggle=(!saiu)&&(naoSaiu||eH||fechVencido);
-          s+='<div style="margin-bottom:3px">'
+          s+='<div style="margin-bottom:3px'+(_dimRota(a.rota)?';opacity:.22':'')+'">'
             +'<div style="display:flex;align-items:center;gap:2px">'
               +'<div onclick="'+(podeToggle?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+(podeToggle?'pointer':'default')+';background:'+chipBg+';color:'+chipCor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px;flex:1;min-width:0">'
                 +(icone?'<span>'+icone+'</span>':'')
@@ -51720,17 +51774,18 @@ async function renderAgendamentos(){
           var a=item.a, diaSaida=parseInt(item.saida.slice(8,10));
           var cor=_rotaCor(a.rota||'');
           var rc=(a.rota||'').length>11?(a.rota||'').slice(0,11)+'…':(a.rota||'');
-          s+='<div style="margin-bottom:3px;background:'+cor+'18;color:'+cor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px" title="'+a.rota+' — saída dia '+diaSaida+'">'
+          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+'background:'+cor+'18;color:'+cor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px" title="'+a.rota+' — saída dia '+diaSaida+'">'
             +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rc+'</span>'
             +'<span style="font-size:.6rem;opacity:.8">↗'+diaSaida+'</span>'
           +'</div>';
         });
       }
       s+='</div>';
+      _wt+=itens.length+exts.length; _fimSem();
     }
     // Células vazias finais
     var tot=_iniSem+_ultDia, rest=(7-(tot%7))%7;
-    for(var ri=0;ri<rest;ri++){ var rc2=(tot+ri)%7; s+='<div style="min-height:72px;'+(rc2<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);background:rgba(0,0,0,.025)"></div>'; }
+    for(var ri=0;ri<rest;ri++){ var rc2=(tot+ri)%7; s+='<div style="min-height:72px;'+(rc2<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);background:rgba(0,0,0,.025)"></div>'; _fimSem(); }
     s+='</div></div>';
     return s;
   }
@@ -51749,13 +51804,17 @@ async function renderAgendamentos(){
   html+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
     +'<div style="width:32px;height:32px;border-radius:8px;background:rgba(5,150,105,.15);color:#059669;display:flex;align-items:center;justify-content:center">'+_ic('truck',17)+'</div>'
     +'<span style="font-size:1rem;font-weight:800;color:var(--text-primary)">Calendário de Saídas</span>'
-    +'<span style="margin-left:auto;font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">'+arr.length+' agendadas</span>'
+    +'<select id="agend-filtro-rota" onchange="_agendSetFiltroRota(this.value)" title="Destacar uma rota nos calendários" style="margin-left:auto;background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:.78rem"><option value="">Todas as rotas</option>'+_rotasU.map(function(r){ return '<option value="'+escapeHtml(r)+'"'+(r.toUpperCase()===_filtroRota?' selected':'')+'>'+escapeHtml(r)+'</option>'; }).join('')+'</select>'
+    +'<span style="font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">'+arr.length+' agendadas</span>'
   +'</div>';
   html+=_mkCal(_dayMap,'saida');
+  html+='<div id="agend-dia-det" style="margin-top:12px"></div>';
   html+='<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:.72rem;color:var(--text-secondary);align-items:center">'
     +'<span><span style="color:#059669;font-weight:700">'+_ic('check-circle',12)+'</span> Saiu</span>'
     +'<span><span style="color:#dc2626;font-weight:700">'+_ic('x-circle',12)+'</span> Não saiu — clique para registrar motivo</span>'
     +'<span><span style="font-weight:700">'+_ic('clock',12)+'</span> Hoje</span>'
+    +'<span><span style="color:#ea580c;font-weight:700">'+_ic('alert-triangle',12)+'</span> Fechamento vencido</span>'
+    +'<span style="margin-left:auto">Clique num dia para ver o detalhe</span>'
   +'</div>';
   html+=_leg;
   html+='</div>';
@@ -51778,7 +51837,95 @@ async function renderAgendamentos(){
   html+='</div>';
 
   container.innerHTML=html;
+
+  // Detalhe do dia clicado (painel abaixo do Calendário de Saídas) — sem nova consulta ao banco
+  window._agendRenderDia = function(dStr){
+    var box=document.getElementById('agend-dia-det'); if(!box) return;
+    document.querySelectorAll('[data-dia]').forEach(function(c){ c.style.outline = c.getAttribute('data-dia')===dStr ? '2px solid #2563eb' : ''; c.style.outlineOffset='-2px'; });
+    var card='background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:14px 16px';
+    if(!dStr){ box.innerHTML='<div style="'+card+';font-size:.8rem;color:var(--text-muted)">Clique num dia do calendário para ver o detalhe das saídas.</div>'; return; }
+    var lista=_dayMap[dStr]||[];
+    var tit=new Date(dStr+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'});
+    tit=tit.charAt(0).toUpperCase()+tit.slice(1);
+    var h='<div style="'+card+'"><div style="font-size:.9rem;font-weight:800;color:var(--text-primary);margin-bottom:8px">'+escapeHtml(tit)+' · '+lista.length+' saída(s)</div>';
+    if(!lista.length) h+='<div style="font-size:.8rem;color:var(--text-muted)">Sem saída agendada neste dia.</div>';
+    lista.forEach(function(a){
+      var demSt=_demMap[(a.rota||'').trim().toUpperCase()+'|'+a.data];
+      var saiu=a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(demSt);
+      var pas=a.data<hoje, eH=a.data===hoje, fv=!saiu&&!pas&&!eH&&_diasUteisAntes(a.data,2)<=hoje;
+      var sit=saiu?['Saiu','#059669']:pas?['Não saiu','#dc2626']:eH?['Sai hoje','#2563eb']:fv?['Fechamento vencido','#ea580c']:['Agendada','var(--text-secondary)'];
+      var mKey=getMKey(a);
+      var mot=mKey?(MLABEL[mKey]||mKey).replace(/^[^A-Za-zÀ-ÿ]+/,''):'';
+      var fe=_diasUteisAntes(a.data,2);
+      var feDt=new Date(fe+'T12:00:00');
+      var feTxt=_DSEM[feDt.getDay()].slice(0,3)+' '+fe.slice(8,10)+'/'+fe.slice(5,7);
+      var feCor=fe<hoje?'#ea580c':fe===hoje?'#2563eb':'var(--text-primary)';
+      var feSub=saiu?'':fe<hoje?'já passou':fe===hoje?'fecha hoje':'';
+      var info=[];
+      if(mot) info.push('Motivo: '+mot);
+      if(a.obs) info.push('Obs.: '+a.obs);
+      // Cargas da Expedição vinculadas a esta saída (mesma rota + data de saída): valores e tempos REAIS dos carimbos da carga
+      var dems=_demLista[_rotaChave(a.rota)+'|'+a.data]||[];
+      var cel=function(rot,val,cor,sub){ return '<div style="flex:1;min-width:104px"><div style="font-size:.6rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-muted)">'+rot+'</div><div style="font-size:.82rem;font-weight:700;color:'+(cor||'var(--text-primary)')+'">'+val+'</div>'+(sub?'<div style="font-size:.65rem;color:var(--text-muted)">'+sub+'</div>':'')+'</div>'; };
+      var grade=cel('Fecha vendas',feTxt,feCor,feSub);
+      var linhasDem='';
+      if(dems.length){
+        dems.forEach(function(d){
+          var sep=d.ts_separacao?(d.ts_carregamento?_fmtMin(_minDiff(d.ts_separacao,d.ts_carregamento)):'em andamento'):'—';
+          var car=d.ts_carregamento?(d.ts_aguardando_nf?_fmtMin(_minDiff(d.ts_carregamento,d.ts_aguardando_nf)):'em andamento'):'—';
+          var rot=d.ts_saiu?(d.ts_fim_viagem?_fmtMin(_minDiff(d.ts_saiu,d.ts_fim_viagem)):'em rota há '+_fmtMin(_minDiff(d.ts_saiu,new Date().toISOString()))):'ainda não saiu';
+          var vt=Number(d.valor_total)||0, vm=Number(d.valor_meta)||0;
+          var pct=vm>0?Math.round(vt/vm*100):null;
+          var vCor=pct===null?'var(--text-primary)':pct>=100?'#059669':'#dc2626';
+          linhasDem+='<div style="display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">'
+            +cel('Carga','#'+d.carga,'var(--text-primary)',escapeHtml(({pendente:'pendente',separacao:'em separação',carregamento:'em carregamento',aguardando_nf:'aguardando NF',aguardando_manifesto:'aguardando manifesto',pronto_viagem:'pronto para viagem',saiu:'em rota',fim_viagem:'fim de viagem',concluido:'concluído'})[d.status]||d.status||''))
+            +cel('Valor',_fmtBRL(vt),vCor,vm>0?pct+'% da meta de '+_fmtBRL(vm):'sem meta')
+            +cel('Separação',sep,'','até iniciar o carregamento')
+            +cel('Carregamento',car,'','até aguardar NF')
+            +cel('Em rota',rot,'','saída até fim de viagem')
+          +'</div>';
+        });
+      } else {
+        var H=_histRota[_rotaChave(a.rota)];
+        linhasDem='<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:.74rem;color:var(--text-muted)">Sem carga da Expedição vinculada a esta saída.'
+          +(H?' Histórico da rota (mediana de '+H.n+(H.n===1?' viagem concluída':' viagens concluídas')+'): separação '+_fmtMin(H.sep)+' · carregamento '+_fmtMin(H.car)+' · em rota '+_fmtMin(H.rota)+'.':' Sem viagens concluídas recentes para calcular o histórico desta rota.')+'</div>';
+      }
+      h+='<div style="padding:10px 0;border-top:1px solid var(--border)">'
+        +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+          +'<span style="width:9px;height:9px;border-radius:50%;background:'+_rotaCor(a.rota||'')+';flex-shrink:0"></span>'
+          +'<div style="flex:1;min-width:200px"><div style="font-size:.86rem;font-weight:700;color:var(--text-primary)">'+escapeHtml(a.rota||'')+' <span style="font-size:.72rem;font-weight:700;color:'+sit[1]+'">· '+sit[0]+'</span></div>'
+          +(info.length?'<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">'+info.map(escapeHtml).join(' · ')+'</div>':'')+'</div>'
+          +'<button onclick="abrirModalAgendamento(\''+a.id+'\')" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.72rem;cursor:pointer">'+_ic('edit-2',11)+' Editar</button>'
+          +(saiu?'':'<button onclick="_agendIr(\''+a.id+'\')" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.72rem;cursor:pointer">'+_ic('alert-triangle',11)+' Motivo</button>')
+        +'</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:8px">'+grade+'</div>'
+        +linhasDem
+      +'</div>';
+    });
+    if(lista.length) h+='<div style="font-size:.68rem;color:var(--text-muted);margin-top:6px">Tempos corridos entre os carimbos da carga na Expedição (incluem noite e pausas). Separação = início da separação até o início do carregamento; Carregamento = início até aguardar NF; Em rota = saída até fim de viagem. Fecha vendas = 2 dias úteis antes da saída.</div>';
+    box.innerHTML=h+'</div>';
+    _featherReplace();
+  };
+  if(!window._agendDiaSel || String(window._agendDiaSel).slice(0,7)!==mesFiltro) window._agendDiaSel=(hoje.slice(0,7)===mesFiltro?hoje:'');
+  window._agendRenderDia(window._agendDiaSel);
   _featherReplace();
+}
+
+// Calendário de Rotas: filtro por rota, clique no dia e atalho para o painel de motivo da rota
+function _agendSetFiltroRota(v){ window._agendFiltroRota=v||''; renderAgendamentos(); }
+function _agendSelDia(dStr, e){
+  // clique em chip/botão tem ação própria; só o fundo da célula (ou o número) seleciona o dia
+  var alvo=e&&e.target&&e.target.closest?e.target.closest('[onclick]'):null;
+  if(alvo && alvo!==e.currentTarget && alvo.getAttribute('onclick')) return;
+  window._agendDiaSel=dStr;
+  if(typeof window._agendRenderDia==='function') window._agendRenderDia(dStr);
+}
+function _agendIr(id){
+  var el=document.getElementById('motivo-agend-'+id);
+  if(!el){ showToast('Esta rota não tem registro de motivo disponível','warning'); return; }
+  document.querySelectorAll('[id^="motivo-agend-"]').forEach(function(e){ if(e!==el) e.style.display='none'; });
+  el.style.display='block';
+  el.scrollIntoView({behavior:'smooth',block:'center'});
 }
 
 // ── Popup automático: rotas sem motivo que passaram da data ──────────────
