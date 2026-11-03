@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.134';
+const APP_VERSION = '4.89.135';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -47771,11 +47771,30 @@ async function gerarPagamentos(btn, opts){
     // ativo (até o mês da data_demissao, inclusive) e NÃO entra mais depois — pedido do usuário,
     // 2026-10-05 (ex.: Cicero, demissão 12/08, tinha 84 entregas descartadas). Inativo sem
     // data_demissao continua sem valer. A regra por mês está na validação de nomes mais abaixo.
-    const [_mots, _ajs, _demsStatus] = await Promise.all([
+    const [_mots, _ajs, _demsStatus, _multiAjRows] = await Promise.all([
       supaFetch('motoristas?select=nome,unidade,ativo,data_demissao') || [],
       supaFetch('ajudantes?select=nome,unidade,ativo,data_demissao') || [],
-      supaFetch('demandas_rota?select=carga,status').catch(()=>[]) || []
+      supaFetch('demandas_rota?select=carga,status').catch(()=>[]) || [],
+      supaFetch('cargas_multi_ajudantes?select=carga,ajudante_nome').catch(()=>[]) || []
     ]);
+    // Cargas com 2+ ajudantes (tabela cargas_multi_ajudantes): carga -> lista de nomes em maiúsculo.
+    const _multiAj = {};
+    (_multiAjRows||[]).forEach(r=>{
+      const c = Math.round(Number(r.carga)); const n = (r.ajudante_nome||'').trim().toUpperCase();
+      if(!c || !n) return;
+      (_multiAj[c] = _multiAj[c] || []).includes(n) || _multiAj[c].push(n);
+    });
+    // Divisão de uma carga com 2+ ajudantes — só em R.I. (R.E. segue a conta normal: o motorista ali recebe por km).
+    // O bônus total da carga (motorista COM ajudante + ajudante, ex.: CEASA 0,50 + 0,50 = R$ 1,00 por entrega) é dividido
+    // em partes iguais entre o motorista e os N ajudantes (N=2 → R$ 1,00 / 3). As ENTREGAS contadas por ajudante também
+    // são divididas (10 entregas e 2 ajudantes → 5 para cada); o motorista conta todas.
+    const _divisaoMulti = (carga, rire, bonus) => {
+      const lista = _multiAj[carga];
+      if(!lista || lista.length < 2 || rire !== 'R.I.') return null;
+      const pool = (bonus.mot||0) + (bonus.ajud||0);
+      if(pool <= 0) return null;
+      return { lista, n: lista.length, parte: pool / (lista.length + 1) };
+    };
     const undMap = {};
     [...(_mots||[]), ...(_ajs||[])].forEach(p=>{ if(p.nome&&p.unidade) undMap[p.nome.trim().toUpperCase()]=p.unidade.trim(); });
     // Unidades válidas = apenas valores reais do cadastro dos ATIVOS (não nulo/vazio)
@@ -47848,7 +47867,7 @@ async function gerarPagamentos(btn, opts){
 
       // Ajudante: verifica no lançamento (banco) e no BASE_DATA — sempre UPPER para chave uniforme
       const ajudante = ((l.ajudante||'').trim() || (dados?.ajudante||'').trim() || '').toUpperCase();
-      const temAjud  = !!ajudante;
+      const temAjud  = !!ajudante || !!(_multiAj[carga] && _multiAj[carga].length);
 
       // Rota: lançamento tem prioridade, fallback para base_data (evita bonus=0 quando l.rota vazio)
       const rota = normalizarRota((l.rota||'').trim()||(dados?.rota||'').trim()) || (l.rota||dados?.rota||'').trim();
@@ -47866,6 +47885,7 @@ async function gerarPagamentos(btn, opts){
       // manual de RETIRA/CEASA, etc.)
       const rire  = normRire(l.rire||dados?.rire||'') || getRireFromRota(rota);
       const bonus = getBonusRota(rota, temAjud);
+      const _multi = _divisaoMulti(carga, rire, getBonusRota(rota, true));
       // Unidade: sempre do cadastro (motorista efetivo tem prioridade)
       const und = undMap[motEfetivo] || undMap[(ajudante||'').trim().toUpperCase()] || '';
 
@@ -47878,24 +47898,29 @@ async function gerarPagamentos(btn, opts){
           rota, rire, und, entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0, cargas:[]
         };
         pessoaMap[chave].entregas += qtd;
-        if(bonus.mot > 0) pessoaMap[chave].total += bonus.mot * qtd;
+        if(_multi) pessoaMap[chave].total += _multi.parte * qtd;
+        else if(bonus.mot > 0) pessoaMap[chave].total += bonus.mot * qtd;
         if(temAjud) pessoaMap[chave].ent_com += qtd;
         else        pessoaMap[chave].ent_sem += qtd;
         pessoaMap[chave].cargas.push({carga, rota, rire, qtd});
       }
 
-      // ── AJUDANTE ──
-      if(ajudante && bonus.ajud > 0){
-        const chaveAj = ajudante.toUpperCase()+'__'+mesAno+'__AJ';
-        if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
-          nome:ajudante.toUpperCase(), tipo:'ajudante', mes_ano:mesAno,
-          rota, rire, und, entregas:0, ent_sem:0, ent_com:0, ent_re:0, val_entrega:0, total:0, cargas:[]
-        };
-        pessoaMap[chaveAj].entregas += qtd;
-        pessoaMap[chaveAj].total   += bonus.ajud * qtd;
-        pessoaMap[chaveAj].ent_com += qtd;
-        if(rire==='R.E.') pessoaMap[chaveAj].ent_re += qtd;
-        pessoaMap[chaveAj].cargas.push({carga, rota, rire, qtd});
+      // ── AJUDANTE ── (carga com 2+ ajudantes: um bloco por ajudante, com a divisão de _divisaoMulti)
+      if((ajudante || _multi) && bonus.ajud > 0){
+        const _ajsCarga = _multi ? _multi.lista : [ajudante];
+        _ajsCarga.forEach(ajNome=>{
+          const chaveAj = ajNome.toUpperCase()+'__'+mesAno+'__AJ';
+          if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
+            nome:ajNome.toUpperCase(), tipo:'ajudante', mes_ano:mesAno,
+            rota, rire, und: undMap[ajNome.toUpperCase()] || und, entregas:0, ent_sem:0, ent_com:0, ent_re:0, val_entrega:0, total:0, cargas:[]
+          };
+          const entAj = _multi ? qtd / _multi.n : qtd;
+          pessoaMap[chaveAj].entregas += entAj;
+          pessoaMap[chaveAj].total   += _multi ? _multi.parte * qtd : bonus.ajud * qtd;
+          pessoaMap[chaveAj].ent_com += entAj;
+          if(rire==='R.E.') pessoaMap[chaveAj].ent_re += entAj;
+          pessoaMap[chaveAj].cargas.push({carga, rota, rire, qtd: entAj, ...(_multi ? {divididoEm:_multi.n} : {})});
+        });
       }
     });
 
@@ -47919,8 +47944,9 @@ async function gerarPagamentos(btn, opts){
       if(!rotaDados) return;
       if(normalizarRota(rotaDados)==='RETIRA') return; // Retira não entra na produtividade
       const ajudante  = (dados.ajudante||'').trim().toUpperCase();
-      const temAjud   = !!ajudante;
+      const temAjud   = !!ajudante || !!(_multiAj[c] && _multiAj[c].length);
       const bonus = getBonusRota(rotaDados, temAjud);
+      const _multi = _divisaoMulti(c, lRire, getBonusRota(rotaDados, true));
       const und   = undMap[condutor] || undMap[(ajudante||'').toUpperCase()] || '';
       vistas.add(c);
       // Motorista conta apenas R.I. — em R.E. recebe por KM (bônus separado); ajudante conta R.I. e R.E.
@@ -47931,22 +47957,27 @@ async function gerarPagamentos(btn, opts){
           rota:rotaDados, rire:lRire, und, entregas:0, ent_sem:0, ent_com:0, val_entrega:0, total:0, cargas:[]
         };
         pessoaMap[chave].entregas += qtd;
-        if(bonus.mot > 0) pessoaMap[chave].total += bonus.mot * qtd;
+        if(_multi) pessoaMap[chave].total += _multi.parte * qtd;
+        else if(bonus.mot > 0) pessoaMap[chave].total += bonus.mot * qtd;
         if(temAjud) pessoaMap[chave].ent_com += qtd;
         else        pessoaMap[chave].ent_sem += qtd;
         pessoaMap[chave].cargas.push({carga:c, rota:rotaDados, rire:lRire, qtd});
       }
-      if(ajudante && bonus.ajud > 0){
-        const chaveAj = ajudante.toUpperCase()+'__'+mesAnoBase+'__AJ';
-        if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
-          nome:ajudante.toUpperCase(), tipo:'ajudante', mes_ano:mesAnoBase,
-          rota:rotaDados, rire:lRire, und, entregas:0, ent_sem:0, ent_com:0, ent_re:0, val_entrega:0, total:0, cargas:[]
-        };
-        pessoaMap[chaveAj].entregas += qtd;
-        pessoaMap[chaveAj].total   += bonus.ajud * qtd;
-        pessoaMap[chaveAj].ent_com += qtd;
-        if(lRire==='R.E.') pessoaMap[chaveAj].ent_re += qtd;
-        pessoaMap[chaveAj].cargas.push({carga:c, rota:rotaDados, rire:lRire, qtd});
+      if((ajudante || _multi) && bonus.ajud > 0){
+        const _ajsCarga = _multi ? _multi.lista : [ajudante];
+        _ajsCarga.forEach(ajNome=>{
+          const chaveAj = ajNome.toUpperCase()+'__'+mesAnoBase+'__AJ';
+          if(!pessoaMap[chaveAj]) pessoaMap[chaveAj] = {
+            nome:ajNome.toUpperCase(), tipo:'ajudante', mes_ano:mesAnoBase,
+            rota:rotaDados, rire:lRire, und: undMap[ajNome.toUpperCase()] || und, entregas:0, ent_sem:0, ent_com:0, ent_re:0, val_entrega:0, total:0, cargas:[]
+          };
+          const entAj = _multi ? qtd / _multi.n : qtd;
+          pessoaMap[chaveAj].entregas += entAj;
+          pessoaMap[chaveAj].total   += _multi ? _multi.parte * qtd : bonus.ajud * qtd;
+          pessoaMap[chaveAj].ent_com += entAj;
+          if(lRire==='R.E.') pessoaMap[chaveAj].ent_re += entAj;
+          pessoaMap[chaveAj].cargas.push({carga:c, rota:rotaDados, rire:lRire, qtd: entAj, ...(_multi ? {divididoEm:_multi.n} : {})});
+        });
       }
     });
 
