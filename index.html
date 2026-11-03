@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.131';
+const APP_VERSION = '4.89.132';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36834,7 +36834,7 @@ async function mlpSalvarTudo(){
 // Pedido do usuário, 2026-10-28: "no final coloque uma aba da visão ano do OTIF".
 async function _calcOtifAno(anoSel, undSel, rireSel){
   const bMes = Array(12).fill(null);
-  let okTotal = 0, totalGeral = 0;
+  let okTotal = 0, totalGeral = 0, onTimeTotal = 0, inFullTotal = 0;
   const mesAtualStr = new Date().toISOString().slice(0,7);
   // Meses buscados 3 por vez (antes um depois do outro: ~12 × 2 s); a soma abaixo
   // continua mês a mês na ordem, então o resultado é o mesmo.
@@ -36850,14 +36850,23 @@ async function _calcOtifAno(anoSel, undSel, rireSel){
     const r = _rsOtif[i];
     if(!r) continue;
     const st = r.stats;
-    const ok  = rireSel==='RI' ? st.otifRI : rireSel==='RE' ? st.otifRE : st.otifG;
-    const tot = rireSel==='RI' ? st.entRI  : rireSel==='RE' ? st.entRE  : st.entG;
+    const ok     = rireSel==='RI' ? st.otifRI    : rireSel==='RE' ? st.otifRE    : st.otifG;
+    const tot    = rireSel==='RI' ? st.entRI     : rireSel==='RE' ? st.entRE     : st.entG;
+    // No Prazo (On Time) e Completo (In Full) são as duas condições que juntas
+    // formam o OTIF — já calculadas separadamente dentro de _computeOtifStats,
+    // só não eram expostas aqui pra fora. Pedido do usuário, 2026-11-03: o
+    // card só mostrava o binário dentro/fora do OTIF, sem dizer QUAL das duas
+    // condições falhou (atraso, corte/devolução, ou os dois).
+    const onTime = rireSel==='RI' ? st.onTimeRI  : rireSel==='RE' ? st.onTimeRE  : st.onTimeG;
+    const inFull = rireSel==='RI' ? st.inFullRI  : rireSel==='RE' ? st.inFullRE  : st.inFullG;
     if(tot>0) bMes[m-1] = ok/tot*100;
     okTotal += ok;
     totalGeral += tot;
+    onTimeTotal += onTime;
+    inFullTotal += inFull;
   }
   const pctAnual = totalGeral>0 ? (okTotal/totalGeral*100) : 0;
-  return { bMes, okTotal, totalGeral, pctAnual };
+  return { bMes, okTotal, totalGeral, onTimeTotal, inFullTotal, pctAnual };
 }
 
 async function carregarPainelOtifAno(){
@@ -36868,16 +36877,29 @@ async function carregarPainelOtifAno(){
     const anoSel = _anoSelPainelIndicadores();
     const undSel = window._painelIndUndSel || '';
     const rireSel = window._painelIndRireSel || '';
-    const { bMes, okTotal, totalGeral, pctAnual } = await _calcOtifAno(anoSel, undSel, rireSel);
+    const { bMes, okTotal, totalGeral, onTimeTotal, inFullTotal, pctAnual } = await _calcOtifAno(anoSel, undSel, rireSel);
     const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
+    // OTIF = No Prazo (On Time) E Completo (In Full) ao mesmo tempo. Decompõe
+    // o "fora do OTIF" nas 2 causas possíveis (atraso, incompleto, ou os
+    // dois) por inclusão-exclusão a partir dos totais já calculados — sem
+    // precisar de uma consulta nova: quem é "no prazo mas incompleto" é
+    // onTimeTotal menos quem também tá no OTIF (que por definição é no prazo
+    // E completo); mesma lógica pro outro lado. Pedido do usuário, 2026-11-03:
+    // "está faltando saber se o pedido foi completo ou não, se foi entregue
+    // no prazo ou não" — o card só mostrava o binário dentro/fora do OTIF.
+    const atrasadoMasCompleto  = Math.max(0, inFullTotal - okTotal);
+    const noPrazoMasIncompleto = Math.max(0, onTimeTotal - okTotal);
+    const atrasadoEIncompleto  = Math.max(0, totalGeral - onTimeTotal - inFullTotal + okTotal);
     container.innerHTML = _renderCardVisaoAnualPercentual({
       indicador: 'OTIF'+eyebrowRire, titulo: 'OTIF', area: 'OPERAÇÕES / DISTRIBUIÇÃO',
       anoSel, pctAnual, metaNum: 95, invertido: true, bMes,
       composicaoItems: [
-        {label:'DENTRO DO OTIF', valor: okTotal, desc:'Pedido entregue até o prazo, sem ocorrência, corte ou troca de mercadoria pós-romaneio.'},
-        {label:'FORA DO OTIF', valor: totalGeral-okTotal, desc:'Pedido atrasado, com ocorrência de devolução, corte ou troca após entrar em romaneio.'},
+        {label:'NO PRAZO E COMPLETO (OTIF)', valor: okTotal, desc:'Pedido entregue até o prazo, sem ocorrência, corte ou troca de mercadoria pós-romaneio.'},
+        {label:'ATRASADO, MAS COMPLETO', valor: atrasadoMasCompleto, desc:'Pedido sem corte, troca ou devolução — mas entregue fora do prazo.'},
+        {label:'NO PRAZO, MAS INCOMPLETO', valor: noPrazoMasIncompleto, desc:'Pedido entregue dentro do prazo — mas com ocorrência de corte, troca ou devolução de mercadoria pós-romaneio.'},
+        {label:'ATRASADO E INCOMPLETO', valor: atrasadoEIncompleto, desc:'Pedido fora do prazo E com ocorrência de corte, troca ou devolução de mercadoria pós-romaneio.'},
       ],
-      baseTxt: `${totalGeral} pedidos no ano`
+      baseTxt: `${totalGeral} pedidos no ano · ${totalGeral>0?(onTimeTotal/totalGeral*100).toFixed(1).replace('.',','):'0,0'}% no prazo · ${totalGeral>0?(inFullTotal/totalGeral*100).toFixed(1).replace('.',','):'0,0'}% completo`
     });
     _featherReplace(); // _renderCardVisaoAnualPercentual já usa ícone Feather no botão de baixar imagem
   } catch(e){
