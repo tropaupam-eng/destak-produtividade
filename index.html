@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.130';
+const APP_VERSION = '4.89.131';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33907,6 +33907,10 @@ function _respirar(){
 // independente de tamanho ou rede. (foreignObjectRendering:true foi tentado
 // antes e MEDIDO como pior, não melhor — revertido; a clonagem do documento
 // inteiro já é cara antes mesmo de qualquer modo de desenho entrar em jogo.)
+// Chamada de dentro de _html2canvasSeguro (não só no laço de "Gerar
+// Apresentação") — o mesmo travamento acontecia também no "📷 Baixar
+// Imagem" avulso de qualquer card isolado, achado pelo usuário, 2026-11-03,
+// porque ESSE botão nunca passava por aqui antes.
 function _destacarOutrosParaCaptura(){
   const ativa = document.querySelector('.page.active');
   const refs = [];
@@ -33915,11 +33919,13 @@ function _destacarOutrosParaCaptura(){
     refs.push({el:p, parent:p.parentNode, next:p.nextSibling});
     p.remove();
   });
-  // modal-gerar-apresentacao fica: é a própria tela de progresso que a
-  // pessoa está vendo durante a geração — removê-la faria ela "sumir" da
-  // tela a cada slide.
+  // Modal aberto na hora (ex: a própria tela de progresso do "Gerar
+  // Apresentação") fica — removê-lo faria ele "sumir" da tela durante a
+  // captura. Por visibilidade real, não por id fixo, já que isso roda em
+  // QUALQUER captura de imagem do app agora, não só dentro de um modal
+  // específico.
   document.querySelectorAll('[id^="modal-"]').forEach(m=>{
-    if(m.id === 'modal-gerar-apresentacao') return;
+    if(getComputedStyle(m).display !== 'none') return;
     refs.push({el:m, parent:m.parentNode, next:m.nextSibling});
     m.remove();
   });
@@ -34012,15 +34018,14 @@ async function gerarApresentacaoPainelIndicadores(){
 
         const alvo = s.container ? document.getElementById(s.container) : abaEl;
         if(alvo){
-          // Remove temporariamente as outras páginas/modais do DOM antes de
-          // capturar — é a clonagem do documento inteiro (não o tamanho
-          // deste card) que trava a aba (ver _destacarOutrosParaCaptura).
-          const refsDesanexados = _destacarOutrosParaCaptura();
+          // Desanexar as outras páginas/modais do DOM antes de capturar já
+          // acontece dentro de _html2canvasSeguro (chamada por
+          // _capturarNodeComo1920x1080 logo abaixo) — cobre esta captura e
+          // qualquer outra do app, sem precisar repetir aqui.
           try{
             const canvas = await _comTimeout(_capturarNodeComo1920x1080(alvo, {semFundo:false}), 20000, 'Captura do slide demorou demais (20s), pulado.');
             pptx.addSlide().addImage({ data:canvas.toDataURL('image/png'), x:0, y:0, w:13.333, h:7.5 });
           }catch(e){ console.warn('Falha ao capturar slide', s.titulo, e); falhou = true; }
-          finally{ _restaurarAposCaptura(refsDesanexados); }
         }
         if(falhou) pulados.push(s.titulo);
 
@@ -34617,11 +34622,21 @@ async function _html2canvasSeguro(node, opts){
   const _opts0 = opts || {};
   const _temaEscuro = (doc)=>{ try{ doc.body.classList.remove('light-theme'); }catch(e){} };
   opts = { ..._opts0, onclone:(doc, el)=>{ _temaEscuro(doc); if(_opts0.onclone) _opts0.onclone(doc, el); } };
-  try{ return await html2canvas(node, opts); }
-  catch(e){
-    if(!/unsupported (color|image) function/i.test((e && e.message) || '')) throw e;
-    console.warn('html2canvas: cor moderna no card, refazendo com cores convertidas:', e.message);
-    return await html2canvas(node, {...opts, onclone:(doc, el)=>{ _h2cSanearCoresModernas(doc); if(opts.onclone) opts.onclone(doc, el); }});
+  // Desanexa as outras páginas/modais do DOM ANTES de qualquer captura — é
+  // aqui, no único lugar que realmente chama html2canvas(), que isso tem
+  // que acontecer, pra cobrir toda captura do app (Baixar Imagem avulso,
+  // Gerar Apresentação, Baixar Imagem de Veículos) sem precisar repetir a
+  // chamada em cada botão. Ver _destacarOutrosParaCaptura.
+  const refsDesanexados = _destacarOutrosParaCaptura();
+  try{
+    try{ return await html2canvas(node, opts); }
+    catch(e){
+      if(!/unsupported (color|image) function/i.test((e && e.message) || '')) throw e;
+      console.warn('html2canvas: cor moderna no card, refazendo com cores convertidas:', e.message);
+      return await html2canvas(node, {...opts, onclone:(doc, el)=>{ _h2cSanearCoresModernas(doc); if(opts.onclone) opts.onclone(doc, el); }});
+    }
+  } finally {
+    _restaurarAposCaptura(refsDesanexados);
   }
 }
 
