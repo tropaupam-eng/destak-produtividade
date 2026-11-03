@@ -9920,7 +9920,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.133';
+const APP_VERSION = '4.89.134';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -30828,6 +30828,25 @@ async function renderDashInterna(){
     const { bd, cargaRota, cargaIsRI, cargaMotorista, cargaAjudante, lancMes, baseDataSupa, todasRotas, rotasRI, rotaParam, cargasUndLanc }
       = await _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, fimMes);
 
+    // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV).
+    // Buscado cedo (antes de "Valor Entregue" e do ranking) pra dar o mesmo
+    // critério de "sem In Full" (ocorrência/corte/troca pós-RO) pros lugares
+    // que precisam saber se um pedido teve avaria — achado por auditoria,
+    // 2026-11-03: todos liam base_data.ocorrencia, coluna zerada em 100% das
+    // linhas desde pelo menos agosto/2026 (a fonte real migrou faz tempo pra
+    // ocorrencias_distribuicao + pedidos_itens_erp, só esses pontos não
+    // acompanharam).
+    const _userUndDash = undFiltro !== undefined && undFiltro !== '' ? undFiltro : '';
+    const _dashCacheKey = _userUndDash ? `${mesFiltro}__${_userUndDash}` : mesFiltro;
+    if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_dashCacheKey);
+    const _dadosOtif = await _carregarOtifMes(mesFiltro, _userUndDash||undefined);
+    // Mesmo critério de "sem In Full" usado pelo OTIF — substitui o antigo
+    // base_data.ocorrencia===1 no "Valor Entregue" e no ranking abaixo.
+    const _ocorrSetDash = new Set();
+    (_dadosOtif?.ocorrRows||[]).forEach(o=>{ if(o.pedido && o.status!=='resolvida') _ocorrSetDash.add(String(o.pedido)); });
+    const _cortesSetDash = _pedidosComCorteOuTrocaPosRo(_dadosOtif?.cortesRows);
+    const _semInFullDash = ped => _ocorrSetDash.has(String(ped)) || _cortesSetDash.has(String(ped));
+
     // Cargas RI do período/unidade
     const cargasUnd = new Set(bd.map(r=>r.carga).filter(v=>v!=null&&v!==''&&!isNaN(Number(v))).map(v=>String(Math.round(Number(v)))));
 
@@ -30894,13 +30913,14 @@ async function renderDashInterna(){
     }
     const totalCargas    = cargasFiltro.size;
     const totalPedidos   = new Set(bd.map(r=>String(r.carga)+'_'+String(r.pedido))).size;
-    // Valor Entregue: dedupe por pedido e exclui ocorrência — mesmo critério do
-    // ranking de motoristas/ajudantes logo abaixo, na mesma função (evita a
-    // tela mostrar dois números de "pedidos válidos" diferentes lado a lado).
+    // Valor Entregue: dedupe por pedido e exclui ocorrência/corte/troca — mesmo
+    // critério do ranking de motoristas/ajudantes logo abaixo, na mesma função
+    // (evita a tela mostrar dois números de "pedidos válidos" diferentes lado
+    // a lado). _semInFullDash (não mais base_data.ocorrencia, coluna morta).
     const _valorVistos = new Set();
     let valorTotal = 0;
     bd.forEach(r=>{
-      if(Number(r.ocorrencia||0)===1 || !r.pedido) return;
+      if(!r.pedido || _semInFullDash(r.pedido)) return;
       const _vk = String(r.carga)+'_'+String(r.pedido);
       if(_valorVistos.has(_vk)) return;
       _valorVistos.add(_vk);
@@ -30938,12 +30958,7 @@ async function renderDashInterna(){
         ? `🚛 Saída importada — ${nSaida} pedidos (aguardando planilha de entrega)`
         : '⏱ Sem planilha — OTIF pela saída registrada no sistema';
 
-    // OTIF — fonte única: _carregarOtifMes (mesmo cache do Painel e TV)
-    // Usa o mesmo filtro de unidade do restante do dashboard (undFiltro da UI ou unidade do usuário)
-    const _userUndDash = undFiltro !== undefined && undFiltro !== '' ? undFiltro : '';
-    const _dashCacheKey = _userUndDash ? `${mesFiltro}__${_userUndDash}` : mesFiltro;
-    if(mesFiltro === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_dashCacheKey);
-    const _dadosOtif = await _carregarOtifMes(mesFiltro, _userUndDash||undefined);
+    // _dadosOtif já buscado antes (ver _calcularBaseFiltrada acima) — reaproveita.
     const _otifInterna = _dadosOtif ? _dadosOtif.stats : _computeOtifStats(baseDataSupa, edRows, lancMes, dem, todasRotas, [], undefined, mesFiltro);
     let otifTot, otifOk, onTimeTot, onTimeOk, inFullTot, inFullOk;
     if(rireFiltro === 'RI'){
@@ -30969,22 +30984,25 @@ async function renderDashInterna(){
     const corOtif   = p => p===null?'#6b7280':p>=95?'#059669':p>=80?'#f59e0b':'#ef4444';
     const corAv     = p => p<=2?'#059669':p<=5?'#f59e0b':'#ef4444';
 
-    // Avaria: pedidos com ocorrência registrada
-    const _bdAvaria = (_dadosOtif?.bdRows || baseDataSupa || []).filter(r=>{
-      if(!r.ocorrencia || Number(r.ocorrencia) === 0) return false;
-      if(rireFiltro === 'RI'){ const ri = r.rire || getRireFromRota(r.rota); return (ri||'').includes('I'); }
-      if(rireFiltro === 'RE'){ const ri = r.rire || getRireFromRota(r.rota); return !(ri||'').includes('I'); }
-      return true;
-    });
-    const avariaQtdInt = _bdAvaria.length;
-    const pctAvariaInt = otifTot > 0 ? Math.round(avariaQtdInt*100/otifTot) : 0;
+    // Avaria: antes filtrava base_data.ocorrencia===1 — essa coluna está
+    // zerada em 100% das linhas desde pelo menos agosto/2026 (achado por
+    // auditoria, 2026-11-03), porque a fonte real de ocorrência/corte/troca
+    // pós-RO já migrou pra ocorrencias_distribuicao + pedidos_itens_erp, a
+    // mesma usada pelo próprio "In Full" do OTIF logo acima — o card ficava
+    // preso em 0%, não porque não acontecem avarias, mas porque lia uma
+    // coluna abandonada. "Avaria" é o complemento do In Full (pedidos COM
+    // ocorrência/corte/troca ÷ total) — reaproveita inFullTot/inFullOk já
+    // calculados ali em cima, sem consulta nova nem lógica paralela que
+    // pudesse divergir do OTIF.
+    const avariaQtdInt = inFullTot > 0 ? (inFullTot - inFullOk) : 0;
+    const pctAvariaInt = inFullTot > 0 ? Math.round(avariaQtdInt*100/inFullTot) : 0;
 
     // 6. Rankings — Motoristas e Ajudantes
     // Chave: carga+pedido para evitar dupla contagem entre cargas diferentes
     const motPedidos = {};
     const ajuPedidos = {};
     bd.forEach(r=>{
-      if(Number(r.ocorrencia||0)===1 || !r.pedido) return;
+      if(!r.pedido || _semInFullDash(r.pedido)) return;
       const c   = Math.round(Number(r.carga));
       const key = String(r.carga)+'_'+String(r.pedido);
       // Motorista: lancamento → base_data.condutor
