@@ -2852,6 +2852,7 @@ body.light-theme{
 
   <!-- ── CHIPS DE MÊS ── -->
   <div id="fin-mes-chips" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px"></div>
+  <div id="fin-bonus-colocacao" style="display:none;margin-bottom:18px"></div>
 
   <!-- ── TABELA ── -->
 
@@ -49054,6 +49055,22 @@ async function gerarPagamentos(btn, opts){
       Object.values(_unicos).forEach(p=>{ pessoaMap[p.nome+'__'+p.mes_ano+'__'+(p.tipo==='ajudante'?'AJ':'MOT')] = p; });
     }
 
+    // ── BÔNUS POR COLOCAÇÃO (lançado à mão na aba Produtividade; tabela bonus_colocacao) ──
+    // Soma ao total da pessoa (nome + mês + tipo). val_entrega, já calculado acima, não muda.
+    try{
+      const _bcRows = await supaFetch('bonus_colocacao?select=mes_ano,tipo,posicao,nome,valor').catch(()=>[]) || [];
+      _bcRows.forEach(r=>{
+        const v = Number(r.valor)||0;
+        const nomeBc = (r.nome||'').trim().toUpperCase();
+        if(v<=0 || !nomeBc) return;
+        const p = pessoaMap[nomeBc+'__'+r.mes_ano+'__'+(r.tipo==='ajudante'?'AJ':'MOT')];
+        if(!p) return;
+        p.total += v;
+        p.bonus_colocacao = (p.bonus_colocacao||0) + v;
+        p.colocacao = r.posicao;
+      });
+    }catch(_){}
+
     // Verificar pagamentos já existentes no Supabase e mesclar status
     let historico = [];
     try{
@@ -49098,6 +49115,7 @@ function renderTabelaFinanceiro(){
   const undSel  = document.getElementById('fin-filtro-und')?.value || '';
   const tipoSel = document.getElementById('fin-filtro-tipo')?.value || '';
   _renderizarChipsMes(mesSel);
+  _renderBonusColocacao();
 
   let dados = _pagamentosCache;
   if(mesSel)  dados = dados.filter(d=>d.mes_ano===mesSel);
@@ -49460,6 +49478,125 @@ function _renderizarChipsMes(mesSelecionado){
     }).join('');
 }
 
+// ── BÔNUS POR COLOCAÇÃO (lançamento manual, só admin) ──────────────────────────────────────────────
+// Top 3 motoristas e top 2 ajudantes do mês recebem um valor lançado à mão aqui (tabela bonus_colocacao,
+// unique mes_ano+tipo+posicao). O valor é somado ao total da pessoa em gerarPagamentos. Pedido do usuário, 2026-11-03.
+const BONUS_COLOC_POSICOES = { motorista: 3, ajudante: 2 };
+let _bonusColocSeq = 0;
+let _bonusColocSalvos = { mes: '', rows: [] };
+
+// Ranking do mês (todas as unidades): entregas desc, nome asc — as mesmas entregas que aparecem na tabela.
+function _rankingColocacao(mes, tipo){
+  return _pagamentosCache
+    .filter(p=>p.mes_ano===mes && p.tipo===tipo)
+    .sort((a,b)=>(b.entregas||0)-(a.entregas||0) || String(a.nome).localeCompare(String(b.nome)))
+    .map(p=>({ nome:p.nome, entregas:p.entregas||0, und:p.und||'' }));
+}
+
+async function _renderBonusColocacao(){
+  const el = document.getElementById('fin-bonus-colocacao');
+  if(!el) return;
+  if(USUARIO_LOGADO?.perfil !== 'admin' || !_pagamentosCache.length){ el.style.display='none'; el.innerHTML=''; return; }
+  const mes = document.getElementById('fin-filtro-mes')?.value || '';
+  const seq = ++_bonusColocSeq;
+  const caixa = 'background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px';
+  el.style.display = 'block';
+  if(!mes){
+    el.innerHTML = `<div style="${caixa};font-size:.82rem;color:var(--text-muted)"><b style="color:var(--text-primary)">🏆 Bônus por colocação</b> — selecione um mês acima para lançar o bônus do top 3 de motoristas e do top 2 de ajudantes.</div>`;
+    return;
+  }
+  let salvos;
+  try{
+    salvos = await supaFetch(`bonus_colocacao?mes_ano=eq.${encodeURIComponent(mes)}&select=tipo,posicao,nome,valor`) || [];
+  }catch(e){
+    if(seq !== _bonusColocSeq) return;
+    el.innerHTML = `<div style="${caixa};font-size:.82rem;color:var(--red)">Bônus por colocação: erro ao carregar (${escapeHtml(e.message||'')}).</div>`;
+    return;
+  }
+  if(seq !== _bonusColocSeq) return;
+  _bonusColocSalvos = { mes, rows: salvos };
+
+  const esc = s => escapeHtml(String(s==null?'':s));
+  const fn  = v => Number.isInteger(v) ? String(v) : Number(v).toLocaleString('pt-BR',{maximumFractionDigits:1});
+  const fv  = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const campo = 'background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:.8rem';
+  let totalLancado = 0;
+
+  const bloco = (tipo, titulo) => {
+    const rk = _rankingColocacao(mes, tipo);
+    let h = `<div style="flex:1;min-width:300px"><div style="font-weight:800;font-size:.82rem;margin-bottom:8px">${titulo}</div>`;
+    for(let pos=1; pos<=BONUS_COLOC_POSICOES[tipo]; pos++){
+      const sv = salvos.find(s=>s.tipo===tipo && s.posicao===pos);
+      if(sv) totalLancado += Number(sv.valor)||0;
+      const padrao = sv ? sv.nome : (rk[pos-1]?.nome || '');
+      const opts = rk.map((r,i)=>`<option value="${esc(r.nome)}"${r.nome===padrao?' selected':''}>${i+1}º — ${esc(r.nome)} (${fn(r.entregas)} ent.)</option>`);
+      if(sv && !rk.some(r=>r.nome===sv.nome)) opts.unshift(`<option value="${esc(sv.nome)}" selected>${esc(sv.nome)} (fora do ranking)</option>`);
+      const aviso = (sv && rk[pos-1] && rk[pos-1].nome !== sv.nome)
+        ? `<div style="font-size:.7rem;color:var(--orange,#e8890c);margin:-2px 0 6px 52px">⚠ Lançado para ${esc(sv.nome)}; hoje o ${pos}º do ranking é ${esc(rk[pos-1].nome)}.</div>` : '';
+      h += `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <span style="width:44px;font-weight:800;font-size:.8rem">${pos}º</span>
+        <select id="bc-sel-${tipo}-${pos}" style="${campo};flex:1;min-width:0">${opts.join('')||'<option value="">(sem pessoas no mês)</option>'}</select>
+        <input id="bc-val-${tipo}-${pos}" type="number" min="0" step="0.01" placeholder="R$ 0,00" value="${sv?Number(sv.valor):''}" style="${campo};width:96px">
+      </div>${aviso}`;
+    }
+    return h + '</div>';
+  };
+
+  const corpo = bloco('motorista','Motoristas — top 3') + bloco('ajudante','Ajudantes — top 2');
+  el.innerHTML = `<div style="${caixa}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div style="font-weight:800;font-size:.9rem">🏆 Bônus por colocação — ${esc(formatarMesAno(mes))}</div>
+      <div style="font-size:.76rem;color:var(--text-muted)">Ranking por entregas (todas as unidades). Valor vazio ou 0 = sem bônus. Total lançado: <b style="color:var(--text-primary)">${fv(totalLancado)}</b></div>
+    </div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap">${corpo}</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:8px">
+      <button id="bc-btn-salvar" onclick="salvarBonusColocacao('${esc(mes)}')" style="background:var(--green,#1f9d55);color:#fff;border:none;border-radius:8px;padding:7px 18px;font-size:.8rem;font-weight:700;cursor:pointer">Salvar bônus</button>
+    </div>
+  </div>`;
+}
+
+async function salvarBonusColocacao(mes){
+  if(USUARIO_LOGADO?.perfil !== 'admin'){ showToast('Só o administrador lança o bônus por colocação','warning'); return; }
+  if(!mes || _bonusColocSalvos.mes !== mes){ showToast('Recarregue o painel do mês e tente de novo','warning'); return; }
+  const upserts = [], apagar = [], vistos = new Set();
+  const agora = new Date().toISOString();
+  for(const tipo of ['motorista','ajudante']){
+    for(let pos=1; pos<=BONUS_COLOC_POSICOES[tipo]; pos++){
+      const nome  = (document.getElementById(`bc-sel-${tipo}-${pos}`)?.value || '').trim();
+      const bruto = parseFloat(String(document.getElementById(`bc-val-${tipo}-${pos}`)?.value || '').replace(',','.'));
+      const valor = Number.isFinite(bruto) ? Math.round(bruto*100)/100 : 0;
+      if(valor > 0){
+        if(!nome){ showToast(`Escolha a pessoa do ${pos}º lugar (${tipo==='motorista'?'motoristas':'ajudantes'})`,'warning'); return; }
+        const k = tipo+'__'+nome;
+        if(vistos.has(k)){ showToast(`${nome} está em duas colocações — cada pessoa só pode ter uma`,'warning'); return; }
+        vistos.add(k);
+        upserts.push({ mes_ano:mes, tipo, posicao:pos, nome, valor, lancado_por:(USUARIO_LOGADO?.nome||USUARIO_LOGADO?.login||null), atualizado_em:agora });
+      } else if(_bonusColocSalvos.rows.some(s=>s.tipo===tipo && s.posicao===pos)){
+        apagar.push({ tipo, pos });
+      }
+    }
+  }
+  const btn = document.getElementById('bc-btn-salvar');
+  if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
+  try{
+    if(upserts.length){
+      await supaFetch('bonus_colocacao?on_conflict=mes_ano,tipo,posicao',{
+        method:'POST',
+        prefer:'resolution=merge-duplicates,return=minimal',
+        body: JSON.stringify(upserts)
+      });
+    }
+    for(const a of apagar){
+      await supaFetch(`bonus_colocacao?mes_ano=eq.${encodeURIComponent(mes)}&tipo=eq.${a.tipo}&posicao=eq.${a.pos}`,{ method:'DELETE', prefer:'return=minimal' });
+    }
+    showToast(`✅ Bônus por colocação salvo (${upserts.length} lançado(s)${apagar.length?`, ${apagar.length} removido(s)`:''})`,'success');
+    await gerarPagamentos();   // recalcula os totais com o bônus e redesenha o painel
+  }catch(e){
+    showToast('Erro ao salvar o bônus: '+e.message,'warning');
+    if(btn){ btn.disabled = false; btn.textContent = 'Salvar bônus'; }
+  }
+}
+
 function _selecionarMesChip(mes){
   const sel = document.getElementById('fin-filtro-mes');
   if(sel) sel.value = mes;
@@ -49493,8 +49630,8 @@ function _dadosRelatorioFinanceiro(){
     const mapa = {};
     dados.forEach(d=>{
       const k = d.nome+'__'+d.tipo+'__'+(d.und||'');
-      if(!mapa[k]) mapa[k] = {...d, entregas:d.entregas||0, ent_sem:d.ent_sem||0, ent_com:d.ent_com||0, ent_re:d.ent_re||0, total:d.total||0};
-      else { mapa[k].entregas+=d.entregas||0; mapa[k].ent_sem+=d.ent_sem||0; mapa[k].ent_com+=d.ent_com||0; mapa[k].ent_re+=d.ent_re||0; mapa[k].total+=d.total||0; }
+      if(!mapa[k]) mapa[k] = {...d, entregas:d.entregas||0, ent_sem:d.ent_sem||0, ent_com:d.ent_com||0, ent_re:d.ent_re||0, total:d.total||0, bonus_colocacao:d.bonus_colocacao||0};
+      else { mapa[k].bonus_colocacao+=d.bonus_colocacao||0; mapa[k].entregas+=d.entregas||0; mapa[k].ent_sem+=d.ent_sem||0; mapa[k].ent_com+=d.ent_com||0; mapa[k].ent_re+=d.ent_re||0; mapa[k].total+=d.total||0; }
     });
     dados = Object.values(mapa);
   }
@@ -49519,7 +49656,7 @@ function exportarFinanceiro(){
   const splitRiRe = d => d.tipo==='ajudante'
     ? { ri: d.entregas - (d.ent_re||0), re: d.ent_re||0 }
     : { ri: d.entregas, re: '' };
-  const linhas = [['Unidade','Tipo','Nome','Total Entregas','Sozinho','Com Ajudante','Entregas Interna (R.I.)','Entregas Externa (R.E.)','Valor Total (R$)','Compet\u00eancia'].join(sep)];
+  const linhas = [['Unidade','Tipo','Nome','Total Entregas','Sozinho','Com Ajudante','Entregas Interna (R.I.)','Entregas Externa (R.E.)','Valor Total (R$)','Compet\u00eancia','B\u00f4nus Coloca\u00e7\u00e3o (R$)'].join(sep)];
 
   const unidades = [...new Set(dados.map(d=>d.und||'').filter(Boolean))].sort();
   unidades.forEach(und=>{
@@ -49527,12 +49664,12 @@ function exportarFinanceiro(){
     const mots = du.filter(d=>d.tipo==='motorista');
     const ajs  = du.filter(d=>d.tipo==='ajudante');
     if(mots.length){
-      linhas.push(['','MOTORISTAS \u2014 '+und,'','','','','','','',''].join(sep));
-      mots.forEach(d=>{ const sp=splitRiRe(d); linhas.push([und,'Motorista',d.nome,d.entregas,d.ent_sem||0,d.ent_com||0,sp.ri,sp.re,fv(d.total),comp].join(sep)); });
+      linhas.push(['','MOTORISTAS \u2014 '+und,'','','','','','','','',''].join(sep));
+      mots.forEach(d=>{ const sp=splitRiRe(d); linhas.push([und,'Motorista',d.nome,d.entregas,d.ent_sem||0,d.ent_com||0,sp.ri,sp.re,fv(d.total),comp,fv(d.bonus_colocacao||0)].join(sep)); });
     }
     if(ajs.length){
-      linhas.push(['','AJUDANTES \u2014 '+und,'','','','','','','',''].join(sep));
-      ajs.forEach(d=>{ const sp=splitRiRe(d); linhas.push([und,'Ajudante',d.nome,d.entregas,d.ent_sem||0,d.ent_com||0,sp.ri,sp.re,fv(d.total),comp].join(sep)); });
+      linhas.push(['','AJUDANTES \u2014 '+und,'','','','','','','','',''].join(sep));
+      ajs.forEach(d=>{ const sp=splitRiRe(d); linhas.push([und,'Ajudante',d.nome,d.entregas,d.ent_sem||0,d.ent_com||0,sp.ri,sp.re,fv(d.total),comp,fv(d.bonus_colocacao||0)].join(sep)); });
     }
     linhas.push('');
   });
@@ -49566,20 +49703,25 @@ function imprimirRelatorioFinanceiro(){
   // Motorista nunca tem entrega em rota externa (R.E.) e ajudante nunca tem entrega "sozinho": cada tabela só traz as colunas que valem.
   const soma = (arr, c) => arr.reduce((s,d)=>s+(d[c]||0),0);
   const cel = v => '<td>'+v+'</td>';
+  // Bônus por colocação (lançado à mão): coluna extra só quando algum dos listados recebeu; o Valor já inclui o bônus.
+  const temBC = dados.some(d=>(d.bonus_colocacao||0) > 0);
+  const celBC = d => temBC ? '<td class="vl">'+((d.bonus_colocacao||0) > 0 ? (mesSel && d.colocacao ? d.colocacao+'º · ' : '')+fv(d.bonus_colocacao) : '')+'</td>' : '';
   const linha = d => {
     const sp = splitRiRe(d);
     const celulas = d.tipo==='motorista'
       ? cel(fn(d.entregas))+cel(fn(d.ent_sem||0))+cel(fn(d.ent_com||0))+cel(fn(sp.ri))
       : cel(fn(d.entregas))+cel(fn(d.ent_com||0))+cel(fn(sp.ri))+cel(fn(sp.re));
-    return '<tr><td class="nm">'+esc(d.nome)+'</td>'+celulas+'<td class="vl">'+fv(d.total)+'</td></tr>';
+    return '<tr><td class="nm">'+esc(d.nome)+'</td>'+celulas+celBC(d)+'<td class="vl">'+fv(d.total)+'</td></tr>';
   };
   const totalRow = (rot, arr, tipo) => '<tr class="tot"><td class="nm">'+esc(rot)+'</td>'
     + (tipo==='motorista' ? cel(fn(soma(arr,'entregas')))+cel(fn(soma(arr,'ent_sem')))+cel(fn(soma(arr,'ent_com')))+cel('')
                           : cel(fn(soma(arr,'entregas')))+cel(fn(soma(arr,'ent_com')))+cel('')+cel(''))
+    + (temBC ? '<td class="vl">'+(soma(arr,'bonus_colocacao') > 0 ? fv(soma(arr,'bonus_colocacao')) : '')+'</td>' : '')
     + '<td class="vl">'+fv(soma(arr,'total'))+'</td></tr>';
+  const colBC = temBC ? ['Bônus colocação (R$)'] : [];
   const cabPorTipo = {
-    motorista: ['Nome','Entregas','Sozinho','Com ajudante','Interna (R.I.)','Valor (R$)'],
-    ajudante:  ['Nome','Entregas','Com ajudante','Interna (R.I.)','Externa (R.E.)','Valor (R$)']
+    motorista: ['Nome','Entregas','Sozinho','Com ajudante','Interna (R.I.)',...colBC,'Valor (R$)'],
+    ajudante:  ['Nome','Entregas','Com ajudante','Interna (R.I.)','Externa (R.E.)',...colBC,'Valor (R$)']
   };
   const tabela = (titulo, arr, tipo) => '<h3>'+esc(titulo)+'</h3><table><thead><tr>'+cabPorTipo[tipo].map((c,i)=>'<th'+(i===0?' class="nm"':'')+'>'+c+'</th>').join('')+'</tr></thead><tbody>'+arr.map(linha).join('')+totalRow('Subtotal', arr, tipo)+'</tbody></table>';
 
@@ -49598,8 +49740,9 @@ function imprimirRelatorioFinanceiro(){
   if(!incluidos.length){ showToast('Nenhum dado para o relatório','warning'); return; }
 
   const filtros = ['Competência: <b>'+esc(comp)+'</b>', 'Unidade: <b>'+esc(undSel||'Todas')+'</b>', 'Tipo: <b>'+esc(tipoSel==='motorista'?'Motoristas':tipoSel==='ajudante'?'Ajudantes':'Motoristas e ajudantes')+'</b>'].join(' &nbsp;·&nbsp; ');
-  const nota = cargasDivididas.length
-    ? '<p class="nota">Cargas com 2 ajudantes ('+cargasDivididas.join(', ')+'): o bônus por entrega (motorista + ajudante) foi dividido em partes iguais entre o motorista e os ajudantes, e as entregas foram divididas entre os ajudantes.</p>' : '';
+  const notaBC = temBC ? '<p class="nota">Bônus por colocação (lançado pela administração): o valor da coluna "Bônus colocação" já está incluído no Valor.</p>' : '';
+  const nota = notaBC + (cargasDivididas.length
+    ? '<p class="nota">Cargas com 2 ajudantes ('+cargasDivididas.join(', ')+'): o bônus por entrega (motorista + ajudante) foi dividido em partes iguais entre o motorista e os ajudantes, e as entregas foram divididas entre os ajudantes.</p>' : '');
 
   const css = '@page{size:A4;margin:12mm}*{box-sizing:border-box}:root{color-scheme:light}html,body{background:#fff}body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:11px;margin:0}@media screen{body{padding:28px 40px;max-width:1100px;margin:0 auto}}'
     + '.cab{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #d71920;padding-bottom:10px;margin-bottom:12px}.cab img{height:46px}'
