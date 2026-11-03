@@ -9961,7 +9961,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.141';
+const APP_VERSION = '4.89.142';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -49479,16 +49479,16 @@ function _renderizarChipsMes(mesSelecionado){
 }
 
 // ── BÔNUS POR COLOCAÇÃO (lançamento manual, só admin) ──────────────────────────────────────────────
-// Top 3 motoristas e top 2 ajudantes do mês recebem um valor lançado à mão aqui (tabela bonus_colocacao,
-// unique mes_ano+tipo+posicao). O valor é somado ao total da pessoa em gerarPagamentos. Pedido do usuário, 2026-11-03.
+// Top 3 motoristas e top 2 ajudantes do mês, POR UNIDADE, recebem um valor lançado à mão aqui (tabela bonus_colocacao,
+// unique mes_ano+und+tipo+posicao). O valor é somado ao total da pessoa em gerarPagamentos. Pedido do usuário, 2026-11-03.
 const BONUS_COLOC_POSICOES = { motorista: 3, ajudante: 2 };
 let _bonusColocSeq = 0;
-let _bonusColocSalvos = { mes: '', rows: [] };
+let _bonusColocSalvos = { mes: '', und: '', rows: [] };
 
-// Ranking do mês (todas as unidades): entregas desc, nome asc — as mesmas entregas que aparecem na tabela.
-function _rankingColocacao(mes, tipo){
+// Ranking do mês na unidade: entregas desc, nome asc — as mesmas entregas que aparecem na tabela.
+function _rankingColocacao(mes, tipo, und){
   return _pagamentosCache
-    .filter(p=>p.mes_ano===mes && p.tipo===tipo)
+    .filter(p=>p.mes_ano===mes && p.tipo===tipo && (p.und||'')===und)
     .sort((a,b)=>(b.entregas||0)-(a.entregas||0) || String(a.nome).localeCompare(String(b.nome)))
     .map(p=>({ nome:p.nome, entregas:p.entregas||0, und:p.und||'' }));
 }
@@ -49498,6 +49498,7 @@ async function _renderBonusColocacao(){
   if(!el) return;
   if(USUARIO_LOGADO?.perfil !== 'admin' || !_pagamentosCache.length){ el.style.display='none'; el.innerHTML=''; return; }
   const mes = document.getElementById('fin-filtro-mes')?.value || '';
+  const und = document.getElementById('fin-filtro-und')?.value || '';
   const seq = ++_bonusColocSeq;
   const caixa = 'background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 16px';
   el.style.display = 'block';
@@ -49505,16 +49506,20 @@ async function _renderBonusColocacao(){
     el.innerHTML = `<div style="${caixa};font-size:.82rem;color:var(--text-muted)"><b style="color:var(--text-primary)">🏆 Bônus por colocação</b> — selecione um mês acima para lançar o bônus do top 3 de motoristas e do top 2 de ajudantes.</div>`;
     return;
   }
+  if(!und){
+    el.innerHTML = `<div style="${caixa};font-size:.82rem;color:var(--text-muted)"><b style="color:var(--text-primary)">🏆 Bônus por colocação</b> — o bônus é por unidade: selecione a <b>Unidade</b> no filtro acima para lançar o top 3 de motoristas e o top 2 de ajudantes dela.</div>`;
+    return;
+  }
   let salvos;
   try{
-    salvos = await supaFetch(`bonus_colocacao?mes_ano=eq.${encodeURIComponent(mes)}&select=tipo,posicao,nome,valor`) || [];
+    salvos = await supaFetch(`bonus_colocacao?mes_ano=eq.${encodeURIComponent(mes)}&und=eq.${encodeURIComponent(und)}&select=tipo,posicao,nome,valor`) || [];
   }catch(e){
     if(seq !== _bonusColocSeq) return;
     el.innerHTML = `<div style="${caixa};font-size:.82rem;color:var(--red)">Bônus por colocação: erro ao carregar (${escapeHtml(e.message||'')}).</div>`;
     return;
   }
   if(seq !== _bonusColocSeq) return;
-  _bonusColocSalvos = { mes, rows: salvos };
+  _bonusColocSalvos = { mes, und, rows: salvos };
 
   const esc = s => escapeHtml(String(s==null?'':s));
   const fn  = v => Number.isInteger(v) ? String(v) : Number(v).toLocaleString('pt-BR',{maximumFractionDigits:1});
@@ -49523,7 +49528,7 @@ async function _renderBonusColocacao(){
   let totalLancado = 0;
 
   const bloco = (tipo, titulo) => {
-    const rk = _rankingColocacao(mes, tipo);
+    const rk = _rankingColocacao(mes, tipo, und);
     let h = `<div style="flex:1;min-width:300px"><div style="font-weight:800;font-size:.82rem;margin-bottom:8px">${titulo}</div>`;
     for(let pos=1; pos<=BONUS_COLOC_POSICOES[tipo]; pos++){
       const sv = salvos.find(s=>s.tipo===tipo && s.posicao===pos);
@@ -49535,7 +49540,7 @@ async function _renderBonusColocacao(){
         ? `<div style="font-size:.7rem;color:var(--orange,#e8890c);margin:-2px 0 6px 52px">⚠ Lançado para ${esc(sv.nome)}; hoje o ${pos}º do ranking é ${esc(rk[pos-1].nome)}.</div>` : '';
       h += `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
         <span style="width:44px;font-weight:800;font-size:.8rem">${pos}º</span>
-        <select id="bc-sel-${tipo}-${pos}" style="${campo};flex:1;min-width:0">${opts.join('')||'<option value="">(sem pessoas no mês)</option>'}</select>
+        <select id="bc-sel-${tipo}-${pos}" style="${campo};flex:1;min-width:0">${opts.join('')||'<option value="">(sem pessoas na unidade)</option>'}</select>
         <input id="bc-val-${tipo}-${pos}" type="number" min="0" step="0.01" placeholder="R$ 0,00" value="${sv?Number(sv.valor):''}" style="${campo};width:96px">
       </div>${aviso}`;
     }
@@ -49545,8 +49550,8 @@ async function _renderBonusColocacao(){
   const corpo = bloco('motorista','Motoristas — top 3') + bloco('ajudante','Ajudantes — top 2');
   el.innerHTML = `<div style="${caixa}">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-      <div style="font-weight:800;font-size:.9rem">🏆 Bônus por colocação — ${esc(formatarMesAno(mes))}</div>
-      <div style="font-size:.76rem;color:var(--text-muted)">Ranking por entregas (todas as unidades). Valor vazio ou 0 = sem bônus. Total lançado: <b style="color:var(--text-primary)">${fv(totalLancado)}</b></div>
+      <div style="font-weight:800;font-size:.9rem">🏆 Bônus por colocação — ${esc(formatarMesAno(mes))} · ${esc(und)}</div>
+      <div style="font-size:.76rem;color:var(--text-muted)">Ranking por entregas desta unidade. Valor vazio ou 0 = sem bônus. Total lançado: <b style="color:var(--text-primary)">${fv(totalLancado)}</b></div>
     </div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">${corpo}</div>
     <div style="display:flex;justify-content:flex-end;margin-top:8px">
@@ -49557,7 +49562,8 @@ async function _renderBonusColocacao(){
 
 async function salvarBonusColocacao(mes){
   if(USUARIO_LOGADO?.perfil !== 'admin'){ showToast('Só o administrador lança o bônus por colocação','warning'); return; }
-  if(!mes || _bonusColocSalvos.mes !== mes){ showToast('Recarregue o painel do mês e tente de novo','warning'); return; }
+  const und = document.getElementById('fin-filtro-und')?.value || '';
+  if(!mes || !und || _bonusColocSalvos.mes !== mes || _bonusColocSalvos.und !== und){ showToast('Recarregue o painel do mês e da unidade e tente de novo','warning'); return; }
   const upserts = [], apagar = [], vistos = new Set();
   const agora = new Date().toISOString();
   for(const tipo of ['motorista','ajudante']){
@@ -49570,7 +49576,7 @@ async function salvarBonusColocacao(mes){
         const k = tipo+'__'+nome;
         if(vistos.has(k)){ showToast(`${nome} está em duas colocações — cada pessoa só pode ter uma`,'warning'); return; }
         vistos.add(k);
-        upserts.push({ mes_ano:mes, tipo, posicao:pos, nome, valor, lancado_por:(USUARIO_LOGADO?.nome||USUARIO_LOGADO?.login||null), atualizado_em:agora });
+        upserts.push({ mes_ano:mes, und, tipo, posicao:pos, nome, valor, lancado_por:(USUARIO_LOGADO?.nome||USUARIO_LOGADO?.login||null), atualizado_em:agora });
       } else if(_bonusColocSalvos.rows.some(s=>s.tipo===tipo && s.posicao===pos)){
         apagar.push({ tipo, pos });
       }
@@ -49580,14 +49586,14 @@ async function salvarBonusColocacao(mes){
   if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
   try{
     if(upserts.length){
-      await supaFetch('bonus_colocacao?on_conflict=mes_ano,tipo,posicao',{
+      await supaFetch('bonus_colocacao?on_conflict=mes_ano,und,tipo,posicao',{
         method:'POST',
         prefer:'resolution=merge-duplicates,return=minimal',
         body: JSON.stringify(upserts)
       });
     }
     for(const a of apagar){
-      await supaFetch(`bonus_colocacao?mes_ano=eq.${encodeURIComponent(mes)}&tipo=eq.${a.tipo}&posicao=eq.${a.pos}`,{ method:'DELETE', prefer:'return=minimal' });
+      await supaFetch(`bonus_colocacao?mes_ano=eq.${encodeURIComponent(mes)}&und=eq.${encodeURIComponent(und)}&tipo=eq.${a.tipo}&posicao=eq.${a.pos}`,{ method:'DELETE', prefer:'return=minimal' });
     }
     showToast(`✅ Bônus por colocação salvo (${upserts.length} lançado(s)${apagar.length?`, ${apagar.length} removido(s)`:''})`,'success');
     await gerarPagamentos();   // recalcula os totais com o bônus e redesenha o painel
