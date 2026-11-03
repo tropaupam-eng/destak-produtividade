@@ -199,6 +199,9 @@ body{
 .btn-topbar.sincronizando{opacity:.8;pointer-events:none}
 .btn-topbar.sincronizando svg{animation:tbGirar .9s linear infinite}
 @keyframes tbGirar{to{transform:rotate(360deg)}}
+.painel-ind-tab-fora{display:none !important}
+.painel-ind-secao{padding:8px 18px;border-radius:999px;border:1px solid var(--border-med);background:var(--bg-card2);color:var(--text-secondary);font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap}
+.painel-ind-secao.active{background:var(--blue);border-color:var(--blue);color:#fff}
 @media(max-width:1100px){
   .topbar-right .tb-label{display:none}
   .topbar-right .btn-topbar.tb-com-label{width:34px;padding:0;justify-content:center;gap:0}
@@ -3224,6 +3227,8 @@ body.light-theme{
     <button onclick="_painelAtualizarTudo()" title="Recarrega os indicadores desta aba agora" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:4px 10px;font-size:.75rem;font-weight:700;color:var(--text-secondary);cursor:pointer"><span data-feather="refresh-cw" style="width:12px;height:12px"></span> Atualizar</button>
   </div>
 
+  <!-- Seções do Painel (mesma divisão do modelo de apresentação): Expedição · Armazém · Distribuição · Monitoramento · Frota -->
+  <div id="painel-ind-secoes" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"></div>
   <!-- Abas de Navegação -->
   <div style="display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);overflow-x:auto">
     <button class="painel-ind-tab active" onclick="mudarAbaIndicadores('abs-expedicao')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-primary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="abs-expedicao">
@@ -4493,7 +4498,7 @@ body.light-theme{
       </div>
 
       <div style="font-size:.74rem;color:var(--text-muted);background:var(--bg-card2);border-radius:8px;padding:9px 11px;line-height:1.4">
-        ℹ️ Inclui todos os indicadores do painel (Absenteísmo, Utilização de Frotas, Liberação/Carregamento no Prazo, Pedidos &amp; Rotas, Custo/Receita Armazém, Prazo de Formação e Produtividade). No modo Semanal, os indicadores sem dado por semana ainda (Utilização de Frotas, Carregamento no Prazo, Prazo de Formação, Produtividade) entram com o dado do mês inteiro mesmo.
+        ℹ️ Gera o PowerPoint no modelo do ABC: capas por seção (Expedição, Armazém, Distribuição, Monitoramento, Frota), na mesma ordem, com texto, formas e gráficos editáveis (não são fotos). Os slides do modelo que ainda não têm dado no sistema são avisados ao final. No modo Semanal, os indicadores sem dado por semana entram com o mês inteiro e as visões anuais ficam de fora.
       </div>
 
       <div id="ga-progresso" style="display:none">
@@ -9920,7 +9925,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.136';
+const APP_VERSION = '4.89.137';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33285,6 +33290,46 @@ function _painelIndAtualizarFiltros(aba){
   }
 }
 
+// Seções do Painel — mesma divisão e mesma ordem do modelo de apresentação (ABC.pptx). Uma aba pode aparecer em
+// mais de uma seção (Pedidos & Rotas vale para Distribuição = rotas externas e Monitoramento = rotas internas).
+const PAINEL_IND_SECOES = {
+  expedicao:     { titulo:'Expedição',     abas:['abs-expedicao'] },
+  armazem:       { titulo:'Armazém',       abas:['custo-armazem','receita-armazem','abs-recebimento-armazenagem','carregamento-prazo','descarrego','prazo-formacao'] },
+  distribuicao:  { titulo:'Distribuição',  abas:['abs-distribuicao','disponibilidade','conferencia-prazo','pedidos-rotas'] },
+  monitoramento: { titulo:'Monitoramento', abas:['pedidos-rotas','produtividade','otif-ano'] },
+  frota:         { titulo:'Frota',         abas:['disponibilidade'] },
+};
+function _painelIndMontarSecoes(){
+  const box = document.getElementById('painel-ind-secoes');
+  if(!box || box.children.length) return;
+  box.innerHTML = Object.keys(PAINEL_IND_SECOES).map(k=>'<button type="button" class="painel-ind-secao" data-secao="' + k + '" onclick="mudarSecaoIndicadores(\'' + k + '\')">' + PAINEL_IND_SECOES[k].titulo + '</button>').join('');
+}
+function _painelIndMostrarSecao(secao){
+  const def = PAINEL_IND_SECOES[secao]; if(!def) return;
+  window._painelIndSecao = secao;
+  _painelIndMontarSecoes();
+  document.querySelectorAll('.painel-ind-tab').forEach(b=>{
+    const i = def.abas.indexOf(b.dataset.aba);
+    b.classList.toggle('painel-ind-tab-fora', i < 0);
+    b.style.order = i < 0 ? '' : String(i);
+  });
+  document.querySelectorAll('.painel-ind-secao').forEach(c=>c.classList.toggle('active', c.dataset.secao === secao));
+}
+// Troca de seção: se a aba aberta não pertence à nova seção, abre a primeira dela.
+function mudarSecaoIndicadores(secao){
+  _painelIndMostrarSecao(secao);
+  const ativa = document.querySelector('.painel-ind-tab.active')?.dataset.aba;
+  const abas = PAINEL_IND_SECOES[secao].abas;
+  if(!abas.includes(ativa)) mudarAbaIndicadores(abas[0]);
+}
+// Abriu uma aba (por clique ou por código): garante que a seção mostrada contém essa aba.
+function _painelIndSincronizarSecao(aba){
+  const atual = window._painelIndSecao;
+  if(atual && PAINEL_IND_SECOES[atual] && PAINEL_IND_SECOES[atual].abas.includes(aba)){ _painelIndMostrarSecao(atual); return; }
+  const k = Object.keys(PAINEL_IND_SECOES).find(x=>PAINEL_IND_SECOES[x].abas.includes(aba));
+  if(k) _painelIndMostrarSecao(k);
+}
+
 function _painelIndCarregarAba(aba){
   _painelIndAtualizarFiltros(aba);
   _painelIndTarefas(aba).forEach(([id, fn]) => { _painelRodar(id, fn); });
@@ -33315,6 +33360,7 @@ function mudarAbaIndicadores(aba){
     tabBtn.style.borderBottom = '2px solid var(--blue)';
   }
 
+  _painelIndSincronizarSecao(aba);
   _painelIndCarregarAba(aba); // uma porta só: falha visível, sem atropelo entre cargas (ver _painelIndTarefas)
 }
 
@@ -34058,6 +34104,444 @@ function _restaurarAposCaptura(refs){
   refs.forEach(r=>{ try{ r.parent.insertBefore(r.el, r.next); }catch(e){} });
 }
 
+// ── Apresentação NATIVA (PowerPoint editável) ───────────────────────────────
+// Pedido do usuário, 2026-11-03: "eu quero que seja slide, não foto". Antes, cada
+// slide era uma foto (html2canvas) colada no PowerPoint. Agora cada card do
+// Painel é convertido em texto, formas e imagens DO PRÓPRIO slide: o número vem
+// do mesmo card que está na tela (lido do DOM já calculado), então segue
+// idêntico ao da tela — sem reimplementar nenhuma conta —, mas fica editável.
+// Ordem, capas e identidade visual seguem o modelo ABC.pptx do usuário.
+const PN_LARG = 13.333, PN_ALT = 7.5;
+const _pnEsperar = ms => new Promise(r=>setTimeout(r, ms));
+// Devolve o controle ao navegador, mas nunca fica preso: em aba escondida o requestAnimationFrame não dispara.
+const _pnRespirar = ()=>Promise.race([new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))), _pnEsperar(80)]);
+const _pnHex2 = n => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2,'0').toUpperCase();
+
+// Cor computada do navegador -> {hex, a}. Devolve null se transparente.
+function _pnCor(v){
+  if(!v || v==='transparent' || v==='none') return null;
+  const re = /^rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*(?:[,/]\s*([\d.]+)(%?))?\s*\)$/i;
+  let m = re.exec(v);
+  if(!m){ try{ m = re.exec(_h2cCorParaRgba(v) || ''); }catch(e){ m = null; } }
+  if(!m) return null;
+  const a = m[4]===undefined ? 1 : parseFloat(m[4]) / (m[5]==='%' ? 100 : 1);
+  if(!(a > 0.01)) return null;
+  return { hex: _pnHex2(m[1]) + _pnHex2(m[2]) + _pnHex2(m[3]), a: Math.min(1, a) };
+}
+const _pnPx = v => parseFloat(v) || 0;
+
+// Rasteriza um <svg> inline (ícones feather) em PNG, usando a cor atual do texto.
+function _pnSvgParaPng(svg, cor, w, h){
+  return new Promise(resolve=>{
+    try{
+      const c = svg.cloneNode(true);
+      c.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      c.setAttribute('width', Math.max(1, w)); c.setAttribute('height', Math.max(1, h));
+      const s = new XMLSerializer().serializeToString(c).replace(/currentColor/g, cor || '#ffffff');
+      const img = new Image();
+      img.onload = ()=>{
+        const k = 3, cv = document.createElement('canvas');
+        cv.width = Math.ceil(Math.max(1,w)*k); cv.height = Math.ceil(Math.max(1,h)*k);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        resolve(cv.toDataURL('image/png'));
+      };
+      img.onerror = ()=>resolve(null);
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+    }catch(e){ resolve(null); }
+  });
+}
+
+// Linhas visuais de um nó de texto (mesma quebra de linha que o navegador fez).
+function _pnLinhasTexto(node, R, tamPx, transform){
+  const t = node.nodeValue, re = /\S+/g, rg = document.createRange(), pal = [];
+  let m;
+  while((m = re.exec(t))){
+    rg.setStart(node, m.index); rg.setEnd(node, m.index + m[0].length);
+    const b = rg.getBoundingClientRect();
+    if(b.width <= 0 && b.height <= 0) continue;
+    let s = m[0];
+    if(transform === 'uppercase') s = s.toUpperCase();
+    else if(transform === 'lowercase') s = s.toLowerCase();
+    else if(transform === 'capitalize') s = s.replace(/(^|\s)(\S)/g, (x,a,c)=>a + c.toUpperCase());
+    pal.push({ s, l:b.left-R.left, r:b.right-R.left, t:b.top-R.top, b:b.bottom-R.top });
+  }
+  const linhas = [];
+  pal.forEach(p=>{
+    const u = linhas[linhas.length-1];
+    if(u && p.t < u.t + (u.b-u.t)*0.6){ u.s += ' ' + p.s; u.x0 = Math.min(u.x0, p.l); u.x1 = Math.max(u.x1, p.r); u.t = Math.min(u.t, p.t); u.b = Math.max(u.b, p.b); }
+    else linhas.push({ s:p.s, x0:p.l, x1:p.r, t:p.t, b:p.b });
+  });
+  return linhas;
+}
+
+// Gráfico Chart.js (barras / rosca) -> dados para um gráfico NATIVO do PowerPoint (editável). Outros tipos caem em imagem.
+function _pnCfgGrafico(canvas){
+  if(typeof Chart === 'undefined' || !Chart.getChart) return null;
+  const ch = Chart.getChart(canvas); if(!ch) return null;
+  const tipo = ch.config.type;
+  if(!['bar','doughnut','pie'].includes(tipo)) return null;
+  const labels = (ch.data.labels || []).map(x=>String(x));
+  const dss = ch.data.datasets || []; if(!dss.length || !labels.length) return null;
+  const cores = d=>{
+    const bg = Array.isArray(d.backgroundColor) ? d.backgroundColor : labels.map(()=>d.backgroundColor);
+    return bg.map(c=>_pnCor(typeof c === 'string' ? c : '') || { hex:'F0F0F8', a:1 });
+  };
+  const op = ch.options || {}, leg = (op.plugins && op.plugins.legend) || {};
+  return { tipo, labels,
+    series: dss.map(d=>({ nome:String(d.label || ''), valores:(d.data || []).map(v=>(typeof v === 'number' && isFinite(v)) ? v : 0), cores:cores(d) })),
+    horizontal: op.indexAxis === 'y',
+    empilhado: !!(op.scales && op.scales.x && op.scales.x.stacked),
+    legenda: leg.display !== false && tipo !== 'bar' && labels.length <= 6, // com mais itens a lista ao lado já faz o papel de legenda
+    legPos: ({ left:'l', right:'r', top:'t', bottom:'b' })[leg.position] || 'r' };
+}
+
+// Percorre o card e devolve a lista de operações de desenho (em px, relativas ao card).
+function _pnExtrair(raiz){
+  const R = raiz.getBoundingClientRect();
+  const ops = [];
+  const pendentes = [];
+  const IGN = /^(SCRIPT|STYLE|NOSCRIPT|OPTION|TEMPLATE|HEAD|SELECT|TEXTAREA|INPUT)$/;
+
+  function caixa(el, cs, b, op){
+    let fill = _pnCor(cs.backgroundColor);
+    const bi = cs.backgroundImage;
+    if(!fill && bi && bi !== 'none'){
+      // degradê: PowerPoint (pptxgenjs) não faz — usa a primeira cor visível do degradê
+      const cores = (bi.match(/rgba?\([^)]+\)/g) || []).map(_pnCor).filter(Boolean);
+      if(cores.length) fill = cores[0];
+    }
+    const lados = ['Top','Right','Bottom','Left'].map(l=>({
+      l, w:_pnPx(cs['border'+l+'Width']), st:cs['border'+l+'Style'], c:_pnCor(cs['border'+l+'Color'])
+    })).map(x=>({ ...x, ok: x.w > 0 && x.st !== 'none' && x.st !== 'hidden' && !!x.c }));
+    const iguais = lados.every(x=>x.ok && x.w === lados[0].w && x.c.hex === lados[0].c.hex && x.c.a === lados[0].c.a);
+    let rad = 0;
+    const r0 = cs.borderTopLeftRadius;
+    if(r0 && r0 !== '0px'){
+      const tok = r0.split(' ')[0];
+      rad = tok.endsWith('%') ? parseFloat(tok)/100 * Math.min(b.w, b.h) : _pnPx(tok);
+      rad = Math.min(rad, b.w/2, b.h/2);
+      if(rad < 1) rad = 0;
+    }
+    if(fill || iguais){
+      ops.push({ k:'rect', b, fill, op, rad, line: iguais ? { w:lados[0].w, c:lados[0].c } : null });
+    }
+    if(!iguais){
+      const f = rad ? rad*0.55 : 0;
+      lados.forEach(x=>{
+        if(!x.ok) return;
+        let bb;
+        if(x.l === 'Top')         bb = { x:b.x+f, y:b.y, w:b.w-2*f, h:x.w };
+        else if(x.l === 'Bottom') bb = { x:b.x+f, y:b.y+b.h-x.w, w:b.w-2*f, h:x.w };
+        else if(x.l === 'Left')   bb = { x:b.x, y:b.y+f, w:x.w, h:b.h-2*f };
+        else                      bb = { x:b.x+b.w-x.w, y:b.y+f, w:x.w, h:b.h-2*f };
+        if(bb.w > 0 && bb.h > 0) ops.push({ k:'rect', b:bb, fill:x.c, op, rad:0, line:null });
+      });
+    }
+  }
+
+  function texto(node, op){
+    const p = node.parentElement; if(!p || !/\S/.test(node.nodeValue)) return;
+    if(IGN.test(p.tagName)) return;
+    const cs = getComputedStyle(p);
+    if(cs.display === 'none' || cs.visibility === 'hidden') return;
+    const tam = _pnPx(cs.fontSize) || 12;
+    const linhas = _pnLinhasTexto(node, R, tam, cs.textTransform);
+    if(!linhas.length) return;
+    // número puro com ponto decimal (ex.: 3.33 / 2.00%) sai com vírgula, como no modelo; milhar (1.045) não é tocado
+    linhas.forEach(l=>{ if(/^-?\d+\.\d{1,2}%?$/.test(l.s)) l.s = l.s.replace('.', ','); });
+    const cor = _pnCor(cs.color); if(!cor) return;
+    const ta = cs.textAlign;
+    ops.push({ k:'txt', linhas, op, cor,
+      align: ta === 'center' ? 'center' : (ta === 'right' || ta === 'end') ? 'right' : 'left',
+      f: { px:tam, w:parseInt(cs.fontWeight,10) || 400, it: cs.fontStyle === 'italic',
+           ls: cs.letterSpacing === 'normal' ? 0 : _pnPx(cs.letterSpacing), fam: cs.fontFamily,
+           ul: /underline/.test(cs.textDecorationLine), st: /line-through/.test(cs.textDecorationLine) } });
+  }
+
+  function andar(el, op){
+    if(el.nodeType === 3){ texto(el, op); return; }
+    if(el.nodeType !== 1) return;
+    if(IGN.test(el.tagName)) return;
+    if(el.classList && (el.classList.contains('report-download-btn') || el.classList.contains('abs-limpar-filtros') || el.hasAttribute('data-pn-ignorar'))) return;
+    const cs = getComputedStyle(el);
+    if(cs.display === 'none' || cs.visibility === 'hidden') return;
+    const opEl = op * (cs.opacity === '' ? 1 : parseFloat(cs.opacity));
+    if(!(opEl > 0.02)) return;
+    const r = el.getBoundingClientRect();
+    const b = { x:r.left-R.left, y:r.top-R.top, w:r.width, h:r.height };
+    const tag = el.tagName.toLowerCase();
+    if(tag === 'svg'){
+      if(r.width > 0 && r.height > 0){
+        const op2 = { k:'img', b, op:opEl, data:null }; ops.push(op2);
+        pendentes.push(_pnSvgParaPng(el, cs.color, r.width, r.height).then(d=>{ op2.data = d; }));
+      }
+      return;
+    }
+    if(r.width > 0 && r.height > 0) caixa(el, cs, b, opEl);
+    if(tag === 'canvas'){
+      let cfg = null; try{ cfg = _pnCfgGrafico(el); }catch(e){ cfg = null; }
+      if(cfg){ ops.push({ k:'graf', b, op:opEl, cfg }); return; }
+      try{ ops.push({ k:'img', b, op:opEl, data:el.toDataURL('image/png') }); }catch(e){}
+      return;
+    }
+    if(tag === 'img'){
+      try{
+        const cv = document.createElement('canvas'); cv.width = el.naturalWidth || r.width; cv.height = el.naturalHeight || r.height;
+        cv.getContext('2d').drawImage(el, 0, 0, cv.width, cv.height);
+        ops.push({ k:'img', b, op:opEl, data:cv.toDataURL('image/png') });
+      }catch(e){}
+      return;
+    }
+    el.childNodes.forEach(c=>andar(c, opEl));
+  }
+
+  andar(raiz, 1);
+  return Promise.all(pendentes).then(()=>({ ops:ops.filter(o=>o.k !== 'img' || o.data), w:R.width, h:R.height }));
+}
+
+// Segoe UI vem com o Windows (mesmo desenho que o navegador usou na tela); o que não for fonte segura vira Segoe UI.
+function _pnFonte(f){
+  const nome = (f.fam || '').split(',')[0].replace(/["']/g,'').trim();
+  const seguras = ['Arial','Calibri','Cambria','Segoe UI','Consolas','Courier New','Times New Roman','Verdana','Tahoma'];
+  let base = seguras.find(s=>s.toLowerCase() === nome.toLowerCase()) || 'Segoe UI';
+  if(base === 'Segoe UI' && f.w <= 300) base = 'Segoe UI Light';
+  return base;
+}
+
+// Desenha uma lista de operações (já extraídas) no slide, dentro da caixa dada (polegadas).
+function _pnEmitir(pptx, slide, grupos, caixa){
+  const GAP = 14; // px entre cards empilhados
+  const W = Math.max(...grupos.map(g=>g.w));
+  const H = grupos.reduce((a,g)=>a + g.h, 0) + GAP * (grupos.length - 1);
+  const s = Math.min(caixa.w / W, caixa.h / H);
+  const ox = caixa.x + (caixa.w - W*s) / 2, oy = caixa.y + (caixa.h - H*s) / 2;
+  let dy = 0;
+  grupos.forEach(g=>{
+    const X = v=>ox + v*s, Y = v=>oy + (v+dy)*s, S = v=>v*s;
+    g.ops.forEach(o=>{
+      if(o.k === 'rect'){
+        const b = o.b;
+        const opt = { x:X(b.x), y:Y(b.y), w:Math.max(S(b.w), 0.005), h:Math.max(S(b.h), 0.005) };
+        opt.fill = o.fill ? { color:o.fill.hex, transparency: Math.round((1 - o.fill.a*o.op)*100) } : { color:'000000', transparency:100 };
+        opt.line = o.line ? { color:o.line.c.hex, width: Math.max(0.25, S(o.line.w)*72), transparency: Math.round((1 - o.line.c.a*o.op)*100) } : { type:'none' };
+        let forma = pptx.ShapeType.rect;
+        if(o.rad > 0){ forma = pptx.ShapeType.roundRect; opt.rectRadius = S(o.rad); }
+        slide.addShape(forma, opt);
+      } else if(o.k === 'img'){
+        const b = o.b;
+        slide.addImage({ data:o.data.replace(/^data:/, ''), x:X(b.x), y:Y(b.y), w:S(b.w), h:S(b.h), transparency: o.op < 1 ? Math.round((1-o.op)*100) : 0 });
+      } else if(o.k === 'graf'){
+        const c = o.cfg, b = o.b;
+        const dados = c.series.map(sr=>({ name:sr.nome || 'Valor', labels:c.labels, values:sr.valores }));
+        const cinza = _PN_CINZA2, grade = '2E303C';
+        const base = { x:X(b.x), y:Y(b.y), w:S(b.w), h:S(b.h), showTitle:false,
+          plotArea:{ fill:{ color:'16161F', transparency:100 } }, chartArea:{ fill:{ color:'16161F', transparency:100 } } };
+        if(c.tipo === 'bar'){
+          const corSerie = c.series.map(sr=>sr.cores[0].hex);
+          const pontos = c.series.length === 1 && c.series[0].cores.some(x=>x.hex !== c.series[0].cores[0].hex);
+          slide.addChart(pptx.charts.BAR, dados, Object.assign(base, {
+            barDir: c.horizontal ? 'bar' : 'col', barGrouping: c.empilhado ? 'stacked' : 'clustered', barGapWidthPct:45,
+            chartColors: pontos ? c.series[0].cores.map(x=>x.hex) : corSerie,
+            showLegend: c.series.length > 1, legendPos:'b', legendColor:cinza, legendFontSize:9, legendFontFace:'Segoe UI',
+            showValue:true, dataLabelColor:'F0ECEC', dataLabelFontSize:9, dataLabelFontFace:'Segoe UI', dataLabelFormatCode:'#,##0',
+            dataLabelPosition: c.empilhado ? 'ctr' : 'outEnd',
+            catAxisLabelColor:cinza, catAxisLabelFontSize:9, catAxisLabelFontFace:'Segoe UI',
+            valAxisLabelColor:cinza, valAxisLabelFontSize:8, valAxisLabelFontFace:'Segoe UI', valAxisLabelFormatCode:'#,##0',
+            valGridLine:{ color:grade, size:0.5 }, catGridLine:{ style:'none' }, catAxisLineShow:false, valAxisLineShow:false }));
+        } else {
+          slide.addChart(pptx.charts.DOUGHNUT, dados.slice(0, 1), Object.assign(base, {
+            holeSize:62, chartColors:c.series[0].cores.map(x=>x.hex), dataBorder:{ pt:1, color:'1E1E28' },
+            showLegend:c.legenda, legendPos:c.legPos, legendColor:'C9CBD2', legendFontSize:9, legendFontFace:'Segoe UI',
+            showPercent:false, showValue:false, showLabel:false, showLeaderLines:false }));
+        }
+      } else if(o.k === 'txt'){
+        const f = o.f, L = o.linhas, pt = Math.round(f.px*s*720)/10;
+        const x0 = Math.min(...L.map(l=>l.x0)), x1 = Math.max(...L.map(l=>l.x1));
+        const wTxt = S(x1 - x0), folga = Math.max(0.12, wTxt*0.16), wBox = wTxt + folga;
+        let x;
+        if(o.align === 'center') x = X((x0+x1)/2) - wBox/2;
+        else if(o.align === 'right') x = X(x1) - wBox + folga*0.25;
+        else x = X(x0);
+        const y = Y(L[0].t), h = S(L[L.length-1].b - L[0].t);
+        const opt = { x, y, w:wBox, h, fontFace:_pnFonte(f), fontSize:Math.max(pt, 1), bold:f.w >= 600, italic:f.it,
+          color:o.cor.hex, align:o.align, valign: L.length > 1 ? 'top' : 'middle', margin:0, wrap:false, fit:'none', isTextBox:true };
+        const tr = Math.round((1 - o.cor.a*o.op)*100); if(tr > 0) opt.transparency = tr;
+        if(f.ls) opt.charSpacing = Math.round(f.ls*s*72*10)/10;
+        if(f.ul) opt.underline = { style:'sng' };
+        if(f.st) opt.strike = 'sngStrike';
+        if(L.length === 1) slide.addText(L[0].s, opt);
+        else {
+          opt.lineSpacing = Math.round((L[1].t - L[0].t)*s*72*10)/10;
+          slide.addText(L.map((l,i)=>({ text:l.s, options:{ breakLine: i < L.length-1 } })), opt);
+        }
+      }
+    });
+    dy += g.h + GAP;
+  });
+}
+
+// ── Estrutura do deck: ordem do modelo ABC.pptx ──────────────────────────────
+const PN_SECOES = {
+  expedicao:     { titulo:'EXPEDIÇÃO',     area:'OPERAÇÕES / EXPEDIÇÃO',     desc:'Absenteísmo, custos, receitas, conferência e carregamento da expedição.' },
+  armazem:       { titulo:'ARMAZÉM',       area:'OPERAÇÕES / ARMAZÉM',       desc:'Absenteísmo, custos, receitas, conferência e 5S do armazém.' },
+  distribuicao:  { titulo:'DISTRIBUIÇÃO',  area:'OPERAÇÕES / DISTRIBUIÇÃO',  desc:'Indicadores de desempenho, custos e plano de ação da equipe de motoristas e ajudantes.' },
+  monitoramento: { titulo:'MONITORAMENTO', area:'OPERAÇÕES / MONITORAMENTO', desc:'Pedidos, rotas, faturamento e produtividade da operação.' },
+  frota:         { titulo:'FROTA',         area:'OPERAÇÕES / FROTA',         desc:'Disponibilidade, manutenção, pneus, combustível e custos da frota.' },
+};
+// n = nº do slide no ABC.pptx. fontes = [aba, índice da tarefa em _painelIndTarefas, índice do card dentro do container].
+// sem = título do slide equivalente em PAINEL_IND_SLIDES (de lá vêm os ajustes de "semana"). anual = some no modo Semanal.
+// semFonte = slide do ABC que ainda não existe no sistema (não é gerado; aparece no aviso final).
+const PN_ROTEIRO = [
+  { tipo:'capa', secao:'expedicao', n:'capa' },
+  { tipo:'card', n:1,  titulo:'Absenteísmo — Expedição',               fontes:[['abs-expedicao',0,0]], sem:'Absenteísmo — Expedição' },
+  { tipo:'card', n:2,  titulo:'Absenteísmo — Expedição (visão anual)', fontes:[['abs-expedicao',1,0]], anual:true },
+  { tipo:'card', n:3,  titulo:'Custo Armazém',                         fontes:[['custo-armazem',0,0]], sem:'Custo Armazém' },
+  { tipo:'card', n:4,  titulo:'Custo Armazém (visão anual)',           fontes:[['custo-armazem',1,0]], anual:true },
+  { tipo:'card', n:5,  titulo:'Receitas Armazém',                      fontes:[['receita-armazem',0,0]], sem:'Receita Armazém' },
+  { tipo:'card', n:6,  titulo:'Receitas Armazém (visão anual)',        fontes:[['receita-armazem',1,0]], anual:true },
+  { tipo:'semFonte', n:7,  titulo:'Erro de conferência (Armazém)' },
+  { tipo:'capa', secao:'armazem', n:8 },
+  { tipo:'card', n:9,  titulo:'Absenteísmo — Recebimento e Armazenagem', fontes:[['abs-recebimento-armazenagem',0,0]], sem:'Absenteísmo — Recebimento e Armazenagem' },
+  { tipo:'semFonte', n:10, titulo:'Recebimento — Tempo médio de atendimento' },
+  { tipo:'semFonte', n:11, titulo:'Itens obsoletos — acima de 90 dias' },
+  { tipo:'semFonte', n:12, titulo:'Oportunidade de transferência' },
+  { tipo:'capa', secao:'distribuicao', n:13 },
+  { tipo:'card', n:14, titulo:'Absenteísmo — Distribuição',               fontes:[['abs-distribuicao',0,0]], sem:'Absenteísmo — Distribuição' },
+  { tipo:'card', n:15, titulo:'Absenteísmo — Distribuição (visão anual)', fontes:[['abs-distribuicao',1,0]], anual:true },
+  { tipo:'card', n:16, titulo:'Utilização por carga — Frota externa',     fontes:[['disponibilidade',0,2]] },
+  { tipo:'card', n:17, titulo:'Utilização de Frotas Fixas',               fontes:[['disponibilidade',0,0]] },
+  { tipo:'card', n:18, titulo:'Utilização de Frotas Fixas (visão anual)', fontes:[['disponibilidade',1,0]], anual:true },
+  { tipo:'card', n:19, titulo:'Liberação no Prazo',                       fontes:[['conferencia-prazo',0,0],['carregamento-prazo',1,0]], rire:'RE' },
+  { tipo:'card', n:20, titulo:'Liberação no Prazo (visão anual)',         fontes:[['conferencia-prazo',1,0]], rire:'RE', anual:true },
+  { tipo:'card', n:21, titulo:'Pedidos & Entregas — Rota externa',        fontes:[['pedidos-rotas',0,0]], rire:'RE', sem:'Pedidos & Rotas' },
+  { tipo:'card', n:22, titulo:'Rotas e faturamento — anual',              fontes:[['pedidos-rotas',3,0]], rire:'RE', anual:true },
+  { tipo:'semFonte', n:23, titulo:'Média de dias por rota' },
+  { tipo:'semFonte', n:24, titulo:'Calendário de rotas' },
+  { tipo:'capa', secao:'monitoramento', n:25 },
+  { tipo:'card', n:26, titulo:'Pedidos & Entregas por rota — Rota interna', fontes:[['pedidos-rotas',0,0]], rire:'RI', sem:'Pedidos & Rotas' },
+  { tipo:'card', n:27, titulo:'Rotas, pedidos e faturamento — Acompanhamento', fontes:[['pedidos-rotas',2,0]], rire:'RI', sem:'Pedidos & Rotas — Acompanhamento do Mês' },
+  { tipo:'semFonte', n:28, titulo:'Venda por rota' },
+  { tipo:'card', n:29, titulo:'Produtividade — valor por mês',            fontes:[['produtividade',0,0]], anual:true },
+  { tipo:'card', n:30, titulo:'OTIF geral — visão anual',                 fontes:[['otif-ano',0,0]], rire:'', anual:true },
+  { tipo:'card', n:31, titulo:'Utilização por carga — Frota interna',     fontes:[['disponibilidade',0,1]] },
+  { tipo:'semFonte', n:32, titulo:'Top veículos por valor (frota interna)' },
+  { tipo:'semFonte', n:33, titulo:'Top veículos por pedidos (frota interna)' },
+  { tipo:'semFonte', n:34, titulo:'Comparativo valor × pedidos (frota interna)' },
+  { tipo:'capa', secao:'frota', n:35 },
+  { tipo:'semFonte', n:36, titulo:'Análise de abastecimentos' },
+  { tipo:'semFonte', n:37, titulo:'Disponibilidade da frota' },
+  { tipo:'semFonte', n:38, titulo:'Escala fixa' },
+  { tipo:'frase', n:39 },
+  { tipo:'fim', n:40 },
+];
+
+const _PN_MESES = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+function _pnMesTexto(mes){ const [a, m] = String(mes).split('-'); return { nome:_PN_MESES[(parseInt(m,10)||1)-1], ano:a }; }
+
+function _pnArquivoB64(url){
+  return fetch(url, { cache:'force-cache' }).then(r=>{ if(!r.ok) throw new Error('Arquivo '+url+' não encontrado ('+r.status+')'); return r.blob(); })
+    .then(b=>new Promise((res, rej)=>{ const fr = new FileReader(); fr.onload = ()=>res(fr.result); fr.onerror = rej; fr.readAsDataURL(b); }));
+}
+function _pnImagem(dataUrl){ return new Promise((res, rej)=>{ const i = new Image(); i.onload = ()=>res(i); i.onerror = rej; i.src = dataUrl; }); }
+// Foto do caminhão + escurecimento à esquerda (onde fica o texto), igual às capas do modelo.
+async function _pnFundoCapa(){
+  const img = await _pnImagem(await _pnArquivoB64('assets/apresentacao/capa-caminhao.jpg'));
+  const W = 1920, H = 1080, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const c = cv.getContext('2d'), k = Math.max(W/img.width, H/img.height);
+  c.drawImage(img, (W-img.width*k)/2, (H-img.height*k)/2, img.width*k, img.height*k);
+  let g = c.createLinearGradient(0, 0, W, 0);
+  g.addColorStop(0, 'rgba(10,12,20,.93)'); g.addColorStop(.42, 'rgba(10,12,20,.80)'); g.addColorStop(.72, 'rgba(10,12,20,.28)'); g.addColorStop(1, 'rgba(10,12,20,.06)');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  g = c.createLinearGradient(0, H*.65, 0, H);
+  g.addColorStop(0, 'rgba(10,12,20,0)'); g.addColorStop(1, 'rgba(10,12,20,.8)');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  return cv.toDataURL('image/jpeg', .86);
+}
+
+const _PN_VERM = 'E8000D', _PN_CINZA = 'C9CBD2', _PN_CINZA2 = '9A9CA8', _PN_BRANCO = 'F0ECEC';
+function _pnRodape(slide, esq, dir, x0){
+  slide.addShape('rect', { x:x0, y:464.5/72, w:(960-2*x0*72)/72, h:1.2/72, fill:{ color:'FFFFFF', transparency:88 }, line:{ type:'none' } });
+  slide.addText(esq, { x:x0, y:483.2/72, w:7.9, h:18.8/72, fontFace:'Segoe UI', fontSize:12, bold:true, color:_PN_CINZA2, charSpacing:3, margin:0, valign:'middle', wrap:false, isTextBox:true });
+  slide.addText(dir, { x:PN_LARG-x0-4.3, y:483.2/72, w:4.3, h:18.8/72, fontFace:'Segoe UI', fontSize:12, bold:true, color:_PN_CINZA2, charSpacing:3, margin:0, align:'right', valign:'middle', wrap:false, isTextBox:true });
+}
+function _pnSlideCapa(pptx, sec, mesTxt, sufixo, secaoTitulo){
+  const sl = pptx.addSlide({ masterName:'PN_CAPA', sectionTitle:secaoTitulo });
+  const x = 88/72;
+  const t = (txt, o)=>sl.addText(txt, Object.assign({ fontFace:'Segoe UI', margin:0, valign:'middle', wrap:false, isTextBox:true }, o));
+  t('DESTAK PRIME  ·  OPERAÇÕES', { x, y:75/72, w:8.6, h:20/72, fontSize:13, bold:true, color:_PN_CINZA, charSpacing:5 });
+  t('APRESENTAÇÃO DE RESULTADOS', { x, y:150/72, w:7, h:24/72, fontSize:16, bold:true, color:_PN_CINZA, charSpacing:5 });
+  t(sec.titulo, { x, y:175/72, w:7.4, h:69/72, fontSize:62, fontFace:'Segoe UI Light', color:_PN_BRANCO });
+  sl.addShape('rect', { x, y:258/72, w:60/72, h:6/72, fill:{ color:_PN_VERM }, line:{ type:'none' } });
+  t([{ text:mesTxt.nome, options:{ bold:true, color:_PN_VERM } }, { text:' '+mesTxt.ano+(sufixo||''), options:{ color:_PN_BRANCO } }], { x, y:278/72, w:7, h:33/72, fontSize:28, charSpacing:2 });
+  sl.addText(sec.desc, { x, y:330/72, w:5.9, h:42/72, fontFace:'Segoe UI', fontSize:13, color:_PN_CINZA, margin:0, valign:'top', isTextBox:true });
+  _pnRodape(sl, 'PAINEL DE METAS  ·  ACOMPANHAMENTO MENSAL', sec.area, x);
+  return sl;
+}
+async function _pnSlideFim(pptx, mesTxt, sufixo){
+  const sl = pptx.addSlide({ masterName:'PN_FIM' });
+  const x = 80/72;
+  const t = (txt, o)=>sl.addText(txt, Object.assign({ fontFace:'Segoe UI', margin:0, valign:'middle', wrap:false, isTextBox:true }, o));
+  t([{ text:'DESTAK PRIME  ·', options:{ breakLine:true } }, { text:'OPERAÇÕES' }], { x, y:134.5/72, w:4.2, h:38.4/72, fontSize:13, bold:true, color:_PN_CINZA, charSpacing:5, valign:'top' });
+  sl.addShape(pptx.ShapeType.roundRect, { x:392/72, y:112/72, w:488.5/72, h:279.5/72, fill:{ color:'FFFFFF' }, line:{ type:'none' }, rectRadius:12/72 });
+  try{ sl.addImage({ data:(await _pnArquivoB64('assets/apresentacao/logo-fechamento.png')).replace(/^data:/,''), x:406.2/72, y:124/72, w:460/72, h:255.5/72 }); }catch(e){ console.warn('logo de fechamento', e); }
+  t('OBRIGADO', { x, y:184.5/72, w:4.6, h:56.6/72, fontSize:52, fontFace:'Segoe UI Light', color:_PN_BRANCO });
+  sl.addShape('rect', { x, y:308/72, w:60/72, h:3/72, fill:{ color:_PN_VERM }, line:{ type:'none' } });
+  t('Apresentação de Resultados', { x, y:325/72, w:4.6, h:24/72, fontSize:16, color:_PN_CINZA });
+  t([{ text:mesTxt.nome, options:{ bold:true, color:_PN_VERM } }, { text:' '+mesTxt.ano+(sufixo||''), options:{ color:_PN_BRANCO } }], { x, y:349/72, w:4.6, h:24/72, fontSize:16 });
+  _pnRodape(sl, 'PAINEL DE METAS  ·  ACOMPANHAMENTO MENSAL', 'OPERAÇÕES', x);
+}
+function _pnSlideFrase(pptx){
+  const sl = pptx.addSlide({ masterName:'PN_FIM' });
+  const x = 88/72;
+  const T = (txt, o)=>sl.addText(txt, Object.assign({ fontFace:'Segoe UI', margin:0, valign:'top', isTextBox:true }, o));
+  T('“', { x, y:48/72, w:2, h:44/72, fontSize:49, bold:true, color:_PN_VERM, valign:'middle', wrap:false });
+  T([
+    { text:'O resultado é consequência. Quando valorizamos cada etapa do ', options:{ color:_PN_BRANCO } },
+    { text:'processo', options:{ color:_PN_VERM, bold:true } }, { text:', a ', options:{ color:_PN_BRANCO } },
+    { text:'qualidade', options:{ color:_PN_VERM, bold:true } }, { text:' deixa de ser exceção e passa a ser ', options:{ color:_PN_BRANCO } },
+    { text:'rotina', options:{ color:_PN_VERM, bold:true } }, { text:'.', options:{ color:_PN_BRANCO } },
+  ], { x, y:104/72, w:807/72, h:107/72, fontSize:28, fontFace:'Segoe UI Light' });
+  sl.addShape('rect', { x:88.6/72, y:241.8/72, w:3/72, h:60.8/72, fill:{ color:_PN_VERM }, line:{ type:'none' } });
+  T([{ text:'Quem respeita o processo,', options:{ color:'FFFFFF', bold:true, breakLine:true } }, { text:'colhe o resultado!”', options:{ color:_PN_VERM, bold:true } }],
+    { x:104.4/72, y:244.8/72, w:7, h:58/72, fontSize:22 });
+  sl.addShape(pptx.ShapeType.roundRect, { x:612/72, y:223/72, w:260/72, h:98.4/72, fill:{ color:'FFFFFF', transparency:94 }, line:{ color:_PN_VERM, width:0.75, transparency:55 }, rectRadius:8/72 });
+  T([{ text:'Processo bem feito hoje é ', options:{ color:'FFFFFF', italic:true } }, { text:'resultado', options:{ color:_PN_VERM, italic:true, bold:true } }, { text:' amanhã!', options:{ color:'FFFFFF', italic:true } }],
+    { x:628/72, y:244/72, w:234.8/72, h:60/72, fontSize:18 });
+  const passos = [['PADRÃO','Cada etapa bem definida'], ['EXECUÇÃO','Feito certo da primeira vez'], ['CONTROLE','Medir e corrigir'], ['RESULTADO','Consequência natural']];
+  passos.forEach((p, i)=>{
+    const cx = (211.9 + i*178.4)/72;
+    T(p[0], { x:cx-1.2, y:(i%2 ? 401.8 : 410.2)/72, w:2.4, h:21.6/72, fontSize:14, bold:true, color:'FFFFFF', align:'center', valign:'middle', charSpacing:2, wrap:false });
+    T(p[1], { x:cx-1.2, y:(i%2 ? 426.4 : 434.8)/72, w:2.4, h:36/72, fontSize:12, color:_PN_CINZA2, align:'center', valign:'top' });
+    if(i < 3) T('›', { x:cx+1.28, y:395.6/72, w:12.7/72, h:35.6/72, fontSize:24, color:_PN_VERM, valign:'middle', wrap:false });
+  });
+  _pnRodape(sl, 'PLANEJAMENTO  ·  MONITORAMENTO  ·  MELHORIA CONTÍNUA', 'DESTAK PRIME', x);
+}
+
+// Carrega um card do Painel com os filtros do slide e devolve o elemento .abs-report.
+async function _pnCarregarCard(fonte, ctx, it){
+  const [aba, ti, ci] = fonte;
+  const tarefa = _painelIndTarefas(aba)[ti]; if(!tarefa) throw new Error('Card não encontrado: '+aba+'#'+ti);
+  const [idCont, fn] = tarefa;
+  const rireAnt = window._painelIndRireSel;
+  if(it.rire !== undefined) window._painelIndRireSel = it.rire;
+  const chave = (window._painelIndRireSel||'') + '|' + (ctx.semanaIdx ?? '') + '|' + (it.sem||'');
+  // a aba do card precisa estar visível na hora de medir (mesmo quando o card já estava carregado de um slide anterior)
+  document.querySelectorAll('.painel-ind-aba').forEach(a=>{ a.style.display = (a.id === 'aba-'+aba) ? 'block' : 'none'; });
+  try{
+    if(ctx.carregado[idCont] !== chave){
+      await _comTimeout(fn(), 45000, 'Carregamento demorou demais (45s)');
+      ctx.carregado[idCont] = chave;
+      await _pnEsperar(250);
+    }
+  } finally { window._painelIndRireSel = rireAnt; }
+  const cont = document.getElementById(idCont);
+  const cards = cont ? [...cont.querySelectorAll('.abs-report')] : [];
+  const card = cards[ci];
+  if(!card) throw new Error('Card vazio ('+aba+'#'+ti+'.'+ci+')');
+  if(card.querySelector('canvas')) await _pnEsperar(250); // Chart.js (sem animação) termina de desenhar
+  return card;
+}
+
 async function gerarApresentacaoPainelIndicadores(){
   if(typeof PptxGenJS === 'undefined'){
     showToast('Biblioteca de apresentação ainda carregando, tente de novo em instantes.', 'warning');
@@ -34074,90 +34558,95 @@ async function gerarApresentacaoPainelIndicadores(){
   const semanaIdx = periodo==='semanal' ? Number(document.getElementById('ga-semana').value) : null;
   if(!mes){ showToast('Selecione um mês', 'warning'); return; }
 
-  // Guarda o estado atual do Painel pra restaurar no final — gerar a
-  // apresentação não pode deixar a tela numa unidade/mês/aba diferente do
-  // que a pessoa estava vendo antes de clicar no botão.
+  // Guarda o estado do Painel pra restaurar no final.
   const undSelOriginal = document.getElementById('painel-ind-und-sel').value;
   const mesSelOriginal = document.getElementById('painel-ind-mes-sel').value;
-  const undOriginal = window._painelIndUndSel;
-  const mesOriginal = window._painelIndMesSel;
+  const undOriginal = window._painelIndUndSel, mesOriginal = window._painelIndMesSel, rireOriginal = window._painelIndRireSel;
   const abaOriginal = document.querySelector('.painel-ind-tab.active')?.dataset.aba || 'abs-expedicao';
+  const eraClaro = document.body.classList.contains('light-theme');
+  const pgCont = document.querySelector('#page-painel-indicadores > .container');
+  const cssContOriginal = pgCont ? pgCont.style.cssText : '';
 
   btn.disabled = true;
   progWrap.style.display = 'block';
-
+  const pulados = [], semFonte = [];
+  let animChartOriginal;
   try{
     window._painelIndUndSel = und;
     window._painelIndMesSel = mes;
+    // O slide é escuro: gera sempre no tema escuro e numa largura fixa (a mesma em qualquer tela).
+    document.body.classList.remove('light-theme');
+    if(pgCont){ pgCont.style.width = '1320px'; pgCont.style.maxWidth = '1320px'; }
+    try{ _painelLimparCaches(); }catch(e){}
+    // sem animação: o gráfico já nasce desenhado (em aba escondida a animação nunca andaria e o canvas sairia em branco)
+    if(typeof Chart !== 'undefined'){ animChartOriginal = Chart.defaults.animation; Chart.defaults.animation = false; }
 
     const pptx = new PptxGenJS();
-    pptx.defineLayout({ name:'SLIDE_16X9', width:13.333, height:7.5 });
+    pptx.defineLayout({ name:'SLIDE_16X9', width:PN_LARG, height:PN_ALT });
     pptx.layout = 'SLIDE_16X9';
+    pptx.title = 'Painel de Metas — Apresentação de Resultados';
+    pptx.author = 'Destak Prime';
+    progTxt.textContent = 'Preparando modelo dos slides...';
+    const fundo = await _pnArquivoB64('assets/apresentacao/fundo-slide.png');
+    pptx.defineSlideMaster({ title:'PN_CONTEUDO', background:{ data:fundo.replace(/^data:/,'') } });
+    pptx.defineSlideMaster({ title:'PN_FIM',      background:{ data:fundo.replace(/^data:/,'') } });
+    pptx.defineSlideMaster({ title:'PN_CAPA',     background:{ data:(await _pnFundoCapa()).replace(/^data:/,'') } });
 
-    const slides = PAINEL_IND_SLIDES;
+    const mesTxt = _pnMesTexto(mes);
+    const sufixo = periodo==='semanal' ? '  ·  SEMANA '+(semanaIdx+1) : '';
+    const ctx = { carregado:{}, semanaIdx };
+    const roteiro = PN_ROTEIRO.filter(it=>!(periodo==='semanal' && it.anual));
     const inicioGeral = Date.now();
-    const pulados = []; // títulos dos slides que não entraram (timeout em carregar ou captura)
-    for(let i=0;i<slides.length;i++){
-      const s = slides[i];
-      progBar.style.width = Math.round((i/slides.length)*100)+'%';
+    let secaoAtual = null;
 
-      // Contador de segundos no slide atual — sem isso, um slide lento (rede
-      // ruim) deixa o texto "Gerando slide X de Y..." parado por dezenas de
-      // segundos com cara de travado, mesmo quando por baixo está tudo
-      // funcionando normalmente, só esperando a rede. Achado real do
-      // usuário, 2026-11-02: "continua lento, o que podemos fazer pra
-      // deixar mais rápido ou me diga o tempo pra gerar essa apresentação".
-      const inicioSlide = Date.now();
-      const tituloBase = `Gerando slide ${i+1} de ${slides.length} — ${s.titulo}...`;
-      progTxt.textContent = tituloBase + ' (0s)';
-      const ticker = setInterval(()=>{
-        progTxt.textContent = tituloBase + ' (' + Math.round((Date.now()-inicioSlide)/1000) + 's)';
-      }, 1000);
+    for(let i=0;i<roteiro.length;i++){
+      const it = roteiro[i];
+      progBar.style.width = Math.round((i/roteiro.length)*100)+'%';
+      const rotulo = it.titulo || (it.tipo==='capa' ? 'Capa — '+PN_SECOES[it.secao].titulo : it.tipo==='frase' ? 'Frase' : 'Encerramento');
+      progTxt.textContent = `Montando slide ${i+1} de ${roteiro.length} — ${rotulo}...`;
 
-      try{
-        const abaEl = document.getElementById('aba-'+s.aba);
-        if(!abaEl) continue;
-        const displayOriginal = abaEl.style.display;
-        abaEl.style.display = 'block';
-
-        if(periodo==='semanal' && s.semanal && s.prepararSemana) s.prepararSemana(semanaIdx);
-        else if(s.limparSemana) s.limparSemana();
-
-        // O timeout aqui é só pra "Gerar Apresentação" não ficar presa minutos
-        // num slide só — supaFetch já tenta de novo sozinho em caso de timeout
-        // (até ~70s por chamada, pra aguentar cold start do Supabase), e um
-        // carregar() pode fazer 2+ chamadas em sequência (ex: Absenteísmo
-        // Distribuição busca absenteismo, DEPOIS motoristas/ajudantes/conferentes
-        // — já otimizado pra rodar em paralelo, mas ainda depende da rede),
-        // então numa rede ruim um slide só já podia segurar a apresentação
-        // inteira por minutos sem nunca pular pro próximo.
-        let falhou = false;
-        try{ await _comTimeout(s.carregar(mes), 20000, 'Carregamento do slide demorou demais (20s), pulado.'); }
-        catch(e){ console.warn('Falha ao carregar slide', s.titulo, e); falhou = true; }
-        // Dá um instante pro DOM assentar (gráficos Chart.js terminam de desenhar
-        // de forma assíncrona depois do innerHTML entrar) — sem isso, html2canvas
-        // às vezes captura o canvas do gráfico ainda em branco.
-        await new Promise(r=>setTimeout(r, 350));
-
-        const alvo = s.container ? document.getElementById(s.container) : abaEl;
-        if(alvo){
-          // Desanexar as outras páginas/modais do DOM antes de capturar já
-          // acontece dentro de _html2canvasSeguro (chamada por
-          // _capturarNodeComo1920x1080 logo abaixo) — cobre esta captura e
-          // qualquer outra do app, sem precisar repetir aqui.
-          try{
-            const canvas = await _comTimeout(_capturarNodeComo1920x1080(alvo, {semFundo:false}), 20000, 'Captura do slide demorou demais (20s), pulado.');
-            pptx.addSlide().addImage({ data:canvas.toDataURL('image/png'), x:0, y:0, w:13.333, h:7.5 });
-          }catch(e){ console.warn('Falha ao capturar slide', s.titulo, e); falhou = true; }
+      if(it.tipo === 'capa'){
+        secaoAtual = PN_SECOES[it.secao].titulo;
+        pptx.addSection({ title:secaoAtual });
+        _pnSlideCapa(pptx, PN_SECOES[it.secao], mesTxt, sufixo, secaoAtual);
+      } else if(it.tipo === 'frase'){ _pnSlideFrase(pptx);
+      } else if(it.tipo === 'fim'){ await _pnSlideFim(pptx, mesTxt, sufixo);
+      } else if(it.tipo === 'semFonte'){ semFonte.push(it.titulo);
+      } else if(it.tipo === 'card'){
+        const velho = it.sem ? PAINEL_IND_SLIDES.find(s=>s.titulo === it.sem) : null;
+        try{
+          if(velho){
+            if(periodo==='semanal' && velho.semanal && velho.prepararSemana) velho.prepararSemana(semanaIdx);
+            else if(velho.limparSemana) velho.limparSemana();
+          }
+          const grupos = [];
+          for(const f of it.fontes){
+            const card = await _pnCarregarCard(f, ctx, it);
+            const pad = card.style.padding; card.style.padding = '10px'; // mesmo respiro do botão "Baixar Imagem"
+            // cards empilhados: só o último leva o rodapé (senão ele aparece no meio do slide)
+            let rodape = null, rodapeDisp = '';
+            if(f !== it.fontes[it.fontes.length-1]){
+              const sp = [...card.querySelectorAll('span')].find(x=>/^PAINEL DE METAS/.test(x.textContent.trim()));
+              rodape = sp ? sp.parentElement : null;
+              if(rodape){ rodapeDisp = rodape.style.display; rodape.style.display = 'none'; }
+            }
+            try{
+              const g = await _pnExtrair(card);
+              if(!g.ops.length) throw new Error('Card sem conteúdo ('+f[0]+')');
+              grupos.push(g);
+            } finally { card.style.padding = pad; if(rodape) rodape.style.display = rodapeDisp; }
+          }
+          const sl = pptx.addSlide({ masterName:'PN_CONTEUDO', sectionTitle:secaoAtual || undefined });
+          _pnEmitir(pptx, sl, grupos, { x:0.45, y:0.3, w:PN_LARG-0.9, h:PN_ALT-0.6 });
+          sl.addNotes(it.titulo + ' — slide ' + it.n + ' do modelo.');
+        }catch(e){
+          console.warn('Slide pulado:', it.titulo, e);
+          pulados.push(it.titulo);
+        } finally {
+          if(velho && velho.limparSemana) velho.limparSemana();
         }
-        if(falhou) pulados.push(s.titulo);
-
-        if(s.limparSemana) s.limparSemana();
-        abaEl.style.display = displayOriginal;
-      } finally {
-        clearInterval(ticker);
       }
-      await _respirar();
+      await _pnRespirar();
     }
 
     const duracaoTotal = Math.round((Date.now()-inicioGeral)/1000);
@@ -34165,21 +34654,30 @@ async function gerarApresentacaoPainelIndicadores(){
     progBar.style.width = '100%';
     const undLabel = (und || 'todas-unidades').replace(/[^a-zA-Z0-9]+/g,'-');
     const periodoLabel = periodo==='semanal' ? `semana${semanaIdx+1}` : 'mensal';
-    await pptx.writeFile({ fileName: `Painel-Indicadores-${undLabel}-${mes}-${periodoLabel}.pptx` });
+    const nomeArq = `Painel-Indicadores-${undLabel}-${mes}-${periodoLabel}.pptx`;
+    if(window._pnSalvarEm){ // teste local: devolve o arquivo em vez de baixar
+      const b64 = await pptx.write({ outputType:'base64' });
+      await window._pnSalvarEm(nomeArq, b64);
+    } else await pptx.writeFile({ fileName:nomeArq });
 
-    const msgPulados = pulados.length ? ` (${pulados.length} slide${pulados.length>1?'s':''} pulado${pulados.length>1?'s':''} por demora: ${pulados.join(', ')})` : '';
-    showToast(`✅ Apresentação gerada em ${duracaoTotal}s!${msgPulados}`, pulados.length ? 'warning' : 'success');
+    const partes = [];
+    if(pulados.length) partes.push(pulados.length+' slide(s) pulado(s) por erro: '+pulados.join(', '));
+    if(semFonte.length) partes.push(semFonte.length+' slide(s) do modelo ainda sem dado no sistema: '+semFonte.join(', '));
+    window._pnUltimoRelatorio = { pulados, semFonte, nomeArq, duracaoTotal };
+    showToast(`✅ Apresentação gerada em ${duracaoTotal}s — slides editáveis.${partes.length ? ' ' + partes.join(' · ') : ''}`, pulados.length ? 'warning' : 'success');
     fecharModalGerarApresentacao();
   }catch(e){
     console.error('Erro ao gerar apresentação:', e);
     showToast('Erro ao gerar apresentação: '+e.message, 'error');
   }finally{
-    // Restaura o estado original do Painel (unidade/mês/aba ativa) — tanto os
-    // selects visíveis quanto os globais que eles controlam.
+    if(animChartOriginal !== undefined && typeof Chart !== 'undefined') Chart.defaults.animation = animChartOriginal;
+    if(eraClaro) document.body.classList.add('light-theme');
+    if(pgCont) pgCont.style.cssText = cssContOriginal;
     document.getElementById('painel-ind-und-sel').value = undSelOriginal;
     document.getElementById('painel-ind-mes-sel').value = mesSelOriginal;
     window._painelIndUndSel = undOriginal;
     window._painelIndMesSel = mesOriginal;
+    window._painelIndRireSel = rireOriginal;
     mudarAbaIndicadores(abaOriginal);
     btn.disabled = false;
     progWrap.style.display = 'none';
