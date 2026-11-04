@@ -3274,6 +3274,9 @@ body.light-theme{
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('erro-conferencia')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="erro-conferencia">
       <span data-feather="alert-circle" style="width:15px;height:15px"></span> Erro de conferência
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('abastecimento-loja')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="abastecimento-loja">
+      <span data-feather="shopping-bag" style="width:15px;height:15px"></span> Abastecimento de Loja
+    </button>
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('dias-por-rota')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="dias-por-rota">
       <span data-feather="repeat" style="width:15px;height:15px"></span> Dias por rota
     </button>
@@ -3342,6 +3345,9 @@ body.light-theme{
   </div>
   <div id="aba-erro-conferencia" class="painel-ind-aba" style="display:none">
     <div id="painel-ind-erro-conferencia-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+  </div>
+  <div id="aba-abastecimento-loja" class="painel-ind-aba" style="display:none">
+    <div id="painel-ind-abastecimento-loja-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
   <div id="aba-dias-por-rota" class="painel-ind-aba" style="display:none">
     <div id="painel-ind-dias-por-rota-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
@@ -9965,7 +9971,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.152';
+const APP_VERSION = '4.89.153';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -30659,7 +30665,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
   const [_rotasRaw, _lancRaw, _drSaiuRaw] = await Promise.all([
     supaFetch('rotas?select=nome,tipo,prazo_otif&ativo=eq.true'),
     // lancamentos do mês — inclui motorista E ajudante para rankings
-    supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00-03:00&ts=lte.${fimMes}T23:59:59-03:00${undFilter}&select=carga,rota,rire,motorista,ajudante,ts&limit=5000`),
+    supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00-03:00&ts=lte.${fimMes}T23:59:59-03:00${undFilter}&select=carga,rota,rire,motorista,ajudante,ts,fonte&limit=5000`),
     // Cargas que saíram no período (usadas mais abaixo pra achar as sem lançamento)
     supaFetch(`demandas_rota?ts_saiu=gte.${iniMes}T00:00:00-03:00&ts_saiu=lte.${fimMes}T23:59:59-03:00&status=in.(saiu,fim_viagem,concluido)&select=carga`).catch(()=>[]),
   ]);
@@ -30676,6 +30682,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
 
   // Mapa carga → isRI, carga → motorista, carga → ajudante (fonte: lancamentos)
   // Exclui LOJA e RETIRA; usa ROTAS_CONTAGEM igual ao padrão do sistema
+  const cargaAbast     = new Set(); // cargas de Abastecimento de Loja (fonte do lançamento) — são de Expedição, fora de Pedidos & Rotas
   const cargaIsRI      = {};
   const cargaMotorista = {};
   const cargaAjudante  = {};
@@ -30683,6 +30690,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
   lancMes.forEach(l => {
     const c = Math.round(Number(l.carga));
     if(!c) return;
+    if(l.fonte==='abastecimento_loja') cargaAbast.add(c);
     // Rota e R.I./R.E. do lançamento valem SEMPRE — inclusive quando o motorista é
     // LOJA/RETIRA/A DEFINIR MOTORISTA. Antes o `return` desses motoristas vinha
     // antes e pulava também a rota: a carga lançada como "Petrolina" (motorista
@@ -30796,7 +30804,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
     });
   }
 
-  return { bd, cargaRota, cargaIsRI, cargaMotorista, cargaAjudante, lancMes, baseDataSupa, todasRotas, rotasRI, rotaParam, cargasUndLanc };
+  return { bd, cargaRota, cargaIsRI, cargaMotorista, cargaAjudante, lancMes, baseDataSupa, todasRotas, rotasRI, rotaParam, cargasUndLanc, cargaAbast };
 }
 
 // Pedidos + valor por semana (calendário alinhado a domingo) — fonte única
@@ -33329,6 +33337,7 @@ function _painelIndTarefas(aba){
     case 'prazo-formacao':              return [['pf-container', renderPrazoFormacao], ['pf-container-ano', renderPrazoFormacaoAno]];
     case 'produtividade':               return [['painel-ind-produtividade-container', carregarPainelProdutividadeAno]];
     case 'otif-ano':                    return [['painel-ind-otif-ano-container', carregarPainelOtifAno]];
+    case 'abastecimento-loja':          return [['painel-ind-abastecimento-loja-container', carregarPainelAbastecimentoLoja]];
     case 'erro-conferencia':            return [['painel-ind-erro-conferencia-container', ()=>_pnCarregarCardDados('painel-ind-erro-conferencia-container', 'erroConferencia')]];
     case 'dias-por-rota':               return [['painel-ind-dias-por-rota-container', ()=>_pnCarregarCardDados('painel-ind-dias-por-rota-container', 'diasPorRota')]];
     case 'calendario-rotas':            return [['painel-ind-calendario-rotas-container', ()=>_pnCarregarCardDados('painel-ind-calendario-rotas-container', 'calendarioRotas')]];
@@ -33462,7 +33471,7 @@ function _painelIndAtualizarFiltros(aba){
 // Seções do Painel — mesma divisão e mesma ordem do modelo de apresentação (ABC.pptx). Uma aba pode aparecer em
 // mais de uma seção (Pedidos & Rotas vale para Distribuição = rotas externas e Monitoramento = rotas internas).
 const PAINEL_IND_SECOES = {
-  expedicao:     { titulo:'Expedição',     abas:['abs-expedicao','carregamento-prazo','erro-conferencia'] },
+  expedicao:     { titulo:'Expedição',     abas:['abs-expedicao','carregamento-prazo','erro-conferencia','abastecimento-loja'] },
   armazem:       { titulo:'Armazém',       abas:['custo-armazem','receita-armazem','abs-recebimento-armazenagem','prazo-formacao'] },
   distribuicao:  { titulo:'Distribuição',  abas:['abs-distribuicao','disponibilidade','conferencia-prazo','pedidos-rotas','dias-por-rota','calendario-rotas'] },
   monitoramento: { titulo:'Monitoramento', abas:['pedidos-rotas','venda-por-rota','produtividade','otif-ano','frota-ranking'] },
@@ -38366,9 +38375,12 @@ function _opcoesRoscaRotas(itens, fmtVal){
 //  R.I.  → lançamentos (rotas internas nascem em Lançamento)
 //  R.E.  → Expedição (demandas_rota)
 //  Todos → interna (lançamentos) + externa (Expedição)
-async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, cargaIsRI){
+async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast){
+  // Abastecimento de Loja não é rota: sai do volume de Pedidos & Rotas (tem card próprio na seção Expedição)
+  const semAbast = (lista, set) => (set && set.size) ? lista.filter(p=>!set.has(Math.round(Number(p.carga)))) : lista;
   if(rireSel === 'RI'){
-    return { semData:_calcPedidosPorSemana(bd, mes), rotaCalc:_calcEntregasPorRota(bd, cargaRota, cargaIsRI, 'RI') };
+    const bdVol = semAbast(bd, cargaAbast);
+    return { semData:_calcPedidosPorSemana(bdVol, mes), rotaCalc:_calcEntregasPorRota(bdVol, cargaRota, cargaIsRI, 'RI') };
   }
   const exp = _agregarExpedicaoRE(await _carregarExpedicaoRE(undSel), {mesStr:mes});
   // Cada carga cai numa única semana (a da saída), então a soma das semanas já é o total do mês
@@ -38377,8 +38389,9 @@ async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, carga
     return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap) };
   }
   const ri = await _calcularBaseFiltrada(mes, 'RI', undSel);
-  const semRI = _calcPedidosPorSemana(ri.bd, mes);
-  const calcRI = _calcEntregasPorRota(ri.bd, ri.cargaRota, ri.cargaIsRI, 'RI');
+  const riBdVol = semAbast(ri.bd, ri.cargaAbast);
+  const semRI = _calcPedidosPorSemana(riBdVol, mes);
+  const calcRI = _calcEntregasPorRota(riBdVol, ri.cargaRota, ri.cargaIsRI, 'RI');
   const semData = semRI.map((s,i)=>({ ped:s.ped+exp.semData[i].ped, val:s.val+exp.semData[i].val, ent:(s.ent||0)+exp.semData[i].ent }));
   semData.entMes = (semRI.entMes||0) + exp.semData.entMes;
   const rotaMapRI = Object.fromEntries(calcRI.todas);
@@ -38399,8 +38412,8 @@ async function carregarPainelPedidosRotas(){
 
     // `bd` (lançamentos) continua sendo a base do OTIF; o VOLUME (pedidos, entregas e
     // valor por semana/rota) da rota externa vem do que foi lançado em Expedição.
-    const { bd, cargaRota, cargaIsRI } = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
-    const { semData, rotaCalc } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI);
+    const { bd, cargaRota, cargaIsRI, cargaAbast } = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
+    const { semData, rotaCalc } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast);
     // Força recálculo do cache de OTIF quando o mês filtrado é o corrente —
     // mesmo padrão do Dashboard Interno/Logístico/OTIF Diário/TV (todos já
     // faziam isso). Sem essa linha, esta aba era a única do sistema que podia
@@ -56281,6 +56294,101 @@ async function renderCustoArmazemAno(prefixo){
     _featherReplace();
   }catch(e){
     console.error('Erro ao carregar Custo Armazém (ano):', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
+    _featherReplace();
+  }
+}
+
+// ── Abastecimento de Loja (Expedição) ─────────────────────────────────
+// Pedido do usuário, 2026-11-03: as cargas de abastecimento de loja apareciam como uma linha "—" no
+// "Valor por Rota" de Pedidos & Rotas (lançamentos com fonte 'abastecimento_loja', sem rota) e inflavam o
+// total; elas são de Expedição. Agora saem de Pedidos & Rotas e têm este card próprio na seção Expedição.
+// Fonte: tabela abastecimento_loja (tela Abastec. Loja), mês pela DATA DE SAÍDA. Pedidos = campo "quantidade"
+// do lançamento; valor = campo "valor". Unidade do filtro = unidade de ORIGEM da carga.
+async function carregarPainelAbastecimentoLoja(){
+  const container = document.getElementById('painel-ind-abastecimento-loja-container');
+  if(!container) return;
+  const fv = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fn = v => Number(v||0).toLocaleString('pt-BR');
+  try{
+    const mesSel = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const undSel = window._painelIndUndSel || '';
+    const mesAnt = _descarregoMesAnterior(mesSel);
+    const [aS, mS] = mesSel.split('-').map(Number);
+    const proxMes = mS===12 ? (aS+1)+'-01' : aS+'-'+String(mS+1).padStart(2,'0');
+    let rows = await supaFetch(`abastecimento_loja?data_saida=gte.${mesAnt}-01&data_saida=lt.${proxMes}-01&select=carga,unidade,unidade_origem,quantidade,valor,confirmado,data_saida&limit=5000`).catch(()=>[]) || [];
+    if(undSel) rows = rows.filter(r=>(r.unidade_origem||'')===undSel);
+    const doMes = m => rows.filter(r=>(r.data_saida||'').startsWith(m));
+    const resumo = lista => ({
+      cargas: lista.length,
+      ped: lista.reduce((s,r)=>s+(Number(r.quantidade)||0),0),
+      val: lista.reduce((s,r)=>s+(Number(r.valor)||0),0),
+      pend: lista.filter(r=>!r.confirmado).length
+    });
+    const lAtual = doMes(mesSel), lAnt = doMes(mesAnt);
+    const atual = resumo(lAtual), ant = resumo(lAnt);
+    const variacao = ant.val>0 ? ((atual.val-ant.val)/ant.val*100) : null;
+
+    const NOMES_MES_LONGO = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+    const [aN, mN] = mesAnt.split('-').map(Number);
+    const mesAtualLabel = NOMES_MES_LONGO[mS-1]+' '+aS;
+    const mesAnteriorLabel = NOMES_MES_LONGO[mN-1]+' '+aN;
+    const undLabel = undSel ? 'origem '+undSel : 'todas as unidades';
+
+    // Por loja de destino
+    const porLoja = {};
+    lAtual.forEach(r=>{ const k=(r.unidade||'(sem loja)').trim(); const o=porLoja[k]=porLoja[k]||{cargas:0,ped:0,val:0}; o.cargas++; o.ped+=Number(r.quantidade)||0; o.val+=Number(r.valor)||0; });
+    const lojas = Object.entries(porLoja).sort((a,b)=>b[1].val-a[1].val);
+    const linhas = lojas.map(([nome,d])=>{
+      const pct = atual.val>0 ? (d.val/atual.val*100) : 0;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">
+        <span style="flex:1;font-size:.92rem;font-weight:600">${escapeHtml(nome)}</span>
+        <span style="font-size:.85rem;color:var(--text-secondary);white-space:nowrap">${fn(d.cargas)} carga${d.cargas===1?'':'s'} · ${fn(d.ped)} ped · ${pct.toFixed(1).replace('.',',')}%</span>
+        <span style="font-size:.92rem;font-weight:700;min-width:130px;text-align:right">${fv(d.val)}</span>
+      </div>`;
+    }).join('');
+    const tot = `<div style="display:flex;align-items:center;gap:10px;padding:10px 0 2px;margin-top:2px;border-top:2px solid var(--red)">
+        <span style="flex:1;font-size:.92rem;font-weight:800">TOTAL (${lojas.length} loja${lojas.length===1?'':'s'})</span>
+        <span style="font-size:.85rem;font-weight:700;white-space:nowrap">${fn(atual.cargas)} carga${atual.cargas===1?'':'s'} · ${fn(atual.ped)} ped</span>
+        <span style="font-size:.94rem;font-weight:800;min-width:130px;text-align:right">${fv(atual.val)}</span>
+      </div>`;
+
+    const corVar = variacao===null ? 'var(--text-muted)' : (variacao>=0 ? '#16a34a' : '#dc2626');
+    const kpi = (rot,val,sub)=>`<div style="background:var(--bg-card2);border-radius:10px;padding:18px 20px;border-top:3px solid var(--border-med)">
+        <div style="font-size:.74rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">${rot}</div>
+        <div style="font-size:1.9rem;font-weight:700;line-height:1.1;margin-top:6px">${val}</div>
+        <div style="font-size:.76rem;color:var(--text-secondary);margin-top:4px">${sub}</div></div>`;
+
+    container.innerHTML = `
+      <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:inline-flex;align-items:center;gap:6px"><span data-feather="download" style="width:13px;height:13px"></span> Baixar Imagem</button>
+        <div style="font-size:.81rem;font-weight:700;letter-spacing:2px;color:var(--text-muted)">EXPEDIÇÃO · ${mesAtualLabel} × MÊS ANTERIOR</div>
+        <h2 style="font-size:2.69rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Abastecimento de Loja</h2>
+        <div style="width:56px;height:3px;background:var(--red);margin:18px 0 28px"></div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:20px">
+          ${kpi('CARGAS ENVIADAS', fn(atual.cargas), atual.pend ? fn(atual.pend)+' ainda não confirmada'+(atual.pend===1?'':'s')+' pela loja' : 'todas confirmadas pela loja')}
+          ${kpi('PEDIDOS', fn(atual.ped), 'quantidade informada no lançamento')}
+          ${kpi('VALOR', fv(atual.val), undLabel)}
+          ${kpi('× '+mesAnteriorLabel, variacao===null ? '—' : `<span style="color:${corVar}">${variacao>=0?'▲':'▼'} ${Math.abs(variacao).toFixed(1).replace('.',',')}%</span>`, ant.cargas ? fn(ant.cargas)+' carga'+(ant.cargas===1?'':'s')+' · '+fv(ant.val) : 'sem abastecimento no mês anterior')}
+        </div>
+
+        <div style="background:var(--bg-card2);border-radius:10px;padding:22px 26px">
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:6px">VALOR POR LOJA</div>
+          ${linhas ? linhas+tot : '<p style="color:var(--text-muted);padding:14px 0">Nenhum abastecimento de loja com saída em '+mesAtualLabel.toLowerCase()+' ('+undLabel+').</p>'}
+        </div>
+
+        <div style="font-size:.76rem;color:var(--text-secondary);margin-top:16px;line-height:1.5">Fonte: tela Abastec. Loja (mês pela data de saída). Estas cargas não entram mais em Pedidos &amp; Rotas.</div>
+
+        <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
+          <span>PAINEL DE INDICADORES · EXPEDIÇÃO</span>
+          <span>OPERAÇÕES / LOGÍSTICA</span>
+        </div>
+      </div>
+    `;
+    _featherReplace();
+  }catch(e){
+    console.error('Erro ao carregar Abastecimento de Loja:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
     _featherReplace();
   }
