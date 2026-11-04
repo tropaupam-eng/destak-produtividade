@@ -20,6 +20,29 @@ Não precisa mudar tela nenhuma — basta o campo vir junto no dado da carga.
 
 ---
 
+## 2026-10-29 — Cargas Pendentes: liberar o valor em R$ para usuário específico, sem virar admin (v4.89.95)
+
+Até aqui o R$ da tela Comercial › Cargas Pendentes (KPI de valor e botão "Ver Valor") só aparecia para `admin`. O Rafael pediu
+para o MATHUES TUPINA (`matheustupina2@gmail.com`, perfil `comercial_indicadores`) ver os valores das cargas, e promover ele a admin
+abriria cadastro, pagamento e perfis. Agora `_cargPendPodeVerValor()` aceita admin **ou** e-mail presente na lista
+`configuracoes.chave='cargas_pendentes_ver_valor'` (array JSON de e-mails, lida ao abrir a página). Linha criada com o e-mail dele.
+Para liberar outra pessoa: acrescentar o e-mail nesse array; para tirar, remover. Admin continua igual.
+Junto: o modo inicial (valor ou %) passou a ser decidido no primeiro carregamento da página, quando o usuário já é conhecido
+(antes era calculado no carregamento do script, possivelmente antes do login).
+
+---
+
+## 2026-10-28 — Dashboard Devolução: tocar no vendedor filtra o painel só para ele (`7d73d90`)
+
+Na aba Dashboard › Devoluções, a tabela "Erros por vendedor" passou a ser clicável: tocar num vendedor mostra só os números
+dele no dashboard inteiro; tocar de novo volta para todos. Só tela, sem mudança de banco nem de cálculo. Pedido do Rafael.
+
+**Leitura pelo CRM (para a IA do Daniel saber):** desde 28–29/10 o CRM do Rafael lê com a chave anon, uma vez por dia, as tabelas
+`ocorrencias_distribuicao`, `motivos_devolucao`, `pedidos_info_erp`, `base_data` (só `vendedor_cod`) e `pedidos_alteracoes_erp`.
+Só leitura, nada é escrito aqui. Se alguma dessas tabelas mudar de nome ou de coluna, ou ganhar RLS, o CRM para de mostrar as
+devoluções com motivo e os avisos de item cortado (ele registra o erro e não grava nada). Proposta em aberto: uma edge function
+irmã da `api-crm-cargas` para essas leituras.
+
 ## 2026-10-13 — painel MFV: o que agrega valor, NF medida, caso à parte (4.89.47)
 
 Decisões do Rafael, só na aba MFV:

@@ -1,9 +1,4 @@
-// Funções compartilhadas entre atualizar-pedidos-erp e receber-pedidos-erp —
-// extraídas em 2026-08-21 depois que a regra de "cancelado não fica em carga"
-// (2026-08-20) foi implementada só num dos dois endpoints na primeira
-// tentativa e um bug real aconteceu em produção enquanto a segunda correção
-// ainda não tinha sido feita. Qualquer regra que precise valer nos dois
-// pontos de entrada do ERP deve morar aqui, não duplicada em cada index.ts.
+// Funcoes compartilhadas entre atualizar-pedidos-erp e receber-pedidos-erp.
 
 // deno-lint-ignore no-explicit-any
 export type SupabaseClientAny = any;
@@ -66,18 +61,35 @@ export function calcularSemanaMes(dataPedido: string): number {
   return Math.ceil((dia + isodowPrimeiro - 1) / 7);
 }
 
+// Achado em auditoria 2026-09-28: tentei duas vezes fazer esta funcao
+// AUTO-CRIAR a linha de demandas_rota quando ela nao existia (a partir de
+// 'lancamentos', primeiro sem checar 'vinculado', depois checando
+// vinculado=true) -- as duas vezes criou cards fantasma na Expedicao
+// ("CEASA"/"PETROLINA"/"RETIRA"/"JUAZEIRO" que o usuario confirmou NUNCA
+// terem sido lancados na aba Expedicao de verdade). Causa: 'lancamentos' e
+// 'demandas_rota' sao conceitos DIFERENTES -- lancamentos e o registro de
+// motorista/veiculo pra produtividade/pagamento, demandas_rota e o board
+// de Expedicao, criado SOMENTE pela acao humana em acaoRotaUnificada
+// ('Adicionar a Pre-Carga') ou pelo formulario manual de lancamento. Uma
+// carga pode ter lancamento (e ate vinculado=true) sem nunca ter passado
+// pela Expedicao. Voltou a ser SO update, nunca insert -- carga sem linha
+// em demandas_rota so ganha uma quando alguem realmente a lanca na tela.
 export async function sincronizarDemandasRota(supabase: SupabaseClientAny, cargas: number[]) {
   for (let i = 0; i < cargas.length; i += 5) {
     await Promise.all(
       cargas.slice(i, i + 5).map(async (carga) => {
-        const { data: agregado } = await supabase.from('base_data').select('valor').eq('carga', carga);
+        const { data: agregado, error: erroAgregado } = await supabase.from('base_data').select('valor').eq('carga', carga);
+        if (erroAgregado) {
+          console.error(`[sincronizarDemandasRota] Falha ao agregar carga ${carga}:`, erroAgregado.message);
+          return;
+        }
         const quantidade = agregado ? agregado.length : 0;
         const valorTotal = (agregado ?? []).reduce((soma: number, r: Record<string, unknown>) => soma + (Number(r.valor) || 0), 0);
-        await supabase
+        const { error } = await supabase
           .from('demandas_rota')
           .update({ quantidade_pedidos: quantidade, valor_total: valorTotal })
-          .eq('carga', carga)
-          .then(() => {}, () => {});
+          .eq('carga', carga);
+        if (error) console.error(`[sincronizarDemandasRota] Falha ao atualizar carga ${carga}:`, error.message);
       })
     );
   }
@@ -117,11 +129,6 @@ export async function buscarLancamentosPorCarga(
   return map;
 }
 
-// Pedido cancelado no ERP (Situacao = CA, gravada em pedidos_info_erp pela
-// planilha de atualizações) não deve continuar nem ser recriado em carga —
-// decisão do usuário em 2026-08-20. Chamado nos dois endpoints que podem
-// criar/mover pedido em base_data. Se o pedido já estiver em base_data,
-// remove e ressincroniza a(s) carga(s) afetada(s).
 export async function removerCanceladosDeBaseData(
   supabase: SupabaseClientAny,
   numerosPedido: number[],
@@ -133,11 +140,14 @@ export async function removerCanceladosDeBaseData(
 
   for (let i = 0; i < numerosPedido.length; i += tamanhoLote) {
     const lote = numerosPedido.slice(i, i + tamanhoLote);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('pedidos_info_erp')
       .select('pedido')
       .in('pedido', lote)
       .eq('situacao', 'CA');
+    if (error) {
+      throw new Error(`Falha ao consultar pedidos cancelados (lote ${i}-${i + lote.length}): ${error.message}`);
+    }
     (data ?? []).forEach((r: Record<string, unknown>) => canceladosSet.add(Math.round(Number(r.pedido))));
   }
   if (!canceladosSet.size) return { canceladosSet, pedidosCanceladosRemovidos };
@@ -145,10 +155,13 @@ export async function removerCanceladosDeBaseData(
   const canceladosLista = [...canceladosSet];
   for (let i = 0; i < canceladosLista.length; i += tamanhoLote) {
     const lote = canceladosLista.slice(i, i + tamanhoLote);
-    const { data: existentesCancelados } = await supabase
+    const { data: existentesCancelados, error: erroExistentes } = await supabase
       .from('base_data')
       .select('pedido,carga')
       .in('pedido', lote);
+    if (erroExistentes) {
+      throw new Error(`Falha ao buscar pedidos cancelados em base_data (lote ${i}-${i + lote.length}): ${erroExistentes.message}`);
+    }
     const encontrados = (existentesCancelados ?? []) as Record<string, unknown>[];
     if (!encontrados.length) continue;
     await apagarPorPedido(supabase, encontrados.map(r => Math.round(Number(r.pedido))), tamanhoLote);
@@ -157,4 +170,82 @@ export async function removerCanceladosDeBaseData(
     await sincronizarDemandasRota(supabase, cargasParaResync);
   }
   return { canceladosSet, pedidosCanceladosRemovidos };
+}
+
+// Pedido que o ERP TIROU da carga (carga_erp vazio) nao pode continuar contando
+// na carga do Cronos. Decisao do usuario em 2026-10-27: o que vale e o que a
+// integracao manda; valor de planilha nao conta. Antes disso a integracao so
+// processava pedido COM carga, entao pedido retirado no ERP ficava preso na
+// carga e o card da Expedicao divergia do ERP (cargas 16065, 16113, 16171).
+// Regras de seguranca:
+//  - so mexe em carga que tem card ABERTO na Expedicao (formacao, pendente,
+//    separacao, carregamento, aguardando_nf, aguardando_manifesto,
+//    pronto_viagem); carga sem card, ou com card que ja saiu/concluiu/foi
+//    cancelado, mantem o historico como esta;
+//  - so considera cards da unidade 1 (ou sem unidade);
+//  - antes de apagar, copia a linha inteira para base_data_removidos_erp; se a
+//    copia falhar, NAO apaga;
+//  - qualquer erro de consulta pula o lote em vez de apagar no escuro.
+const STATUS_CARD_ABERTO = new Set([
+  'formacao', 'pendente', 'separacao', 'carregamento', 'aguardando_nf', 'aguardando_manifesto', 'pronto_viagem',
+]);
+
+export async function removerPedidosQueSairamDaCarga(
+  supabase: SupabaseClientAny,
+  numerosPedido: number[],
+  tamanhoLote: number,
+): Promise<{ removidos: number; cargasAfetadas: number[] }> {
+  const cargasAfetadas = new Set<number>();
+  let removidos = 0;
+
+  for (let i = 0; i < numerosPedido.length; i += tamanhoLote) {
+    const lote = numerosPedido.slice(i, i + tamanhoLote);
+    const { data: linhas, error: erroLinhas } = await supabase.from('base_data').select('*').in('pedido', lote);
+    if (erroLinhas) {
+      console.error('[removerPedidosQueSairamDaCarga] Falha ao ler base_data:', erroLinhas.message);
+      continue;
+    }
+    const candidatas = (linhas ?? []) as Record<string, unknown>[];
+    if (!candidatas.length) continue;
+
+    const cargas = [...new Set(candidatas.map(r => Math.round(Number(r.carga))).filter(Number.isFinite))];
+    const { data: cards, error: erroCards } = await supabase
+      .from('demandas_rota')
+      .select('carga,status,unidade')
+      .in('carga', cargas);
+    if (erroCards) {
+      console.error('[removerPedidosQueSairamDaCarga] Falha ao ler demandas_rota:', erroCards.message);
+      continue;
+    }
+    const abertas = new Set<number>();
+    const fechadas = new Set<number>();
+    for (const c of (cards ?? []) as Record<string, unknown>[]) {
+      const und = String(c.unidade ?? '').trim();
+      if (und && !und.startsWith('1')) continue;
+      const carga = Math.round(Number(c.carga));
+      if (STATUS_CARD_ABERTO.has(String(c.status))) abertas.add(carga); else fechadas.add(carga);
+    }
+    const alvo = candidatas.filter(r => {
+      const carga = Math.round(Number(r.carga));
+      return abertas.has(carga) && !fechadas.has(carga);
+    });
+    if (!alvo.length) continue;
+
+    const agora = new Date().toISOString();
+    const { error: erroArquivo } = await supabase.from('base_data_removidos_erp').insert(
+      alvo.map(r => ({ ...r, removido_em: agora, motivo: 'ERP tirou o pedido da carga (carga_erp vazio) - integracao' })),
+    );
+    if (erroArquivo) {
+      console.error('[removerPedidosQueSairamDaCarga] Falha ao arquivar, nada apagado:', erroArquivo.message);
+      continue;
+    }
+    const { error: erroApagar } = await supabase.from('base_data').delete().in('id', alvo.map(r => r.id));
+    if (erroApagar) {
+      console.error('[removerPedidosQueSairamDaCarga] Falha ao apagar de base_data:', erroApagar.message);
+      continue;
+    }
+    removidos += alvo.length;
+    alvo.forEach(r => cargasAfetadas.add(Math.round(Number(r.carga))));
+  }
+  return { removidos, cargasAfetadas: [...cargasAfetadas] };
 }

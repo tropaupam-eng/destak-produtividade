@@ -21,10 +21,10 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-10-22, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial
+## 2026-11-04, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial — v4.89.181
 Onde: `index.html`: formulário "Registrar Ocorrência": `_ocorrAtualizarItensUI` (coluna nova "Valor unit. (R$) *"
 em cada produto), `_ocorrToggleItemQtd`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`; helpers novos
-`_ocorrPrecoItem` e `_ocorrMarcarPrecoVazio`. `version.json` e `APP_VERSION` 4.89.72 → 4.89.73.
+`_ocorrPrecoItem` e `_ocorrMarcarPrecoVazio`. `version.json` e `APP_VERSION` 4.89.180 → 4.89.181 (trabalho feito em 22/10 e parado; atualizado com a main em 04/11, conflito só na versão).
 Por quê: pedido do Gabriel. Desde 18/09 quase todo item do ERP chega sem preço unitário (100% em outubro), e a
 ocorrência acabava mostrando "(valor do pedido)", que superestima a devolução parcial. Agora, na devolução
 PARCIAL, cada produto marcado tem um campo de valor unitário OBRIGATÓRIO: vem pré-preenchido quando o ERP tem o
@@ -36,6 +36,347 @@ Devolução TOTAL não mudou. As 41 ocorrências parciais antigas sem valor NÃO
 Sem mudança de estrutura de banco. Causa raiz (preço não chega do ERP) segue pendente com o Daniel.
 Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. O valor depende de digitação.
+
+## 2026-10-30, Gabriel: Carregamento no Prazo (Visão Anual): clique nas barras de EVOLUÇÃO MENSAL filtra o mês — v4.89.126
+Onde: `index.html`: `_toggleMesCarregAno` (nova), `carregarPainelCarregamentoPrazoAno` (passa `onMesClick`/`mesSelIdx`/`pctView` ao
+`_renderCardVisaoAnualPercentual`, que já existia) e `_calcNoPrazoAno` (devolve também `porMes` {noPrazo, fora}). Mesma regra do
+Absenteísmo: clique = só esse mês, clique de novo desmarca, Ctrl+clique soma, Shift+clique intervalo, "✕ Limpar filtros" volta ao ano. Com
+mês(es) marcado(s): "RESULTADO DE <MÊS>" e NO PRAZO/FORA DO PRAZO/registros passam a ser só dos meses marcados (vários meses = soma no
+prazo ÷ soma total). O número grande segue sendo o acumulado do ano. Clique só troca a seleção, sem recalcular os 12 meses (cache
+`window._carregAnoCache`, vale para o mesmo ano/unidade/filtro R.I./R.E.). A seleção usa o mesmo armazenamento do Absenteísmo
+(`_absAnoMesSelPorPrefixo['carreg-prazo']`), então zera ao trocar mês/unidade no topo. Não toca em dados do Supabase.
+Como desfazer: `git revert` deste commit (volta ao 4.89.125, só sem o clique).
+Pendente/risco: baixo; só visual/cliente.
+
+## 2026-10-30, Gabriel: Carregamento no Prazo alimentado pela planilha de Rotas Externas (regra final) — v4.89.125
+Onde: `index.html`, Painel de Indicadores › aba Carregamento no Prazo. Funções novas (antes de `abrirModalLancarMotivosPrazo`):
+`_parseRotasExternasXlsx`, `_calcCarregPlanilha`, `_dataPlanilha`, `_chaveSemanasCarreg`, `importarPlanilhaMotivosPrazo`,
+`_impCarregarAtuais`, `_impMostrarPrevia`, `_impTrocarUnidade`, `_impGravar`, `_impFechar`, `_carregPrazoDaPlanilha`,
+`_renderCarregPrazoPlanilha`. Alterados: cabeçalho do cartão "Análise por Motivo" (botão "Importar planilha"; "Baixar Imagem"
+deslocado), `carregarPainelCarregamentoPrazo` (mensal), `_calcCarregamentoNoPrazoMes` e `_calcNoPrazoAno` (visão anual) e descrições da
+composição anual. `APP_VERSION`/`version.json`: 4.89.117 → 4.89.125 (as 4.89.118 a 4.89.124 nunca foram publicadas; esta entrada as
+substitui).
+Ajuste (30/10, após teste do Gabriel): na Visão Anual, mês DEPOIS do último mês importado da planilha (ex.: OUT sem planilha) fica em
+branco: não mostra 100%, não entra no acumulado do ano nem nos totais (`carregarPainelCarregamentoPrazoAno`, wrapper `calcMesAno`).
+Meses antes do último importado seguem pelo sistema. Para desfazer: remover o wrapper e voltar a passar `_calcCarregamentoNoPrazoMes`.
+Por quê: pedido do Gabriel: "alimente o Carregamento no Prazo com a planilha Rotas externas -2026". Três versões minhas saíram erradas
+(denominador de motivos; tabela SEM 1..5 digitada à mão; Rota Extra fora do OK). REGRA FINAL (Gabriel, 30/10): cada linha da planilha é um
+carregamento. Só contam as colunas Data, Dia da Semana, Nome da Rota e "Status de carregamento" (antes chamada "Rota no prazo": os dois
+nomes funcionam). Total = linhas com status. OK = "Carregamento ok" E "Rota Extra" (toda rota extra foi carregamento OK). NOK = "Valor
+abaixo da meta", "Falta de Veículo", "Atraso no carregamento", "Atraso do motorista" (e qualquer status desconhecido). % = OK ÷ total,
+por semana e no mês. Valor expedido, meta, % atingido e a coluna "Status" de meta NÃO são usados. Semana = a do mês pela data (domingo a
+sábado; a 1ª vai até o primeiro sábado). Linha sem status não conta. Linha com data de outro mês (provável erro de digitação: 15/9 e
+16/9 na aba de outubro; 4/8, 17/8, 26/8 e 31/8 na de setembro) conta no mês da aba, na semana da linha anterior, e a prévia avisa.
+Resultado com a planilha atual: Setembro 69 de 85 = 81,2%; Outubro 51 de 63 = 81,0%.
+O que faz: 1) "Importar planilha" lê as abas de mês, mostra PRÉVIA (por semana e mês, motivos hoje × planilha, avisos) e só grava ao
+clicar em Gravar (unidade: a do filtro do Painel ou "1 - CD"; mês igual ao do sistema vem desmarcado; motivo novo é cadastrado).
+2) Grava motivos em `liberacao_prazo_motivos_mes` (upsert, mesma tabela do "Lançar Motivos") e as semanas {sem,total,noPrazo} em
+`configuracoes` (JSON, chave `carregamento_prazo_semanas_<ano>_<mes>_<unidade>`; PATCH se existir, senão POST). Sem tabela/coluna nova,
+sem DELETE; NÃO guarda o valor anterior (a prévia mostra "hoje no sistema"). Nada gravado por mim.
+3) Mês com semanas importadas: cartão mensal "Carregamento no Prazo · Rotas Externas" (acumulado do mês, meta 90%, % por semana com "x de
+y", quantidade de carregamentos por semana, no prazo/fora/total) e a Visão Anual usa o % do mês. Mês sem importação, ou com filtro
+R.I./R.E. (a planilha não tem), segue o cálculo do sistema como antes (decisão assumida: manter o sistema nos meses sem planilha; hoje
+isso mistura dois métodos no acumulado do ano: Jan a Ago 100% pelo sistema contra ~81% da planilha). Sem unidade ("Todas"): soma as
+unidades com planilha no mês.
+Filtro R.I./R.E. (corrigido na 4.89.122): a planilha é de ROTAS EXTERNAS. Com o filtro R.I. (rota interna) o indicador segue o cálculo do
+sistema; com R.E. e com "Todas" os meses importados usam a planilha (antes eu ignorava a planilha em qualquer um dos dois filtros). Achado
+no print do Gabriel: filtro R.I. ligado e nada ainda importado no banco, então Set/Out apareciam 100% pelo sistema. Em "Todas" a planilha
+(só externas) substitui o número do mês inteiro: confirmar com o Gabriel se prefere só em R.E.Erro ao gravar (4.89.125): no 1º teste real do Gabriel o Gravar falhou com `duplicate key value violates unique constraint
+"liberacao_prazo_motivos_mes_mes_ano_unidade_motivo_nome"` (código 23505, chave (2026-09, 1 - CD, Atraso no carregamento)). Causa: o upsert
+(`Prefer: resolution=merge-duplicates`) não dizia ao PostgREST em quais colunas está o conflito; sem `?on_conflict=`, ele só considera a chave
+primária e tentava INSERIR de novo o mês que já existia (Setembro, lançado em 29/10). Correção: `liberacao_prazo_motivos_mes?on_conflict=mes_ano,unidade,motivo_nome`
+na importação (`_impGravar`) e, pelo mesmo motivo, em "Lançar Motivos" (`mlpSalvarTudo`: salvar de novo um mês existente dava o mesmo erro).
+Nada foi gravado na tentativa que falhou (o erro veio no 1º passo, antes das semanas). 7 testes novos do fluxo de gravação (upsert com
+on_conflict, motivo novo, POST/PATCH da configuração, erro sem efeito colateral). Não consegui testar contra o banco real sem gravar dado;
+se o Gravar ainda errar, mandar o print da mensagem.Planilha nova (4.89.124): o Gabriel passou a usar só as colunas Data, Dia Semana, Nome da Rota e "Status de carregamento" (o arquivo
+"Rotas externas -2026 (1).xlsx" de 30/10 tem só a aba de Setembro; a de Outubro saiu dele). Conferido com o arquivo real: a aba é lida sem
+ajuste (cabeçalho em E3, bloco "Análise por motivo" em Q:V), Setembro = 85 carregamentos, 69 OK = 81,2%; os 4 status são escritos sempre
+igual (sem espaço sobrando). "Dia Semana" é fórmula da data, então não serve para achar data errada. Ajustes: (1) data digitada em mês
+VIZINHO (4/8, 17/8, 26/8 numa aba de setembro; 15/9 e 16/9 numa de outubro) passa a valer como o MESMO DIA do mês da aba só para definir a
+semana (antes herdava a semana da linha anterior, errando por ex. 26/8 → semana 5 em vez de 4); o total do mês não muda e a prévia avisa
+"vale corrigir na planilha"; dia inexistente (31/8 → 31/9) e datas muito fora herdam a semana anterior; (2) aba sem o nome do mês no título
+passa a usar o mês (e ano) mais frequente das datas, com aviso. Linha em vermelho (L14, Rota Extra 4/8) não é lida (a cor não conta).Aviso com botão nos cartões (4.89.123): depois de dois prints "ainda errado" do Gabriel (Set/Out em 100% pelo sistema), a conferência no
+banco mostrou que NADA tinha sido importado (nenhuma chave `carregamento_prazo_semanas_*`, nenhum motivo de Outubro): a tela estava certa
+para o que havia no banco, mas não dizia isso. Agora, no topo dos cartões mensal e anual de Carregamento no Prazo (FORA do cartão, não vai
+na imagem baixada), há um aviso com o botão "Importar planilha": "Nenhuma planilha de Rotas Externas importada em 2026", "Meses pela
+planilha: SET, OUT. Os demais vêm do sistema", "Este mês está pela planilha" / "ainda não tem planilha importada" e, com filtro R.I., "a
+planilha só vale em R.E. ou Todas". Auxiliares: `_barraPlanilhaCarreg`, `_mesesComPlanilhaCarreg`. O botão antigo (em "Análise por Motivo",
+mais embaixo) continua. 9 testes novos.Observação sobre a planilha (auditoria, 30/10): o bloco "Análise por motivo" é fórmula e continua igual (conta a coluna de status); a
+tabela SEM 1..5 é digitada à mão e não é usada.
+Testes: `node check.js` ok; 27 testes do leitor/cálculo (cálculo independente por data e por linha sobre os dados reais; layout novo de 4
+colunas; nome antigo e novo do cabeçalho; status desconhecido = NOK), 5 de integração mensal/anual, planilha real lida com a biblioteca XLSX
+no navegador (prévia) e regressão igual à da main.
+Como desfazer: `git revert` do commit desta entrada (dados importados continuam no banco; remover as chaves `carregamento_prazo_semanas_*`
+em `configuracoes` volta o indicador ao cálculo do sistema).
+Pendente/risco: teste visual do Gabriel em localhost (botão, prévia, Gravar, cartão mensal e visão anual).
+## 2026-10-29, Gabriel: Painel de Indicadores — padrão "acumulado do ano + resultado do mês" só nas VISÕES ANUAIS; mensais voltam ao acumulado do mês — v4.89.115
+Onde: `index.html`: `renderCustoArmazem` e `renderReceitaArmazem` (mensais), `_renderCardVisaoAnualPercentual` (cartão anual em %:
+Absenteísmo Armazém/Expedição/Recebimento/Distribuição, OTIF, prazos, disponibilidade...) e `renderRelatorioAbsenteismo` (mensal).
+`APP_VERSION` e `version.json`: 4.89.115 (main estava em 4.89.114; mesclada, conflito só de versão).
+Por quê: correção de um erro meu. O pedido do Gabriel tinha sido feito olhando as VISÕES ANUAIS e eu apliquei também nas mensais.
+Ele corrigiu: "na visão mensal está acumulado do ano mas é acumulado do mês" e "a visão anual do Absenteísmo ainda está errada".
+Agora:
+- Visão ANUAL (Custo, Receita, Absenteísmo e os demais cartões em %): número grande = ACUMULADO NO ANO; ao lado "RESULTADO DE
+  <MÊS>/<ANO>" (mês clicado nas barras ou, sem clique, o mês do filtro do Painel; "—" se o mês não tem dado) e a META DEFINIDA.
+  No cartão em %, o "RESULTADO" que ficava embaixo da composição saiu (virou o bloco ao lado do número grande, com a etiqueta
+  DENTRO/FORA DA META do mês). Composição 1, 2, 3 em ordem decrescente (já da v4.89.114).
+- Visão MENSAL: número grande = ACUMULADO NO MÊS (ou da semana clicada), como era. Custo e Receita mensais: o antigo "MAIOR
+  CATEGORIA" saiu e no lugar fica "ACUMULADO NO ANO" (suposição minha; confirmar com o Gabriel). Absenteísmo mensal: voltou ao
+  original (acumulado do mês + meta) e o cálculo do ano em segundo plano que eu tinha incluído SAIU (sem custo extra).
+Substitui os itens 2 (mensais) da entrada da v4.89.114 logo abaixo e a entrada de Absenteísmo mensal da v4.89.115 anterior
+(nunca publicadas).
+Dados: nada gravado; só leitura. Nenhuma coluna nova.
+Testes: `node check.js` ok; 20 testes de Custo/Receita (anual e mensal), 11 do cartão em % (resultado do mês, mês clicado, sem
+dado, sem meta, invertido) e regressão igual à da main (falhas antigas de ambiente: `_ic` não existe no teste).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel nas visões anual e mensal de Absenteísmo, Custo e Receita.
+## 2026-10-29, Gabriel: Painel de Indicadores — composição 1, 2, 3 em ordem decrescente e cartões de Custo/Receita com acumulado do ano + resultado do mês — v4.89.114
+Onde: `index.html`, Painel de Indicadores: `renderCustoArmazem`, `renderCustoArmazemAno`, `renderReceitaArmazem`,
+`renderReceitaArmazemAno` (cartões de Custo e Receitas Armazém, mensal e anual); `_renderCardVisaoAnualPercentual`
+(cartão em % de OTIF, prazos, disponibilidade, absenteísmo anual etc.) e a lista de composição do Absenteísmo mensal.
+`APP_VERSION` e `version.json`: 4.89.113 → 4.89.114 (já em cima da main com a v4.89.113).
+Por quê: pedido do Gabriel, "em todos os dashboards do Painel de Indicadores":
+1) Composição em ordem decrescente de valor e numerada "1, 2, 3" (antes "01, 02, 03"). Custo/Receita já vinham
+   ordenados por valor; nos cartões em % (e Absenteísmo mensal) agora também ordena do maior para o menor (empate
+   mantém a ordem original). Atenção: em Disponibilidade os itens ALTA/MÉDIA/BAIXA passam a seguir a quantidade.
+2) Custo e Receitas Armazém (mensal e anual): o número grande é SEMPRE o "ACUMULADO NO ANO" (mesma unidade filtrada),
+   não muda ao escolher mês ou semana. O bloco "MAIOR CATEGORIA" (nome + valor) saiu e no lugar entra "RESULTADO DE
+   <MÊS>/<ANO>" com o total do mês: o mês clicado nas barras (anual) ou, sem clique, o mês do filtro do Painel. Na
+   visão mensal é o mês inteiro (a semana clicada continua filtrando só a composição). Em Receita mensal o
+   "ACUMULADO NO ANO" pequeno foi removido (virou o número grande). O link "ver ano inteiro/mês inteiro" continua.
+Os cartões em % já tinham o acumulado do ano fixo e o bloco "RESULTADO" do mês: só receberam a numeração e a ordem.
+Dados: nada gravado; só leitura. Nenhuma coluna nova.
+Testes: `node check.js` ok; 19 testes de lógica novos (ano, mês, unidade, mês clicado, semana clicada, mês sem dados,
+ordem e numeração nos 4 cartões) + cartão em %; conferido visualmente com dados fictícios. Regressão igual à da main
+(falhas antigas de ambiente: `_ic` não existe no teste).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost (Custo e Receita, mensal e anual, com e sem mês/semana clicados).
+## 2026-10-29, Gabriel: crédito manual — data de emissão da nota sem calendário e sem a linha — v4.89.104
+Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-semcal` e a classe do campo `cm-emissao` (era `cm-data`).
+`APP_VERSION` e `version.json`: 4.89.103 → 4.89.104.
+Por quê: pedido do Gabriel: como a data de emissão vem do ERP, tirar o ícone do calendário e a linha branca antes dele. O
+campo continua sendo do tipo data: quando o ERP não traz a emissão (pedido sem nota) dá para digitar a data à mão
+(dd/mm/aaaa), só não há mais o seletor de calendário. O campo de data da janela "Editar ocorrência" continua com calendário
+e linha (classe `cm-data`, inalterada). A regra de calendário claro + linha vale para campos de data que a pessoa preenche;
+este é a exceção por ser automático.
+Testes: `node check.js` ok; 63 testes de lógica passando; conferido visualmente numa página de teste. Nenhum dado tocado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel.
+## 2026-10-29, Gabriel: crédito manual — campos de preenchimento MANUAL mais claros e destacados — v4.89.103
+Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-manual` (variáveis `--cm-realce` / `--cm-fundo`), marcação dos
+campos pedido, valor do crédito e peso faltante, contorno dos botões Sim/Não, `_cmTravar` e `_cmDestravarAuto`.
+`APP_VERSION` e `version.json`: 4.89.102 → 4.89.103.
+Por quê: pedido do Gabriel, invertendo a decisão da v4.89.102: os campos que se preenchem à mão ficam mais claros (contorno
+e fundo claros no tema escuro; contorno azul com fundo branco no tema claro) e os automáticos continuam como estavam
+(escuros e travados). Destacados: Nº do pedido, valor do crédito, peso faltante e os botões Sim/Não. Um campo que o ERP
+costuma preencher mas não trouxe (pedido sem nota, não encontrado) também fica destacado, para mostrar que é preciso
+digitar. Nada mudou na lógica de gravar nem nos dados.
+Testes: `node check.js` ok; 60 testes de lógica passando; conferido visualmente numa página de teste.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel; a main andou (v4.89.102 de outra mudança), então a publicação pede mesclar e
+subir a versão.
+## 2026-10-29, Gabriel: crédito manual — campos do ERP travados, com contorno escuro, e sem o texto azul — v4.89.102
+Onde: `index.html`, aba "Histórico - crédito manual": CSS `.cm-auto`, estado `_cmPedidoBuscado`, ajudantes `_cmTravar` /
+`_cmDestravarAuto`, `cmAutoPreencher` e `cmLimparForm`. `APP_VERSION` e `version.json`: 4.89.101 → 4.89.102.
+Por quê: pedido do Gabriel: (1) tirar o texto azul "(preenchido automaticamente)"; (2) campos preenchidos pelo ERP com o
+contorno mais escuro; (3) esses campos travados. Os 4 campos (código do cliente, valor do pedido, data de emissão, número da
+nota) ficam somente leitura e escuros SÓ quando o ERP trouxe o dado; se não trouxe (pedido sem nota, não encontrado), o campo
+fica livre para digitar. Ao trocar o pedido, os dados travados do anterior somem na hora (não fica dado de outro pedido
+travado); sair do campo do pedido sem mudá-lo não refaz a busca nem apaga o que foi digitado; "Limpar" destrava tudo. Em
+tema claro o contorno é cinza-escuro. Mudança de decisão: antes os campos automáticos eram editáveis ("você pode corrigir");
+agora só se corrige o que o ERP não trouxe. Se um dado do ERP estiver errado, hoje não dá para corrigir na tela.
+Testes: `node check.js` ok; 54 testes de lógica (travamento, troca de pedido, blur, Limpar, erro e nova tentativa) passando;
+conferido visualmente o contorno escuro numa página de teste. Nenhum dado do banco foi tocado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel; decidir se algum campo travado deve poder ser destravado por admin.
+## 2026-10-29, Gabriel: nova aba "Histórico - crédito manual" em Distribuição — v4.89.101 (PUBLICADA; tabela ainda pendente)
+Onde: `index.html`: item novo no menu Distribuição (`data-page="credito-manual"`, só `admin` por padrão), página
+`page-credito-manual` (antes de `page-geral`), rota em `showPage`, entradas em `PAGINAS` e `PAGINAS_GRUPOS` (para liberar
+a outros perfis pela tela de Perfis) e o bloco de funções `cm*` / `carregarCreditoManual` / `renderCreditoManual` (antes de
+`renderFrotaStatus`). `APP_VERSION` e `version.json`: 4.89.95 → 4.89.101 (97 = aviso de pedido cancelado; 98 = evidência por foto; 99 = ícone do calendário claro; 100 = linha clara antes do ícone; 101 = só a mescla com a main).
+Por quê: pedido do Gabriel: aba para lançar crédito manual por pedido. Digitados: pedido, valor do crédito manual e peso
+faltante (kg). Preenchidos pelo ERP a partir do pedido, e editáveis: código do cliente, valor do pedido, data de emissão
+da nota e número da nota (`pedidos_info_erp`: codigo_cliente, valor, emissao, nota_fiscal; se o pedido não estiver lá,
+usa o valor de `base_data`). Pedido sem nota (cancelado, DI...) ou anterior a 01/05/2026 fica para preencher à mão; a tela
+avisa. Campo de data com ícone do calendário claro e uma linha clara separando o texto do ícone (classe cm-data, mesmo padrão do devol-data; também no campo de data da janela Editar ocorrência). Campo OBRIGATÓRIO "Evidência enviada por foto? Sim/Não" (dois botões, nada marcado por padrão; grava evidencia_foto true/false; a lista mostra a coluna, — nos lançamentos sem o dado). Pedido CANCELADO no ERP (situação CA) mostra um aviso vermelho junto do nome do cliente, SEM bloquear (no ERP há 447 pedidos CA que já tinham nota emitida: pode haver crédito em pedido faturado e depois cancelado). Lista o histórico (500 mais recentes) com total de crédito.
+TABELA NOVA (ESTRUTURA DE BANCO, quem cria é o Daniel; sem RLS): `credito_manual_historico`
+  id uuid primary key default gen_random_uuid(), codigo_cliente text, pedido text not null, valor_credito numeric(12,2)
+  not null, valor_pedido numeric(12,2), data_emissao date, numero_nota text, peso_faltante numeric(12,3),
+  criado_em timestamptz not null default now(), criado_por text, evidencia_foto boolean.
+  (se a tabela JÁ foi criada sem a última coluna: alter table public.credito_manual_historico add column evidencia_foto boolean;)
+Publicada em 29/10 por decisão do Gabriel, com a tabela ainda NÃO encontrada no banco na hora da publicação (a aba só aparece para admin). Sem a tabela, a aba abre e avisa "tabela ainda não existe"; salvar mostra aviso claro. Nada foi gravado no banco.
+Dinheiro: lança valores de crédito (só registro/histórico, sem pagamento nem cálculo financeiro). Avisar o Daniel antes de
+publicar (estrutura de banco + valores em R$).
+Testes: `node check.js` ok; 43 testes de lógica (parser de valores, preenchimento automático, corrida de buscas, validações,
+payload do POST, tabela inexistente, lista, escape de HTML). Testes antigos t3/t4/r/t6 falham igual na main (faltava o
+`_ic` no ambiente de teste), não por esta mudança. Sem teste com a tabela real (ainda não existe).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: Daniel criar a tabela; teste visual do Gabriel em localhost; decidir quem mais vê a aba (hoje só admin).
+## 2026-10-26, Gabriel: botão "Editar" nas ocorrências de Distribuição (Lançamento) — v4.89.79
+Onde: `index.html`: `renderOcorrenciasLanc` (botão "✏️ Editar" abaixo de "Marcar Resolvida", também nas resolvidas) e
+funções novas `_podeEditarOcorrencia`, `editarOcorrenciaLanc`, `salvarEditarOcorrencia`, `fecharEditarOcorrencia`,
+`_eoDiaBRT` (logo antes de "ABAS LANÇAMENTO"). `APP_VERSION` e `version.json`: 4.89.78 → 4.89.79.
+Por quê: pedido do Gabriel: poder editar ocorrências já lançadas. Quem vê o botão: usuários admin e o perfil
+"Devolução" (chave `devolu__o`, hoje 1 usuário). Os outros perfis não veem.
+O que edita (janela própria, tema claro/escuro): motivo, rota, observação, data da ocorrência e a QUANTIDADE de cada
+produto devolvido. NÃO troca pedido, nem total/parcial, nem produtos (primeira versão, "aos poucos"). Só envia ao banco o
+que mudou: motivo novo atualiza `motivo_id`, `motivo_nome` e `tipo` (mesma regra do registro: vem do impacto no OTIF do
+motivo); data nova grava meio-dia de Brasília; quantidade nova atualiza o item, a `quantidade` da ocorrência e, só se os
+itens tiverem valor unitário, `valor_total`/`valor_devolvido` (os lançados desde 18/09 não têm preço: não mexe). Se
+falhar no meio, os itens já alterados voltam à quantidade original.
+Dados em produção: faz PATCH em `ocorrencias_distribuicao` e `ocorrencias_distribuicao_itens` (só linhas da ocorrência
+aberta; nenhum DELETE, nenhuma coluna/tabela nova). NÃO há histórico do valor anterior (guardar "editado por/em" exigiria
+coluna nova: precisa falar com o Daniel antes). A permissão é só da tela (tabelas sem RLS, como o resto do sistema).
+Testes: `node check.js` ok; 43 testes de lógica (permissões, botões, só o que mudou vai ao banco, validações, desfazer em
+caso de falha) e regressão passando. Não testado com login real (não tenho acesso): teste visual do Gabriel.
+Como desfazer: `git revert` do commit desta entrada (edições já salvas pelo botão ficam como estão no banco).
+Pendente/risco: teste visual em localhost (como admin e, se possível, com o usuário do perfil Devolução); decidir se
+entra edição de pedido/total-parcial/produtos e se o Daniel aprova guardar quem editou e quando.
+## 2026-10-26, Gabriel: gráfico de linhas por tipo de unidade volta ao Dashboard Devolução, com balão protegido — v4.89.78
+Onde: `index.html` e `version.json` (4.89.77 → 4.89.78). Mescla a branch `gabriel/dashboard-devolucao-filtro-setor`
+(commits 7d36f5b, e1338b1, 7bd77c5: gráfico "Devoluções por tipo de unidade", 4 linhas + "Outros", botões Dia/Semana,
+detalhes na entrada de 27/10 logo abaixo) sobre a main com a proteção dos balões da v4.89.77. Único conflito: este
+arquivo de registro (mantidas as duas entradas).
+Causa do erro do Log ("Cannot read properties of undefined (reading 'dataIndex')"): ACHADA e REPRODUZIDA com mouse real
+no Chart.js 4.4.1. O gráfico de linhas esconde do balão os valores zero (`filter: item.raw > 0`); ao passar o mouse
+num dia sem nenhuma devolução, a lista do balão vem VAZIA e `title: c => ...c[0].dataIndex` estoura. Esse era o
+gatilho que eu não tinha achado na v4.89.77 (que só protegeu as barras).
+Correção: `title`, `afterLabel` e `footer` do gráfico de linhas devolvem texto vazio quando não há item. Testado: o
+código sem proteção gera o erro ao passar o mouse nos dias zerados; o protegido não gera nenhum.
+Testes: `node check.js` ok; testes de lógica e de dados reais do dashboard (linhas, barras, setor, datas) e de
+regressão passando.
+Como desfazer: `git revert` do commit desta entrada (volta a v4.89.77, sem o gráfico de linhas).
+Pendente/risco: teste visual do Gabriel em localhost (passar o mouse em dias com e sem devolução, Dia/Semana, trocar
+datas, clicar na rosca) e conferir o Log de Erros antes de publicar.
+## 2026-10-26, Gabriel: proteção dos balões (tooltip) dos gráficos de barras contra lista vazia — v4.89.77
+Onde: `index.html`: Dashboard Devolução, função `barras()` (callbacks `title` e `afterLabel` do balão); mesma proteção em
+dois balões de outras telas que assumiam `items[0]`: gráfico de pedidos por placa (`title` e `footer`, `totaisPorPlaca`)
+e o footer "Atendimento" (`semData`). Só retornam texto vazio quando não há item; nada mais mudou. `APP_VERSION` e
+`version.json`: 4.89.76 → 4.89.77.
+Por quê: Log de Erros (dash-devolucao, 26/10, 4 ocorrências no localhost): "Cannot read properties of undefined
+(reading 'dataIndex')" no `title` do balão, que assumia que a lista do balão nunca vem vazia.
+Reprodução: NÃO consegui reproduzir. Numa página isolada (Chart.js 4.4.1, mesmas opções, mouse parado sobre a barra,
+gráfico redesenhado com menos itens e com zero itens) o erro não aparece, nem com o código antigo. A linha do erro
+(25904) não bate com a main, então o gatilho provável é um rascunho local não enviado. Confirmado só que o callback
+antigo estoura com lista vazia e o novo devolve texto vazio. Por isso NÃO adiei o redesenho com `setTimeout` (só se a
+reprodução apontasse para isso). Se o erro voltar no site publicado, anotar aqui e investigar o gatilho.
+Dados: nada no Supabase foi lido ou alterado; erros do Log não foram marcados como resolvidos.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost (passar o mouse nas barras, mudar datas, clicar na rosca,
+Limpar filtros) e conferir o Log de Erros antes de publicar.
+## 2026-10-26, Gabriel: publicação do Dashboard Devolução (setor + barras), SEM os gráficos de linha — v4.89.76
+Onde: `index.html` e `version.json` (4.89.75 → 4.89.76; `APP_VERSION` igual). Entram: clique no setor filtra os
+motivos, correção do erro no clique da rosca, tabelas removidas de baixo das roscas, barras por conferente (Armazém) e
+por vendedor (entradas já registradas abaixo, de 24/10 e 26/10).
+Por quê: decisão do Gabriel: os gráficos de linha (por dia e por tipo de unidade) ficam em stand by, precisam de mais
+trabalho. Eles continuam só na branch `gabriel/dashboard-devolucao-filtro-setor` (commits 7d36f5b, e1338b1, 7bd77c5) e
+as entradas de 27/10 delas NÃO foram publicadas; ao retomar, mesclar essa branch de novo na main.
+Método: branch nova `gabriel/devolucao-sem-linhas` a partir da main (já com 4.89.75 do Cargas Pendentes), mesclando o
+commit 989b4cc; único conflito foi a versão (resolvido para 4.89.76). `node check.js` ok; conferido que o código das
+linhas não está no arquivo.
+Como desfazer: `git revert` do commit de mesclagem desta entrada.
+Pendente/risco: conferir o site publicado depois do deploy do Pages.
+## 2026-10-27, Gabriel: Dashboard Devolução — gráfico de linhas "Devoluções por tipo de unidade"
+Onde: `index.html`: no markup, linha `devol-grid3` (largura toda) com o gráfico, legenda própria, botões "Dia / Semana"
+e nota; em `carregarDashDevolucao` (busca dos itens devolvidos e da unidade de venda de cada item); em
+`renderDashDevolucao` (agrupamento e desenho); estado/funções `_devolItens`, `_devolRefPorPedido`, `_devolPedidosRef`,
+`_devolGranul`, `DEVOL_UNID_TRECHO`, `_devolTipoUnidade`, `DEVOL_SERIES_UNID`, `devolGranul`. Mesma versão (4.89.74,
+ainda não publicada).
+Por quê: pedido do Gabriel: uma linha para cada tipo de unidade (Saco, Caixa, Pacote, Fardo), no lugar do gráfico
+"Devoluções por dia". Os demais tipos (Milheiro, Quilo, Unidade, não classificados...) entram numa linha cinza
+"Outros"; o balão mostra quais. Cada linha está na unidade do seu tipo (sacos, caixas...), então as alturas não se
+comparam entre linhas. Dia = data da ocorrência (fuso de Brasília); "Semana" agrupa de segunda a domingo. Eixo
+contínuo (períodos vazios = 0). Respeita o filtro de datas; não depende do setor clicado nas roscas. Só o ponto mais
+alto leva o número escrito; o balão mostra o período, as quantidades e o nº de ocorrências.
+Classificação: a unidade vem da referência do item no ERP (pedidos_itens_erp.referencia), pelo primeiro trecho
+("CX C/16PCT" = Caixa, "SC C/20KG" = Saco, "FD C/2PCT" = Fardo, "PCT..." = Pacote; "P/X" vale X). Mesmas regras da aba
+Regras do Excel "Devolucoes_por_tipo_de_unidade" entregue ao Gabriel. Ocorrência sem itens detalhados (as antigas) e
+com data impossível (ano 0026) ficam fora; a nota embaixo avisa. Removido o seletor antigo "Caixas / Todos os volumes".
+Dados (só leitura): ocorrencias_distribuicao_itens e pedidos_itens_erp (referências em lotes de 60 pedidos, guardadas
+na sessão). Nenhuma coluna nova, nenhum dado alterado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. A busca de referências cresce com o nº de
+ocorrências (o cache de sessão ajuda).
+
+## 2026-10-26, Gabriel: Dashboard Devolução — barras por conferente (Armazém) e por vendedor
+Onde: `index.html`: no markup, nova linha `devol-grid2` com 2 cards; em `carregarDashDevolucao` (colunas novas na
+leitura de ocorrências + busca do vendedor dos pedidos); em `renderDashDevolucao` (desenho das barras); estado
+novo `_devolPedVend`, `_devolNomeVend`, `DEVOL_MOTIVOS_VENDEDOR`, `_devolEhMotivoVendedor`. Mesma versão (4.89.74,
+ainda não publicada).
+Por quê: pedido do Gabriel. (1) "Erros por conferente": barras HORIZONTAIS com as ocorrências cujo motivo é do
+setor Armazém (Falta no Carregamento, Inversão no Carregamento, Sobra de Produto), por conferente. (2) "Erros por
+vendedor": barras VERTICAIS só das ocorrências com os motivos Forma de Pagamento Incorreto, Pedido Digitado com a
+Quantidade Incorreta e Pedido Duplicado - Comercial (comparados pelo nome do motivo), por vendedor do pedido.
+Ambos respeitam o filtro de datas; clicar num setor nas roscas NÃO mexe neles. Número escrito no fim de cada barra;
+o balão do vendedor detalha por motivo. Mais de 15 vendedores: 14 maiores + "Outros (n vendedores)" em cinza.
+De onde vêm os dados (só leitura): conferente = coluna `conferente` da própria ocorrência (as buscas de reserva
+por pedido em `conferencia_pedidos` e por carga em `atribuicoes_armazem` não acharam nada nas ocorrências do
+Armazém); vendedor = `pedidos_info_erp.vendedor` (código; reserva `base_data.vendedor_cod`) e o nome vem de
+`usuarios` (perfil vendedor, `codigo_vendedor`). Buscas só dos pedidos dos 3 motivos, em lotes de 150. Nenhuma
+coluna nova e nenhum dado alterado.
+Atenção aos dados (leitura de 26/10): das 16 ocorrências do Armazém, só 6 têm conferente gravado (3 de Jacson Alves
+da S. Lima, 3 de Jaqueline Lopes da Silva); as outras 10 aparecem como "Sem conferente registrado" (barra cinza).
+Os 21 pedidos dos 3 motivos têm vendedor (12 vendedores, todos com nome no cadastro).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
+real e dados reais.
+
+## 2026-10-24, Gabriel: Dashboard Devolução — clicar num setor filtra os motivos de devolução
+Onde: `index.html`: `renderDashDevolucao` reescrita (mesma tela, agora com seleção), funções novas
+`devolSelecionarSetor` e `devolLimparSetor`, estado `_devolSetorSel`; no markup, título/subtítulo dinâmicos e o
+botão "Limpar filtros" do card "Motivos de devolução". `version.json` e `APP_VERSION` 4.89.73 → 4.89.74.
+Por quê: pedido do Gabriel. Clicar numa fatia de "Motivos por setor" (ou na legenda, ou na linha da tabela) mostra
+no gráfico "Motivos de devolução" só os motivos daquele setor; o título vira "Motivos de devolução — Comercial",
+o subtítulo diz quantas ocorrências são do setor, e as porcentagens passam a ser sobre o total do setor (somam
+100%). A rosca de setor continua com todos os setores: a fatia escolhida sai do anel e as outras esmaecem. Clicar
+de novo na mesma fatia, ou em "Limpar filtros", volta ao total. "Sem motivo" também seleciona. A seleção convive
+com o filtro de datas (se o setor não tem ocorrência no período novo, a seleção é solta) e zera ao reabrir a aba.
+Cada motivo mantém a mesma cor com e sem filtro. Só leitura: nenhuma consulta nova, nenhum dado alterado.
+Como desfazer: `git revert` do commit desta entrada.
+Erro meu, achado no teste local do Gabriel e corrigido antes de publicar (nunca foi pra `main`): o 1º commit desta
+entrada (9ac4e33) redesenhava as roscas DENTRO do onClick do próprio gráfico; o Chart.js seguia tratando o clique
+num gráfico já destruído e lançava "Cannot read properties of undefined (reading 'handleEvent')", que o Log de Erros
+registrou como "Script error." (JS Error, página dash-devolucao, usuário Gabriel, 23/10 10:57 e 10:58, versão
+4.89.74, localhost:8080). Correção: o redesenho roda depois do clique (setTimeout 0). Conferido no navegador com
+clique de verdade: sem nenhum erro. Esses 2 registros no Log de Erros são do teste; o Gabriel pode marcá-los como
+resolvidos pelo botão da própria tela.
+Também (pedido do Gabriel, pra aproveitar o espaço): saíram as tabelas com quantidade e % que ficavam embaixo das
+duas roscas, e o gráfico ficou mais alto (280 → 340 px). A % continua escrita em cada fatia e a quantidade aparece
+no balão ao passar o mouse; a seleção de setor segue pela fatia e pela legenda à direita. Efeito conhecido: os
+motivos que ficam dentro de "Outros" deixaram de aparecer listados em algum lugar (antes estavam na tabela).
+Pendente/risco: teste visual do Gabriel em localhost antes de publicar. Conferido numa tela de teste com o código
+real e dados reais, com clique de verdade na fatia.
+
+## 2026-10-23, Gabriel: nova aba "Dashboard Devolução" em Análise (duas roscas)
+Onde: `index.html`: item novo no menu Análise (`data-page="dash-devolucao"`, depois do Gerot); página
+`page-dash-devolucao`; `showPage` (rota nova); funções novas `carregarDashDevolucao`, `renderDashDevolucao`,
+`_devolSetorDe` e as constantes `DEVOL_*`; permissão: `PAGINAS`, `PAGINAS_GRUPOS` e as listas padrão de
+`PERFIS_PADRAO_SISTEMA` de adm_distribuicao, exped_admin e adm_armazem (admin vê tudo). `version.json` e
+`APP_VERSION` 4.89.72 → 4.89.73.
+Por quê: pedido do Gabriel. Duas roscas com as ocorrências de Distribuição › Ocorrências: (1) motivos por setor
+(Armazém, Distribuição, Comercial, Mercado, Logística, mais "Sem motivo") e (2) motivos de devolução (os 5 maiores
++ "Outros"; a tabela embaixo lista todos). Período = campos "Data inicial" e "Data final" (pedido do Gabriel, no
+lugar do seletor de período); vazio = sem limite, as duas pontas são inclusivas, a data da ocorrência é a de
+Brasília, intervalo invertido mostra aviso, botão "Limpar datas" aparece quando há data. Com data no filtro,
+ocorrência de data impossível (ano 0026) fica de fora; sem filtro, conta no total. Tooltip com quantidade e %.
+Os campos de data usam `color-scheme` escuro (claro no tema claro) pra o ícone do calendário aparecer branco, e
+não preto, no tema escuro. Só nesses dois campos; os outros campos de data do app não foram mexidos.
+Formato (pedido do Gabriel, referência de um gráfico do Power BI): rosca grossa, só a PORCENTAGEM (2 casas) de
+cada fatia escrita fora do anel com linha de ligação, legenda (bolinha + nome) à direita, sem número no centro
+(o total fica no topo); a tabela com quantidades continua abaixo de cada rosca. Rótulos vizinhos são afastados
+pra não se sobrepor. Conferido numa tela de teste com o código real e os dados reais, no tema escuro e no claro.
+Cores: paleta categórica validada (script de validação passou nos dois temas, nas superfícies reais do app);
+cada setor tem sempre a mesma cor; rosca com no máximo 6 fatias.
+Só LEITURA: lê `ocorrencias_distribuicao` (id, motivo_id, motivo_nome, criado_em) e `motivos_devolucao` (id, nome,
+setor). Nenhuma coluna nova, nenhum dado alterado, sem dinheiro.
+Observação de dado: existe uma ocorrência com a data de registro no ano 0026 (erro de digitação); com data no
+filtro ela fica de fora, e sem filtro conta no total. Não corrigi (seria alterar dado de produção).
+Publicado na `main` em 2026-10-23 (commits ee4a596, b4f7b42, cba7d26, fc55717), versão 4.89.73. Antes: revisão do
+diff (só a aba nova, a versão e as 3 listas de perfis; nenhum padrão de risco, todo texto do banco passa por
+`escapeHtml`), `node check.js` ok, testes de lógica com dados reais e teste visual do Gabriel em localhost. Depois:
+deploy do Pages concluído com sucesso e `index.html` do site idêntico, byte a byte, ao do commit fc55717.
+Como desfazer: `git revert fc55717 cba7d26 b4f7b42 ee4a596` (nessa ordem) e subir `version.json`/`APP_VERSION`.
+Pendente/risco: perfis com permissão customizada em Cadastro › Perfis podem precisar marcar a página nova.
 
 ## 2026-10-21, Gabriel: Ocorrências (Distribuição) — selo em destaque mostra o setor do motivo
 Onde: `index.html`: `_renderOcorrenciasGeneric` (selo ao lado de "Pedido #..."), `carregarOcorrenciasDistrib`
