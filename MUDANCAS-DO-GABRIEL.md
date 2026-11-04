@@ -21,7 +21,7 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-04, Gabriel: Ocorrências (Distribuição) — mostra quem conferiu a carga e quem separou o pedido (FDSAS) — v4.89.193
+## 2026-11-04, Gabriel: Ocorrências (Distribuição) — mostra quem conferiu a carga e quem separou o pedido (FDSAS) — v4.89.193 (PUBLICADO em 04/11/2026, commit 136b11a)
 Onde: `index.html`: variável `_ocorrFdsas` e função `_ocorrFdsasInfo` (novas), `carregarOcorrenciasDistrib` (lê uma
 linha de `configuracoes`) e `_renderOcorrenciasGeneric` (chips "Conferiu (FDSAS)", "Separou (FDSAS)" e aviso de situação).
 `version.json` e `APP_VERSION` 4.89.192 → 4.89.193.
