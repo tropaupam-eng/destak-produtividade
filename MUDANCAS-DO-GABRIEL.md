@@ -21,10 +21,10 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-04, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial — v4.89.181
+## 2026-11-04, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial — v4.89.183
 Onde: `index.html`: formulário "Registrar Ocorrência": `_ocorrAtualizarItensUI` (coluna nova "Valor unit. (R$) *"
 em cada produto), `_ocorrToggleItemQtd`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`; helpers novos
-`_ocorrPrecoItem` e `_ocorrMarcarPrecoVazio`. `version.json` e `APP_VERSION` 4.89.180 → 4.89.181 (trabalho feito em 22/10 e parado; atualizado com a main em 04/11, conflito só na versão).
+`_ocorrPrecoItem` e `_ocorrMarcarPrecoVazio`. `version.json` e `APP_VERSION` 4.89.182 → 4.89.183 (trabalho feito em 22/10 e parado; atualizado com a main em 04/11, conflito só na versão).
 Por quê: pedido do Gabriel. Desde 18/09 quase todo item do ERP chega sem preço unitário (100% em outubro), e a
 ocorrência acabava mostrando "(valor do pedido)", que superestima a devolução parcial. Agora, na devolução
 PARCIAL, cada produto marcado tem um campo de valor unitário OBRIGATÓRIO: vem pré-preenchido quando o ERP tem o
