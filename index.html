@@ -9944,7 +9944,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.188';
+const APP_VERSION = '4.89.189';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -42099,7 +42099,7 @@ async function carregarHistoricoRotas(){
           <div style="display:flex;align-items:center;gap:8px">
             <button onclick="abrirEditarChegada('${d.id}',${d.carga})"
               style="background:rgba(245,158,11,.1);color:#f59e0b;border:1.5px solid rgba(245,158,11,.3);border-radius:8px;padding:6px 14px;font-size:.78rem;font-weight:700;cursor:pointer">
-              ${_ic('edit-2',12)} Chegada/KM
+              ${_ic('edit-2',12)} Saída/Retorno/KM
             </button>
             <select id="hist-reabrir-status-${d.id}"
               style="border:1.5px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.78rem;outline:none;background:var(--bg-input);color:var(--text-primary)">
@@ -43358,17 +43358,30 @@ Deseja ir agora para o Caixa fazer a prestação de contas da carga ${dem?.carga
 }
 
 let _editChegadaDemId=null, _editChegadaCarga=null;
+// Editar saída / retorno / KM de uma carga do Histórico de Rotas.
+// Saída: só o admin altera (muda demandas_rota.data_saida — que decide o mês da carga nos valores, OTIF e calendário — e rotas_viagem.data_saida).
+// Retorno e KM final: quem já podia editar continua podendo. Os horários exatos (ts_saiu / ts_fim_viagem) NÃO são mexidos.
 async function abrirEditarChegada(demandaId, carga){
   _editChegadaDemId = demandaId;
   _editChegadaCarga = carga;
+  const ehAdmin = (USUARIO_LOGADO?.perfil||'')==='admin';
   document.getElementById('edit-chegada-titulo').textContent = `Carga #${carga}`;
-  document.getElementById('edit-chegada-data').value = '';
-  document.getElementById('edit-chegada-km').value = '';
+  ['edit-chegada-saida','edit-chegada-data','edit-chegada-km'].forEach(i=>{ document.getElementById(i).value=''; });
+  const inpSaida = document.getElementById('edit-chegada-saida');
+  inpSaida.disabled = !ehAdmin;
+  inpSaida.dataset.orig = '';
+  document.getElementById('edit-chegada-saida-obs').textContent = ehAdmin ? '' : '(só o admin altera)';
   try{
-    const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${demandaId}&select=*&order=criado_em.desc&limit=1`).catch(()=>[]) || [];
-    const s = rv[0]||{};
+    const [rv, dem] = await Promise.all([
+      supaFetch(`rotas_viagem?demanda_id=eq.${demandaId}&select=*&order=criado_em.desc&limit=1`).catch(()=>[]),
+      supaFetch(`demandas_rota?id=eq.${demandaId}&select=data_saida`).catch(()=>[])
+    ]);
+    const s = (rv||[])[0]||{}, d0 = (dem||[])[0]||{};
+    const saida = d0.data_saida || s.data_saida || '';
+    if(saida) inpSaida.value = saida;
     if(s.data_retorno) document.getElementById('edit-chegada-data').value = s.data_retorno;
     if(s.km_final)     document.getElementById('edit-chegada-km').value   = s.km_final;
+    inpSaida.dataset.orig = saida;
   }catch(e){}
   document.getElementById('modal-editar-chegada').style.display='flex';
 }
@@ -43377,25 +43390,41 @@ function fecharEditarChegada(){
   _editChegadaDemId=null; _editChegadaCarga=null;
 }
 async function salvarEditarChegada(){
-  const data  = document.getElementById('edit-chegada-data').value;
-  const kmFim = parseInt(document.getElementById('edit-chegada-km').value)||null;
-  if(!data){  showToast('Informe a data de chegada','warning'); return; }
-  if(!kmFim){ showToast('Informe o KM final','warning');        return; }
+  const ehAdmin = (USUARIO_LOGADO?.perfil||'')==='admin';
+  const inpSaida = document.getElementById('edit-chegada-saida');
+  const saidaNova = inpSaida.value || '';
+  const saidaOrig = inpSaida.dataset.orig || '';
+  const retorno   = document.getElementById('edit-chegada-data').value || '';
+  const kmFim     = parseInt(document.getElementById('edit-chegada-km').value)||null;
+  if(!saidaNova){ showToast('Informe a data de saída','warning'); return; }
+  if(retorno && retorno < saidaNova){ showToast('A data de retorno não pode ser antes da saída','warning'); return; }
+  const mudouSaida = ehAdmin && saidaNova !== saidaOrig;
   try{
     const rv = await supaFetch(`rotas_viagem?demanda_id=eq.${_editChegadaDemId}&select=*&order=criado_em.desc&limit=1`).catch(()=>[]) || [];
-    const saida = rv[0];
-    if(saida){
-      const diasRota = saida.data_saida
-        ? Math.round((new Date(data)-new Date(saida.data_saida))/(864e5))+1
-        : null;
-      const kmTotal = saida.km_inicial!=null ? kmFim-saida.km_inicial : null;
-      await supaFetch(`rotas_viagem?id=eq.${saida.id}`,{
-        method:'PATCH',
-        body:JSON.stringify({km_final:kmFim, data_retorno:data, dias_rota:diasRota, km_total:kmTotal})
-      });
+    const reg = rv[0];
+    const saidaRv = ehAdmin ? saidaNova : (reg?.data_saida || saidaNova);
+    const diasRota = (saidaRv && retorno) ? Math.round((new Date(retorno)-new Date(saidaRv))/864e5)+1 : null;
+    const kmIni = reg?.km_inicial ?? null;
+    const kmFinal = kmFim ?? reg?.km_final ?? null;
+    const kmTotal = (kmIni!=null && kmFinal!=null) ? kmFinal-kmIni : null;
+    const corpo = { data_saida:saidaRv, data_retorno:retorno||null, dias_rota:diasRota, km_final:kmFinal, km_total:kmTotal };
+    if(mudouSaida){
+      await supaFetch(`demandas_rota?id=eq.${_editChegadaDemId}`,{ method:'PATCH', body:JSON.stringify({data_saida:saidaNova}) });
     }
+    if(reg){
+      await supaFetch(`rotas_viagem?id=eq.${reg.id}`,{ method:'PATCH', body:JSON.stringify(corpo) });
+    } else {
+      await supaFetch('rotas_viagem',{ method:'POST', body:JSON.stringify({ demanda_id:_editChegadaDemId, carga:parseInt(_editChegadaCarga), ...corpo }) });
+    }
+    // Auditoria: quem mudou, quando e de/para
+    supaFetch('erros_sistema',{ method:'POST', body:JSON.stringify({
+      usuario_nome: USUARIO_LOGADO?.nome || USUARIO_LOGADO?.id || '-',
+      pagina: 'historico_rotas', tipo: 'edicao_saida_retorno',
+      mensagem: 'Carga '+_editChegadaCarga+': saída '+(saidaOrig||'-')+' → '+saidaRv+'; retorno '+(reg?.data_retorno||'-')+' → '+(retorno||'-')+'; KM final '+(reg?.km_final??'-')+' → '+(kmFinal??'-'),
+      contexto: { demanda_id:_editChegadaDemId, carga:_editChegadaCarga, antes:{saida:saidaOrig, rotas_viagem:reg||null}, depois:corpo }
+    }) }).catch(()=>{});
     fecharEditarChegada();
-    showToast('✅ Chegada e KM atualizados!','success');
+    showToast('✅ Saída, retorno e KM atualizados!','success');
     await carregarHistoricoRotas();
   }catch(e){ showToast('Erro: '+e.message,'error'); }
 }
@@ -60665,17 +60694,21 @@ function _cftvRenderTable(data){
 <div id="modal-editar-chegada" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:600;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)fecharEditarChegada()">
   <div style="background:#fff;border-radius:18px;width:100%;max-width:420px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.35)">
     <div style="background:linear-gradient(135deg,#92400e,#f59e0b);padding:20px 24px;color:#fff">
-      <h3 style="font-size:1.05rem;font-weight:800;margin:0 0 3px"><span data-feather="edit-2" style="width:15px;height:15px;vertical-align:-2px"></span> Editar Chegada / KM Final</h3>
+      <h3 style="font-size:1.05rem;font-weight:800;margin:0 0 3px"><span data-feather="edit-2" style="width:15px;height:15px;vertical-align:-2px"></span> Editar Saída / Retorno / KM</h3>
       <p id="edit-chegada-titulo" style="font-size:.8rem;opacity:.85;margin:0">Carga #—</p>
     </div>
     <div style="padding:24px">
       <div style="display:grid;gap:14px;margin-bottom:20px">
         <div>
-          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px"><span data-feather="calendar" style="width:12px;height:12px;vertical-align:-2px"></span> Data de Chegada *</label>
+          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px"><span data-feather="calendar" style="width:12px;height:12px;vertical-align:-2px"></span> Data de Saída <span id="edit-chegada-saida-obs" style="font-weight:600;text-transform:none;color:#9ca3af"></span></label>
+          <input type="date" id="edit-chegada-saida" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px"><span data-feather="calendar" style="width:12px;height:12px;vertical-align:-2px"></span> Data de Retorno (chegada)</label>
           <input type="date" id="edit-chegada-data" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
         </div>
         <div>
-          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px"><span data-feather="hash" style="width:12px;height:12px;vertical-align:-2px"></span> KM Final *</label>
+          <label style="font-size:.72rem;font-weight:700;color:#4b5563;text-transform:uppercase;display:block;margin-bottom:5px"><span data-feather="hash" style="width:12px;height:12px;vertical-align:-2px"></span> KM Final (opcional)</label>
           <input type="number" id="edit-chegada-km" placeholder="Ex: 46080" style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;box-sizing:border-box"/>
         </div>
       </div>
