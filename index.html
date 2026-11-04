@@ -3812,6 +3812,11 @@ body.light-theme{
       <button onclick="salvarAgendPedido()" style="background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:.88rem;font-weight:700;cursor:pointer;white-space:nowrap"><span data-feather="plus" style="width:14px;height:14px;vertical-align:-2px"></span> Agendar</button>
     </div>
     <div id="msg-agped" style="display:none;font-size:.82rem;font-weight:600;padding:8px 14px;border-radius:8px;margin-bottom:12px"></div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <label for="agped-mes" style="font-size:.73rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Mês da entrega</label>
+      <select id="agped-mes" onchange="_agendPedMes=this.value;renderAgendPedidosLista()" style="background:var(--bg-input);border:1.5px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.86rem;color:var(--text-primary);outline:none;min-width:170px"></select>
+      <span id="agped-contagem" style="font-size:.8rem;color:var(--text-muted)"></span>
+    </div>
     <div id="agped-lista" style="display:flex;flex-direction:column;gap:7px"></div>
   </div>
 
@@ -9945,7 +9950,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.191';
+const APP_VERSION = '4.89.192';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -52131,12 +52136,13 @@ async function excluirAgendamento(id){
 // AGENDAMENTO DE ENTREGAS POR PEDIDO
 // ══════════════════════════════════════════
 let _agendPedidosCache = [];
+let _agendPedMes = null;   // mês filtrado na lista (AAAA-MM) ou 'todos'; padrão = mês atual
 
 async function carregarAgendPedidos(){
   const lista = document.getElementById('agped-lista');
   if(!lista) return;
   try{
-    const rows = await supaFetch(`agendamentos_pedidos?order=data_entrega.asc&limit=500`,{_quiet:true}).catch(()=>[]);
+    const rows = await supaFetch(`agendamentos_pedidos?order=data_entrega.asc&limit=5000`,{_quiet:true}).catch(()=>[]);
     _agendPedidosCache = rows || [];
     renderAgendPedidosLista();
   }catch(e){ console.warn('carregarAgendPedidos',e); }
@@ -52145,12 +52151,28 @@ async function carregarAgendPedidos(){
 function renderAgendPedidosLista(){
   const lista = document.getElementById('agped-lista');
   if(!lista) return;
-  if(!_agendPedidosCache.length){
-    lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.84rem">Nenhum agendamento de entrega cadastrado.</div>';
+  const hoje = hojeDataBRT();
+  if(!_agendPedMes) _agendPedMes = hoje.slice(0,7);
+  // opções do filtro: meses que têm agendamento + mês atual (sempre), do mais novo para o mais antigo
+  const _mesesSet = new Set(_agendPedidosCache.map(a=>(a.data_entrega||'').slice(0,7)).filter(Boolean));
+  _mesesSet.add(hoje.slice(0,7));
+  if(_agendPedMes!=='todos') _mesesSet.add(_agendPedMes);
+  const _nomeMes = m => { const s = new Date(m+'-01T12:00:00').toLocaleDateString('pt-BR',{month:'long',year:'numeric'}); return s.charAt(0).toUpperCase()+s.slice(1); };
+  const _qtdMes = {}; _agendPedidosCache.forEach(a=>{ const m=(a.data_entrega||'').slice(0,7); _qtdMes[m]=(_qtdMes[m]||0)+1; });
+  const selMes = document.getElementById('agped-mes');
+  if(selMes){
+    selMes.innerHTML = [..._mesesSet].sort().reverse().map(m=>'<option value="'+m+'">'+_nomeMes(m)+' ('+(_qtdMes[m]||0)+')</option>').join('')
+      + '<option value="todos">Todos os meses ('+_agendPedidosCache.length+')</option>';
+    selMes.value = _agendPedMes;
+  }
+  const filtrados = _agendPedMes==='todos' ? _agendPedidosCache : _agendPedidosCache.filter(a=>(a.data_entrega||'').slice(0,7)===_agendPedMes);
+  const cont = document.getElementById('agped-contagem');
+  if(cont) cont.textContent = filtrados.length+' agendamento'+(filtrados.length===1?'':'s')+(_agendPedMes==='todos'?'':' em '+_nomeMes(_agendPedMes).toLowerCase());
+  if(!filtrados.length){
+    lista.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.84rem">'+(_agendPedidosCache.length?'Nenhum agendamento de entrega neste mês.':'Nenhum agendamento de entrega cadastrado.')+'</div>';
     return;
   }
-  const hoje = hojeDataBRT();
-  lista.innerHTML = _agendPedidosCache.map(a=>{
+  lista.innerHTML = filtrados.map(a=>{
     const past = a.data_entrega < hoje;
     const dataBR = a.data_entrega ? new Date(a.data_entrega+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--bg-card2);border:1px solid var(--border);border-radius:9px;padding:11px 14px;${past?'opacity:.6':''}">
@@ -52189,6 +52211,7 @@ async function salvarAgendPedido(){
       headers:{'Prefer':'resolution=merge-duplicates'}
     });
     showMsg('✅ Agendamento salvo!',true);
+    _agendPedMes = data.slice(0,7);   // leva o filtro para o mês do agendamento que acabou de salvar
     document.getElementById('agped-pedido').value='';
     document.getElementById('agped-data').value='';
     if(document.getElementById('agped-obs')) document.getElementById('agped-obs').value='';
