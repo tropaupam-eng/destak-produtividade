@@ -9950,7 +9950,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.194';
+const APP_VERSION = '4.89.195';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -35010,7 +35010,7 @@ async function _pnHtmlDiasPorRota(mes, und){
 
 // ── 3) Calendário de rotas — slide 24 do modelo ──
 // Visual sóbrio (pedido do usuário, 2026-11-04): cinza = agendada / sem saída registrada, verde = saiu na data agendada,
-// vermelho = saiu com atraso, azul = carga na Expedição (qualquer etapa antes da saída) com pedidos vinculados. Os motivos do atraso ficam contados no topo. Nada é suposto: cada cor diz de onde vem na legenda.
+// vermelho = saiu com atraso, azul = carga na Expedição (qualquer etapa antes da saída; vinculada ao agendamento ou da mesma rota e data). Os motivos do atraso ficam contados no topo. Nada é suposto: cada cor diz de onde vem na legenda.
 //  - saiu na data = agendamento marcado "realizado" OU existe carga da MESMA rota e data (demandas_rota) com status saiu/fim_viagem/concluido
 //    (mesma regra da tela Calendário de Saídas; só "lançada" na pré-carga NÃO conta como saída);
 //  - com atraso = saiu, mas com motivo de atraso marcado no agendamento, ou a carga vinculada ao agendamento saiu em data posterior;
@@ -35027,13 +35027,9 @@ async function _pnHtmlCalendarioRotas(mesDeck, naTela){
   const dem = await supaFetch(`demandas_rota?data_saida=gte.${P.ini}&data_saida=lte.${fimMes}&status=${SAIU}&select=carga,rota,data_saida&limit=5000`) || [];
   const cargasVinc = [...new Set(rows.map(r=>r.carga).filter(Boolean))];
   const demCarga = cargasVinc.length ? await _pnEmLotes(cargasVinc, 100, ids=>supaFetch(`demandas_rota?carga=in.(${ids.join(',')})&status=${SAIU}&select=carga,data_saida`)) : [];
-  // cargas em formação do mês (mesma rota e data do agendamento) + as vinculadas ao agendamento, e quantos pedidos cada uma tem
+  // cargas na Expedição que ainda não saíram (mesma rota e data do agendamento) + as vinculadas ao agendamento
   const demForm = await supaFetch(`demandas_rota?data_saida=gte.${P.ini}&data_saida=lte.${fimMes}&status=not.in.(saiu,fim_viagem,concluido,cancelado)&select=carga,rota,data_saida&limit=2000`) || [];
   const formVinc = cargasVinc.length ? await _pnEmLotes(cargasVinc, 100, ids=>supaFetch(`demandas_rota?carga=in.(${ids.join(',')})&status=not.in.(saiu,fim_viagem,concluido,cancelado)&select=carga`)) : [];
-  const idsForm = [...new Set([...demForm.map(d=>d.carga), ...formVinc.map(d=>d.carga)].filter(Boolean))];
-  const pedsForm = idsForm.length ? await _pnEmLotes(idsForm, 60, ids=>supaFetch(`base_data?carga=in.(${ids.join(',')})&select=carga&limit=20000`)) : [];
-  const nPedidos = new Map(); pedsForm.forEach(p=>nPedidos.set(String(p.carga), (nPedidos.get(String(p.carga))||0) + 1));
-  const temPed = c => (nPedidos.get(String(c))||0) > 0;
   const formSet = new Set(formVinc.map(d=>String(d.carga)));
   const formPorRotaData = new Map(); demForm.forEach(d=>{ const k = chaveRotaF(d.rota)+'|'+d.data_saida; if(!formPorRotaData.has(k)) formPorRotaData.set(k, []); formPorRotaData.get(k).push(d.carga); });
   const chaveRota = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
@@ -35048,7 +35044,7 @@ async function _pnHtmlCalendarioRotas(mesDeck, naTela){
     if(dc && dc > a.data) return 'atraso';
     if((dc && dc <= a.data) || saiuSet.has(chaveRota(a.rota)+'|'+a.data)) return 'ok';   // saiu na data ou antes = no prazo, mesmo com motivo de atraso antigo gravado (regra do usuário, 2026-11-04)
     if(a.status === 'realizado') return mot ? 'atraso' : 'ok';
-    if(a.carga && formSet.has(String(a.carga)) && temPed(a.carga)) return 'formacao';   // azul SÓ com o nº da carga vinculado ao agendamento
+    if((a.carga && formSet.has(String(a.carga))) || (formPorRotaData.get(chaveRotaF(a.rota)+'|'+a.data) || []).length) return 'formacao';   // azul = carga na Expedição que ainda não saiu: vinculada ao agendamento OU da mesma rota e data (igual à Nova Pré-Carga)
     return 'agendada';
   };
   const porDia = new Map(); const porRota = new Map();
@@ -35085,13 +35081,13 @@ async function _pnHtmlCalendarioRotas(mesDeck, naTela){
       <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:14px">${_pnh.rot('MOTIVOS DO ATRASO')}
         <div style="display:flex;gap:18px;margin-top:10px">${MOTIVOS.map(([k, nome])=>`<div style="flex:1;min-width:0"><div style="font-size:1.4rem;font-weight:700;line-height:1">${contMot[k]||0}</div><div style="font-size:.78rem;color:var(--text-secondary);margin-top:5px">${nome}</div></div>`).join('')}</div>
       </div>`, 'var(--border-med)', 'margin-bottom:18px;padding:20px 24px');
-  const legenda = [['agendada','Agendada / sem saída registrada'],['formacao','Carga na Expedição, ainda não saiu (com pedidos)'],['ok','Saiu na data'],['atraso','Saiu com atraso']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
+  const legenda = [['agendada','Agendada / sem saída registrada'],['formacao','Carga na Expedição, ainda não saiu'],['ok','Saiu na data'],['atraso','Saiu com atraso']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
   const contagem = [...porRota.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).map(([r,n])=>_pnh.esc(r)+' '+n).join(' · ');
   const corpo = `${topo}
       <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${cab}${celulas}</div>
       <div style="font-size:.8rem;color:var(--text-secondary);margin-top:12px">${legenda}</div>
       <div style="margin-top:16px">${_pnh.rot('SAÍDAS POR ROTA')}<div style="font-size:.84rem;color:var(--text-secondary);margin-top:6px;line-height:1.6">${contagem}</div></div>
-      ${_pnh.nota('Fonte: agendamento de rotas ('+(naTela ? 'mês do filtro' : 'mês seguinte ao da apresentação')+') cruzado com as cargas da Expedição. Saiu na data = carga da mesma rota e data com saída registrada (rota apenas lançada na pré-carga não conta). Azul (na Expedição) = o agendamento tem o nº da carga vinculado e essa carga está em qualquer etapa antes da saída (formação, separação, carregamento, aguardando NF...) com pedidos. Sem nº de carga vinculado não fica azul. Saiu com atraso = saiu, com motivo de atraso marcado no agendamento ou carga vinculada que saiu depois da data. Motivos: contados nas rotas com atraso e nas que já passaram da data sem saída registrada. Rotas sem registro de saída ficam cinza.')}`;
+      ${_pnh.nota('Fonte: agendamento de rotas ('+(naTela ? 'mês do filtro' : 'mês seguinte ao da apresentação')+') cruzado com as cargas da Expedição. Saiu na data = carga da mesma rota e data com saída registrada (rota apenas lançada na pré-carga não conta). Azul (na Expedição) = existe carga em qualquer etapa antes da saída (formação, separação, carregamento, aguardando NF...), vinculada ao agendamento ou criada para a mesma rota e data. Saiu com atraso = saiu, com motivo de atraso marcado no agendamento ou carga vinculada que saiu depois da data. Motivos: contados nas rotas com atraso e nas que já passaram da data sem saída registrada. Rotas sem registro de saída ficam cinza.')}`;
   return _pnh.casca('DISTRIBUIÇÃO · AGENDAMENTO DE ROTAS · '+P.nome+' '+P.ano+' · '+rows.length+' SAÍDAS', 'Calendário de rotas — '+P.nome.charAt(0)+P.nome.slice(1).toLowerCase(), corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
@@ -52375,7 +52371,7 @@ async function renderAgendamentos(){
   }catch(e){}
 
   // ── 3. Situação de cada agendamento — MESMO padrão do card "Calendário de rotas" do Painel de Indicadores ──
-  // cinza = agendada / sem saída registrada · azul = carga na Expedição (qualquer etapa antes da saída) com pedidos vinculados · verde = saiu na data · vermelho = saiu com atraso.
+  // cinza = agendada / sem saída registrada · azul = carga na Expedição (qualquer etapa antes da saída; vinculada ao agendamento ou da mesma rota e data) · verde = saiu na data · vermelho = saiu com atraso.
   // "Saiu" = agendamento marcado como realizado OU carga da mesma rota+data (ou vinculada pelo nº da carga) com status saiu/fim_viagem/concluido.
   // Só "lançada" na pré-carga NÃO conta como saída. Saiu na data ou antes = verde, mesmo com motivo gravado; motivo só pinta de vermelho quando não há data de saída para provar o contrário; motivo sem saída registrada segue cinza e é contado no topo.
   var _SAIU_ST=['saiu','fim_viagem','concluido']; var _ANDAM=function(st){ return !!st && _SAIU_ST.indexOf(st)<0 && st!=='cancelado'; }; /* carga na Expedicao que ainda NAO saiu */
@@ -52399,10 +52395,6 @@ async function renderAgendamentos(){
       });
     }
     _formIds=[...new Set(_formIds)];
-    if(_formIds.length){
-      var _pd=await _emLotes(_formIds,60,function(ids){ return supaFetch('base_data?carga=in.('+ids.join(',')+')&select=carga&limit=20000',{_quiet:true}); });
-      _pd.forEach(function(p){ var c=String(p.carga); _nPed[c]=(_nPed[c]||0)+1; });
-    }
   }catch(e){}
   const _ATOM2 = {sem_veiculo:'veiculo',sem_motorista:'motorista',valor:'comercial',atraso_rota:'atraso_rota'};
   function _motivoAtr(a){ var k=a.motivo_atraso||_ATOM2[a.acao]||''; if(k==='outro') k='atraso_carregamento'; return k==='saiu_data_correta'?'':k; }
@@ -52411,8 +52403,7 @@ async function renderAgendamentos(){
     if(dc && dc>a.data) return 'atraso';
     if((dc && dc<=a.data) || _saiuSet[rk]) return 'ok';   // saiu na data ou antes = no prazo, mesmo com motivo de atraso antigo gravado (regra do usuário, 2026-11-04)
     if(a.status==='realizado') return mot?'atraso':'ok';
-    var comPed=function(x){ return (_nPed[String(x)]||0)>0; };
-    if(c && _formVinc[c] && comPed(c)) return 'formacao';   // azul SÓ com o nº da carga vinculado ao agendamento
+    if((c && _formVinc[c]) || (_formPorRD[rk]||[]).length) return 'formacao';   // azul = carga na Expedição que ainda não saiu: vinculada ao agendamento OU da mesma rota e data (igual à Nova Pré-Carga)
     return 'agendada';
   }
   var _est={}; arr.forEach(function(a){ _est[a.id]=_estadoAg(a); });
@@ -52511,7 +52502,7 @@ async function renderAgendamentos(){
     ok:'background:rgba(22,163,74,.20);color:#16a34a',
     atraso:'background:rgba(220,38,38,.18);color:#dc2626'
   };
-  var _ESTLAB = {agendada:'Agendada / sem saída registrada',formacao:'Carga na Expedição, ainda não saiu (com pedidos)',ok:'Saiu na data',atraso:'Saiu com atraso'};
+  var _ESTLAB = {agendada:'Agendada / sem saída registrada',formacao:'Carga na Expedição, ainda não saiu',ok:'Saiu na data',atraso:'Saiu com atraso'};
 
   // Subtrair N dias úteis (seg–sex) de uma data
   function _diasUteisAntes(dataStr,n){ var d=new Date(dataStr+'T12:00:00'),c=0; while(c<n){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; } return d.toISOString().slice(0,10); }
