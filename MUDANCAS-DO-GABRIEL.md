@@ -39,7 +39,7 @@ Como desfazer: `git revert` do commit desta entrada (a tela volta ao normal) e, 
 Pendente/risco: o nome de quem separou/conferiu fica numa linha de configuracoes legível com a chave pública do Cronos (o
 banco não tem controle de acesso, como a auditoria já aponta); levar ao Daniel. Teste visual do Gabriel em localhost antes de publicar.
 
-## 2026-11-04, Gabriel: Ocorrências (Distribuição): valor TOTAL do produto na devolução parcial (troca do unitário) — v4.89.184
+## 2026-11-04, Gabriel: Ocorrências (Distribuição): valor TOTAL do produto na devolução parcial (troca do unitário) — v4.89.187
 Onde: `index.html`: formulário Registrar Ocorrência: coluna "Valor total (R$) *" no lugar de "Valor unit."; `_ocorrValorTotalItem` (era `_ocorrPrecoItem`), `_ocorrQtdMudou` (nova), `_ocorrMarcarPrecoVazio`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`.
 Por quê: pedido do Gabriel ("aqui não é valor unitário, substitua para valor total do produto"). O valor digitado é o total do produto na devolução, SEM multiplicar pela quantidade; "Valor a devolver" = soma dos totais. Quando o ERP tem o preço, o total vem preenchido (preço × qtd) e acompanha a quantidade até a pessoa digitar. Obrigatório (> 0) em todo produto marcado. Gravação: `ocorrencias_distribuicao_itens.valor_total` = total digitado; `valor_unitario` = total ÷ quantidade (a edição de ocorrência recalcula em cima dele); `ocorrencias_distribuicao.valor_devolvido` = soma. Colunas que já existiam; sem mudança de estrutura. Registros feitos com a v4.89.183 (unitário × qtd) não mudam.
 Como desfazer: `git revert` do commit desta entrada.
