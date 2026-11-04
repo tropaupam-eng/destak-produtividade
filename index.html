@@ -9971,7 +9971,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.178';
+const APP_VERSION = '4.89.179';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -34890,21 +34890,52 @@ async function _pnHtmlDiasPorRota(mes, und){
 }
 
 // ── 3) Calendário de rotas — slide 24 do modelo ──
-async function _pnHtmlCalendarioRotas(mesDeck){
-  // O calendário é de PLANEJAMENTO: no modelo, o deck de outubro traz o calendário de novembro (55 saídas agendadas).
-  const mes = _pnMesSeguinte(mesDeck);
+// Visual sóbrio (pedido do usuário, 2026-11-04): cinza = agendada / sem saída registrada, verde = saiu na data agendada,
+// amarelo = saiu com atraso. Os motivos do atraso ficam contados no topo. Nada é suposto: cada cor diz de onde vem na legenda.
+//  - saiu na data = agendamento marcado "realizado" OU existe carga da MESMA rota e data (demandas_rota) com status saiu/fim_viagem/concluido
+//    (mesma regra da tela Calendário de Saídas; só "lançada" na pré-carga NÃO conta como saída);
+//  - com atraso = saiu, mas com motivo de atraso marcado no agendamento, ou a carga vinculada ao agendamento saiu em data posterior.
+// naTela = card da aba do Painel: mostra o mês do filtro. No deck mostra o mês SEGUINTE (o modelo de outubro traz o calendário de novembro).
+async function _pnHtmlCalendarioRotas(mesDeck, naTela){
+  const mes = naTela ? mesDeck : _pnMesSeguinte(mesDeck);
   const P = _pnPeriodoMes(mes);
   const fimMes = mes+'-'+String(new Date(P.ano, P.mes, 0).getDate()).padStart(2,'0');
-  const rows = await supaFetch(`agendamentos_rotas?data=gte.${P.ini}&data=lte.${fimMes}&select=rota,data,status&order=data.asc&limit=2000`) || [];
+  const SAIU = 'in.(saiu,fim_viagem,concluido)';
+  const rows = await supaFetch(`agendamentos_rotas?data=gte.${P.ini}&data=lte.${fimMes}&select=id,rota,data,status,lancado,carga,motivo_atraso,acao&order=data.asc&limit=2000`) || [];
   if(!rows.length) throw _pnSemDado('sem rotas agendadas para '+P.nome.toLowerCase());
+  const dem = await supaFetch(`demandas_rota?data_saida=gte.${P.ini}&data_saida=lte.${fimMes}&status=${SAIU}&select=carga,rota,data_saida&limit=5000`) || [];
+  const cargasVinc = [...new Set(rows.map(r=>r.carga).filter(Boolean))];
+  const demCarga = cargasVinc.length ? await _pnEmLotes(cargasVinc, 100, ids=>supaFetch(`demandas_rota?carga=in.(${ids.join(',')})&status=${SAIU}&select=carga,data_saida`)) : [];
+  const chaveRota = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
+  const saiuSet = new Set(dem.map(d=>chaveRota(d.rota)+'|'+d.data_saida));
+  const dataCarga = new Map(); demCarga.forEach(d=>{ const o = dataCarga.get(d.carga); if(!o || d.data_saida < o) dataCarga.set(d.carga, d.data_saida); });
+  const hoje = hojeDataBRT();
+  const ATOM = { sem_veiculo:'veiculo', sem_motorista:'motorista', valor:'comercial', atraso_rota:'atraso_rota' };
+  const MOTIVOS = [['comercial','Comercial não fechou'],['veiculo','Sem veículo'],['motorista','Sem motorista'],['atraso_rota','Atraso de rota'],['atraso_carregamento','Atraso no carregamento']];
+  const motivoDe = a => { let k = a.motivo_atraso || ATOM[a.acao] || ''; if(k === 'outro') k = 'atraso_carregamento'; return k === 'saiu_data_correta' ? '' : k; };
+  const estadoDe = a => {
+    const mot = motivoDe(a), dc = a.carga ? dataCarga.get(a.carga) : null;
+    if(dc && dc > a.data) return 'atraso';
+    if(a.status === 'realizado' || saiuSet.has(chaveRota(a.rota)+'|'+a.data) || (dc && dc <= a.data)) return mot ? 'atraso' : 'ok';
+    return 'agendada';
+  };
   const porDia = new Map(); const porRota = new Map();
+  let nOk = 0, nAtraso = 0, nSemSaida = 0, nASair = 0; const contMot = {};
   rows.forEach(r=>{
     const rota = (r.rota||'').trim().toUpperCase(); if(!rota) return;
+    const est = estadoDe(r);
     if(!porDia.has(r.data)) porDia.set(r.data, []);
-    porDia.get(r.data).push({ rota, status:r.status });
+    porDia.get(r.data).push({ rota, est });
     porRota.set(rota, (porRota.get(rota)||0) + 1);
+    if(est === 'ok') nOk++; else if(est === 'atraso') nAtraso++; else if(r.data <= hoje) nSemSaida++; else nASair++;
+    if(est === 'atraso' || (est === 'agendada' && r.data <= hoje)){ const k = motivoDe(r); if(k) contMot[k] = (contMot[k]||0) + 1; }
   });
-  const corStatus = s => s === 'atrasado' || s === 'nao_realizado' ? '#ef4444' : s === 'realizado' ? 'var(--text-primary)' : 'var(--text-secondary)';
+  const total = nOk + nAtraso + nSemSaida + nASair;
+  const ESTILO = {
+    agendada: 'background:rgba(148,163,184,.14);color:var(--text-secondary)',
+    ok:       'background:rgba(22,163,74,.20);color:#16a34a',
+    atraso:   'background:rgba(202,138,4,.22);color:#ca8a04',
+  };
   const primeiro = new Date(P.ano, P.mes-1, 1).getDay(), dias = new Date(P.ano, P.mes, 0).getDate();
   const semanas = Math.ceil((primeiro + dias) / 7);
   let celulas = '';
@@ -34912,14 +34943,22 @@ async function _pnHtmlCalendarioRotas(mesDeck){
     const d = i - primeiro + 1;
     if(d < 1 || d > dias){ celulas += '<div style="min-height:84px;border-radius:6px"></div>'; continue; }
     const key = mes+'-'+String(d).padStart(2,'0');
-    const itens = (porDia.get(key) || []).map(x=>`<div style="font-size:.74rem;font-weight:600;line-height:1.35;color:${corStatus(x.status)}">${_pnh.esc(x.rota)}</div>`).join('');
-    celulas += `<div style="min-height:84px;background:var(--bg-card2);border:1px solid var(--border);border-radius:6px;padding:7px 9px"><div style="font-size:.78rem;font-weight:700;color:var(--text-muted);margin-bottom:3px">${d}</div>${itens}</div>`;
+    const itens = (porDia.get(key) || []).map(x=>`<div style="font-size:.74rem;font-weight:700;line-height:1.3;border-radius:4px;padding:2px 6px;margin-top:3px;${ESTILO[x.est]}">${_pnh.esc(x.rota)}</div>`).join('');
+    celulas += `<div style="min-height:84px;background:var(--bg-card2);border:1px solid var(--border);border-radius:6px;padding:6px 7px"><div style="font-size:.78rem;font-weight:700;color:var(--text-muted)">${d}</div>${itens}</div>`;
   }
   const cab = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB'].map(x=>`<div style="text-align:center;font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);padding:4px 0">${x}</div>`).join('');
+  const kpi = (rotulo, valor) => `<div style="flex:1;min-width:0"><div style="font-size:1.9rem;font-weight:700;line-height:1">${valor}</div><div style="font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);margin-top:6px">${rotulo}</div></div>`;
+  const topo = _pnh.caixa(`<div style="display:flex;gap:18px">${kpi('AGENDADAS', total)}${kpi('SAÍRAM NA DATA', nOk)}${kpi('SAÍRAM COM ATRASO', nAtraso)}${kpi('SEM SAÍDA REGISTRADA', nSemSaida)}${kpi('A SAIR', nASair)}</div>
+      <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:14px">${_pnh.rot('MOTIVOS DO ATRASO')}
+        <div style="display:flex;gap:18px;margin-top:10px">${MOTIVOS.map(([k, nome])=>`<div style="flex:1;min-width:0"><div style="font-size:1.4rem;font-weight:700;line-height:1">${contMot[k]||0}</div><div style="font-size:.78rem;color:var(--text-secondary);margin-top:5px">${nome}</div></div>`).join('')}</div>
+      </div>`, 'var(--border-med)', 'margin-bottom:18px;padding:20px 24px');
+  const legenda = [['agendada','Agendada / sem saída registrada'],['ok','Saiu na data'],['atraso','Saiu com atraso']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
   const contagem = [...porRota.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).map(([r,n])=>_pnh.esc(r)+' '+n).join(' · ');
-  const corpo = `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${cab}${celulas}</div>
+  const corpo = `${topo}
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${cab}${celulas}</div>
+      <div style="font-size:.8rem;color:var(--text-secondary);margin-top:12px">${legenda}</div>
       <div style="margin-top:16px">${_pnh.rot('SAÍDAS POR ROTA')}<div style="font-size:.84rem;color:var(--text-secondary);margin-top:6px;line-height:1.6">${contagem}</div></div>
-      ${_pnh.nota('Fonte: agendamento de rotas do mês seguinte ao da apresentação. Cor do nome: branco = realizada · cinza = agendada · vermelho = atrasada ou não realizada.')}`;
+      ${_pnh.nota('Fonte: agendamento de rotas ('+(naTela ? 'mês do filtro' : 'mês seguinte ao da apresentação')+') cruzado com as cargas da Expedição. Saiu na data = carga da mesma rota e data com saída registrada (rota apenas lançada na pré-carga não conta). Saiu com atraso = saiu, com motivo de atraso marcado no agendamento ou carga vinculada que saiu depois da data. Motivos: contados nas rotas com atraso e nas que já passaram da data sem saída registrada. Rotas sem registro de saída ficam cinza.')}`;
   return _pnh.casca('DISTRIBUIÇÃO · AGENDAMENTO DE ROTAS · '+P.nome+' '+P.ano+' · '+rows.length+' SAÍDAS', 'Calendário de rotas — '+P.nome.charAt(0)+P.nome.slice(1).toLowerCase(), corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
@@ -35093,6 +35132,7 @@ async function _pnCarregarCardDados(idCont, chave){
     const mes = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const und = window._painelIndUndSel || '';
     const ctx = (window._pnCtxPainel && window._pnCtxPainel.chave === mes+'|'+und) ? window._pnCtxPainel : (window._pnCtxPainel = { chave:mes+'|'+und });
+    ctx.naTela = true;   // card da aba do Painel (o deck usa o próprio ctx, sem esta marca)
     cont.innerHTML = await _pnHtmlDados(chave, mes, und, ctx);
     if(typeof _featherReplace === 'function') _featherReplace();
   }catch(e){
@@ -35105,7 +35145,7 @@ async function _pnCarregarCardDados(idCont, chave){
 async function _pnHtmlDados(chave, mes, und, ctx){
   if(chave === 'erroConferencia') return _pnHtmlErroConferencia(mes);
   if(chave === 'diasPorRota') return _pnHtmlDiasPorRota(mes, und);
-  if(chave === 'calendarioRotas') return _pnHtmlCalendarioRotas(mes);
+  if(chave === 'calendarioRotas') return _pnHtmlCalendarioRotas(mes, !!(ctx && ctx.naTela));
   if(chave === 'vendaPorRota') return _pnHtmlVendaPorRota(mes, und);
   if(chave === 'topValor') return _pnHtmlTopVeiculos(mes, und, ctx, 'valor');
   if(chave === 'topPedidos') return _pnHtmlTopVeiculos(mes, und, ctx, 'pedidos');
