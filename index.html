@@ -9971,7 +9971,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.156';
+const APP_VERSION = '4.89.157';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -30815,8 +30815,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
 // usada pelo Dashboard Interno e pelo Painel de Indicadores.
 function _calcPedidosPorSemana(bd, mesFiltro){
   const _semDoMes = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
-  const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0,_ents:new Set()}));
-  const _entsMes = new Set(); // entregas distintas no mês inteiro (a mesma parada não pode contar em 2 semanas)
+  const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0}));
   const vistoPed = new Set();
   bd.forEach(p=>{
     const key = String(p.carga)+'_'+String(p.pedido);
@@ -30831,13 +30830,11 @@ function _calcPedidosPorSemana(bd, mesFiltro){
     const s = p.semana_mes || _semDoMes(p.data_pedido);
     if(s>=1&&s<=5){
       semData[s-1].ped++; semData[s-1].val+=Number(p.valor)||0;
-      const _ek = String(p.carga)+'|'+((p.cliente||'').toUpperCase().trim() || 'P'+p.pedido);
-      semData[s-1]._ents.add(_ek);
-      _entsMes.add(_ek);
     }
   });
-  semData.forEach(s=>{ s.ent = s._ents.size; delete s._ents; });
-  semData.entMes = _entsMes.size;
+  // Entrega = pedido (pedido do usuário, 2026-11-03: vários pedidos do mesmo cliente contam cada um como uma entrega)
+  semData.forEach(s=>{ s.ent = s.ped; delete s._ents; });
+  semData.entMes = semData.reduce((a,s)=>a+s.ped,0);
   return semData;
 }
 
@@ -30876,14 +30873,12 @@ function _calcEntregasPorRota(bd, cargaRota, cargaIsRI, rireFiltro){
       }
     }
     if(rota === 'RETIRA') return; // cliente retira conta no total mas não entra no gráfico por rota
-    if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0,ent:0,_ents:new Set()};
+    if(!rotaMap[rota]) rotaMap[rota]={ped:0,val:0,ent:0};
     rotaMap[rota].ped++;
     rotaMap[rota].val+=Number(p.valor)||0;
-    // "Entrega" = parada num cliente (vários pedidos do mesmo cliente na mesma
-    // carga são 1 entrega só). Sem nome de cliente, o pedido conta como 1 entrega.
-    rotaMap[rota]._ents.add(String(c)+'|'+((p.cliente||'').toUpperCase().trim() || 'P'+p.pedido));
   });
-  Object.values(rotaMap).forEach(d=>{ d.ent = d._ents.size; delete d._ents; });
+  // "Entrega" = pedido (pedido do usuário, 2026-11-03): cada pedido conta como uma entrega, mesmo do mesmo cliente.
+  Object.values(rotaMap).forEach(d=>{ d.ent = d.ped; delete d._ents; });
   return _montarRotaCalc(rotaMap);
 }
 
@@ -30935,26 +30930,8 @@ async function _carregarExpedicaoRE(undSel){
     // o mesmo que o card da Expedição mostra) — não se soma do base_data (pedido do usuário).
     cargas.push({ carga:c, rota, dataRef, mes:dataRef.slice(0,7), ped:Number(d.quantidade_pedidos)||0, val:Number(d.valor_total)||0, ent:0 });
   });
-  const ids = cargas.map(x=>x.carga);
-  const pedPorCarga = new Map();
-  for(let i=0;i<ids.length;i+=250){
-    const rows = await supaFetch(`base_data?carga=in.(${ids.slice(i,i+250).join(',')})&select=carga,pedido,cliente&limit=20000`).catch(()=>[]) || [];
-    rows.forEach(r=>{ const c = Math.round(Number(r.carga)); if(!pedPorCarga.has(c)) pedPorCarga.set(c,[]); pedPorCarga.get(c).push(r); });
-  }
-  // Código do cliente (da integração) é mais confiável que o nome pra contar entregas
-  const todosPed = [...new Set([...pedPorCarga.values()].flat().map(r=>r.pedido).filter(Boolean))];
-  const codMap = new Map();
-  for(let i=0;i<todosPed.length;i+=400){
-    const rows = await supaFetch(`pedidos_info_erp?pedido=in.(${todosPed.slice(i,i+400).join(',')})&select=pedido,codigo_cliente`).catch(()=>[]) || [];
-    rows.forEach(r=>{ if(r.codigo_cliente) codMap.set(String(r.pedido), String(r.codigo_cliente).trim()); });
-  }
-  cargas.forEach(cg=>{
-    const rows = pedPorCarga.get(cg.carga) || [];
-    const ents = new Set();
-    // base_data só serve pra saber QUANTAS PARADAS (clientes) a carga tem; ped/val já vieram da Expedição
-    rows.forEach(r=>{ ents.add(codMap.get(String(r.pedido)) || (r.cliente||'').toUpperCase().trim() || 'P'+r.pedido); });
-    cg.ent = ents.size;
-  });
+  // Entrega = pedido (pedido do usuário, 2026-11-03): usa o mesmo número de pedidos da carga lançada em Expedição.
+  cargas.forEach(cg=>{ cg.ent = cg.ped; });
   _expRECache = { ts:Date.now(), chave, dados:cargas };
   return cargas;
 }
