@@ -21,6 +21,24 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-04, Gabriel: Ocorrências (Distribuição) — mostra quem conferiu a carga e quem separou o pedido (FDSAS) — v4.89.193
+Onde: `index.html`: variável `_ocorrFdsas` e função `_ocorrFdsasInfo` (novas), `carregarOcorrenciasDistrib` (lê uma
+linha de `configuracoes`) e `_renderOcorrenciasGeneric` (chips "Conferiu (FDSAS)", "Separou (FDSAS)" e aviso de situação).
+`version.json` e `APP_VERSION` 4.89.192 → 4.89.193.
+Por quê: acompanhamento de devolução da expedição interna do CD, para chegar à causa raiz (treinamento etc.). O FDSAS
+guarda quem conferiu cada carga e quem separou cada pedido; a tela já mostrava "sem conferente registrado" para a rota interna.
+Como funciona: o Apps Script da planilha de integração (conta logisticadestak.emb) cruza as ocorrências de rota interna da
+unidade `1 - CD` com as abas do FDSAS e grava o resultado, por id de ocorrência, em UMA linha da tabela `configuracoes`
+(chave `fdsas_responsaveis`, mesmo padrão do MFV `mfv_v2`). A tela só LÊ essa linha. O campo `conferente` da ocorrência
+NÃO é alterado. Sem a linha, ou para ocorrência fora do CD, a lista fica exatamente como antes.
+Dado no Supabase: tabela `configuracoes`, chave `fdsas_responsaveis`, valor anterior: não existia (criada pelo script).
+Sem tabela nem coluna novas, sem dinheiro. É a ponte provisória: a versão definitiva, com tabelas próprias no Cronos, será
+pedida ao Daniel.
+Como desfazer: `git revert` do commit desta entrada (a tela volta ao normal) e, se quiser, apagar a linha
+(`delete from configuracoes where chave = 'fdsas_responsaveis'`) e desativar o gatilho `gerarRelatorio` no Apps Script.
+Pendente/risco: o nome de quem separou/conferiu fica numa linha de configuracoes legível com a chave pública do Cronos (o
+banco não tem controle de acesso, como a auditoria já aponta); levar ao Daniel. Teste visual do Gabriel em localhost antes de publicar.
+
 ## 2026-11-04, Gabriel: Ocorrências (Distribuição): valor TOTAL do produto na devolução parcial (troca do unitário) — v4.89.186
 Onde: `index.html`: formulário Registrar Ocorrência: coluna "Valor do produto (R$) *" no lugar de "Valor unit." (nome pedido pelo Gabriel: "valor do produto", não "valor total"); `_ocorrValorTotalItem` (era `_ocorrPrecoItem`), `_ocorrQtdMudou` (nova), `_ocorrMarcarPrecoVazio`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`.
 Por quê: pedido do Gabriel ("aqui não é valor unitário, substitua para valor total do produto"). O valor digitado é o total do produto na devolução, SEM multiplicar pela quantidade; "Valor a devolver" = soma dos totais. Quando o ERP tem o preço, o total vem preenchido (preço × qtd) e acompanha a quantidade até a pessoa digitar. Obrigatório (> 0) em todo produto marcado. Gravação: `ocorrencias_distribuicao_itens.valor_total` = total digitado; `valor_unitario` = total ÷ quantidade (a edição de ocorrência recalcula em cima dele); `ocorrencias_distribuicao.valor_devolvido` = soma. Colunas que já existiam; sem mudança de estrutura. Registros feitos com a v4.89.183 (unitário × qtd) não mudam.
