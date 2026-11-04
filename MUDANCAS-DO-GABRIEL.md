@@ -21,6 +21,12 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-04, Gabriel: Ocorrências (Distribuição): valor TOTAL do produto na devolução parcial (troca do unitário) — v4.89.186
+Onde: `index.html`: formulário Registrar Ocorrência: coluna "Valor total (R$) *" no lugar de "Valor unit."; `_ocorrValorTotalItem` (era `_ocorrPrecoItem`), `_ocorrQtdMudou` (nova), `_ocorrMarcarPrecoVazio`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`.
+Por quê: pedido do Gabriel ("aqui não é valor unitário, substitua para valor total do produto"). O valor digitado é o total do produto na devolução, SEM multiplicar pela quantidade; "Valor a devolver" = soma dos totais. Quando o ERP tem o preço, o total vem preenchido (preço × qtd) e acompanha a quantidade até a pessoa digitar. Obrigatório (> 0) em todo produto marcado. Gravação: `ocorrencias_distribuicao_itens.valor_total` = total digitado; `valor_unitario` = total ÷ quantidade (a edição de ocorrência recalcula em cima dele); `ocorrencias_distribuicao.valor_devolvido` = soma. Colunas que já existiam; sem mudança de estrutura. Registros feitos com a v4.89.183 (unitário × qtd) não mudam.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: se a intenção era o total da LINHA DA NOTA (proporcional à quantidade devolvida), o cálculo muda; confirmar com o Gabriel no teste.
+
 ## 2026-11-04, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial — v4.89.183
 Onde: `index.html`: formulário "Registrar Ocorrência": `_ocorrAtualizarItensUI` (coluna nova "Valor unit. (R$) *"
 em cada produto), `_ocorrToggleItemQtd`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`; helpers novos

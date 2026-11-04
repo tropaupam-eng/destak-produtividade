@@ -9944,7 +9944,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.185';
+const APP_VERSION = '4.89.186';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19395,21 +19395,35 @@ async function _ocorrCarregarItensPedido(pedido){
 // de R$10 (R$100 no total), faltou 1 → devolvido é R$10, não R$100. Pedido do
 // usuário, 2026-10-08: o valor que aparecia na ocorrência era sempre o do
 // pedido inteiro, mesmo numa devolução parcial de 1 item.
-// Devolução PARCIAL: o valor unitário de cada produto marcado é obrigatório.
-// Vem pré-preenchido quando o ERP tem o preço e fica vazio quando não tem (desde
-// 18/09 quase todo item chega sem preço) — aí a pessoa digita. Pedido do usuário,
-// 2026-10-22. Devolve 0 se o campo estiver vazio ou inválido.
-function _ocorrPrecoItem(idx){
-  const el = document.querySelector(`.l-ocorr-item-preco[data-idx="${idx}"]`);
+// Devolução PARCIAL: o VALOR TOTAL de cada produto marcado é obrigatório (valor do produto na
+// devolução, já considerando a quantidade — não é unitário). Vem pré-preenchido (preço × qtd)
+// quando o ERP tem o preço e fica vazio quando não tem (desde 18/09 quase todo item chega sem
+// preço) — aí a pessoa digita. Pedido do usuário, 2026-10-22; trocado de unitário para total em
+// 2026-11-04. Devolve 0 se o campo estiver vazio ou inválido.
+function _ocorrValorTotalItem(idx){
+  const el = document.querySelector(`.l-ocorr-item-vtotal[data-idx="${idx}"]`);
   const v = el && el.value!=='' ? Number(String(el.value).replace(',','.')) : 0;
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
-// Borda vermelha enquanto o produto está marcado e o valor unitário continua vazio.
+// Enquanto a pessoa não digitou o total, ele acompanha a quantidade (preço do ERP × qtd).
+function _ocorrQtdMudou(idx){
+  const it = _ocorrItensPedidoCache[idx];
+  const el = document.querySelector(`.l-ocorr-item-vtotal[data-idx="${idx}"]`);
+  const q  = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
+  const vUnit = Number(it?.valor_unitario)||0;
+  if(el && q && vUnit > 0 && el.dataset.auto === '1'){
+    const qtd = q.value!=='' ? Number(q.value) : 0;
+    el.value = qtd > 0 ? (Math.round(qtd*vUnit*100)/100) : '';
+  }
+  _ocorrMarcarPrecoVazio(idx);
+  _ocorrRecalcValorDevolvido();
+}
+// Borda vermelha enquanto o produto está marcado e o valor total continua vazio.
 function _ocorrMarcarPrecoVazio(idx){
   const chk = document.querySelector(`.l-ocorr-item-chk[data-idx="${idx}"]`);
-  const el  = document.querySelector(`.l-ocorr-item-preco[data-idx="${idx}"]`);
+  const el  = document.querySelector(`.l-ocorr-item-vtotal[data-idx="${idx}"]`);
   if(!el) return;
-  const faltando = !!chk?.checked && _ocorrPrecoItem(idx) <= 0;
+  const faltando = !!chk?.checked && _ocorrValorTotalItem(idx) <= 0;
   el.style.borderColor = faltando ? '#dc2626' : 'var(--border)';
   el.style.background  = faltando ? 'rgba(220,38,38,.08)' : 'var(--bg-input)';
 }
@@ -19424,9 +19438,7 @@ function _ocorrRecalcValorDevolvido(){
       const idx = Number(chk.dataset.idx);
       const it  = _ocorrItensPedidoCache[idx];
       if(!it) return;
-      const qtdEl = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
-      const qtd   = qtdEl && qtdEl.value!=='' ? Number(qtdEl.value) : 0;
-      valor += qtd * _ocorrPrecoItem(idx);
+      valor += _ocorrValorTotalItem(idx);
     });
   }
   const el = document.getElementById('l-ocorr-valor-devolvido');
@@ -19446,7 +19458,7 @@ function _ocorrAtualizarItensUI(){
   if(lista){
     lista.innerHTML = n
       ? `<div style="display:flex;justify-content:flex-end;gap:8px;padding:0 4px 2px;font-size:.7rem;font-weight:700;color:var(--text-muted)">
-          <span style="width:70px">Qtd</span><span style="width:104px">Valor unit. (R$) *</span>
+          <span style="width:70px">Qtd</span><span style="width:104px">Valor total (R$) *</span>
         </div>` + _ocorrItensPedidoCache.map((it,idx)=>{
           const nome = it.descricao || it.mercadoria || 'Produto';
           const qtdMax = it.quantidade_atual!=null ? Number(it.quantidade_atual) : '';
@@ -19454,10 +19466,10 @@ function _ocorrAtualizarItensUI(){
           return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;font-size:.82rem;color:var(--text-primary)">
             <input type="checkbox" class="l-ocorr-item-chk" data-idx="${idx}" onchange="_ocorrToggleItemQtd(${idx})">
             <span style="flex:1">${escapeHtml(nome)}</span>
-            <input type="number" class="l-ocorr-item-qtd" data-idx="${idx}" min="0" step="1" value="${qtdMax}" disabled oninput="_ocorrRecalcValorDevolvido()"
+            <input type="number" class="l-ocorr-item-qtd" data-idx="${idx}" min="0" step="1" value="${qtdMax}" disabled oninput="_ocorrQtdMudou(${idx})"
               style="width:70px;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:.78rem;background:var(--bg-input);color:var(--text-primary)">
-            <input type="number" class="l-ocorr-item-preco" data-idx="${idx}" min="0" step="0.01" inputmode="decimal" placeholder="obrigatório" value="${vUnit?vUnit:''}" disabled
-              title="Valor unitário do produto (obrigatório na devolução parcial)" oninput="_ocorrMarcarPrecoVazio(${idx});_ocorrRecalcValorDevolvido()"
+            <input type="number" class="l-ocorr-item-vtotal" data-idx="${idx}" min="0" step="0.01" inputmode="decimal" placeholder="obrigatório" value="${(vUnit && qtdMax!=='') ? Math.round(vUnit*Number(qtdMax)*100)/100 : ''}" data-auto="${vUnit?'1':'0'}" disabled
+              title="Valor total deste produto na devolução (obrigatório na devolução parcial)" oninput="this.dataset.auto='0';_ocorrMarcarPrecoVazio(${idx});_ocorrRecalcValorDevolvido()"
               style="width:104px;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:.78rem;background:var(--bg-input);color:var(--text-primary)">
           </label>`;
         }).join('')
@@ -19469,11 +19481,11 @@ function _ocorrAtualizarItensUI(){
 function _ocorrToggleItemQtd(idx){
   const chk = document.querySelector(`.l-ocorr-item-chk[data-idx="${idx}"]`);
   const qtd = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
-  const preco = document.querySelector(`.l-ocorr-item-preco[data-idx="${idx}"]`);
+  const preco = document.querySelector(`.l-ocorr-item-vtotal[data-idx="${idx}"]`);
   if(qtd) qtd.disabled = !chk?.checked;
   if(preco) preco.disabled = !chk?.checked;
   _ocorrMarcarPrecoVazio(idx);
-  if(chk?.checked && preco && _ocorrPrecoItem(idx) <= 0) preco.focus();
+  if(chk?.checked && preco && _ocorrValorTotalItem(idx) <= 0) preco.focus();
   _ocorrRecalcValorDevolvido();
 }
 
@@ -19576,16 +19588,19 @@ async function salvarOcorrenciaLanc(){
       if(!it) return;
       const qtdEl = document.querySelector(`.l-ocorr-item-qtd[data-idx="${idx}"]`);
       const qtd   = qtdEl && qtdEl.value!=='' ? Number(qtdEl.value) : null;
-      // Valor unitário vem do campo da linha (pré-preenchido com o do ERP quando existe).
-      itensParaGravar.push({ produto: it.descricao || it.mercadoria || 'Produto', quantidade: qtd, valor_unitario: _ocorrPrecoItem(idx) || null, _idx: idx });
+      // Valor TOTAL vem do campo da linha (pré-preenchido com preço do ERP × qtd quando existe).
+      // O unitário gravado é total ÷ quantidade (a edição de ocorrência recalcula em cima dele).
+      const vTotal = _ocorrValorTotalItem(idx);
+      itensParaGravar.push({ produto: it.descricao || it.mercadoria || 'Produto', quantidade: qtd, valor_total: vTotal || null,
+        valor_unitario: (vTotal && qtd > 0) ? Math.round(vTotal / qtd * 1e6) / 1e6 : null, _idx: idx });
     });
     if(!itensParaGravar.length){ showToast('Selecione ao menos um produto para a devolução parcial','warning'); return; }
-    // Obrigatório: todo produto marcado precisa de valor unitário (> 0).
-    const semPreco = itensParaGravar.filter(i => !i.valor_unitario);
+    // Obrigatório: todo produto marcado precisa de valor total (> 0).
+    const semPreco = itensParaGravar.filter(i => !i.valor_total);
     if(semPreco.length){
       semPreco.forEach(i => _ocorrMarcarPrecoVazio(i._idx));
-      document.querySelector(`.l-ocorr-item-preco[data-idx="${semPreco[0]._idx}"]`)?.focus();
-      showToast('Informe o valor unitário de '+(semPreco.length===1 ? semPreco[0].produto : semPreco.length+' produtos marcados')+' para registrar a devolução parcial','warning');
+      document.querySelector(`.l-ocorr-item-vtotal[data-idx="${semPreco[0]._idx}"]`)?.focus();
+      showToast('Informe o valor total de '+(semPreco.length===1 ? semPreco[0].produto : semPreco.length+' produtos marcados')+' para registrar a devolução parcial','warning');
       return;
     }
   }
@@ -19596,7 +19611,7 @@ async function salvarOcorrenciaLanc(){
   // em cima do que foi de fato selecionado/digitado no momento de salvar.
   // Arredonda em centavos: com preço digitado à mão (ex.: 3 × 6,60) a soma em ponto
   // flutuante dava 19.799999999999997 e ia assim pro banco.
-  const valorDevolvido = Math.round(itensParaGravar.reduce((s,i)=> s + (Number(i.quantidade)||0)*(Number(i.valor_unitario)||0), 0) * 100) / 100 || null;
+  const valorDevolvido = Math.round(itensParaGravar.reduce((s,i)=> s + (i.valor_total!=null ? Number(i.valor_total)||0 : (Number(i.quantidade)||0)*(Number(i.valor_unitario)||0)), 0) * 100) / 100 || null;
 
   const usuario   = USUARIO_LOGADO?.nome || USUARIO_LOGADO?.email || null;
   const motivoSel = document.getElementById('l-ocorr-motivo');
@@ -19641,7 +19656,7 @@ async function salvarOcorrenciaLanc(){
         body:JSON.stringify(itensParaGravar.map(i=>({
           ocorrencia_id:novaOcorrenciaId, produto:i.produto, quantidade:i.quantidade,
           valor_unitario:i.valor_unitario,
-          valor_total: (i.quantidade!=null && i.valor_unitario!=null) ? Math.round(i.quantidade*i.valor_unitario*100)/100 : null,
+          valor_total: i.valor_total!=null ? Math.round(i.valor_total*100)/100 : ((i.quantidade!=null && i.valor_unitario!=null) ? Math.round(i.quantidade*i.valor_unitario*100)/100 : null),
         })))
       }).catch(()=>{});
     }
