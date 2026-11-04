@@ -21,6 +21,21 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-04, Gabriel: PROPOSTA de migração (NÃO aplicada): tabelas do FDSAS para o acompanhamento de devolução
+Onde: arquivo novo `supabase/migrations/20261104_fdsas_conferencias_separacoes.sql`. Cria `fdsas_pessoas`,
+`fdsas_conferencias`, `fdsas_separacoes` e a view `v_ocorrencias_responsaveis` (ocorrências com quem conferiu a carga e
+quem separou o pedido; coluna `unidade_carga` para filtrar o CD).
+Por quê: versão definitiva da ponte provisória (linha `fdsas_responsaveis` em `configuracoes`): histórico, painéis por pessoa
+(erros por conferente dividido pelas cargas conferidas) e vínculo com os cadastros pelo código, sem depender de nome.
+Estado: SÓ o arquivo no repositório (branch `gabriel/fdsas-tabelas`). NADA foi aplicado no Supabase: o workflow só publica o
+Pages. Precisa do Daniel (estrutura do banco): revisar e rodar no SQL Editor. Só cria objetos novos, não altera nada existente;
+reversão no fim do arquivo. Sintaxe conferida com um analisador de SQL (17 comandos ok); não executado em um Postgres de verdade,
+então testar primeiro no SQL Editor com a reversão à mão.
+Pendente/risco: (1) quem alimenta as tabelas (função agendada do Supabase ou envio pelo FDSAS) ainda não existe; (2) privacidade:
+nomes ligados a conferências e separações legíveis com a chave pública (sem RLS), decisão do Daniel; (3) vínculo das pessoas com
+`conferentes`/`ajudantes` precisa de confirmação (há dois "Nicolas" e dois "José Vitor" nos ajudantes).
+Como desfazer: apagar o arquivo (se ainda não aplicado) ou rodar a reversão do fim do arquivo (se aplicado).
+
 ## 2026-11-04, Gabriel: Ocorrências (Distribuição) — valor unitário obrigatório na devolução parcial — v4.89.183
 Onde: `index.html`: formulário "Registrar Ocorrência": `_ocorrAtualizarItensUI` (coluna nova "Valor unit. (R$) *"
 em cada produto), `_ocorrToggleItemQtd`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`; helpers novos
