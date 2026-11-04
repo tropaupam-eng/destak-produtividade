@@ -3386,6 +3386,7 @@ body.light-theme{
     <div id="painel-ind-pedidos-rotas-container-re-ano" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
     <div id="painel-ind-pedidos-rotas-otif-geral" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
     <div id="painel-ind-pedidos-rotas-otif-causas" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+    <div id="painel-ind-pedidos-rotas-motivos-setor" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
     <div id="painel-ind-pedidos-rotas-venda-container" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
@@ -33389,7 +33390,7 @@ function _painelIndTarefas(aba){
     case 'conferencia-prazo':           return [['painel-ind-conferencia-prazo-container', carregarPainelConferenciaPrazo], ['painel-ind-conferencia-prazo-container-ano', carregarPainelConferenciaPrazoAno]];
     case 'carregamento-prazo':          return [['painel-ind-carregamento-prazo-container', carregarPainelCarregamentoPrazo], ['painel-ind-conferencia-motivos-container', carregarMotivosLiberacaoPrazo], ['painel-ind-carregamento-prazo-container-ano', carregarPainelCarregamentoPrazoAno]];
     // ATENÇÃO: o deck (PN_ROTEIRO) referencia estas tarefas pelo ÍNDICE; o índice 0 (R.I. mês) não pode mudar de lugar.
-    case 'pedidos-rotas':               return [['painel-ind-pedidos-rotas-container', carregarPainelPedidosRotas], ['painel-ind-pedidos-rotas-container-re', ()=>carregarPainelPedidosRotas({ containerId:'painel-ind-pedidos-rotas-container-re', rire:'RE', sufixo:'-re' })], ['painel-ind-pedidos-rotas-venda-container', ()=>_pnCarregarCardDados('painel-ind-pedidos-rotas-venda-container', 'vendaPorRota')], ['painel-ind-pedidos-rotas-container-ano', carregarPainelPedidosRotasAno], ['painel-ind-pedidos-rotas-container-re-ano', ()=>carregarPainelPedidosRotasAno({ containerId:'painel-ind-pedidos-rotas-container-re-ano', rire:'RE', sufixo:'-re' })], ['painel-ind-pedidos-rotas-otif-geral', carregarPainelOtifGeralRotas], ['painel-ind-pedidos-rotas-otif-causas', carregarPainelOtifCausasInFull]];
+    case 'pedidos-rotas':               return [['painel-ind-pedidos-rotas-container', carregarPainelPedidosRotas], ['painel-ind-pedidos-rotas-container-re', ()=>carregarPainelPedidosRotas({ containerId:'painel-ind-pedidos-rotas-container-re', rire:'RE', sufixo:'-re' })], ['painel-ind-pedidos-rotas-venda-container', ()=>_pnCarregarCardDados('painel-ind-pedidos-rotas-venda-container', 'vendaPorRota')], ['painel-ind-pedidos-rotas-container-ano', carregarPainelPedidosRotasAno], ['painel-ind-pedidos-rotas-container-re-ano', ()=>carregarPainelPedidosRotasAno({ containerId:'painel-ind-pedidos-rotas-container-re-ano', rire:'RE', sufixo:'-re' })], ['painel-ind-pedidos-rotas-otif-geral', carregarPainelOtifGeralRotas], ['painel-ind-pedidos-rotas-otif-causas', carregarPainelOtifCausasInFull], ['painel-ind-pedidos-rotas-motivos-setor', carregarPainelMotivosPorSetor]];
     case 'custo-armazem':               return [['pica-container', ()=>renderCustoArmazem('pica')], ['pica-container-ano', ()=>renderCustoArmazemAno('pica')]];
     case 'receita-armazem':             return [['pira-container', ()=>renderReceitaArmazem('pira')], ['pira-container-ano', ()=>renderReceitaArmazemAno('pira')], ['painel-ind-descarrego-container', carregarPainelDescarrego]];
     case 'prazo-formacao':              return [['pf-container', renderPrazoFormacao], ['pf-container-ano', renderPrazoFormacaoAno]];
@@ -38857,19 +38858,143 @@ function _renderGraficoPainelRotasAno(rotaCalc, sufixo){
   if(sufixo) _cPainelRotasPizzaAnoExtra[sufixo] = novoGraf; else _cPainelRotasPizzaAno = novoGraf;
 }
 
-// ── "Por que não foi In Full": causa de cada pedido fora do In Full no mês (R.I. + R.E.) ──
-// Pedido do usuário, 2026-11-04. Universo = exatamente o do OTIF geral (os pedidos que _computeOtifStats conta);
-// "fora do In Full" = o mesmo critério dele: ocorrência não resolvida OU corte/troca pós-romaneio.
-// Causa = motivo da ocorrência (ocorrencias_distribuicao.motivo_id → motivos_devolucao); quando o pedido só está fora por
-// corte do ERP (pedidos_itens_erp) e ninguém lançou ocorrência, NÃO há motivo no sistema — aparece como "sem motivo registrado".
-// Cada pedido entra em UMA causa só (a de maior prioridade: armazém, logística, entrega, vendedor, cliente, outros; ocorrência antes de corte).
-async function carregarPainelOtifCausasInFull(){
-  const container = document.getElementById('painel-ind-pedidos-rotas-otif-causas');
+// ── Tabela "Motivos por setor — In Full e On Time" (pedido do usuário, 2026-11-04) ──
+// Linhas = setor → motivo; colunas = pedidos fora do In Full e pedidos atrasados (On Time). Mês e unidade do Painel.
+// In Full: motivo da ocorrência (ver _calcCausasInFull). On Time: só vira motivo de setor quando alguém registrou o motivo
+// da carga no Calendário de Rotas (agendamentos_rotas.motivo_atraso, ligado à CARGA). As marcações em lote "Atraso de Rota" sem carga
+// não ligam a nenhum pedido e portanto não entram. Sem registro, o atraso fica em "SEM MOTIVO REGISTRADO" mostrando só o FATO
+// que o sistema tem (onde a carga está), nunca como causa.
+async function _calcAtrasosOnTime(mes, undSel){
+  const d = await _carregarOtifMes(mes, undSel || undefined);
+  const cargasArr = [...(d.cargasMes||new Set())];
+  const [demRows, agRows] = await Promise.all([
+    cargasArr.length ? supaFetch(`demandas_rota?carga=in.(${cargasArr.join(',')})&select=carga,status`,{_quiet:true}).catch(()=>[]) : [],
+    cargasArr.length ? supaFetch(`agendamentos_rotas?carga=in.(${cargasArr.join(',')})&motivo_atraso=not.is.null&select=carga,motivo_atraso,motivo_label`,{_quiet:true}).catch(()=>[]) : []
+  ]);
+  const ordem = _PATR_ORDEM_STATUS;
+  const dem = {};
+  (demRows||[]).forEach(r=>{ if(r.carga==null) return; const k=String(r.carga); if(!dem[k] || ordem.indexOf(r.status) > ordem.indexOf(dem[k])) dem[k]=r.status; });
+  const mot = {};
+  (agRows||[]).forEach(r=>{ if(r.carga==null || r.motivo_atraso==='saiu_data_correta') return; mot[String(r.carga)] = r; });
+  const MAPA = {
+    comercial:           { setor:'comercial',    label:'Rota não fechou o valor até a data de fechamento' },
+    veiculo:             { setor:'distribuicao', label:'Sem veículo' },
+    motorista:           { setor:'distribuicao', label:'Sem motorista' },
+    atraso_rota:         { setor:'distribuicao', label:'Atraso de rota' },
+    atraso_carregamento: { setor:'armazem',      label:'Atraso no carregamento' }
+  };
+  const atrasados = [];
+  _computeOtifStats(d.bdRows, d.entRows, d.lancRows, d.saidaRows, d.rotasRows, d.ocorrRows, undefined, mes, d.agendPedMap, d.feriadosSet,
+    (ped, carga, rota, rire, dataPedido, onTime)=>{
+      if(onTime) return;
+      const ck = carga!=null ? String(carga) : null;
+      const m = ck ? mot[ck] : null;
+      let setor, label;
+      if(m){
+        const mp = MAPA[m.motivo_atraso];
+        setor = mp ? mp.setor : 'outros';
+        label = mp ? mp.label : ((m.motivo_label||'').trim() || 'Outro motivo registrado');
+      } else {
+        setor = 'semmotivo';
+        const st = ck ? dem[ck] : null;
+        if(!st) label = 'Sem registro de status da carga';
+        else if(_PATR_STATUS_ABERTO.has(st)) label = 'Carga ainda no armazém — '+((typeof FLUXO_STATUS!=='undefined' && FLUXO_STATUS[st]?.label) || st);
+        else if(st==='saiu' || st==='fim_viagem' || st==='concluido') label = 'Carga saiu e atrasou em trânsito ou na entrega';
+        else label = (typeof FLUXO_STATUS!=='undefined' && FLUXO_STATUS[st]?.label) || st;
+      }
+      atrasados.push({ ped:String(ped), rire, setor, label });
+    },
+    d.cortesRows, d.pendenteTsMap);
+  return { atrasados, universo: d.stats.entG };
+}
+
+async function carregarPainelMotivosPorSetor(){
+  const container = document.getElementById('painel-ind-pedidos-rotas-motivos-setor');
   if(!container) return;
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
   try{
     const mes = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const undSel = window._painelIndUndSel || '';
+    const [inf, ont] = await Promise.all([ _calcCausasInFull(mes, undSel), _calcAtrasosOnTime(mes, undSel) ]);
+    // matriz setor -> motivo -> {inFull, onTime}
+    const GRUPOS = [
+      { k:'armazem',      rot:'ARMAZÉM / CONFERENTE', cor:'#dc2626' },
+      { k:'logistica',    rot:'LOGÍSTICA',            cor:'#f59e0b' },
+      { k:'distribuicao', rot:'ENTREGA / FROTA',      cor:'#2563eb' },
+      { k:'comercial',    rot:'VENDEDOR / COMERCIAL', cor:'#8b5cf6' },
+      { k:'mercado',      rot:'CLIENTE',              cor:'#0891b2' },
+      { k:'outros',       rot:'OUTROS',               cor:'#9ca3af' },
+      { k:'semmotivo',    rot:'SEM MOTIVO REGISTRADO', cor:'#6b7280' }
+    ];
+    const mx = {}; GRUPOS.forEach(g=>mx[g.k]={});
+    const add = (setor, label, col, n)=>{ const g = mx[setor] || mx.outros; const r = g[label] = g[label] || { inFull:0, onTime:0 }; r[col]+=n; };
+    Object.values(inf.causas).forEach(c=>{
+      if(c.setorKey==='corte') add('semmotivo', 'Corte / troca pós-romaneio (o ERP mostra o corte, ninguém registrou a causa)', 'inFull', c.n);
+      else if(c.setorKey==='outros' && c.label==='Fora do In Full sem causa localizada') add('semmotivo', c.label, 'inFull', c.n);
+      else add(c.setorKey, c.label, 'inFull', c.n);
+    });
+    ont.atrasados.forEach(a=>add(a.setor, a.label, 'onTime', 1));
+    const totIF = inf.fora.length, totOT = ont.atrasados.length;
+    const pct = (n,t)=> t>0 ? (n/t*100).toFixed(1).replace('.',',')+'%' : '—';
+    const nf = n => n ? n.toLocaleString('pt-BR') : '<span style="color:var(--text-muted)">—</span>';
+    const th = (txt, al)=>`<div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);text-align:${al||'right'}">${txt}</div>`;
+    const grade = 'display:grid;grid-template-columns:3fr .9fr .8fr .9fr .8fr;gap:10px;align-items:baseline';
+    const corpo = GRUPOS.map(g=>{
+      const linhas = Object.entries(mx[g.k]).sort((a,b)=>(b[1].inFull+b[1].onTime)-(a[1].inFull+a[1].onTime));
+      if(!linhas.length) return '';
+      const sIF = linhas.reduce((s,x)=>s+x[1].inFull,0), sOT = linhas.reduce((s,x)=>s+x[1].onTime,0);
+      return `<div style="margin-top:14px;border-top:2px solid ${g.cor}">
+        <div style="${grade};padding:9px 0;font-weight:800;font-size:.92rem">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:2px;background:${g.cor}"></span>${g.rot}</div>
+          <div style="text-align:right">${nf(sIF)}</div><div style="text-align:right;font-size:.8rem;color:var(--text-secondary)">${sIF?pct(sIF,totIF):''}</div>
+          <div style="text-align:right">${nf(sOT)}</div><div style="text-align:right;font-size:.8rem;color:var(--text-secondary)">${sOT?pct(sOT,totOT):''}</div>
+        </div>
+        ${linhas.map(([lb,v])=>`<div style="${grade};padding:7px 0 7px 18px;border-top:1px solid var(--border);font-size:.88rem">
+          <div>${escapeHtml(lb)}</div>
+          <div style="text-align:right">${nf(v.inFull)}</div><div style="text-align:right;font-size:.78rem;color:var(--text-muted)">${v.inFull?pct(v.inFull,totIF):''}</div>
+          <div style="text-align:right">${nf(v.onTime)}</div><div style="text-align:right;font-size:.78rem;color:var(--text-muted)">${v.onTime?pct(v.onTime,totOT):''}</div>
+        </div>`).join('')}
+      </div>`;
+    }).join('');
+    const [aa, mm] = mes.split('-').map(Number);
+    const NOMES = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+    const semIF = (mx.semmotivo ? Object.values(mx.semmotivo).reduce((s,x)=>s+x.inFull,0) : 0);
+    const semOT = (mx.semmotivo ? Object.values(mx.semmotivo).reduce((s,x)=>s+x.onTime,0) : 0);
+    container.innerHTML = `
+      <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;position:relative">
+        <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
+        <div style="font-size:.81rem;font-weight:700;letter-spacing:2px;color:var(--text-muted)">OTIF · ${NOMES[mm-1]} ${aa} · R.I. + R.E.${undSel?' · '+escapeHtml(undSel):''}</div>
+        <h2 style="font-size:2.69rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Motivos por Setor — In Full e On Time</h2>
+        <div style="width:56px;height:3px;background:var(--red);margin:18px 0 28px"></div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:20px">
+          <div style="background:var(--bg-card2);border-radius:10px;padding:20px 24px;border-top:3px solid var(--red)"><div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">IN FULL — PEDIDOS FALHOS</div><div style="font-size:2.2rem;font-weight:700;margin-top:6px">${totIF.toLocaleString('pt-BR')}</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:4px">${totIF-semIF} com motivo de setor · ${semIF} sem motivo registrado</div></div>
+          <div style="background:var(--bg-card2);border-radius:10px;padding:20px 24px;border-top:3px solid var(--red)"><div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">ON TIME — PEDIDOS ATRASADOS</div><div style="font-size:2.2rem;font-weight:700;margin-top:6px">${totOT.toLocaleString('pt-BR')}</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:4px">${totOT-semOT} com motivo de setor · ${semOT} sem motivo registrado</div></div>
+        </div>
+        <div style="background:var(--bg-card2);border-radius:10px;padding:22px 26px">
+          <div style="${grade};padding-bottom:8px">${th('SETOR / MOTIVO','left')}${th('IN FULL')}${th('%')}${th('ON TIME')}${th('%')}</div>
+          ${corpo || '<p style="color:var(--text-muted);padding:16px 0">Nenhum pedido fora do In Full ou atrasado neste mês.</p>'}
+          <div style="${grade};padding:12px 0 2px;margin-top:14px;border-top:3px solid var(--red);font-weight:800">
+            <div>TOTAL</div><div style="text-align:right">${totIF.toLocaleString('pt-BR')}</div><div></div><div style="text-align:right">${totOT.toLocaleString('pt-BR')}</div><div></div>
+          </div>
+        </div>
+        <div style="font-size:.78rem;color:var(--text-muted);margin-top:14px;line-height:1.55">
+          <b>In Full:</b> motivo lançado na ocorrência (cada pedido em uma causa só). <b>On Time:</b> o motivo só aparece quando foi registrado para a carga no Calendário de Rotas (comercial não fechou o valor, sem veículo, sem motorista, atraso de rota, atraso no carregamento); sem registro, a linha mostra só onde a carga está, que é um fato do sistema e não a causa. Um pedido pode estar nas duas colunas. Setor de cada motivo do calendário: comercial → Vendedor/Comercial; veículo, motorista e atraso de rota → Entrega/Frota; atraso no carregamento → Armazém.
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
+          <span>PAINEL DE INDICADORES · OTIF</span>
+          <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
+        </div>
+      </div>`;
+    _featherReplace();
+  }catch(e){
+    console.error('Erro ao carregar motivos por setor:', e);
+    container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
+    _featherReplace();
+  }
+}
+
+// Núcleo do "Por que não foi In Full": usado pelo card de causas e pela tabela de motivos por setor.
+async function _calcCausasInFull(mes, undSel){
     const d = await _carregarOtifMes(mes, undSel || undefined);
     // 1) pedidos do universo do OTIF que ficaram fora do In Full
     const fora = [];
@@ -38931,6 +39056,23 @@ async function carregarPainelOtifCausasInFull(){
         somar('sem', 'Fora do In Full sem causa localizada', 'outros', '#9ca3af', f);
       }
     });
+    return { universo, fora, causas, conf, SETORES };
+}
+
+// ── "Por que não foi In Full": causa de cada pedido fora do In Full no mês (R.I. + R.E.) ──
+// Pedido do usuário, 2026-11-04. Universo = exatamente o do OTIF geral (os pedidos que _computeOtifStats conta);
+// "fora do In Full" = o mesmo critério dele: ocorrência não resolvida OU corte/troca pós-romaneio.
+// Causa = motivo da ocorrência (ocorrencias_distribuicao.motivo_id → motivos_devolucao); quando o pedido só está fora por
+// corte do ERP (pedidos_itens_erp) e ninguém lançou ocorrência, NÃO há motivo no sistema — aparece como "sem motivo registrado".
+// Cada pedido entra em UMA causa só (a de maior prioridade: armazém, logística, entrega, vendedor, cliente, outros; ocorrência antes de corte).
+async function carregarPainelOtifCausasInFull(){
+  const container = document.getElementById('painel-ind-pedidos-rotas-otif-causas');
+  if(!container) return;
+  container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
+  try{
+    const mes = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+    const undSel = window._painelIndUndSel || '';
+    const { universo, fora, causas, conf, SETORES } = await _calcCausasInFull(mes, undSel);
     const total = fora.length;
     const linhas = Object.values(causas).sort((a,b)=>b.n-a.n);
     const pctTxt = (n,t)=> t>0 ? (n/t*100).toFixed(1).replace('.',',')+'%' : '—';
