@@ -3388,6 +3388,7 @@ body.light-theme{
       <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando indicador de pedidos e rotas...</p>
     </div>
     <div id="painel-ind-pedidos-rotas-venda-container" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+    <div id="painel-ind-pedidos-rotas-venda-re-container" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
     <div id="painel-ind-pedidos-rotas-container-ano" style="margin-top:20px"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
@@ -9970,7 +9971,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.167';
+const APP_VERSION = '4.89.168';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33388,7 +33389,7 @@ function _painelIndTarefas(aba){
     case 'disponibilidade':             return [['painel-ind-disponibilidade-container', carregarPainelDisponibilidade], ['painel-ind-disponibilidade-container-ano', carregarPainelDisponibilidadeAno]];
     case 'conferencia-prazo':           return [['painel-ind-conferencia-prazo-container', carregarPainelConferenciaPrazo], ['painel-ind-conferencia-prazo-container-ano', carregarPainelConferenciaPrazoAno]];
     case 'carregamento-prazo':          return [['painel-ind-carregamento-prazo-container', carregarPainelCarregamentoPrazo], ['painel-ind-conferencia-motivos-container', carregarMotivosLiberacaoPrazo], ['painel-ind-carregamento-prazo-container-ano', carregarPainelCarregamentoPrazoAno]];
-    case 'pedidos-rotas':               return [['painel-ind-pedidos-rotas-container', carregarPainelPedidosRotas], ['painel-ind-pedidos-rotas-venda-container', ()=>_pnCarregarCardDados('painel-ind-pedidos-rotas-venda-container', 'vendaPorRota')], ['painel-ind-pedidos-rotas-container-ano', carregarPainelPedidosRotasAno]];
+    case 'pedidos-rotas':               return [['painel-ind-pedidos-rotas-container', carregarPainelPedidosRotas], ['painel-ind-pedidos-rotas-venda-container', ()=>_pnCarregarCardDados('painel-ind-pedidos-rotas-venda-container', 'vendaPorRota')], ['painel-ind-pedidos-rotas-venda-re-container', ()=>_pnCarregarCardDados('painel-ind-pedidos-rotas-venda-re-container', 'vendaPorRotaRE')], ['painel-ind-pedidos-rotas-container-ano', carregarPainelPedidosRotasAno]];
     case 'custo-armazem':               return [['pica-container', ()=>renderCustoArmazem('pica')], ['pica-container-ano', ()=>renderCustoArmazemAno('pica')]];
     case 'receita-armazem':             return [['pira-container', ()=>renderReceitaArmazem('pira')], ['pira-container-ano', ()=>renderReceitaArmazemAno('pira')], ['painel-ind-descarrego-container', carregarPainelDescarrego]];
     case 'prazo-formacao':              return [['pf-container', renderPrazoFormacao], ['pf-container-ano', renderPrazoFormacaoAno]];
@@ -34919,10 +34920,13 @@ async function _pnHtmlCalendarioRotas(mesDeck){
 }
 
 // ── 4) Venda por rota (pedidos do mês × mês anterior, rotas internas) — slide 28 do modelo ──
-async function _pnHtmlVendaPorRota(mes, und){
+// rire: 'RI' (padrão, rotas internas — lançamentos) ou 'RE' (rotas externas — pedidos das cargas da Expedição, pela data do pedido)
+async function _pnHtmlVendaPorRota(mes, und, rire){
+  const ehRE = rire === 'RE';
   const ant = _pnMesAnterior(mes);
-  const A = _semAbastecimento(await _calcularBaseFiltrada(mes, 'RI', und));
-  const B = _semAbastecimento(await _calcularBaseFiltrada(ant, 'RI', und));
+  const A = ehRE ? null : _semAbastecimento(await _calcularBaseFiltrada(mes, 'RI', und));
+  const B = ehRE ? null : _semAbastecimento(await _calcularBaseFiltrada(ant, 'RI', und));
+  const linhasRE = ehRE ? await _carregarPedidosRE(und, ant+'-01') : null;
   // só pedidos feitos no próprio mês (mesma regra do "Pedidos por semana" do Painel)
   // Mês em andamento: compara o MESMO PERÍODO nos dois meses (dia 1 até o dia de hoje, fuso de Salvador) —
   // senão 3 dias de novembro apareciam contra o outubro inteiro (pedido do usuário, 2026-11-03).
@@ -34935,13 +34939,20 @@ async function _pnHtmlVendaPorRota(mes, und){
     const d = Number(String(p.data_pedido||'').slice(8,10));
     return !d || d <= diaCorte;
   });
-  const ra = Object.fromEntries(_calcEntregasPorRota(doMes(A, mes), A.cargaRota, A.cargaIsRI, 'RI').todas);
-  const rb = Object.fromEntries(_calcEntregasPorRota(doMes(B, ant), B.cargaRota, B.cargaIsRI, 'RI').todas);
+  // R.E.: pedidos por rota pela data do pedido (mesmo corte de dia dos dois meses)
+  const reMes = (m, inteiro)=>{ const o = {}; linhasRE.forEach(p=>{ if(p.data.slice(0,7) !== m) return; if(diaCorte !== null && !inteiro && Number(p.data.slice(8,10)) > diaCorte) return; (o[p.rota] = o[p.rota] || {ped:0}).ped++; }); return o; };
+  const ra = ehRE ? reMes(mes) : Object.fromEntries(_calcEntregasPorRota(doMes(A, mes), A.cargaRota, A.cargaIsRI, 'RI').todas);
+  const rb = ehRE ? reMes(ant) : Object.fromEntries(_calcEntregasPorRota(doMes(B, ant), B.cargaRota, B.cargaIsRI, 'RI').todas);
   const nomes = [...new Set([...Object.keys(ra), ...Object.keys(rb)])].filter(n=>n && n !== '—');
-  if(!nomes.length) throw _pnSemDado('sem pedidos de rotas internas');
+  if(!nomes.length) throw _pnSemDado(ehRE ? 'sem pedidos de rotas externas' : 'sem pedidos de rotas internas');
   // mês anterior FECHADO (base da projeção): só precisa quando o mês atual está em andamento
-  const rbInt = diaCorte === null ? rb : Object.fromEntries(_calcEntregasPorRota(doMes(B, ant, true), B.cargaRota, B.cargaIsRI, 'RI').todas);
-  const linhas = nomes.map(n=>({ nome:n, a:(ra[n]?.ped)||0, b:(rb[n]?.ped)||0, bInt:(rbInt[n]?.ped)||0 })).sort((x,y)=>y.a-x.a);
+  const rbInt = diaCorte === null ? rb : ehRE ? reMes(ant, true) : Object.fromEntries(_calcEntregasPorRota(doMes(B, ant, true), B.cargaRota, B.cargaIsRI, 'RI').todas);
+  let linhas = nomes.map(n=>({ nome:n, a:(ra[n]?.ped)||0, b:(rb[n]?.ped)||0, bInt:(rbInt[n]?.ped)||0 })).sort(ehRE ? ((x,y)=>Math.max(y.a,y.b,y.bInt)-Math.max(x.a,x.b,x.bInt) || y.a-x.a) : ((x,y)=>y.a-x.a));
+  // R.E. tem muitas rotas: mostra as 9 maiores e soma o resto em 'DEMAIS ROTAS' (os totais continuam de todas)
+  if(ehRE && linhas.length > 10){
+    const resto = linhas.slice(9);
+    linhas = linhas.slice(0, 9).concat([{ nome:'DEMAIS ROTAS ('+resto.length+')', a:resto.reduce((s,x)=>s+x.a,0), b:resto.reduce((s,x)=>s+x.b,0), bInt:resto.reduce((s,x)=>s+x.bInt,0) }]);
+  }
   const totA = linhas.reduce((s,x)=>s+x.a, 0), totB = linhas.reduce((s,x)=>s+x.b, 0);
   const max = Math.max(...linhas.map(x=>Math.max(x.a, x.b)), 1);
   const var_ = (a,b)=> b > 0 ? ((a-b)/b*100) : null;
@@ -34961,7 +34972,7 @@ async function _pnHtmlVendaPorRota(mes, und){
   // ── Projeção de fechamento do mês: pedidos até hoje + ritmo por dia útil × dias úteis que faltam ──
   // Dia útil = segunda a sábado, fora feriados cadastrados (mesma regra do prazo do OTIF: só domingo e feriado não contam).
   let projHtml = '';
-  if(diaCorte !== null){
+  if(diaCorte !== null && !ehRE){ // R.E. em andamento: sem projeção (ver aviso abaixo) — a fonte só conta pedidos de cargas que já saíram
     const [aa, mmn] = mes.split('-').map(Number), ultDia = new Date(Date.UTC(aa, mmn, 0)).getUTCDate();
     const proxMes = _pnMesSeguinte(mes);
     const feriados = new Set(((await supaFetch(`feriados?data=gte.${mes}-01&data=lt.${proxMes}-01&select=data`).catch(()=>[])) || []).map(r=>r.data));
@@ -34992,17 +35003,18 @@ async function _pnHtmlVendaPorRota(mes, und){
       projHtml = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;margin:30px 0 14px">
           <div>${_pnh.rot('PROJEÇÃO DE FECHAMENTO — '+mm(mes)+' × '+mm(ant)+' FECHADO')}<div style="font-size:.85rem;color:var(--text-secondary);margin-top:4px">no ritmo atual · dia ${diaCorte} de ${ultDia} · ${duDecorridos} ${duDecorridos===1?'dia útil decorrido':'dias úteis decorridos'} · faltam ${duFaltam} ${duFaltam===1?'dia útil':'dias úteis'}</div></div>
           <div style="display:flex;align-items:baseline;gap:14px"><span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">TOTAL PROJETADO</span><span style="font-size:1.4rem;font-weight:700">${_pnh.n(totProj)} × ${_pnh.n(totBInt)} ped.</span><span style="font-size:1.4rem;font-weight:700;color:${corVar(vtp)}">${fmtVar(vtp)}</span></div></div>
-        <div style="display:flex;gap:16px">${linhas.map(cardP).join('')}</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">${linhas.map(cardP).join('')}</div>
         <div style="font-size:.8rem;color:var(--text-muted);margin-top:14px;line-height:1.5">Projeção = pedidos até hoje + (pedidos até hoje ÷ dias úteis decorridos) × dias úteis que faltam (parte tracejada da barra). Dia útil = segunda a sábado, fora feriados cadastrados; hoje conta como decorrido. Estimativa pelo ritmo atual, não é meta.${duDecorridos < 5 ? ' <b>Atenção:</b> só '+duDecorridos+(duDecorridos===1?' dia útil decorrido':' dias úteis decorridos')+' — com poucos dias a projeção oscila muito e vai se ajustando conforme o mês avança.' : ''}${feriados.size ? '' : ' Não há feriado cadastrado neste mês (Cadastros › Feriados): todos os dias de segunda a sábado foram contados como úteis.'}</div>`;
     }
   }
   const corpo = `<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:14px;margin:-6px 0 16px"><span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">TOTAL</span><span style="font-size:1.4rem;font-weight:700">${_pnh.n(totA)} × ${_pnh.n(totB)} ped.</span><span style="font-size:1.4rem;font-weight:700;color:${corVar(vt)}">${fmtVar(vt)}</span></div>
-      <div style="display:flex;gap:16px">${linhas.map(card).join('')}</div>
+      ${(ehRE && diaCorte !== null) ? `<div style="background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.5);color:#f59e0b;border-radius:10px;padding:10px 14px;font-size:.82rem;margin:0 0 14px;line-height:1.5"><b>Atenção:</b> mês em andamento. Só entram pedidos de cargas externas que já saíram da Expedição; pedido recente que ainda não saiu não aparece. Por isso a comparação com o mês anterior fechado fica muito abaixo do real e não há projeção de fechamento para as rotas externas.</div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">${linhas.map(card).join('')}</div>
       ${projHtml}
-      ${_pnh.nota('Pedidos das rotas internas (R.I.) — pedidos feitos no mês, mesma conta do Painel (sem cliente que retira), '+mm(mes)+' × '+mm(ant)+(diaCorte === null ? '' : ', ambos do dia 01 ao dia '+d2(diaCorte))+'. Rota sem pedido no mês anterior aparece sem variação percentual.')}`;
+      ${_pnh.nota(ehRE ? 'Pedidos das rotas externas (R.E.) — contados pela data do pedido, só de cargas lançadas na Expedição que já têm data de saída: pedido recente que ainda não saiu em carga não aparece, por isso o mês em andamento tende a ficar abaixo do mês anterior fechado. '+mm(mes)+' × '+mm(ant)+(diaCorte === null ? '' : ', ambos do dia 01 ao dia '+d2(diaCorte))+'. Mostra as 9 maiores rotas; as demais somam em DEMAIS ROTAS.' : 'Pedidos das rotas internas (R.I.) — pedidos feitos no mês, mesma conta do Painel (sem cliente que retira), '+mm(mes)+' × '+mm(ant)+(diaCorte === null ? '' : ', ambos do dia 01 ao dia '+d2(diaCorte))+'. Rota sem pedido no mês anterior aparece sem variação percentual.')}`;
   const periodoTxt = diaCorte === null ? 'PEDIDOS NO MÊS · '+mm(mes)+' × '+mm(ant)
     : 'PEDIDOS DE 01 A '+d2(diaCorte)+' · '+mm(mes)+' × '+mm(ant)+' (MESMO PERÍODO)';
-  return _pnh.casca('MONITORAMENTO · VENDAS · '+periodoTxt, 'Venda por rota', corpo, 'OPERAÇÕES / MONITORAMENTO');
+  return _pnh.casca('MONITORAMENTO · VENDAS · '+(ehRE ? 'ROTAS EXTERNAS · ' : '')+periodoTxt, ehRE ? 'Venda por rota — externas' : 'Venda por rota', corpo, 'OPERAÇÕES / MONITORAMENTO');
 }
 
 // ── 5) Frota interna — valor e pedidos por veículo (slides 32, 33 e 34 do modelo) ──
@@ -35102,6 +35114,7 @@ async function _pnHtmlDados(chave, mes, und, ctx){
   if(chave === 'diasPorRota') return _pnHtmlDiasPorRota(mes, und);
   if(chave === 'calendarioRotas') return _pnHtmlCalendarioRotas(mes);
   if(chave === 'vendaPorRota') return _pnHtmlVendaPorRota(mes, und);
+  if(chave === 'vendaPorRotaRE') return _pnHtmlVendaPorRota(mes, und, 'RE');
   if(chave === 'topValor') return _pnHtmlTopVeiculos(mes, und, ctx, 'valor');
   if(chave === 'topPedidos') return _pnHtmlTopVeiculos(mes, und, ctx, 'pedidos');
   if(chave === 'comparativoVeic') return _pnHtmlComparativoVeiculos(mes, und, ctx);
