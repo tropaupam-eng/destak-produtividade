@@ -9950,7 +9950,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.193';
+const APP_VERSION = '4.89.194';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18242,8 +18242,6 @@ async function _renderAgendaNovaRota(){
   }
   if(mesRef !== _agendaNovaRotaMes) return; // usuário já trocou de mês enquanto buscava
 
-  agends = agends.filter(a => a.status !== 'realizado' && a.status !== 'concluido');
-
   if(!agends.length){
     grid.innerHTML = '';
     vazio.style.display='block';
@@ -18252,8 +18250,59 @@ async function _renderAgendaNovaRota(){
     return;
   }
 
-  const _RPAL = ['#7ec854','#5ba8f0','#3ecfab','#f0a83a','#f07a6a','#e87eb8','#f56b6b','#a992f5','#55d68e','#c084e0','#60a5fa','#34d399','#fb923c','#f472b6','#818cf8'];
-  const _cor = nome => { let h=0, n=(nome||'').toUpperCase(); for(let i=0;i<n.length;i++) h=((h*31)+n.charCodeAt(i))>>>0; return _RPAL[h%_RPAL.length]; };
+  // ── Situação de cada agendamento — MESMAS cores e regra do Calendário de Saídas (pedido do usuário, 2026-11-04) ──
+  // cinza = ainda SEM pré-carga (única que pode ser clicada) · azul = carga na Expedição que ainda não saiu (vinculada ao agendamento OU
+  // criada para a mesma rota e data) · verde = saiu na data ou antes · vermelho = saiu depois da data.
+  // Não depende mais do campo "lancado" (falhava e deixava criar pré-carga duplicada).
+  const _chv = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
+  const _SAIU = ['saiu','fim_viagem','concluido'];
+  const _ATOM = {sem_veiculo:'veiculo',sem_motorista:'motorista',valor:'comercial',atraso_rota:'atraso_rota'};
+  let _demMes = [], _demVinc = [], _semExp = false;
+  try{
+    const [_y2,_m2] = mesRef.split('-').map(Number);
+    const _prox2 = _m2===12 ? `${_y2+1}-01` : `${_y2}-${String(_m2+1).padStart(2,'0')}`;
+    _demMes = await supaFetch('demandas_rota?data_saida=gte.'+mesRef+'-01&data_saida=lt.'+_prox2+'-01&select=carga,rota,status,data_saida&limit=5000',{_quiet:true}) || [];
+    const _cv = [...new Set(agends.map(a=>a.carga).filter(c=>c && /^\d+$/.test(String(c))).map(String))];
+    for(let i=0;i<_cv.length;i+=100){
+      const r = await supaFetch('demandas_rota?carga=in.('+_cv.slice(i,i+100).join(',')+')&select=carga,rota,status,data_saida&limit=2000',{_quiet:true});
+      if(r) _demVinc = _demVinc.concat(r);
+    }
+  }catch(e){ _semExp = true; }
+  if(mesRef !== _agendaNovaRotaMes) return;
+  const _saiuSet = {}, _andaRD = {}, _dcMap = {}, _andaVinc = {};
+  _demMes.forEach(d=>{
+    const k = _chv(d.rota)+'|'+(d.data_saida||'');
+    if(_SAIU.indexOf(d.status)>=0) _saiuSet[k]=true;
+    else if(d.status!=='cancelado') (_andaRD[k]=_andaRD[k]||[]).push(String(d.carga));
+  });
+  _demVinc.forEach(d=>{
+    const c = String(d.carga);
+    if(_SAIU.indexOf(d.status)>=0){ if(d.data_saida && (!_dcMap[c] || d.data_saida<_dcMap[c])) _dcMap[c]=d.data_saida; }
+    else if(d.status!=='cancelado') _andaVinc[c]=true;
+  });
+  // devolve {est, carga}: est = ok | atraso | vinc | semvinc | agendada
+  const _estadoPC = a => {
+    let mot = a.motivo_atraso || _ATOM[a.acao] || ''; if(mot==='outro') mot='atraso_carregamento'; if(mot==='saiu_data_correta') mot='';
+    const c = a.carga ? String(a.carga) : '', dc = c ? _dcMap[c] : null, rk = _chv(a.rota)+'|'+a.data;
+    if(dc && dc > a.data) return {est:'atraso'};
+    if((dc && dc <= a.data) || _saiuSet[rk]) return {est:'ok'};
+    if(a.status==='realizado') return {est: mot ? 'atraso' : 'ok'};
+    if(c && _andaVinc[c]) return {est:'vinc', carga:c};
+    const rd = _andaRD[rk] || [];
+    if(rd.length) return {est:'semvinc', carga:rd.join(', ')};
+    return {est:'agendada'};
+  };
+  const _CHIPPC = {
+    agendada:'background:#f1f5f9;color:#475569;border:1px dashed #94a3b8;cursor:pointer',
+    vinc:'background:rgba(37,99,235,.14);color:#2563eb',
+    semvinc:'background:rgba(37,99,235,.14);color:#2563eb',
+    ok:'background:rgba(22,163,74,.16);color:#15803d',
+    atraso:'background:rgba(220,38,38,.14);color:#dc2626'
+  };
+  const _legendaPC = '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.78rem;color:#475569;margin-bottom:10px">'
+    + [['agendada','Sem pré-carga (clique para criar)'],['vinc','Carga na Expedição, ainda não saiu'],['ok','Saiu na data ou antes'],['atraso','Saiu com atraso']].map(([k,tx])=>'<span style="display:inline-flex;align-items:center;gap:6px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;'+_CHIPPC[k]+'"></span>'+tx+'</span>').join('')
+    + (_semExp ? '<span style="color:#b45309;font-weight:700">⚠ Não deu para conferir a Expedição agora — confira antes de criar a pré-carga.</span>' : '')
+    + '</div>';
 
   const hoje = hojeDataBRT();
   const _priDia = new Date(mesRef+'-01T12:00:00');
@@ -18277,14 +18326,18 @@ async function _renderAgendaNovaRota(){
     s += '<div style="min-height:100px;padding:6px 5px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;'+(eH?'background:rgba(37,99,235,.06);':wknd?'background:#fafafa;':'')+'">';
     s += '<div style="text-align:right;font-size:.8rem;font-weight:700;color:'+(eH?'#2563eb':wknd?'#f87171':'#9ca3af')+';margin-bottom:4px">'+dia+'</div>';
     itens.forEach(a=>{
-      const cor = _cor(a.rota||'');
-      const ja = !!a.lancado;
+      const e = _estadoPC(a);
       const rotaEsc = escapeHtml(a.rota||'');
       const rc = rotaEsc.length>18 ? rotaEsc.slice(0,18)+'…' : rotaEsc;
-      if(ja){
-        s += '<div title="'+rotaEsc+' — pré-carga já criada" style="margin-bottom:4px;background:#f0fdf4;color:#15803d;border-radius:6px;padding:4px 8px;font-size:.78rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">✓ '+rc+'</div>';
+      const base = 'margin-bottom:4px;border-radius:6px;padding:4px 8px;font-size:.78rem;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;'+_CHIPPC[e.est];
+      if(e.est==='agendada'){
+        s += '<div onclick="selecionarAgendaParaNovaDemanda(\''+(a.rota||'').replace(/'/g,"\\'")+'\',\''+a.data+'\')" title="Selecionar '+rotaEsc+' — '+a.data+'" style="'+base+'">'+rc+'</div>';
       } else {
-        s += '<div onclick="selecionarAgendaParaNovaDemanda(\''+(a.rota||'').replace(/'/g,"\\'")+'\',\''+a.data+'\')" title="Selecionar '+rotaEsc+' — '+a.data+'" style="cursor:pointer;margin-bottom:4px;background:'+cor+'20;color:'+cor+';border-radius:6px;padding:4px 8px;font-size:.78rem;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+rc+'</div>';
+        const tit = e.est==='ok' ? rotaEsc+' — saiu na data ou antes'
+                  : e.est==='atraso' ? rotaEsc+' — saiu com atraso'
+                  : e.est==='vinc' ? rotaEsc+' — pré-carga já criada (carga '+e.carga+')'
+                  : rotaEsc+' — já existe pré-carga para esta rota e data (carga '+e.carga+'), ainda sem o nº vinculado ao agendamento';
+        s += '<div title="'+tit+'" style="'+base+'">'+(e.est==='ok'?'✓ ':'')+rc+'</div>';
       }
     });
     s += '</div>';
@@ -18292,7 +18345,7 @@ async function _renderAgendaNovaRota(){
   const tot = _iniSem+_ultDia, rest=(7-(tot%7))%7;
   for(let ri=0; ri<rest; ri++){ s += '<div style="min-height:100px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:#fafafa"></div>'; }
   s += '</div></div>';
-  grid.innerHTML = s;
+  grid.innerHTML = _legendaPC + s;
 }
 
 function selecionarAgendaParaNovaDemanda(rota, data){
