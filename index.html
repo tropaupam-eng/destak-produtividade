@@ -9971,7 +9971,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.179';
+const APP_VERSION = '4.89.180';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -34891,21 +34891,32 @@ async function _pnHtmlDiasPorRota(mes, und){
 
 // ── 3) Calendário de rotas — slide 24 do modelo ──
 // Visual sóbrio (pedido do usuário, 2026-11-04): cinza = agendada / sem saída registrada, verde = saiu na data agendada,
-// amarelo = saiu com atraso. Os motivos do atraso ficam contados no topo. Nada é suposto: cada cor diz de onde vem na legenda.
+// amarelo = saiu com atraso, azul = carga em formação com pedidos vinculados. Os motivos do atraso ficam contados no topo. Nada é suposto: cada cor diz de onde vem na legenda.
 //  - saiu na data = agendamento marcado "realizado" OU existe carga da MESMA rota e data (demandas_rota) com status saiu/fim_viagem/concluido
 //    (mesma regra da tela Calendário de Saídas; só "lançada" na pré-carga NÃO conta como saída);
-//  - com atraso = saiu, mas com motivo de atraso marcado no agendamento, ou a carga vinculada ao agendamento saiu em data posterior.
+//  - com atraso = saiu, mas com motivo de atraso marcado no agendamento, ou a carga vinculada ao agendamento saiu em data posterior;
+//  - em formação (azul) = ainda não saiu e existe carga EM FORMAÇÃO (demandas_rota) da mesma rota e data, ou vinculada ao agendamento, com pelo menos 1 pedido (base_data.carga).
 // naTela = card da aba do Painel: mostra o mês do filtro. No deck mostra o mês SEGUINTE (o modelo de outubro traz o calendário de novembro).
 async function _pnHtmlCalendarioRotas(mesDeck, naTela){
   const mes = naTela ? mesDeck : _pnMesSeguinte(mesDeck);
   const P = _pnPeriodoMes(mes);
   const fimMes = mes+'-'+String(new Date(P.ano, P.mes, 0).getDate()).padStart(2,'0');
   const SAIU = 'in.(saiu,fim_viagem,concluido)';
+  const chaveRotaF = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
   const rows = await supaFetch(`agendamentos_rotas?data=gte.${P.ini}&data=lte.${fimMes}&select=id,rota,data,status,lancado,carga,motivo_atraso,acao&order=data.asc&limit=2000`) || [];
   if(!rows.length) throw _pnSemDado('sem rotas agendadas para '+P.nome.toLowerCase());
   const dem = await supaFetch(`demandas_rota?data_saida=gte.${P.ini}&data_saida=lte.${fimMes}&status=${SAIU}&select=carga,rota,data_saida&limit=5000`) || [];
   const cargasVinc = [...new Set(rows.map(r=>r.carga).filter(Boolean))];
   const demCarga = cargasVinc.length ? await _pnEmLotes(cargasVinc, 100, ids=>supaFetch(`demandas_rota?carga=in.(${ids.join(',')})&status=${SAIU}&select=carga,data_saida`)) : [];
+  // cargas em formação do mês (mesma rota e data do agendamento) + as vinculadas ao agendamento, e quantos pedidos cada uma tem
+  const demForm = await supaFetch(`demandas_rota?data_saida=gte.${P.ini}&data_saida=lte.${fimMes}&status=eq.formacao&select=carga,rota,data_saida&limit=2000`) || [];
+  const formVinc = cargasVinc.length ? await _pnEmLotes(cargasVinc, 100, ids=>supaFetch(`demandas_rota?carga=in.(${ids.join(',')})&status=eq.formacao&select=carga`)) : [];
+  const idsForm = [...new Set([...demForm.map(d=>d.carga), ...formVinc.map(d=>d.carga)].filter(Boolean))];
+  const pedsForm = idsForm.length ? await _pnEmLotes(idsForm, 60, ids=>supaFetch(`base_data?carga=in.(${ids.join(',')})&select=carga&limit=20000`)) : [];
+  const nPedidos = new Map(); pedsForm.forEach(p=>nPedidos.set(String(p.carga), (nPedidos.get(String(p.carga))||0) + 1));
+  const temPed = c => (nPedidos.get(String(c))||0) > 0;
+  const formSet = new Set(formVinc.map(d=>String(d.carga)));
+  const formPorRotaData = new Map(); demForm.forEach(d=>{ const k = chaveRotaF(d.rota)+'|'+d.data_saida; if(!formPorRotaData.has(k)) formPorRotaData.set(k, []); formPorRotaData.get(k).push(d.carga); });
   const chaveRota = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
   const saiuSet = new Set(dem.map(d=>chaveRota(d.rota)+'|'+d.data_saida));
   const dataCarga = new Map(); demCarga.forEach(d=>{ const o = dataCarga.get(d.carga); if(!o || d.data_saida < o) dataCarga.set(d.carga, d.data_saida); });
@@ -34917,24 +34928,26 @@ async function _pnHtmlCalendarioRotas(mesDeck, naTela){
     const mot = motivoDe(a), dc = a.carga ? dataCarga.get(a.carga) : null;
     if(dc && dc > a.data) return 'atraso';
     if(a.status === 'realizado' || saiuSet.has(chaveRota(a.rota)+'|'+a.data) || (dc && dc <= a.data)) return mot ? 'atraso' : 'ok';
+    if((a.carga && formSet.has(String(a.carga)) && temPed(a.carga)) || (formPorRotaData.get(chaveRotaF(a.rota)+'|'+a.data) || []).some(temPed)) return 'formacao';
     return 'agendada';
   };
   const porDia = new Map(); const porRota = new Map();
-  let nOk = 0, nAtraso = 0, nSemSaida = 0, nASair = 0; const contMot = {};
+  let nOk = 0, nAtraso = 0, nSemSaida = 0, nASair = 0, nForm = 0; const contMot = {};
   rows.forEach(r=>{
     const rota = (r.rota||'').trim().toUpperCase(); if(!rota) return;
     const est = estadoDe(r);
     if(!porDia.has(r.data)) porDia.set(r.data, []);
     porDia.get(r.data).push({ rota, est });
     porRota.set(rota, (porRota.get(rota)||0) + 1);
-    if(est === 'ok') nOk++; else if(est === 'atraso') nAtraso++; else if(r.data <= hoje) nSemSaida++; else nASair++;
-    if(est === 'atraso' || (est === 'agendada' && r.data <= hoje)){ const k = motivoDe(r); if(k) contMot[k] = (contMot[k]||0) + 1; }
+    if(est === 'ok') nOk++; else if(est === 'atraso') nAtraso++; else if(est === 'formacao') nForm++; else if(r.data <= hoje) nSemSaida++; else nASair++;
+    if(est === 'atraso' || ((est === 'agendada' || est === 'formacao') && r.data <= hoje)){ const k = motivoDe(r); if(k) contMot[k] = (contMot[k]||0) + 1; }
   });
-  const total = nOk + nAtraso + nSemSaida + nASair;
+  const total = nOk + nAtraso + nForm + nSemSaida + nASair;
   const ESTILO = {
     agendada: 'background:rgba(148,163,184,.14);color:var(--text-secondary)',
     ok:       'background:rgba(22,163,74,.20);color:#16a34a',
     atraso:   'background:rgba(202,138,4,.22);color:#ca8a04',
+    formacao: 'background:rgba(37,99,235,.20);color:#3b82f6',
   };
   const primeiro = new Date(P.ano, P.mes-1, 1).getDay(), dias = new Date(P.ano, P.mes, 0).getDate();
   const semanas = Math.ceil((primeiro + dias) / 7);
@@ -34948,17 +34961,17 @@ async function _pnHtmlCalendarioRotas(mesDeck, naTela){
   }
   const cab = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB'].map(x=>`<div style="text-align:center;font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);padding:4px 0">${x}</div>`).join('');
   const kpi = (rotulo, valor) => `<div style="flex:1;min-width:0"><div style="font-size:1.9rem;font-weight:700;line-height:1">${valor}</div><div style="font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);margin-top:6px">${rotulo}</div></div>`;
-  const topo = _pnh.caixa(`<div style="display:flex;gap:18px">${kpi('AGENDADAS', total)}${kpi('SAÍRAM NA DATA', nOk)}${kpi('SAÍRAM COM ATRASO', nAtraso)}${kpi('SEM SAÍDA REGISTRADA', nSemSaida)}${kpi('A SAIR', nASair)}</div>
+  const topo = _pnh.caixa(`<div style="display:flex;gap:18px">${kpi('AGENDADAS', total)}${kpi('SAÍRAM NA DATA', nOk)}${kpi('SAÍRAM COM ATRASO', nAtraso)}${kpi('EM FORMAÇÃO', nForm)}${kpi('SEM SAÍDA REGISTRADA', nSemSaida)}${kpi('A SAIR', nASair)}</div>
       <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:14px">${_pnh.rot('MOTIVOS DO ATRASO')}
         <div style="display:flex;gap:18px;margin-top:10px">${MOTIVOS.map(([k, nome])=>`<div style="flex:1;min-width:0"><div style="font-size:1.4rem;font-weight:700;line-height:1">${contMot[k]||0}</div><div style="font-size:.78rem;color:var(--text-secondary);margin-top:5px">${nome}</div></div>`).join('')}</div>
       </div>`, 'var(--border-med)', 'margin-bottom:18px;padding:20px 24px');
-  const legenda = [['agendada','Agendada / sem saída registrada'],['ok','Saiu na data'],['atraso','Saiu com atraso']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
+  const legenda = [['agendada','Agendada / sem saída registrada'],['formacao','Carga em formação (com pedidos)'],['ok','Saiu na data'],['atraso','Saiu com atraso']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
   const contagem = [...porRota.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).map(([r,n])=>_pnh.esc(r)+' '+n).join(' · ');
   const corpo = `${topo}
       <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">${cab}${celulas}</div>
       <div style="font-size:.8rem;color:var(--text-secondary);margin-top:12px">${legenda}</div>
       <div style="margin-top:16px">${_pnh.rot('SAÍDAS POR ROTA')}<div style="font-size:.84rem;color:var(--text-secondary);margin-top:6px;line-height:1.6">${contagem}</div></div>
-      ${_pnh.nota('Fonte: agendamento de rotas ('+(naTela ? 'mês do filtro' : 'mês seguinte ao da apresentação')+') cruzado com as cargas da Expedição. Saiu na data = carga da mesma rota e data com saída registrada (rota apenas lançada na pré-carga não conta). Saiu com atraso = saiu, com motivo de atraso marcado no agendamento ou carga vinculada que saiu depois da data. Motivos: contados nas rotas com atraso e nas que já passaram da data sem saída registrada. Rotas sem registro de saída ficam cinza.')}`;
+      ${_pnh.nota('Fonte: agendamento de rotas ('+(naTela ? 'mês do filtro' : 'mês seguinte ao da apresentação')+') cruzado com as cargas da Expedição. Saiu na data = carga da mesma rota e data com saída registrada (rota apenas lançada na pré-carga não conta). Em formação = carga ainda não saiu e já tem pedidos vinculados. Saiu com atraso = saiu, com motivo de atraso marcado no agendamento ou carga vinculada que saiu depois da data. Motivos: contados nas rotas com atraso e nas que já passaram da data sem saída registrada. Rotas sem registro de saída ficam cinza.')}`;
   return _pnh.casca('DISTRIBUIÇÃO · AGENDAMENTO DE ROTAS · '+P.nome+' '+P.ano+' · '+rows.length+' SAÍDAS', 'Calendário de rotas — '+P.nome.charAt(0)+P.nome.slice(1).toLowerCase(), corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
