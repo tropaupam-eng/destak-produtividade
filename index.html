@@ -9970,7 +9970,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.163';
+const APP_VERSION = '4.89.164';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -34871,9 +34871,9 @@ async function _pnHtmlVendaPorRota(mes, und){
   const hojeSsa = new Date().toLocaleDateString('en-CA', { timeZone:'America/Bahia' });
   const d2 = n=>String(n).padStart(2,'0');
   const diaCorte = mes === hojeSsa.slice(0,7) ? Number(hojeSsa.slice(8,10)) : null;
-  const doMes = (R, m)=>R.bd.filter(p=>{
+  const doMes = (R, m, inteiro)=>R.bd.filter(p=>{
     if((p.mes_ano || p.data_pedido || '').slice(0,7) !== m) return false;
-    if(diaCorte === null) return true;
+    if(diaCorte === null || inteiro) return true;
     const d = Number(String(p.data_pedido||'').slice(8,10));
     return !d || d <= diaCorte;
   });
@@ -34881,7 +34881,9 @@ async function _pnHtmlVendaPorRota(mes, und){
   const rb = Object.fromEntries(_calcEntregasPorRota(doMes(B, ant), B.cargaRota, B.cargaIsRI, 'RI').todas);
   const nomes = [...new Set([...Object.keys(ra), ...Object.keys(rb)])].filter(n=>n && n !== '—');
   if(!nomes.length) throw _pnSemDado('sem pedidos de rotas internas');
-  const linhas = nomes.map(n=>({ nome:n, a:(ra[n]?.ped)||0, b:(rb[n]?.ped)||0 })).sort((x,y)=>y.a-x.a);
+  // mês anterior FECHADO (base da projeção): só precisa quando o mês atual está em andamento
+  const rbInt = diaCorte === null ? rb : Object.fromEntries(_calcEntregasPorRota(doMes(B, ant, true), B.cargaRota, B.cargaIsRI, 'RI').todas);
+  const linhas = nomes.map(n=>({ nome:n, a:(ra[n]?.ped)||0, b:(rb[n]?.ped)||0, bInt:(rbInt[n]?.ped)||0 })).sort((x,y)=>y.a-x.a);
   const totA = linhas.reduce((s,x)=>s+x.a, 0), totB = linhas.reduce((s,x)=>s+x.b, 0);
   const max = Math.max(...linhas.map(x=>Math.max(x.a, x.b)), 1);
   const var_ = (a,b)=> b > 0 ? ((a-b)/b*100) : null;
@@ -34898,8 +34900,39 @@ async function _pnHtmlVendaPorRota(mes, und){
         <div style="font-size:.82rem;color:var(--text-secondary);text-align:center;margin-top:10px">${_pnh.n(x.a)} × ${_pnh.n(x.b)} pedidos · ${x.a-x.b > 0 ? '+' : x.a-x.b < 0 ? '−' : ''}${_pnh.n(Math.abs(x.a-x.b))} ped.</div></div>`;
   };
   const vt = var_(totA, totB);
+  // ── Projeção de fechamento do mês: pedidos até hoje + ritmo por dia útil × dias úteis que faltam ──
+  // Dia útil = segunda a sábado, fora feriados cadastrados (mesma regra do prazo do OTIF: só domingo e feriado não contam).
+  let projHtml = '';
+  if(diaCorte !== null){
+    const [aa, mmn] = mes.split('-').map(Number), ultDia = new Date(Date.UTC(aa, mmn, 0)).getUTCDate();
+    const proxMes = _pnMesSeguinte(mes);
+    const feriados = new Set(((await supaFetch(`feriados?data=gte.${mes}-01&data=lt.${proxMes}-01&select=data`).catch(()=>[])) || []).map(r=>r.data));
+    let duDecorridos = 0, duFaltam = 0;
+    for(let d=1; d<=ultDia; d++){
+      const ds = mes+'-'+d2(d);
+      if(new Date(Date.UTC(aa, mmn-1, d)).getUTCDay() === 0 || feriados.has(ds)) continue;
+      if(d <= diaCorte) duDecorridos++; else duFaltam++;
+    }
+    const proj = x=> duDecorridos > 0 ? Math.round(x.a + (x.a/duDecorridos)*duFaltam) : null;
+    const ritmo = x=> duDecorridos > 0 ? x.a/duDecorridos : null;
+    const totProj = duDecorridos > 0 ? linhas.reduce((s,x)=>s+proj(x), 0) : null;
+    const totBInt = linhas.reduce((s,x)=>s+x.bInt, 0);
+    const colunas = 'grid-template-columns:1.6fr 1fr 1fr 1.2fr 1.2fr .9fr';
+    const cel = (txt, o)=>`<div style="${(o&&o.esq)?'text-align:left':'text-align:right'};${(o&&o.neg)?'font-weight:700;':''}${(o&&o.cor)?'color:'+o.cor+';':''}">${txt}</div>`;
+    const cab = ['ROTA','ATÉ HOJE','RITMO / DIA ÚTIL','PROJEÇÃO DO MÊS',mm(ant)+' FECHADO','VAR.'].map((h,i)=>`<div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);text-align:${i?'right':'left'}">${h}</div>`).join('');
+    const lin = x=>{ const p = proj(x), v = p === null ? null : var_(p, x.bInt); return `<div style="display:grid;${colunas};gap:10px;padding:9px 0;border-top:1px solid var(--border);font-size:.95rem">${cel(_pnh.esc(x.nome), {esq:1, neg:1})}${cel(_pnh.n(x.a))}${cel(ritmo(x)===null?'—':_pnh.p1(ritmo(x)))}${cel(p===null?'—':_pnh.n(p), {neg:1})}${cel(_pnh.n(x.bInt))}${cel(fmtVar(v), {cor:corVar(v), neg:1})}</div>`; };
+    const vtp = totProj === null ? null : var_(totProj, totBInt);
+    const linTot = `<div style="display:grid;${colunas};gap:10px;padding:11px 0 2px;border-top:2px solid var(--red);font-size:1rem">${cel('TOTAL', {esq:1, neg:1})}${cel(_pnh.n(totA), {neg:1})}${cel(duDecorridos>0?_pnh.p1(totA/duDecorridos):'—', {neg:1})}${cel(totProj===null?'—':_pnh.n(totProj), {neg:1})}${cel(_pnh.n(totBInt), {neg:1})}${cel(fmtVar(vtp), {cor:corVar(vtp), neg:1})}</div>`;
+    projHtml = `<div style="background:var(--bg-card2);border-radius:10px;padding:22px 26px;border-top:3px solid var(--red);margin-top:18px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px">${_pnh.rot('PROJEÇÃO DE FECHAMENTO — '+mm(mes))}<span style="font-size:.85rem;color:var(--text-secondary)">dia ${diaCorte} de ${ultDia} · ${duDecorridos} ${duDecorridos===1?'dia útil decorrido':'dias úteis decorridos'} · faltam ${duFaltam} ${duFaltam===1?'dia útil':'dias úteis'}</span></div>
+        <div style="display:grid;${colunas};gap:10px;padding-bottom:8px">${cab}</div>
+        ${linhas.map(lin).join('')}${linTot}
+        <div style="font-size:.8rem;color:var(--text-muted);margin-top:12px;line-height:1.5">Projeção = pedidos até hoje + (pedidos até hoje ÷ dias úteis decorridos) × dias úteis que faltam. Dia útil = segunda a sábado, fora feriados cadastrados; o dia de hoje conta como decorrido. É uma estimativa pelo ritmo do mês, não uma meta.${duDecorridos < 5 ? ' <b>Atenção:</b> só '+duDecorridos+(duDecorridos===1?' dia útil decorrido':' dias úteis decorridos')+' — com poucos dias a projeção oscila muito e vai se ajustando conforme o mês avança.' : ''}${feriados.size ? '' : ' Não há feriado cadastrado neste mês (Cadastros › Feriados): todos os dias de segunda a sábado foram contados como úteis.'}</div>
+      </div>`;
+  }
   const corpo = `<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:14px;margin:-6px 0 16px"><span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">TOTAL</span><span style="font-size:1.4rem;font-weight:700">${_pnh.n(totA)} × ${_pnh.n(totB)} ped.</span><span style="font-size:1.4rem;font-weight:700;color:${corVar(vt)}">${fmtVar(vt)}</span></div>
       <div style="display:flex;gap:16px">${linhas.map(card).join('')}</div>
+      ${projHtml}
       ${_pnh.nota('Pedidos das rotas internas (R.I.) — pedidos feitos no mês, mesma conta do Painel (sem cliente que retira), '+mm(mes)+' × '+mm(ant)+(diaCorte === null ? '' : ', ambos do dia 01 ao dia '+d2(diaCorte))+'. Rota sem pedido no mês anterior aparece sem variação percentual.')}`;
   const periodoTxt = diaCorte === null ? 'PEDIDOS NO MÊS · '+mm(mes)+' × '+mm(ant)
     : 'PEDIDOS DE 01 A '+d2(diaCorte)+' · '+mm(mes)+' × '+mm(ant)+' (MESMO PERÍODO)';
