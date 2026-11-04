@@ -9944,7 +9944,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.185';
+const APP_VERSION = '4.89.186';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18423,6 +18423,15 @@ let _ocorrValorPorPedido = {};
 let _ocorrConferentePorCarga = {};
 let _ocorrConferentePorPedido = {};
 let _ocorrVeiculoPorCarga = {};
+// Quem conferiu a carga e quem separou o pedido, segundo o FDSAS (só CD, rota interna). O Apps Script da
+// planilha de integração grava o resultado numa linha de "configuracoes" (chave fdsas_responsaveis), por id
+// de ocorrência. Pedido do Gabriel, 2026-11-04. null = ainda não existe / não carregou.
+let _ocorrFdsas = null;
+function _ocorrFdsasInfo(o){
+  const v = _ocorrFdsas && _ocorrFdsas.por_ocorrencia && _ocorrFdsas.por_ocorrencia[String(o.id)];
+  if(!v) return null;
+  return { cf: v.cf || '', sp: v.sp || '', st: v.st || '', ce: v.ce || '', gerado: _ocorrFdsas.gerado_em || '' };
+}
 
 // Helper: retorna tipo da rota (RI/RE) a partir do ROTAS_CACHE
 function getTipoRota(nomeRota){
@@ -18861,6 +18870,15 @@ async function carregarOcorrenciasDistrib(){
         rows.forEach(r=>{ if(r.carga!=null && r.veiculo) _ocorrVeiculoPorCarga[r.carga] = r.veiculo; });
       }
     }catch(e){}
+    // FDSAS: uma linha só de configuracoes (pequena). Falha ou ausência não atrapalha a lista.
+    _ocorrFdsas = null;
+    try{
+      const rows = await supaFetch('configuracoes?chave=eq.fdsas_responsaveis&select=valor&limit=1',{_quiet:true}) || [];
+      if(rows[0] && rows[0].valor){
+        const v = typeof rows[0].valor === 'string' ? JSON.parse(rows[0].valor) : rows[0].valor;
+        if(v && v.por_ocorrencia) _ocorrFdsas = v;
+      }
+    }catch(e){ _ocorrFdsas = null; }
     // Setor do motivo (Armazém, Comercial, Mercado...): a ocorrência só grava
     // motivo_id/motivo_nome, o setor mora em motivos_devolucao. Tabela pequena
     // (cadastro), traz inclusive os inativos pra ocorrência antiga continuar com setor.
@@ -18980,6 +18998,10 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
     // esses campos.
     const conferentes = o.conferente || confPedido || (confSet ? [...confSet].join(', ') : '');
     const veiculo = o.veiculo || (o.carga!=null ? _ocorrVeiculoPorCarga[o.carga] : null);
+    // FDSAS (CD, rota interna): quem conferiu a carga e quem separou o pedido. Nas outras ocorrências
+    // continua tudo como era.
+    const fd = _ocorrFdsasInfo(o);
+    const fdTitulo = fd ? ` title="Dados do FDSAS${fd.gerado ? ', atualizados em '+escapeHtml(new Date(fd.gerado).toLocaleString('pt-BR')) : ''}"` : '';
     const detalhes = [
       o.produto ? `${_ic('package',12)}${o.quantidade!=null?o.quantidade+'x ':''}${escapeHtml(o.produto)}` : '',
       valorDevolvido!=null ? `${_ic('dollar-sign',12)}${valorDevolvido.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} ${valorDaNota ? '(valor da nota)' : 'devolvido'}`
@@ -18987,7 +19009,10 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
       o.cliente ? `${_ic('user',12)}${escapeHtml(o.cliente)}` : '',
       o.motorista ? `${_ic('user',12)}${escapeHtml(o.motorista)}` : '',
       veiculo ? `${_ic('truck',12)}${escapeHtml(veiculo)}` : '',
-      conferentes ? `${_ic('user-check',12)}${escapeHtml(conferentes)}` : `${_ic('user-check',12)}sem conferente registrado`,
+      conferentes ? `${_ic('user-check',12)}${escapeHtml(conferentes)}` : (fd && fd.cf ? '' : `${_ic('user-check',12)}sem conferente registrado`),
+      fd && fd.cf ? `<span${fdTitulo}>${_ic('user-check',12)}<b>Conferiu (FDSAS):</b> ${escapeHtml(fd.cf)}${fd.ce ? ' · '+fmtDt(fd.ce) : ''}</span>` : '',
+      fd && fd.sp ? `<span${fdTitulo}>${_ic('package',12)}<b>Separou (FDSAS):</b> ${escapeHtml(fd.sp)}</span>` : '',
+      fd && fd.st && fd.st !== 'OK' ? `<span${fdTitulo} style="color:#b45309;font-weight:600">${_ic('alert-triangle',12)}${escapeHtml(fd.st)}</span>` : '',
     ].filter(Boolean).join(' · ');
     return `<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${isPend?'#dc2626':'#059669'};border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
