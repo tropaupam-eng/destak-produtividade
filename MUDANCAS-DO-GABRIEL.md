@@ -34,6 +34,9 @@ qual produto falta. O "Valor a devolver" do formulário atualiza ao digitar. O v
 (colunas que já existiam; nenhuma coluna nova). Valores gravados em centavos (arredondados).
 Devolução TOTAL não mudou. As 41 ocorrências parciais antigas sem valor NÃO mudam sozinhas.
 Sem mudança de estrutura de banco. Causa raiz (preço não chega do ERP) segue pendente com o Daniel.
+Rótulo no histórico (pedido do Gabriel, 04/11): parcial registrada a partir de 04/11/2026 com valor devolvido mostra
+"R$ X (valor da nota)" em vez de "R$ X devolvido" (`_renderOcorrenciasGeneric`, variável `valorDaNota`, corte por `criado_em`).
+As anteriores seguem como estavam ("devolvido" ou "(valor do pedido)").
 Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. O valor depende de digitação.
 
