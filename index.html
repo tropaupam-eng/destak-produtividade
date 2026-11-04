@@ -3778,38 +3778,11 @@ body.light-theme{
   </div>
   <input type="hidden" id="agend-mes-atual" value="">
 
-  <!-- KPIs linha 1: visão geral -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:10px">
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;border-left:4px solid #2563eb">
-      <div style="font-size:1.6rem;font-weight:900;color:#2563eb" id="agend-kpi-total">—</div>
-      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-top:2px">Agendadas</div>
-    </div>
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;border-left:4px solid #059669">
-      <div style="font-size:1.6rem;font-weight:900;color:#059669" id="agend-kpi-real">—</div>
-      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-top:2px">Realizadas</div>
-    </div>
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;border-left:4px solid #ef4444">
-      <div style="font-size:1.6rem;font-weight:900;color:#ef4444" id="agend-kpi-pend">—</div>
-      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-top:2px">Não saíram</div>
-    </div>
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;border-left:4px solid #7c3aed">
-      <div style="font-size:1.6rem;font-weight:900;color:#7c3aed" id="agend-kpi-rotas">—</div>
-      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-top:2px">Rotas diferentes</div>
-    </div>
-  </div>
+  <!-- Topo neutro: contagem por situação + motivos do atraso (preenchido por renderAgendamentos) -->
+  <div id="agend-topo" style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px"></div>
 
   <!-- Cards de ação: o que precisa de atenção agora -->
-  <div id="agend-acoes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-bottom:12px"></div>
-
-  <!-- Faixa compacta de motivos de não saída -->
-  <div id="agend-relatorio" style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:16px">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-      <div style="font-size:.82rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:7px"><span data-feather="bar-chart-2" style="width:14px;height:14px"></span> Motivos de não saída no mês</div>
-      <span id="agend-motivos-resumo" style="font-size:.68rem;color:var(--text-muted)"></span>
-    </div>
-    <div id="agend-barra-container"></div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:9px" id="agend-motivos"></div>
-  </div>
+  <div id="agend-acoes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-bottom:16px"></div>
 
   <!-- Cargas abaixo do valor mínimo (planilha) -->
   <div id="agend-baixo-valor" style="margin-bottom:16px"></div>
@@ -9971,7 +9944,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.180';
+const APP_VERSION = '4.89.181';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -52155,87 +52128,78 @@ async function renderAgendamentos(){
     }
   }catch(e){}
 
-  // ── 3. KPIs — mesma lógica de "saiu" do calendário ────────────────────────
-  // Helper: rota saiu = realizado OU lancado OU pré-carga com status saiu/fim_viagem/concluido
-  var _dMapKpi={};
-  demandasMes.forEach(function(d){ _dMapKpi[_rotaChave(d.rota)+'|'+(d.data_saida||'')]=d.status; });
-  // todas as cargas da Expedição de cada saída (rota + data de saída) — detalhe do dia no Calendário de Saídas
-  var _demLista={};
-  demandasMes.forEach(function(d){ var k=_rotaChave(d.rota)+'|'+(d.data_saida||''); (_demLista[k]=_demLista[k]||[]).push(d); });
-  const _saiuFn = a => { var ds=_dMapKpi[_rotaChave(a.rota)+'|'+a.data]; return a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(ds); };
+  // ── 3. Situação de cada agendamento — MESMO padrão do card "Calendário de rotas" do Painel de Indicadores ──
+  // cinza = agendada / sem saída registrada · azul = carga em formação com pedidos vinculados · verde = saiu na data · amarelo = saiu com atraso.
+  // "Saiu" = agendamento marcado como realizado OU carga da mesma rota+data (ou vinculada pelo nº da carga) com status saiu/fim_viagem/concluido.
+  // Só "lançada" na pré-carga NÃO conta como saída. Motivo do atraso marcado + saída registrada = amarelo; motivo sem saída registrada segue cinza e é contado no topo.
+  var _SAIU_ST=['saiu','fim_viagem','concluido'];
+  var _dMapKpi={}, _demLista={}, _saiuSet={}, _formPorRD={}, _dataCargaSaiu={}, _formVinc={}, _nPed={}, _formIds=[];
+  demandasMes.forEach(function(d){
+    var k=_rotaChave(d.rota)+'|'+(d.data_saida||'');
+    _dMapKpi[k]=d.status;
+    (_demLista[k]=_demLista[k]||[]).push(d);   // todas as cargas da Expedição de cada saída — detalhe do dia
+    if(_SAIU_ST.indexOf(d.status)>=0) _saiuSet[k]=true;
+    else if(d.status==='formacao' && d.carga){ (_formPorRD[k]=_formPorRD[k]||[]).push(String(d.carga)); _formIds.push(String(d.carga)); }
+  });
+  async function _emLotes(ids,n,fn){ var out=[]; for(var i=0;i<ids.length;i+=n){ var r=await fn(ids.slice(i,i+n)); if(r) out=out.concat(r); } return out; }
+  try{
+    var _cv=[...new Set(arr.map(function(a){ return a.carga; }).filter(function(c){ return c && /^\d+$/.test(String(c)); }).map(String))];
+    if(_cv.length){
+      var _dv=await _emLotes(_cv,100,function(ids){ return supaFetch('demandas_rota?carga=in.('+ids.join(',')+')&select=carga,data_saida,status&limit=2000',{_quiet:true}); });
+      _dv.forEach(function(d){
+        var c=String(d.carga);
+        if(_SAIU_ST.indexOf(d.status)>=0){ if(d.data_saida && (!_dataCargaSaiu[c] || d.data_saida<_dataCargaSaiu[c])) _dataCargaSaiu[c]=d.data_saida; }
+        else if(d.status==='formacao'){ _formVinc[c]=true; _formIds.push(c); }
+      });
+    }
+    _formIds=[...new Set(_formIds)];
+    if(_formIds.length){
+      var _pd=await _emLotes(_formIds,60,function(ids){ return supaFetch('base_data?carga=in.('+ids.join(',')+')&select=carga&limit=20000',{_quiet:true}); });
+      _pd.forEach(function(p){ var c=String(p.carga); _nPed[c]=(_nPed[c]||0)+1; });
+    }
+  }catch(e){}
+  const _ATOM2 = {sem_veiculo:'veiculo',sem_motorista:'motorista',valor:'comercial',atraso_rota:'atraso_rota'};
+  function _motivoAtr(a){ var k=a.motivo_atraso||_ATOM2[a.acao]||''; if(k==='outro') k='atraso_carregamento'; return k==='saiu_data_correta'?'':k; }
+  function _estadoAg(a){
+    var mot=_motivoAtr(a), c=a.carga?String(a.carga):'', dc=c?_dataCargaSaiu[c]:null, rk=_rotaChave(a.rota)+'|'+a.data;
+    if(dc && dc>a.data) return 'atraso';
+    if(a.status==='realizado' || _saiuSet[rk] || (dc && dc<=a.data)) return mot?'atraso':'ok';
+    var comPed=function(x){ return (_nPed[String(x)]||0)>0; };
+    if((c && _formVinc[c] && comPed(c)) || (_formPorRD[rk]||[]).some(comPed)) return 'formacao';
+    return 'agendada';
+  }
+  var _est={}; arr.forEach(function(a){ _est[a.id]=_estadoAg(a); });
+  const _saiuFn = a => _est[a.id]==='ok' || _est[a.id]==='atraso';
 
-  const total   = arr.length;
-  const totalR  = arr.filter(_saiuFn).length;
-  const naoSaiu = arr.filter(a=>!_saiuFn(a)&&a.data<=hoje).length;
-  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
-  set('agend-kpi-total', total);
-  set('agend-kpi-real',  totalR);
-  set('agend-kpi-pend',  naoSaiu);
-  set('agend-kpi-rotas', new Set(arr.map(a=>(a.rota||'').trim().toUpperCase()).filter(Boolean)).size);
+  var _nOk=0,_nAtr=0,_nForm=0,_nSem=0,_nASair=0,_contMot={};
+  arr.forEach(function(a){
+    var e=_est[a.id];
+    if(e==='ok') _nOk++; else if(e==='atraso') _nAtr++; else if(e==='formacao') _nForm++; else if(a.data<=hoje) _nSem++; else _nASair++;
+    if(e==='atraso' || ((e==='agendada'||e==='formacao') && a.data<=hoje)){ var k=_motivoAtr(a); if(k) _contMot[k]=(_contMot[k]||0)+1; }
+  });
 
   renderCargasAbaixoValor(mesFiltro);
 
-  // ── 4. Mapas de motivo ─────────────────────────────────────────────────────
+  // ── 4. Rótulos de motivo ───────────────────────────────────────────────────
   // Compatibilidade: fluxo antigo usa a.acao; fluxo novo usa a.motivo_atraso
-  const MCORES = {comercial:'#f59e0b',veiculo:'#7c3aed',motorista:'#3b82f6',atraso_rota:'#ea580c',atraso_carregamento:'#f97316',outro:'#6b7280',saiu_data_correta:'#059669'};
   const MLABEL = {comercial:'💰 Comercial',veiculo:'🚛 Sem Veículo',motorista:'🚗 Sem Motorista',atraso_rota:'⏱️ Atraso de Rota',atraso_carregamento:'📦 Atraso no Carregamento',outro:'📦 Atraso no Carregamento',saiu_data_correta:'✅ Saiu no prazo'};
   const ATOM   = {sem_veiculo:'veiculo',sem_motorista:'motorista',valor:'comercial',atraso_rota:'atraso_rota'};
   const getMKey = a => a.motivo_atraso || ATOM[a.acao] || '';
 
-  // ── 5. Contadores do painel de motivos ────────────────────────────────────
-  const naoSaiuArr = arr.filter(a=>!_saiuFn(a)&&a.data<=hoje);
-  const noPrazo    = totalR; // espelha exatamente o KPI "Realizadas"
-  const semVeiculo    = naoSaiuArr.filter(a=>getMKey(a)==='veiculo').length;
-  const semMot        = naoSaiuArr.filter(a=>getMKey(a)==='motorista').length;
-  const semValor      = naoSaiuArr.filter(a=>getMKey(a)==='comercial').length;
-  const semAtraso     = naoSaiuArr.filter(a=>getMKey(a)==='atraso_rota').length;
-  const semAtrasoCarg = naoSaiuArr.filter(a=>getMKey(a)==='atraso_carregamento'||getMKey(a)==='outro').length;
-  // Percentagens calculadas sobre agendadas (não inclui extras — extras são métricas separadas)
-  const totalRef = Math.max(total, 1);
-
-  // label fica em texto puro (sem emoji) — a barra empilhada (barHtml, mais
-  // abaixo) mostra esse mesmo texto como legenda/title puro; o ícone (icone)
-  // só é usado no card de resumo (mHtml), que de fato renderiza HTML.
-  const motivosCfg = [
-    {label:'Saíram na data certa',    icone:'check-circle', val:noPrazo,        cor:'#059669', desc:'Rota saiu conforme programado'},
-    {label:'Comercial não fechou',    icone:'dollar-sign',  val:semValor,       cor:'#ef4444', desc:'Pendência comercial'},
-    {label:'Sem veículo',             icone:'truck',        val:semVeiculo,     cor:'#7c3aed', desc:'Carga não saiu por falta de veículo'},
-    {label:'Sem motorista',           icone:'user',         val:semMot,         cor:'#3b82f6', desc:'Carga não saiu por falta de motorista'},
-    {label:'Atraso de rota',          icone:'clock',        val:semAtraso,      cor:'#ea580c', desc:'Rota saiu com atraso'},
-    {label:'Atraso no Carregamento',  icone:'package',      val:semAtrasoCarg,  cor:'#f97316', desc:'Atraso no carregamento da carga'},
-  ];
-  // ── 6. Faixa compacta de motivos: barra proporcional + chips (substitui os cards grandes) ──
-  const motivosEl = document.getElementById('agend-motivos');
-  const _somaMot = motivosCfg.reduce(function(s,m){ return s+m.val; },0);
-  const _resto = Math.max(total-_somaMot,0);
-  if(motivosEl){
-    var mHtml = '';
-    var _chip = function(cor,label,val,pct,desc){
-      return '<span title="'+desc+'" style="display:inline-flex;align-items:center;gap:5px;font-size:.74rem;color:var(--text-secondary);'+(val?'':'opacity:.5')+'">'
-        +'<span style="width:9px;height:9px;border-radius:2px;background:'+cor+';flex-shrink:0"></span>'
-        +label+' <b style="color:'+(val?cor:'var(--text-muted)')+';font-size:.82rem">'+val+'</b>'
-        +'<span style="font-size:.66rem;color:var(--text-muted)">'+pct+'%</span></span>';
-    };
-    for(var mi=0;mi<motivosCfg.length;mi++){
-      var m = motivosCfg[mi];
-      mHtml += _chip(m.cor, m.label, m.val, Math.round((m.val/totalRef)*100), m.desc);
-    }
-    if(_resto>0) mHtml += _chip('#9ca3af','A realizar / sem motivo',_resto,Math.round((_resto/totalRef)*100),'Agendadas que ainda não chegaram na data ou que não saíram e ainda não têm motivo');
-    motivosEl.innerHTML = mHtml;
-  }
-  const _resEl = document.getElementById('agend-motivos-resumo');
-  if(_resEl) _resEl.textContent = total ? ('% sobre '+total+' agendada'+(total===1?'':'s')) : '';
-
-  const barraCont = document.getElementById('agend-barra-container');
-  if(barraCont && total>0){
-    var barHtml = '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px;background:var(--border)">';
-    motivosCfg.forEach(function(s){
-      if(s.val>0) barHtml += '<div title="'+s.label+': '+s.val+'" style="flex:none;width:'+(s.val/total*100)+'%;background:'+s.cor+'"></div>';
-    });
-    barHtml += '</div>';
-    barraCont.innerHTML = barHtml;
-  } else if(barraCont){
-    barraCont.innerHTML = '<p style="font-size:.8rem;color:var(--text-muted);margin:0">Nenhum dado registrado ainda — as ações do popup da Expedição aparecem aqui automaticamente.</p>';
+  // ── 5. Topo neutro: contagem por situação + motivos do atraso (sem cores por motivo) ──
+  const topoEl = document.getElementById('agend-topo');
+  if(topoEl){
+    var _kp = function(rot,val){ return '<div style="flex:1;min-width:104px"><div style="font-size:1.6rem;font-weight:800;line-height:1;color:var(--text-primary)">'+val+'</div><div style="font-size:.66rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-top:6px">'+rot+'</div></div>'; };
+    var _MOT5 = [['comercial','Comercial não fechou'],['veiculo','Sem veículo'],['motorista','Sem motorista'],['atraso_rota','Atraso de rota'],['atraso_carregamento','Atraso no carregamento']];
+    topoEl.innerHTML =
+      '<div style="display:flex;gap:14px;flex-wrap:wrap">'+_kp('Agendadas',arr.length)+_kp('Saíram na data',_nOk)+_kp('Saíram com atraso',_nAtr)+_kp('Em formação',_nForm)+_kp('Sem saída registrada',_nSem)+_kp('A sair',_nASair)+'</div>'
+      +'<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">'
+        +'<div style="font-size:.66rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)">Motivos do atraso</div>'
+        +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px">'
+        +_MOT5.map(function(m){ return '<div style="flex:1;min-width:104px"><div style="font-size:1.2rem;font-weight:700;line-height:1;color:var(--text-primary)">'+(_contMot[m[0]]||0)+'</div><div style="font-size:.74rem;color:var(--text-secondary);margin-top:4px">'+m[1]+'</div></div>'; }).join('')
+        +'</div>'
+        +'<div style="font-size:.68rem;color:var(--text-muted);margin-top:10px">Motivos contados nas rotas que saíram com atraso e nas que já passaram da data sem saída registrada. “Saiu” = carga da Expedição da mesma rota e data (ou vinculada ao agendamento) com saída registrada; rota só lançada na pré-carga não conta.</div>'
+      +'</div>';
   }
 
   // ── 6b. Cards de ação: o que precisa de atenção agora (clique abre o dia / o painel de motivo) ──
@@ -52252,18 +52216,19 @@ async function renderAgendamentos(){
       var _fd = function(d){ return d.slice(8,10)+'/'+d.slice(5,7); };
       var _cardAcao = function(lista,cor,icone,titulo,subCom,subSem,comData,abrirMotivo){
         var tem = lista.length>0;
-        var h = '<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid '+(tem?cor:'var(--border-med)')+';border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">'
+        cor = 'var(--text-secondary)';   // padrão sóbrio: sem cor por tipo de pendência
+        var h = '<div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid var(--border-med);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">'
           +'<div style="display:flex;align-items:center;gap:8px">'
-            +'<span style="color:'+(tem?cor:'var(--text-muted)')+';display:inline-flex">'+_ic(icone,16)+'</span>'
+            +'<span style="color:var(--text-muted);display:inline-flex">'+_ic(icone,16)+'</span>'
             +'<span style="font-size:.78rem;font-weight:800;color:var(--text-primary);flex:1">'+titulo+'</span>'
-            +'<span style="font-size:1.4rem;font-weight:900;line-height:1;color:'+(tem?cor:'var(--text-muted)')+'">'+lista.length+'</span>'
+            +'<span style="font-size:1.4rem;font-weight:900;line-height:1;color:'+(tem?'var(--text-primary)':'var(--text-muted)')+'">'+lista.length+'</span>'
           +'</div>'
           +'<div style="font-size:.7rem;color:var(--text-muted)">'+(tem?subCom:subSem)+'</div>';
         if(tem){
           h += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:2px">';
           lista.slice(0,4).forEach(function(a){
             var r=(a.rota||''); if(r.length>14) r=r.slice(0,14)+'…';
-            h += '<button onclick="_agendAcaoIr(\''+a.data+'\',\''+a.id+'\','+(abrirMotivo?'true':'false')+')" title="'+escapeHtml(a.rota||'')+' — '+_fd(a.data)+'" style="background:'+cor+'18;color:'+cor+';border:1px solid '+cor+'40;border-radius:6px;padding:3px 8px;font-size:.68rem;font-weight:700;cursor:pointer">'+escapeHtml(r)+(comData?' · '+_fd(a.data):'')+'</button>';
+            h += '<button onclick="_agendAcaoIr(\''+a.data+'\',\''+a.id+'\','+(abrirMotivo?'true':'false')+')" title="'+escapeHtml(a.rota||'')+' — '+_fd(a.data)+'" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:.68rem;font-weight:700;cursor:pointer">'+escapeHtml(r)+(comData?' · '+_fd(a.data):'')+'</button>';
           });
           if(lista.length>4) h += '<span style="font-size:.68rem;color:var(--text-muted);align-self:center">+'+(lista.length-4)+'</span>';
           h += '</div>';
@@ -52292,15 +52257,17 @@ async function renderAgendamentos(){
 
   // ── 8. Calendário mensal (dois painéis: Saídas + Fechamento) ─────────────
 
-  // Paleta de cores por rota (determinística)
-  var _RPAL = ['#7ec854','#5ba8f0','#3ecfab','#f0a83a','#f07a6a','#e87eb8','#f56b6b','#a992f5','#55d68e','#c084e0','#60a5fa','#34d399','#fb923c','#f472b6','#818cf8'];
-  function _rotaCor(nome){ var h=0,n=(nome||'').toUpperCase(); for(var i=0;i<n.length;i++) h=((h*31)+n.charCodeAt(i))>>>0; return _RPAL[h%_RPAL.length]; }
+  // Cores dos chips: SÓ 4 situações (sem cor por rota) — mesmo padrão do card do Painel
+  var _CHIP = {
+    agendada:'background:rgba(148,163,184,.14);color:var(--text-secondary)',
+    formacao:'background:rgba(37,99,235,.20);color:#3b82f6',
+    ok:'background:rgba(22,163,74,.20);color:#16a34a',
+    atraso:'background:rgba(202,138,4,.22);color:#ca8a04'
+  };
+  var _ESTLAB = {agendada:'Agendada / sem saída registrada',formacao:'Carga em formação (com pedidos)',ok:'Saiu na data',atraso:'Saiu com atraso'};
 
   // Subtrair N dias úteis (seg–sex) de uma data
   function _diasUteisAntes(dataStr,n){ var d=new Date(dataStr+'T12:00:00'),c=0; while(c<n){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; } return d.toISOString().slice(0,10); }
-
-  // Mapa de status de demandas por 'ROTA|DATA' (reutiliza o _dMapKpi construído nos KPIs)
-  var _demMap=_dMapKpi;
 
   // Mapas por dia
   var _dayMap={}, _fechMap={}, _extraMap={};
@@ -52323,7 +52290,7 @@ async function renderAgendamentos(){
     var s='<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden">';
     // Header dias
     s+='<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) 64px;background:var(--bg-card2);border-bottom:1px solid var(--border)">';
-    _DS.forEach(function(d,i){ var wk=i===0||i===6; s+='<div style="text-align:center;padding:9px 4px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:'+(wk?'rgba(248,113,113,.75)':'var(--text-muted)')+'">'+d+'</div>'; });
+    _DS.forEach(function(d,i){ var wk=i===0||i===6; s+='<div style="text-align:center;padding:9px 4px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">'+d+'</div>'; });
     s+='<div style="text-align:center;padding:9px 4px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Sem.</div>';
     s+='</div>';
     // Grid
@@ -52348,44 +52315,39 @@ async function renderAgendamentos(){
       var col=(_iniSem+dia-1)%7, wknd=col===0||col===6;
       var itens=mapDia[dStr]||[], exts=tipo==='saida'?(_extraMap[dStr]||[]):[];
       var numSt=eH
-        ?'display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:#2563eb;color:#fff;border-radius:50%;font-size:.72rem;font-weight:800'
-        :'font-size:.72rem;font-weight:700;color:'+(wknd?'rgba(239,68,68,.55)':'var(--text-muted)');
-      s+='<div '+(tipo==='saida'?'data-dia="'+dStr+'" onclick="_agendSelDia(\''+dStr+'\',event)" ':'')+'style="'+(tipo==='saida'?'cursor:pointer;':'')+'min-height:72px;padding:5px 4px;'+(col<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);'+(eH?'background:rgba(37,99,235,.04);':'')+(wknd&&!eH?'background:rgba(0,0,0,.02);':'')+'">';
+        ?'display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:var(--text-primary);color:var(--bg-card);border-radius:50%;font-size:.72rem;font-weight:800'
+        :'font-size:.72rem;font-weight:700;color:var(--text-muted)';
+      s+='<div '+(tipo==='saida'?'data-dia="'+dStr+'" onclick="_agendSelDia(\''+dStr+'\',event)" ':'')+'style="'+(tipo==='saida'?'cursor:pointer;':'')+'min-height:72px;padding:5px 4px;'+(col<6?'border-right:1px solid var(--border);':'')+'border-bottom:1px solid var(--border);'+(eH?'background:rgba(148,163,184,.10);':'')+(wknd&&!eH?'background:rgba(0,0,0,.02);':'')+'">';
       s+='<div style="text-align:right;margin-bottom:4px"><span style="'+numSt+'">'+dia+'</span></div>';
 
       if(tipo==='saida'){
         itens.forEach(function(a){
           var mKey=getMKey(a);
-          var demSt=_demMap[(a.rota||'').trim().toUpperCase()+'|'+a.data];
-          var saiu=a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(demSt);
+          var est=_est[a.id]||'agendada';
+          var saiu=(est==='ok'||est==='atraso');
           var naoSaiu=!saiu&&pas&&!eH;
           var fechVencido=!saiu&&!pas&&!eH&&_diasUteisAntes(a.data,2)<=hoje;
-          var cor=_rotaCor(a.rota||'');
-          var chipBg=saiu?'rgba(5,150,105,.14)':naoSaiu?'rgba(239,68,68,.12)':fechVencido?'rgba(234,88,12,.12)':cor+'18';
-          var chipCor=saiu?'#059669':naoSaiu?'#dc2626':fechVencido?'#ea580c':cor;
-          var icone=saiu?_ic('check-circle',11):naoSaiu?_ic('x-circle',11):fechVencido?_ic('alert-triangle',11):(eH?_ic('clock',11):'');
           var rotaC=(a.rota||'').length>13?(a.rota||'').slice(0,13)+'…':(a.rota||'');
           var mBtns='';
-          if(!saiu){
+          if(est!=='ok'){
             _MOPTS.forEach(function(mo){
-              var sel=mKey===mo.k, mc=MCORES[mo.k]||'#6b7280';
-              mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\''+mo.k+'\')" style="background:'+(sel?mc+'22':'var(--bg-card)')+';color:'+(sel?mc:'var(--text-secondary)')+';border:'+(sel?'1.5px solid '+mc:'1px solid var(--border)')+';border-radius:4px;padding:2px 7px;font-size:.62rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+mo.l+'</button>';
+              var sel=mKey===mo.k;
+              mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\''+mo.k+'\')" style="background:'+(sel?'var(--bg-card2)':'var(--bg-card)')+';color:'+(sel?'var(--text-primary)':'var(--text-secondary)')+';border:'+(sel?'1.5px solid var(--text-secondary)':'1px solid var(--border)')+';border-radius:4px;padding:2px 7px;font-size:.62rem;font-weight:'+(sel?800:600)+';cursor:pointer;white-space:nowrap">'+mo.l+'</button>';
             });
             if(mKey) mBtns+='<button onclick="salvarMotivoAgend(\''+a.id+'\',\'\')" style="background:rgba(107,114,128,.1);color:#9ca3af;border:1px solid rgba(107,114,128,.2);border-radius:4px;padding:2px 7px;font-size:.62rem;cursor:pointer">✕</button>';
           }
-          var podeToggle=(!saiu)&&(naoSaiu||eH||fechVencido);
+          var podeToggle=(est!=='ok')&&(est==='atraso'||naoSaiu||eH||fechVencido);
           s+='<div style="margin-bottom:3px'+(_dimRota(a.rota)?';opacity:.22':'')+'">'
             +'<div style="display:flex;align-items:center;gap:2px">'
-              +'<div onclick="'+(podeToggle?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+(podeToggle?'pointer':'default')+';background:'+chipBg+';color:'+chipCor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px;flex:1;min-width:0">'
-                +(icone?'<span>'+icone+'</span>':'')
+              +'<div onclick="'+(podeToggle?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+' — '+_ESTLAB[est]+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+(podeToggle?'pointer':'default')+';'+_CHIP[est]+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px;flex:1;min-width:0">'
                 +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rotaC+(a.carga?'&nbsp;<span style="font-size:.55rem;opacity:.8">#'+a.carga+'</span>':'')+'</span>'
-                +(mKey?'<span style="font-size:.58rem" title="'+(MLABEL[mKey]||mKey)+'">'+_ic('alert-triangle',9)+'</span>':'')
+                +(mKey&&mKey!=='saiu_data_correta'?'<span style="font-size:.58rem" title="'+(MLABEL[mKey]||mKey)+'">'+_ic('alert-triangle',9)+'</span>':'')
               +'</div>'
               +'<button onclick="abrirModalAgendamento(\''+a.id+'\')" title="Editar agendamento (nº carga, data, obs...)" style="background:rgba(255,255,255,.06);color:var(--text-muted);border:none;border-radius:4px;padding:1px 4px;font-size:.6rem;cursor:pointer;flex-shrink:0;line-height:1.4" onmouseover="this.style.background=\'rgba(255,255,255,.14)\'" onmouseout="this.style.background=\'rgba(255,255,255,.06)\'">'+_ic('edit-2',10)+'</button>'
-              +(USUARIO_LOGADO?.perfil==='admin'?'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Excluir agendamento" style="background:rgba(239,68,68,.08);color:#ef4444;border:none;border-radius:4px;padding:1px 4px;font-size:.6rem;cursor:pointer;flex-shrink:0;line-height:1.4" onmouseover="this.style.background=\'rgba(239,68,68,.22)\'" onmouseout="this.style.background=\'rgba(239,68,68,.08)\'">'+_ic('trash-2',10)+'</button>':'')
+              +(USUARIO_LOGADO?.perfil==='admin'?'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Excluir agendamento" style="background:rgba(255,255,255,.06);color:var(--text-muted);border:none;border-radius:4px;padding:1px 4px;font-size:.6rem;cursor:pointer;flex-shrink:0;line-height:1.4" onmouseover="this.style.background=\'rgba(255,255,255,.14)\'" onmouseout="this.style.background=\'rgba(255,255,255,.06)\'">'+_ic('trash-2',10)+'</button>':'')
             +'</div>'
-            +(mBtns&&!saiu?'<div id="motivo-agend-'+a.id+'" style="display:none;margin-top:2px;background:var(--bg-card2);border:1px solid var(--border);border-radius:6px;padding:5px">'
-              +'<div style="font-size:.6rem;color:var(--text-muted);font-weight:700;margin-bottom:3px;text-transform:uppercase">Por que não saiu?</div>'
+            +(mBtns&&est!=='ok'?'<div id="motivo-agend-'+a.id+'" style="display:none;margin-top:2px;background:var(--bg-card2);border:1px solid var(--border);border-radius:6px;padding:5px">'
+              +'<div style="font-size:.6rem;color:var(--text-muted);font-weight:700;margin-bottom:3px;text-transform:uppercase">Motivo do atraso</div>'
               +'<div style="display:flex;flex-wrap:wrap;gap:2px">'+mBtns+'</div>'
             +'</div>':'')
           +'</div>';
@@ -52393,15 +52355,14 @@ async function renderAgendamentos(){
         // Extras — clique para converter em agendamento
         exts.forEach(function(d){
           var rc=(d.rota||'').length>13?(d.rota||'').slice(0,13)+'…':(d.rota||'');
-          s+='<div onclick="vincularExtraComoAgendamento(\''+d.rota+'\',\''+d.data_saida+'\','+(d.carga?"'"+d.carga+"'":'null')+')" style="margin-bottom:3px;background:rgba(245,158,11,.12);color:#d97706;border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer" title="Clique para vincular como rota agendada">⚡ '+rc+(d.carga?' <span style="opacity:.75">#'+d.carga+'</span>':'')+'</div>';
+          s+='<div onclick="vincularExtraComoAgendamento(\''+d.rota+'\',\''+d.data_saida+'\','+(d.carga?"'"+d.carga+"'":'null')+')" style="margin-bottom:3px;background:rgba(148,163,184,.14);color:var(--text-secondary);border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer" title="Clique para vincular como rota agendada">⚡ '+rc+(d.carga?' <span style="opacity:.75">#'+d.carga+'</span>':'')+'</div>';
         });
       } else {
         // Fechamento: chips com seta para a data de saída
         itens.forEach(function(item){
           var a=item.a, diaSaida=parseInt(item.saida.slice(8,10));
-          var cor=_rotaCor(a.rota||'');
           var rc=(a.rota||'').length>11?(a.rota||'').slice(0,11)+'…':(a.rota||'');
-          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+'background:'+cor+'18;color:'+cor+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px" title="'+a.rota+' — saída dia '+diaSaida+'">'
+          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+'background:rgba(148,163,184,.14);color:var(--text-secondary);border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px" title="'+a.rota+' — saída dia '+diaSaida+'">'
             +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rc+'</span>'
             +'<span style="font-size:.6rem;opacity:.8">↗'+diaSaida+'</span>'
           +'</div>';
@@ -52417,11 +52378,11 @@ async function renderAgendamentos(){
     return s;
   }
 
-  // Legenda de rotas
+  // Rotas do mês: filtro do cabeçalho + contagem em texto (sem cor por rota)
   var _rotasU=[...new Set(arr.map(function(a){return(a.rota||'').trim();}))].sort();
-  var _leg='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">';
-  _rotasU.forEach(function(r){ var c=_rotaCor(r); _leg+='<div style="display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--text-secondary)"><span style="width:9px;height:9px;border-radius:50%;background:'+c+';flex-shrink:0;display:inline-block"></span>'+r+'</div>'; });
-  _leg+='</div>';
+  var _cntRota={}; arr.forEach(function(a){ var r=(a.rota||'').trim().toUpperCase(); if(r) _cntRota[r]=(_cntRota[r]||0)+1; });
+  var _leg='<div style="font-size:.74rem;color:var(--text-secondary);margin-top:10px;line-height:1.7"><b style="color:var(--text-muted);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase">Saídas por rota</b><br>'
+    +Object.keys(_cntRota).sort(function(x,y){ return _cntRota[y]-_cntRota[x] || x.localeCompare(y); }).map(function(r){ return escapeHtml(r)+' '+_cntRota[r]; }).join(' · ')+'</div>';
 
   // ── 9. Montar HTML final ─────────────────────────────────────────────────
   var html='';
@@ -52429,38 +52390,34 @@ async function renderAgendamentos(){
   // --- Calendário de Saídas ---
   html+='<div style="margin-bottom:32px">';
   html+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
-    +'<div style="width:32px;height:32px;border-radius:8px;background:rgba(5,150,105,.15);color:#059669;display:flex;align-items:center;justify-content:center">'+_ic('truck',17)+'</div>'
+    +'<div style="width:32px;height:32px;border-radius:8px;background:var(--bg-card2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center">'+_ic('truck',17)+'</div>'
     +'<span style="font-size:1rem;font-weight:800;color:var(--text-primary)">Calendário de Saídas</span>'
     +'<select id="agend-filtro-rota" onchange="_agendSetFiltroRota(this.value)" title="Destacar uma rota nos calendários" style="margin-left:auto;background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:.78rem"><option value="">Todas as rotas</option>'+_rotasU.map(function(r){ return '<option value="'+escapeHtml(r)+'"'+(r.toUpperCase()===_filtroRota?' selected':'')+'>'+escapeHtml(r)+'</option>'; }).join('')+'</select>'
     +'<span style="font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">'+arr.length+' agendadas</span>'
   +'</div>';
   html+=_mkCal(_dayMap,'saida');
   html+='<div id="agend-dia-det" style="margin-top:12px"></div>';
-  html+='<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:.72rem;color:var(--text-secondary);align-items:center">'
-    +'<span><span style="color:#059669;font-weight:700">'+_ic('check-circle',12)+'</span> Saiu</span>'
-    +'<span><span style="color:#dc2626;font-weight:700">'+_ic('x-circle',12)+'</span> Não saiu — clique para registrar motivo</span>'
-    +'<span><span style="font-weight:700">'+_ic('clock',12)+'</span> Hoje</span>'
-    +'<span><span style="color:#ea580c;font-weight:700">'+_ic('alert-triangle',12)+'</span> Fechamento vencido</span>'
-    +'<span style="margin-left:auto">Clique num dia para ver o detalhe</span>'
+  html+='<div style="display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font-size:.72rem;color:var(--text-secondary);align-items:center">'
+    +['agendada','formacao','ok','atraso'].map(function(k){ return '<span style="display:inline-flex;align-items:center;gap:6px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;'+_CHIP[k]+'"></span>'+_ESTLAB[k]+'</span>'; }).join('')
+    +'<span style="margin-left:auto">Clique num dia para ver o detalhe · clique na rota sem saída para registrar o motivo</span>'
   +'</div>';
   html+=_leg;
   html+='</div>';
 
   // --- Divisória ---
   html+='<div style="height:1px;background:var(--border);margin:0 0 28px;position:relative">'
-    +'<div style="position:absolute;top:-2px;left:50%;transform:translateX(-50%);width:40px;height:5px;border-radius:3px;background:linear-gradient(90deg,#7c3aed,#f07a6a)"></div>'
+    +'<div style="position:absolute;top:-2px;left:50%;transform:translateX(-50%);width:40px;height:5px;border-radius:3px;background:var(--border-med)"></div>'
   +'</div>';
 
   // --- Calendário de Fechamento ---
   html+='<div>';
   html+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
-    +'<div style="width:32px;height:32px;border-radius:8px;background:rgba(124,58,237,.15);color:#7c3aed;display:flex;align-items:center;justify-content:center">'+_ic('lock',17)+'</div>'
+    +'<div style="width:32px;height:32px;border-radius:8px;background:var(--bg-card2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center">'+_ic('lock',17)+'</div>'
     +'<span style="font-size:1rem;font-weight:800;color:var(--text-primary)">Fechamento de Vendas</span>'
     +'<span style="margin-left:auto;font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">2 dias úteis antes da saída</span>'
   +'</div>';
   html+=_mkCal(_fechMap,'fechamento');
   html+='<div style="font-size:.72rem;color:var(--text-muted);margin-top:10px">Cada chip mostra a rota e o número <strong>↗DD</strong> indica o dia da saída. O fechamento de vendas deve ocorrer nesta data.</div>';
-  html+=_leg;
   html+='</div>';
 
   container.innerHTML=html;
@@ -52468,7 +52425,7 @@ async function renderAgendamentos(){
   // Detalhe do dia clicado (painel abaixo do Calendário de Saídas) — sem nova consulta ao banco
   window._agendRenderDia = function(dStr){
     var box=document.getElementById('agend-dia-det'); if(!box) return;
-    document.querySelectorAll('[data-dia]').forEach(function(c){ c.style.outline = c.getAttribute('data-dia')===dStr ? '2px solid #2563eb' : ''; c.style.outlineOffset='-2px'; });
+    document.querySelectorAll('[data-dia]').forEach(function(c){ c.style.outline = c.getAttribute('data-dia')===dStr ? '2px solid var(--text-secondary)' : ''; c.style.outlineOffset='-2px'; });
     var card='background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:14px 16px';
     if(!dStr){ box.innerHTML='<div style="'+card+';font-size:.8rem;color:var(--text-muted)">Clique num dia do calendário para ver o detalhe das saídas.</div>'; return; }
     var lista=_dayMap[dStr]||[];
@@ -52477,16 +52434,16 @@ async function renderAgendamentos(){
     var h='<div style="'+card+'"><div style="font-size:.9rem;font-weight:800;color:var(--text-primary);margin-bottom:8px">'+escapeHtml(tit)+' · '+lista.length+' saída(s)</div>';
     if(!lista.length) h+='<div style="font-size:.8rem;color:var(--text-muted)">Sem saída agendada neste dia.</div>';
     lista.forEach(function(a){
-      var demSt=_demMap[(a.rota||'').trim().toUpperCase()+'|'+a.data];
-      var saiu=a.status==='realizado'||a.lancado||['saiu','fim_viagem','concluido'].includes(demSt);
+      var est=_est[a.id]||'agendada';
+      var saiu=(est==='ok'||est==='atraso');
       var pas=a.data<hoje, eH=a.data===hoje, fv=!saiu&&!pas&&!eH&&_diasUteisAntes(a.data,2)<=hoje;
-      var sit=saiu?['Saiu','#059669']:pas?['Não saiu','#dc2626']:eH?['Sai hoje','#2563eb']:fv?['Fechamento vencido','#ea580c']:['Agendada','var(--text-secondary)'];
+      var sit=est==='ok'?['Saiu na data','#16a34a']:est==='atraso'?['Saiu com atraso','#ca8a04']:est==='formacao'?['Carga em formação','#3b82f6']:pas?['Sem saída registrada','var(--text-secondary)']:eH?['Sai hoje','var(--text-secondary)']:fv?['Fechamento vencido','var(--text-secondary)']:['Agendada','var(--text-secondary)'];
       var mKey=getMKey(a);
       var mot=mKey?(MLABEL[mKey]||mKey).replace(/^[^A-Za-zÀ-ÿ]+/,''):'';
       var fe=_diasUteisAntes(a.data,2);
       var feDt=new Date(fe+'T12:00:00');
       var feTxt=_DSEM[feDt.getDay()].slice(0,3)+' '+fe.slice(8,10)+'/'+fe.slice(5,7);
-      var feCor=fe<hoje?'#ea580c':fe===hoje?'#2563eb':'var(--text-primary)';
+      var feCor='var(--text-primary)';
       var feSub=saiu?'':fe<hoje?'já passou':fe===hoje?'fecha hoje':'';
       var info=[];
       if(mot) info.push('Motivo: '+mot);
@@ -52519,7 +52476,7 @@ async function renderAgendamentos(){
       }
       h+='<div style="padding:10px 0;border-top:1px solid var(--border)">'
         +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-          +'<span style="width:9px;height:9px;border-radius:50%;background:'+_rotaCor(a.rota||'')+';flex-shrink:0"></span>'
+          +'<span style="width:10px;height:10px;border-radius:3px;flex-shrink:0;'+_CHIP[est]+'"></span>'
           +'<div style="flex:1;min-width:200px"><div style="font-size:.86rem;font-weight:700;color:var(--text-primary)">'+escapeHtml(a.rota||'')+' <span style="font-size:.72rem;font-weight:700;color:'+sit[1]+'">· '+sit[0]+'</span></div>'
           +(info.length?'<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px">'+info.map(escapeHtml).join(' · ')+'</div>':'')+'</div>'
           +'<button onclick="abrirModalAgendamento(\''+a.id+'\')" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:.72rem;cursor:pointer">'+_ic('edit-2',11)+' Editar</button>'
