@@ -9970,7 +9970,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.165';
+const APP_VERSION = '4.89.166';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -30813,7 +30813,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
 // Pedidos + valor por semana (calendário alinhado a domingo) — fonte única
 // usada pelo Dashboard Interno e pelo Painel de Indicadores.
 function _calcPedidosPorSemana(bd, mesFiltro){
-  const _semDoMes = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
+  const _semDoMes = _semanaMesSeg;
   const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0}));
   const vistoPed = new Set();
   bd.forEach(p=>{
@@ -30826,7 +30826,7 @@ function _calcPedidosPorSemana(bd, mesFiltro){
     if(rotaPed === 'RETIRA') return;
     // Rota sem prazo cadastrado (ex: CEASA) só é excluída do %OTIF — continua contando
     // aqui e em "Entregas por Rota", que são métricas de volume, não de prazo.
-    const s = p.semana_mes || _semDoMes(p.data_pedido);
+    const s = _semDoMes(p.data_pedido) || p.semana_mes;
     if(s>=1&&s<=5){
       semData[s-1].ped++; semData[s-1].val+=Number(p.valor)||0;
     }
@@ -30936,11 +30936,20 @@ async function _carregarExpedicaoRE(undSel){
 }
 
 // Semana do mês (calendário alinhado a domingo, máx. 5) — mesma regra de _calcPedidosPorSemana
+// REGRA ÚNICA DE SEMANA DO MÊS (pedido do usuário, 2026-11-03): semana de SEGUNDA a DOMINGO, contada pelo calendário
+// (mesma grade de _calcSemanas e do semana_mes que o ERP grava), máx. 5 (a 6ª, quando existe, soma na 5ª).
+// Quantidade de pedidos = semana da DATA DO PEDIDO; OTIF = semana da DATA DA ENTREGA. Antes o OTIF usava semana de DOMINGO a
+// sábado e os pedidos usavam o semana_mes gravado (segunda a domingo): o mesmo pedido caía em semanas diferentes nos dois cards.
+function _semanaMesSeg(d){
+  if(!d) return 0;
+  const dt = String(d).length > 10 ? new Date(d) : new Date(d+'T00:00:00');
+  if(isNaN(dt)) return 0;
+  const primeiro = new Date(dt.getFullYear(), dt.getMonth(), 1);
+  return Math.min(Math.floor((dt.getDate()-1+(primeiro.getDay()+6)%7)/7)+1, 5);
+}
 function _semanaDoMesData(dateStr){
   if(!dateStr) return 0;
-  const dt = new Date(dateStr.slice(0,10)+'T00:00:00');
-  const primeiro = new Date(dt.getFullYear(), dt.getMonth(), 1);
-  return Math.min(Math.floor((dt.getDate()+primeiro.getDay()-1)/7)+1, 5);
+  return _semanaMesSeg(String(dateStr).slice(0,10));
 }
 
 // Soma as cargas da Expedição de um mês (mesStr) ou de um ano inteiro (anoStr)
@@ -30986,7 +30995,7 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
   const { entRows, ocorrRows, saidaRows, lancRows, rotasRows, cortesRows,
           pendenteTsMap, agendPedMap, feriadosSet } = dadosOtif;
 
-  const _semDoMesOtif = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
+  const _semDoMesOtif = _semanaMesSeg;
 
   // Semana do PEDIDO (quando entrou) — usada como fallback quando ainda não
   // há data de resolução dentro do mês filtrado. Decisão do usuário em
@@ -31000,7 +31009,7 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
   _computeOtifStats(bd, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hoje, mesFiltro, agendPedMap, feriadosSet,
     (ped, carga, rota, rire, dataPedido, onTime, inFull, dataFim) => {
       const isOtif = onTime && inFull;
-      const semPedido = semanaMap[ped] || _semDoMesOtif(dataPedido);
+      const semPedido = _semDoMesOtif(dataPedido) || semanaMap[ped];
       const mesDataFim = dataFim ? dataFim.slice(0,7) : null;
       const semIdx = (dataFim && mesDataFim === mesFiltro) ? _semDoMesOtif(dataFim) : semPedido;
       if(semIdx >= 1 && semIdx <= 5){
@@ -32199,8 +32208,8 @@ async function renderDashLogistico(forcarRefresh){
   // pedido entrou). porSemanaOtif: semana da ENTREGA (usado em "OTIF por
   // Semana" — quando foi resolvido). São perguntas diferentes de propósito,
   // por isso dois acumuladores separados em vez de um só.
-  // Alinhado a domingo — mesma fórmula usada em semana_mes/_semDoMesOtif
-  const _semDoMesDlog = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
+  // Semana de segunda a domingo — regra única _semanaMesSeg (pedido = data do pedido; OTIF = data da entrega)
+  const _semDoMesDlog = _semanaMesSeg;
   const porRota = {}, porMotorista = {}, porCliente = {};
   const porSemana     = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
   const porSemanaOtif = {1:{total:0,onTime:0,inFull:0,otif:0},2:{total:0,onTime:0,inFull:0,otif:0},3:{total:0,onTime:0,inFull:0,otif:0},4:{total:0,onTime:0,inFull:0,otif:0},5:{total:0,onTime:0,inFull:0,otif:0}};
@@ -32222,7 +32231,7 @@ async function renderDashLogistico(forcarRefresh){
       let c = _acc(porCliente, cliente);
       if(c){ c.total++; if(onTime)c.onTime++; if(inFull)c.inFull++; if(isOtif)c.otif++; }
       // "Entregas por Semana": pela semana do PEDIDO (quando entrou).
-      const sem = semanaMap[pedido];
+      const sem = _semDoMesDlog(dataPedido) || semanaMap[pedido];
       if(sem && porSemana[sem]){ porSemana[sem].total++; if(onTime)porSemana[sem].onTime++; if(inFull)porSemana[sem].inFull++; if(isOtif)porSemana[sem].otif++; }
       // "OTIF por Semana": pela semana da ENTREGA — sem entrega ainda (dataFim
       // null) ou entregue fora do mês filtrado, cai no fallback (semana do pedido).
@@ -37354,7 +37363,7 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
     demandasMesTodas.forEach(d=>{ _demMapLib[(d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')] = d.status; });
 
     // Semana é a da data agendada — mesmo critério de _calcPedidosPorSemana
-    const _semDoMesLib = d => { if(!d) return 0; const _dt = d.length > 10 ? new Date(d) : new Date(d+'T00:00:00'); const _primeiro = new Date(_dt.getFullYear(), _dt.getMonth(), 1); return Math.min(Math.floor((_dt.getDate()+_primeiro.getDay()-1)/7)+1, 5); };
+    const _semDoMesLib = _semanaMesSeg;
     const semData = Array.from({length:5},()=>({esperado:0, atendido:0}));
 
     agendamentosMes.forEach(a=>{
