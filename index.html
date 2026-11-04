@@ -7229,7 +7229,7 @@ body.light-theme{
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button onclick="abrirPopupRotasExpedicao()" id="btn-rotas-semana" style="display:flex;align-items:center;gap:6px;background:linear-gradient(135deg,#1e3a5f,#2563eb);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.83rem;font-weight:700;cursor:pointer;white-space:nowrap"><span data-feather="calendar" style="width:15px;height:15px"></span>Rotas da Semana</button>
       <button onclick="carregarDemandas()" class="exp-btn-refresh"><span data-feather="refresh-cw" style="width:15px;height:15px"></span>Atualizar</button>
-      <button onclick="abrirModalNovaDemanda()" class="exp-btn-new" id="btn-nova-demanda"><span data-feather="plus" style="width:15px;height:15px"></span>Nova Pré-Carga</button>
+      <button onclick="abrirSelecaoRotaAgenda()" class="exp-btn-new" id="btn-nova-demanda"><span data-feather="plus" style="width:15px;height:15px"></span>Nova Pré-Carga</button>
     </div>
   </div>
 
@@ -9971,7 +9971,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.149';
+const APP_VERSION = '4.89.150';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18213,16 +18213,117 @@ async function salvarNovoVeiculo(){
 }
 
 function toggleFormExpedicao(){
-  // Substituído por abrirModalNovaDemanda
-  abrirModalNovaDemanda();
+  // Substituído por abrirSelecaoRotaAgenda
+  abrirSelecaoRotaAgenda();
 }
 
+// ── Seleção de rota pela agenda (abre ANTES do form de Nova Pré-Carga) ────
+let _agendaNovaRotaMes = null; // 'YYYY-MM' do mês exibido no seletor
 
-function abrirModalNovaDemanda(){
+function abrirSelecaoRotaAgenda(){
+  const modal = document.getElementById('modal-agenda-nova-rota');
+  if(!modal){ abrirModalNovaDemanda(); return; } // fallback defensivo
+  _agendaNovaRotaMes = hojeDataBRT().slice(0,7);
+  modal.style.display='flex';
+  _renderAgendaNovaRota();
+}
+
+function fecharModalAgendaNovaRota(){
+  const modal = document.getElementById('modal-agenda-nova-rota');
+  if(modal) modal.style.display='none';
+}
+
+function navegarMesAgendaNovaRota(delta){
+  const [y,m] = _agendaNovaRotaMes.split('-').map(Number);
+  const d = new Date(y, m-1+delta, 1);
+  _agendaNovaRotaMes = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  _renderAgendaNovaRota();
+}
+
+async function _renderAgendaNovaRota(){
+  const label = document.getElementById('agenda-nova-rota-mes-label');
+  const grid  = document.getElementById('agenda-nova-rota-grid');
+  const vazio = document.getElementById('agenda-nova-rota-vazio');
+  if(!grid) return;
+  const mesRef = _agendaNovaRotaMes;
+  if(label) label.textContent = new Date(mesRef+'-15').toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+  grid.innerHTML = '<div style="text-align:center;padding:24px;color:#9ca3af">Carregando agenda...</div>';
+  vazio.style.display='none';
+
+  let agends = [];
+  try{
+    const [_y,_m] = mesRef.split('-').map(Number);
+    const _prox = _m===12 ? `${_y+1}-01` : `${_y}-${String(_m+1).padStart(2,'0')}`;
+    agends = await supaFetch('agendamentos_rotas?select=*&data=gte.'+mesRef+'-01&data=lt.'+_prox+'-01&order=data.asc') || [];
+  }catch(e){
+    grid.innerHTML = '<div style="text-align:center;padding:24px;color:#dc2626;font-size:.85rem">Erro ao carregar agenda: '+e.message+'</div>';
+    return;
+  }
+  if(mesRef !== _agendaNovaRotaMes) return; // usuário já trocou de mês enquanto buscava
+
+  agends = agends.filter(a => a.status !== 'realizado' && a.status !== 'concluido');
+
+  if(!agends.length){
+    grid.innerHTML = '';
+    vazio.style.display='block';
+    vazio.innerHTML = _ic('calendar',22)+'<div style="margin-top:6px">Nenhuma rota agendada neste mês</div>';
+    _featherReplace();
+    return;
+  }
+
+  const _RPAL = ['#7ec854','#5ba8f0','#3ecfab','#f0a83a','#f07a6a','#e87eb8','#f56b6b','#a992f5','#55d68e','#c084e0','#60a5fa','#34d399','#fb923c','#f472b6','#818cf8'];
+  const _cor = nome => { let h=0, n=(nome||'').toUpperCase(); for(let i=0;i<n.length;i++) h=((h*31)+n.charCodeAt(i))>>>0; return _RPAL[h%_RPAL.length]; };
+
+  const hoje = hojeDataBRT();
+  const _priDia = new Date(mesRef+'-01T12:00:00');
+  const _ultDia = new Date(_priDia.getFullYear(), _priDia.getMonth()+1, 0).getDate();
+  const _iniSem = _priDia.getDay();
+  const _DS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+
+  const porDia = {};
+  agends.forEach(a=>{ (porDia[a.data]=porDia[a.data]||[]).push(a); });
+
+  let s = '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">';
+  s += '<div style="display:grid;grid-template-columns:repeat(7,1fr);background:#f3f4f6;border-bottom:1px solid #e2e8f0">';
+  _DS.forEach((d,i)=>{ const wk=i===0||i===6; s+='<div style="text-align:center;padding:7px 2px;font-size:.65rem;font-weight:700;text-transform:uppercase;color:'+(wk?'#ef4444':'#6b7280')+'">'+d+'</div>'; });
+  s += '</div><div style="display:grid;grid-template-columns:repeat(7,1fr)">';
+  for(let bi=0; bi<_iniSem; bi++){ s += '<div style="min-height:58px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:#fafafa"></div>'; }
+  for(let dia=1; dia<=_ultDia; dia++){
+    const dStr = mesRef+'-'+String(dia).padStart(2,'0');
+    const eH = dStr===hoje;
+    const col = (_iniSem+dia-1)%7, wknd = col===0||col===6;
+    const itens = porDia[dStr]||[];
+    s += '<div style="min-height:58px;padding:4px 3px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;'+(eH?'background:rgba(37,99,235,.06);':wknd?'background:#fafafa;':'')+'">';
+    s += '<div style="text-align:right;font-size:.66rem;font-weight:700;color:'+(eH?'#2563eb':wknd?'#f87171':'#9ca3af')+';margin-bottom:2px">'+dia+'</div>';
+    itens.forEach(a=>{
+      const cor = _cor(a.rota||'');
+      const ja = !!a.lancado;
+      const rotaEsc = escapeHtml(a.rota||'');
+      const rc = rotaEsc.length>11 ? rotaEsc.slice(0,11)+'…' : rotaEsc;
+      if(ja){
+        s += '<div title="'+rotaEsc+' — pré-carga já criada" style="margin-bottom:2px;background:#f0fdf4;color:#15803d;border-radius:5px;padding:2px 5px;font-size:.62rem;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">✓ '+rc+'</div>';
+      } else {
+        s += '<div onclick="selecionarAgendaParaNovaDemanda(\''+(a.rota||'').replace(/'/g,"\\'")+'\',\''+a.data+'\')" title="Selecionar '+rotaEsc+' — '+a.data+'" style="cursor:pointer;margin-bottom:2px;background:'+cor+'20;color:'+cor+';border-radius:5px;padding:2px 5px;font-size:.62rem;font-weight:700;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+rc+'</div>';
+      }
+    });
+    s += '</div>';
+  }
+  const tot = _iniSem+_ultDia, rest=(7-(tot%7))%7;
+  for(let ri=0; ri<rest; ri++){ s += '<div style="min-height:58px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:#fafafa"></div>'; }
+  s += '</div></div>';
+  grid.innerHTML = s;
+}
+
+function selecionarAgendaParaNovaDemanda(rota, data){
+  fecharModalAgendaNovaRota();
+  abrirModalNovaDemanda(rota, data);
+}
+
+function abrirModalNovaDemanda(presetRota, presetData){
   const modal = document.getElementById('modal-nova-demanda');
   if(!modal) return;
-  // Setar data de hoje
-  document.getElementById('exp-data').value = hojeDataBRT();
+  // Setar data de hoje (ou a data pré-selecionada na agenda)
+  document.getElementById('exp-data').value = presetData || hojeDataBRT();
   // Limpar campos
   ['exp-motorista','exp-veiculo','exp-rota'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value='';
@@ -18235,7 +18336,17 @@ function abrirModalNovaDemanda(){
   // Carregar listas
   carregarMotoristas();
   carregarVeiculos();
-  carregarRotasExp();
+  carregarRotasExp().then(()=>{
+    // Só aplica depois do select de rotas estar populado
+    if(presetRota){
+      const selRota = document.getElementById('exp-rota');
+      if(selRota){ selRota.value = presetRota; preencherValorRota(); }
+    }
+    if(presetData){
+      const inpData = document.getElementById('exp-data');
+      if(inpData) inpData.value = presetData;
+    }
+  });
   modal.style.display='flex';
 }
 
@@ -18277,6 +18388,15 @@ async function criarDemanda(){
   const motoristaSalvar = motorista || (ehVeiculoFrete(veiculo) ? '' : 'A DEFINIR MOTORISTA');
   const veiculoSalvar   = veiculo || 'A DEFINIR VEÍCULO';
 
+  // Evita pré-carga duplicada para a mesma rota/data (mesma checagem do popup "Rotas da Semana")
+  try{
+    const jaExiste = await supaFetch(`demandas_rota?rota=eq.${encodeURIComponent(rota)}&data_saida=eq.${data}&status=not.in.(cancelado)&select=id&limit=1`).catch(()=>[]) || [];
+    if(jaExiste.length){
+      showMsgExp('⚠️ Já existe uma pré-carga ativa para '+rota+' em '+data,'warning');
+      return;
+    }
+  }catch(e){}
+
   try{
     await supaFetch('demandas_rota',{
       method:'POST',
@@ -18291,6 +18411,11 @@ async function criarDemanda(){
     });
 
     showMsgExp('✅ Pré-carga criada!','ok');
+    // Se a rota/data corresponde a um agendamento, marca como já lançado
+    // (mesmo efeito do botão "Adicionar à Pré-Carga" do popup de agenda)
+    supaFetch('agendamentos_rotas?rota=eq.'+encodeURIComponent(rota)+'&data=eq.'+data, {
+      method:'PATCH', body: JSON.stringify({lancado:true}), prefer:'return=minimal'
+    }).catch(()=>{});
     // Limpar formulário
     ['exp-motorista','exp-veiculo','exp-rota','exp-valor-meta'].forEach(id=>{
       const el = document.getElementById(id); if(el) el.value='';
@@ -59180,6 +59305,42 @@ function _cftvRenderTable(data){
 </div>
 
 <!-- ══ MODAL NOVA PRÉ-CARGA ══ -->
+<!-- ══ EXPEDIÇÃO — escolher rota agendada antes de criar a pré-carga ══ -->
+<div id="modal-agenda-nova-rota" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:600;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:620px;max-height:90vh;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.35);display:flex;flex-direction:column">
+
+    <div style="background:linear-gradient(135deg,#0D0D0D,#E8000D);padding:22px 26px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <div>
+        <h3 style="font-size:1.1rem;font-weight:800;margin-bottom:3px;display:flex;align-items:center;gap:7px"><span data-feather="calendar" style="width:15px;height:15px"></span>Nova Pré-Carga</h3>
+        <p style="font-size:.8rem;opacity:.7">Escolha a rota e a data agendada para sair</p>
+      </div>
+      <button onclick="fecharModalAgendaNovaRota()"
+        style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:.85rem;font-weight:600">
+        ✕ Fechar
+      </button>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid #e2e8f0;flex-shrink:0">
+      <button onclick="navegarMesAgendaNovaRota(-1)" style="background:#f3f4f6;border:none;border-radius:8px;padding:7px 12px;cursor:pointer;color:#374151;font-weight:700">‹</button>
+      <span id="agenda-nova-rota-mes-label" style="font-size:.92rem;font-weight:800;color:#111;text-transform:capitalize"></span>
+      <button onclick="navegarMesAgendaNovaRota(1)" style="background:#f3f4f6;border:none;border-radius:8px;padding:7px 12px;cursor:pointer;color:#374151;font-weight:700">›</button>
+    </div>
+
+    <div style="padding:16px 22px;overflow-y:auto;flex:1">
+      <div id="agenda-nova-rota-grid"></div>
+      <div id="agenda-nova-rota-vazio" style="display:none;text-align:center;padding:28px;color:#9ca3af;font-size:.85rem"></div>
+    </div>
+
+    <div style="padding:14px 22px;border-top:1px solid #e2e8f0;flex-shrink:0">
+      <button onclick="fecharModalAgendaNovaRota();abrirModalNovaDemanda()"
+        style="width:100%;background:#f3f4f6;color:#374151;border:none;border-radius:10px;padding:11px;font-size:.85rem;font-weight:700;cursor:pointer">
+        Rota fora da agenda (lançamento manual)
+      </button>
+    </div>
+
+  </div>
+</div>
+
 <div id="modal-nova-demanda" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:600;align-items:center;justify-content:center;padding:16px">
   <div style="background:#fff;border-radius:18px;width:100%;max-width:500px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.35)">
 
