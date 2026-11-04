@@ -5483,6 +5483,22 @@ body.light-theme{
     <button class="arm-tab active" id="arm-tab-demandas" onclick="switchArmTab('demandas',this)"><span data-feather="clipboard" style="width:13px;height:13px;vertical-align:-2px"></span> Hoje no armazém</button>
     <button class="arm-tab" id="arm-tab-concluido" onclick="switchArmTab('concluido',this)"><span data-feather="check-circle" style="width:13px;height:13px;vertical-align:-2px"></span> Concluídas</button>
     <button class="arm-tab" id="arm-tab-quadro" onclick="switchArmTab('quadro',this)"><span data-feather="bar-chart-2" style="width:13px;height:13px;vertical-align:-2px"></span> Quadro por rota</button>
+    <button class="arm-tab" id="arm-tab-aderencia" onclick="switchArmTab('aderencia',this)"><span data-feather="user-check" style="width:13px;height:13px;vertical-align:-2px"></span> Aderência</button>
+  </div>
+
+  <!-- Painel Aderência: vínculo da carga ao conferente e check de conferência, por dia e por conferente (rotas externas) -->
+  <div class="arm-panel" id="arm-painel-aderencia">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <p style="font-size:.78rem;color:var(--text-secondary);margin:0;max-width:62ch">Quais cargas de rotas externas tiveram o conferente vinculado e os pedidos conferidos no Cronos, dia a dia, e quais conferentes não estão preenchendo. O dia é a data de saída da carga. Cargas internas (Ceasa, Petrolina, Juazeiro) são conferidas no FDSAS e não entram aqui.</p>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <label style="display:flex;flex-direction:column;gap:3px;font-size:.68rem;color:var(--text-muted);font-weight:700">Mês
+          <input type="month" id="arm-ader-mes" class="devol-data" onchange="renderArmAderencia()" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.8rem">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:.74rem;color:var(--text-secondary);font-weight:600;padding-bottom:8px"><input type="checkbox" id="arm-ader-ocultar0" onchange="renderArmAderencia()"> Ocultar quem não registrou nada</label>
+        <button onclick="renderArmAderencia()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:.78rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:12px;height:12px;vertical-align:-2px"></span> Atualizar</button>
+      </div>
+    </div>
+    <div id="arm-aderencia-container"><p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p></div>
   </div>
 
   <!-- Painel Demandas (pré-cargas + conferentes) -->
@@ -9950,7 +9966,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.192';
+const APP_VERSION = '4.89.193';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -49149,6 +49165,141 @@ function switchArmTab(tab, btn){
   if(painel) painel.classList.add('active');
   if(tab==='abastecimento') renderAbastecimentoLoja().catch(e=>console.warn('abastecimento:',e));
   if(tab==='quadro') renderArmQuadro().catch(e=>console.warn('quadro por rota:',e));
+  if(tab==='aderencia') renderArmAderencia().catch(e=>console.warn('aderência:',e));
+}
+
+// ── Armazém › Aderência ───────────────────────────────────────────────
+// Pedido do Gabriel (2026-11-04): acompanhar, por dia, se o conferente vinculou a carga e fez o check de
+// conferência no Cronos, e identificar quem não está preenchendo. Escopo escolhido: só rotas externas
+// (as de demandas_rota); as internas são conferidas no FDSAS. Só leitura: não grava nada.
+// Vínculo = linha em atribuicoes_armazem para a demanda. Check = pedidos distintos em conferencia_pedidos
+// (status ok/nok) em relação à quantidade_pedidos da demanda. Dia = data_saida da demanda.
+function _aderCalcular(dems, atrib, cps, conferentes){
+  const porDem = {}, cpPorCarga = {};
+  atrib.forEach(a=>{ (porDem[a.demanda_id] = porDem[a.demanda_id] || []).push(a); });
+  cps.forEach(c=>{ (cpPorCarga[c.carga] = cpPorCarga[c.carga] || []).push(c); });
+  const cargas = dems.map(d=>{
+    const at = porDem[d.id] || [];
+    const cp = cpPorCarga[d.carga] || [];
+    const pedChecados = new Set(cp.filter(c=>c.status==='ok'||c.status==='nok').map(c=>String(c.pedido)));
+    const qp = Number(d.quantidade_pedidos)||0;
+    const pct = qp ? Math.min(100, Math.round(100*pedChecados.size/qp)) : (pedChecados.size ? 100 : 0);
+    return {
+      id:d.id, carga:d.carga, rota:d.rota||'', dia:d.data_saida, status:d.status, qp,
+      vinculada: at.length>0,
+      nomesVinc: [...new Set(at.map(a=>a.conferente_nome).filter(Boolean))],
+      nomesCheck: [...new Set(cp.map(c=>c.conferente_nome).filter(Boolean))],
+      pedChecados: pedChecados.size, pctCheck: pct,
+      check: pedChecados.size>0 ? (pct>=100 ? 'completo' : 'parcial') : 'nenhum'
+    };
+  });
+  const dias = [...new Set(cargas.map(c=>c.dia).filter(Boolean))].sort();
+  const porConf = {};
+  conferentes.forEach(c=>{ porConf[c.nome] = {nome:c.nome, cargas:new Set(), pedidos:new Set(), dias:new Set(), ultimo:''}; });
+  const toca = (nome, dia, carga, ped)=>{
+    if(!nome) return;
+    const p = porConf[nome] = porConf[nome] || {nome, cargas:new Set(), pedidos:new Set(), dias:new Set(), ultimo:''};
+    if(dia){ p.dias.add(dia); if(dia>p.ultimo) p.ultimo = dia; }
+    if(carga!=null) p.cargas.add(carga);
+    if(ped!=null) p.pedidos.add(ped);
+  };
+  cargas.forEach(c=>{
+    c.nomesVinc.forEach(n=>toca(n, c.dia, c.carga, null));
+    (cpPorCarga[c.carga]||[]).filter(x=>x.status==='ok'||x.status==='nok').forEach(x=>toca(x.conferente_nome, c.dia, c.carga, String(x.pedido)));
+  });
+  return {cargas, dias, conferentes:Object.values(porConf)};
+}
+
+async function renderArmAderencia(){
+  const box = document.getElementById('arm-aderencia-container');
+  const inMes = document.getElementById('arm-ader-mes');
+  if(!box || !inMes) return;
+  if(!inMes.value) inMes.value = hojeDataBRT().slice(0,7);
+  const [ano, mes] = inMes.value.split('-').map(Number);
+  const ini = `${ano}-${String(mes).padStart(2,'0')}-01`;
+  const prox = mes===12 ? `${ano+1}-01-01` : `${ano}-${String(mes+1).padStart(2,'0')}-01`;
+  box.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p>';
+  try{
+    const undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
+    const undQ = undUsr ? `&or=(unidade.eq.${encodeURIComponent(undUsr)},unidade.is.null)` : '';
+    const dems = (await supaFetch(`demandas_rota?carga=not.is.null&status=neq.cancelado&data_saida=gte.${ini}&data_saida=lt.${prox}&select=id,carga,rota,data_saida,quantidade_pedidos,status,unidade&order=data_saida.asc&limit=1000${undQ}`) || []);
+    if(!dems.length){
+      box.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga de rota externa com saída neste mês.</p>';
+      return;
+    }
+    const ids = dems.map(d=>d.id), cargas = [...new Set(dems.map(d=>d.carga))];
+    const [atrib, cps, confs] = await Promise.all([
+      _emLotes(ids, 40, l=>supaFetch(`atribuicoes_armazem?demanda_id=in.(${l.join(',')})&select=demanda_id,conferente_nome`).catch(()=>[])),
+      _emLotes(cargas, 60, l=>supaFetch(`conferencia_pedidos?carga=in.(${l.join(',')})&select=carga,pedido,status,conferente_nome`).catch(()=>[])),
+      supaFetch('conferentes?ativo=eq.true&perfil=eq.conferente&select=nome,unidade&order=nome.asc').catch(()=>[])
+    ]);
+    const confsUnid = (confs||[]).filter(c=>!undUsr || (c.unidade||'').trim()===undUsr);
+    const r = _aderCalcular(dems, atrib, cps, confsUnid);
+    const n = r.cargas.length;
+    const vinc = r.cargas.filter(c=>c.vinculada).length;
+    const chkOk = r.cargas.filter(c=>c.check==='completo').length;
+    const saiuSemVinc = r.cargas.filter(c=>!c.vinculada && ['saiu','fim_viagem','concluido'].includes(c.status)).length;
+    const pct = (a,b)=> b ? Math.round(100*a/b)+'%' : '—';
+    const fmtD = d => { const p = String(d||'').split('-'); return p.length===3 ? p[2]+'/'+p[1] : '—'; };
+    const SEMANA = ['dom','seg','ter','qua','qui','sex','sáb'];
+    const dsem = d => SEMANA[new Date(d+'T12:00:00').getDay()];
+    const kpi = (label, valor, cor, sub) => `<div class="kpi-card" style="border-top-color:${cor};padding:12px 14px"><div class="kpi-label" style="font-size:.65rem">${label}</div><div class="kpi-value" style="font-size:1.6rem">${valor}</div>${sub?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${sub}</div>`:''}</div>`;
+    const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px">
+      ${kpi('Cargas com saída no mês', n, 'var(--red)')}
+      ${kpi('Com conferente vinculado', pct(vinc,n), 'var(--green)', vinc+' de '+n)}
+      ${kpi('Com check completo', pct(chkOk,n), '#3b82f6', chkOk+' de '+n)}
+      ${kpi('Saíram sem vínculo', saiuSemVinc, saiuSemVinc?'#ef4444':'var(--green)', 'carga em viagem ou concluída sem conferente')}
+    </div>`;
+
+    const th = (t, al) => `<th style="text-align:${al||'left'};padding:7px 10px;font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap">${t}</th>`;
+    const td = (t, al, extra) => `<td style="text-align:${al||'left'};padding:7px 10px;font-size:.8rem;border-bottom:1px solid var(--border);vertical-align:top;${extra||''}">${t}</td>`;
+    const chip = (t, cor) => `<span style="display:inline-block;background:${cor};color:#fff;border-radius:10px;padding:1px 8px;font-size:.68rem;font-weight:700;margin:1px 3px 1px 0">${t}</span>`;
+
+    // Por dia
+    const linhasDia = r.dias.map(d=>{
+      const cs = r.cargas.filter(c=>c.dia===d);
+      const v = cs.filter(c=>c.vinculada).length, ck = cs.filter(c=>c.check==='completo').length;
+      const sem = cs.filter(c=>!c.vinculada);
+      const quem = [...new Set(cs.flatMap(c=>c.nomesVinc))];
+      const cor = v===0 ? '#ef4444' : (v<cs.length ? '#f59e0b' : '#22c55e');
+      return `<tr>
+        ${td('<b>'+fmtD(d)+'</b> <span style="color:var(--text-muted)">'+dsem(d)+'</span>')}
+        ${td(cs.length,'right')}
+        ${td('<span style="color:'+cor+';font-weight:800">'+v+'</span>','right')}
+        ${td(ck,'right')}
+        ${td(sem.length ? sem.map(c=>chip('#'+escapeHtml(c.carga)+' '+escapeHtml(c.rota), 'rgba(239,68,68,.85)')).join('') : '<span style="color:var(--text-muted)">—</span>')}
+        ${td(quem.length ? quem.map(escapeHtml).join(', ') : '<span style="color:var(--text-muted)">ninguém vinculou</span>')}
+      </tr>`;
+    }).join('');
+    const tabDia = `<div class="card" style="padding:14px;margin-bottom:16px"><div style="font-weight:800;font-size:.9rem;margin-bottom:8px">Dia a dia</div>
+      <div style="overflow:auto;max-height:28rem"><table style="width:100%;border-collapse:collapse"><thead><tr>${th('Dia')}${th('Cargas','right')}${th('Vinculadas','right')}${th('Check completo','right')}${th('Cargas sem conferente')}${th('Quem vinculou')}</tr></thead><tbody>${linhasDia}</tbody></table></div></div>`;
+
+    // Por conferente
+    const diasComCarga = r.dias.length;
+    const ocultar0 = !!document.getElementById('arm-ader-ocultar0')?.checked;
+    const confOrd = r.conferentes.map(c=>({...c, nCargas:c.cargas.size, nPed:c.pedidos.size, nDias:c.dias.size}))
+      .filter(c=>!ocultar0 || c.nDias>0)
+      .sort((a,b)=> (a.nDias-b.nDias) || (a.nCargas-b.nCargas) || a.nome.localeCompare(b.nome));
+    const linhasConf = confOrd.map(c=>{
+      const p = diasComCarga ? Math.round(100*c.nDias/diasComCarga) : 0;
+      const cor = c.nDias===0 ? '#ef4444' : (p<50 ? '#f59e0b' : '#22c55e');
+      return `<tr>
+        ${td('<b>'+escapeHtml(c.nome)+'</b>')}
+        ${td(c.nCargas,'right', c.nCargas===0?'color:#ef4444;font-weight:800':'')}
+        ${td(c.nPed,'right')}
+        ${td(c.nDias+' de '+diasComCarga,'right')}
+        ${td('<span style="color:'+cor+';font-weight:800">'+p+'%</span>','right')}
+        ${td(diasComCarga-c.nDias,'right')}
+        ${td(c.ultimo ? fmtD(c.ultimo) : '<span style="color:var(--text-muted)">sem registro</span>','right')}
+      </tr>`;
+    }).join('');
+    const tabConf = `<div class="card" style="padding:14px;margin-bottom:16px"><div style="font-weight:800;font-size:.9rem">Por conferente</div>
+      <p style="font-size:.72rem;color:var(--text-muted);margin:4px 0 8px;max-width:70ch">Do que menos preencheu para o que mais preencheu. Um dia conta quando o conferente vinculou uma carga ou conferiu pedidos nela. Quem cuida só de rotas internas (FDSAS) pode aparecer com zero aqui.</p>
+      <div style="overflow:auto;max-height:28rem"><table style="width:100%;border-collapse:collapse"><thead><tr>${th('Conferente')}${th('Cargas','right')}${th('Pedidos conferidos','right')}${th('Dias com registro','right')}${th('% dos dias','right')}${th('Dias sem registro','right')}${th('Último registro','right')}</tr></thead><tbody>${linhasConf}</tbody></table></div></div>`;
+
+    box.innerHTML = kpis + tabDia + tabConf;
+    _featherReplace();
+  }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
 }
 
 // ── Armazém › Quadro por rota ─────────────────────────────────────────
