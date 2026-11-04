@@ -9970,7 +9970,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.166';
+const APP_VERSION = '4.89.167';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -30970,6 +30970,55 @@ function _agregarExpedicaoRE(cargas, {mesStr, anoStr}={}){
   return { rotaMap, semData, porMes };
 }
 
+// Pedidos das rotas externas pela DATA DO PEDIDO (pedido do usuário, 2026-11-04: "o pedido tem que ser pela data do pedido").
+// Antes o volume R.E. vinha do total de pedidos da carga em demandas_rota e entrava no mês/semana da DATA DE SAÍDA da carga
+// (145 dos 147 pedidos R.E. de Novembro tinham sido feitos em Outubro). Agora cada pedido (base_data) conta no mês e na semana
+// em que foi feito. Continuam valendo as mesmas cargas de Expedição (_carregarExpedicaoRE: só cargas com data de saída);
+// `desde` = 1º dia do período: um pedido não pode ser mais novo que a saída da carga, então só cargas que saíram desde aí.
+let _pedRECache = { ts:0, chave:null, dados:null };
+async function _carregarPedidosRE(undSel, desde){
+  const chave = (undSel||'')+'|'+desde;
+  if(_pedRECache.dados && _pedRECache.chave===chave && Date.now()-_pedRECache.ts < 60000) return _pedRECache.dados;
+  const cargas = (await _carregarExpedicaoRE(undSel)).filter(c=>c.dataRef >= desde);
+  const rotaDaCarga = new Map();
+  cargas.forEach(c=>{ if(!rotaDaCarga.has(c.carga)) rotaDaCarga.set(c.carga, c.rota); });
+  const ids = [...rotaDaCarga.keys()], lotes = [];
+  for(let i=0; i<ids.length; i+=80) lotes.push(ids.slice(i, i+80));
+  // sem .catch de propósito: se um lote falhar o card mostra o erro, em vez de mostrar um volume menor sem avisar
+  const partes = await Promise.all(lotes.map(l=>supaFetch(`base_data?carga=in.(${l.join(',')})&select=carga,pedido,valor,data_pedido&limit=20000`)));
+  const vistos = new Set(), linhas = [];
+  partes.forEach(rows=>(rows||[]).forEach(r=>{
+    const c = Math.round(Number(r.carga));
+    const k = c+'_'+r.pedido;
+    if(vistos.has(k) || !r.data_pedido) return;
+    vistos.add(k);
+    linhas.push({ carga:c, rota:rotaDaCarga.get(c), data:String(r.data_pedido).slice(0,10), val:Number(r.valor)||0 });
+  }));
+  _pedRECache = { ts:Date.now(), chave, dados:linhas };
+  return linhas;
+}
+// Mesmo formato de _agregarExpedicaoRE ({rotaMap, semData, porMes}), mas por pedido e pela data do pedido.
+function _agregarPedidosRE(linhas, {mesStr, anoStr}={}){
+  const rotaMap = {};
+  const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0}));
+  const porMes = Array.from({length:12}, ()=>({ped:0,val:0,ent:0}));
+  const cargasRota = {};
+  linhas.forEach(p=>{
+    const mes = p.data.slice(0,7);
+    if(mesStr && mes !== mesStr) return;
+    if(anoStr && mes.slice(0,4) !== anoStr) return;
+    const r = rotaMap[p.rota] || (rotaMap[p.rota] = {ped:0,val:0,ent:0,cargas:0});
+    r.ped++; r.val += p.val; r.ent++;
+    (cargasRota[p.rota] = cargasRota[p.rota] || new Set()).add(p.carga);
+    const s = _semanaMesSeg(p.data);
+    if(s>=1 && s<=5){ semData[s-1].ped++; semData[s-1].val += p.val; semData[s-1].ent++; }
+    const m = Number(mes.slice(5,7));
+    if(m>=1 && m<=12){ porMes[m-1].ped++; porMes[m-1].val += p.val; porMes[m-1].ent++; }
+  });
+  Object.keys(rotaMap).forEach(k=>{ rotaMap[k].cargas = cargasRota[k].size; });
+  return { rotaMap, semData, porMes };
+}
+
 // Junta dois mapas { rota:{ped,val,ent} } (usado no filtro "Todos": interna + externa)
 function _somarRotaMaps(a, b){
   const out = {};
@@ -38439,8 +38488,8 @@ async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, carga
     const bdVol = semAbast(bd, cargaAbast);
     return { semData:_calcPedidosPorSemana(bdVol, mes), rotaCalc:_calcEntregasPorRota(bdVol, cargaRota, cargaIsRI, 'RI') };
   }
-  const exp = _agregarExpedicaoRE(await _carregarExpedicaoRE(undSel), {mesStr:mes});
-  // Cada carga cai numa única semana (a da saída), então a soma das semanas já é o total do mês
+  const exp = _agregarPedidosRE(await _carregarPedidosRE(undSel, mes+'-01'), {mesStr:mes});
+  // Cada pedido cai numa única semana (a do pedido), então a soma das semanas já é o total do mês
   exp.semData.entMes = exp.semData.reduce((a,s)=>a+s.ent,0);
   if(rireSel === 'RE'){
     return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap) };
@@ -38648,7 +38697,7 @@ async function carregarPainelPedidosRotasAno(){
 
     // R.E. (e a parte externa do "Todos") vem do que foi lançado em Expedição;
     // R.I. (e a parte interna do "Todos") continua vindo de lançamentos.
-    const exp = rireSel !== 'RI' ? _agregarExpedicaoRE(await _carregarExpedicaoRE(undSel), {anoStr:anoSel}) : null;
+    const exp = rireSel !== 'RI' ? _agregarPedidosRE(await _carregarPedidosRE(undSel, anoSel+'-01-01'), {anoStr:anoSel}) : null;
     if(rireSel === 'RE'){
       exp.porMes.forEach((m,i)=>{ bMesPed[i]=m.ped; bMesVal[i]=m.val; bMesEnt[i]=m.ent; });
       rotaCalc = _montarRotaCalc(exp.rotaMap);
