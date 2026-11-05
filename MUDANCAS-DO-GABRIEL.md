@@ -21,6 +21,22 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Crédito Manual — só código do cliente e valor do pedido são automáticos — v4.89.208
+Onde: `index.html`, página Distribuição › Histórico — Crédito Manual (`page-credito-manual`): campo do pedido (busca ao digitar e ao sair do
+campo), aviso embaixo do pedido, CSS `.cm-auto` e funções `cmAutoPreencher`, `cmPedidoMudou`, `_cmTravar`, `_cmDestravarAuto`, `cmLimparForm`.
+`APP_VERSION`/`version.json` 4.89.207 → 4.89.208.
+Por quê: pedido do Gabriel, ajustando a v4.89.202 (que tinha deixado tudo manual): pelo Nº do pedido o ERP (`pedidos_info_erp`: codigo_cliente, valor,
+cliente, situacao; se faltar o valor, `base_data`) preenche SÓ o código do cliente e o valor do pedido. Emissão da nota, número da nota, valor do
+crédito, peso faltante e evidência por foto continuam manuais (destacados). Campo preenchido pelo ERP fica travado e escuro (`.cm-auto`); se o ERP não
+trouxe o dado (pedido não encontrado), o campo fica livre e destacado para digitar. Embaixo do pedido aparece o nome do cliente e, em pedido
+cancelado (situação CA), um aviso vermelho que NÃO bloqueia. Trocar o pedido apaga na hora os dados travados do anterior; sair do campo sem mudar o
+pedido não refaz a busca nem apaga o que foi digitado; "Limpar" destrava tudo. Salvar grava os valores como estão no campo (cópia do momento). Só LÊ
+o banco (duas consultas por pedido); nada é gravado por esta mudança. Dado sobre emissão/nota deixou de ser consultado.
+Testes: `node check.js` ok; 27 testes de lógica (preenche/trava, cancelado, fallback, não encontrado, trocar pedido, corrida de buscas, Limpar, erro e
+nova tentativa, salvar, marcação da tela) passando. Sem teste com a tabela real se ela ainda não existir; teste visual do Gabriel pendente.
+Como desfazer: `git revert` do commit desta entrada (volta ao 4.89.207, tudo manual).
+Pendente/risco: tabela `credito_manual_historico` ainda precisa existir para salvar (ver entrada de 05/11 anterior); valor do pedido é o do ERP
+(soma dos itens), que pode diferir do valor impresso na nota.
 ## 2026-11-05, Gabriel: Campos de data com ícone do calendário claro (Crédito Manual e Ocorrências) — v4.89.203
 Onde: `index.html`: `#cm-emissao` (Histórico — Crédito Manual › Data de emissão da nota) passa de `.cm-semcal` (sem ícone) para `.cm-data` (ícone do
 calendário claro + linha separadora); `#l-ocorr-data` (Distribuição › Ocorrências › Data da ocorrência) ganha a classe `.cm-data` (o ícone saía escuro,
