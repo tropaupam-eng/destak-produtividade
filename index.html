@@ -49248,6 +49248,55 @@ function _aderPreset(tipo){
   renderArmAderencia();
 }
 
+// Detalhe do dia: ao clicar numa coluna do gráfico, mostra as cargas do dia e cada pedido (conferido ou não).
+// Os pedidos da carga vêm de base_data (planilha importada); o check vem de conferencia_pedidos. Só leitura.
+async function _aderSelDia(dia){
+  const box = document.getElementById('ader-dia-detalhe');
+  const ctx = window._aderCtx;
+  if(!box || !ctx) return;
+  const cols = document.querySelectorAll('.ader-col');
+  if(box.dataset.dia === dia){ box.dataset.dia = ''; box.innerHTML = ''; cols.forEach(c=>{ c.style.opacity = ''; }); return; }
+  box.dataset.dia = dia;
+  cols.forEach(c=>{ c.style.opacity = c.dataset.dia===dia ? '1' : '.4'; });
+  box.innerHTML = '<p style="color:var(--text-muted);font-size:.8rem">Carregando pedidos...</p>';
+  const fmt = d => { const p = String(d).split('-'); return p[2]+'/'+p[1]+'/'+p[0]; };
+  try{
+    const cs = ctx.cargas.filter(c=>c.dia===dia).sort((x,y)=>String(x.carga).localeCompare(String(y.carga),undefined,{numeric:true}));
+    const base = await _emLotes(cs.map(c=>c.carga), 20, l=>supaFetch('base_data?carga=in.('+l.join(',')+')&select=carga,pedido,cliente&limit=1000').catch(()=>[]));
+    if(box.dataset.dia !== dia) return; // o usuário já clicou em outro dia
+    const baseCarga = {}; base.forEach(b=>{ (baseCarga[b.carga] = baseCarga[b.carga] || {})[String(b.pedido)] = b.cliente||''; });
+    const cpCarga = {}; ctx.cps.forEach(c=>{ (cpCarga[c.carga] = cpCarga[c.carga] || {})[String(c.pedido)] = c; });
+    const blocos = cs.map(c=>{
+      const peds = Object.assign({}, baseCarga[c.carga]||{});
+      const chk = cpCarga[c.carga] || {};
+      Object.keys(chk).forEach(p=>{ if(!(p in peds)) peds[p] = ''; }); // conferido mas fora da planilha
+      const lista = Object.keys(peds).sort((x,y)=>Number(x)-Number(y));
+      const conf = lista.filter(p=>chk[p] && (chk[p].status==='ok'||chk[p].status==='nok')).length;
+      const cor = c.check==='completo' ? '#22c55e' : (c.check==='parcial' ? '#f59e0b' : '#ef4444');
+      const chips = lista.map(p=>{
+        const k = chk[p], st = k && k.status;
+        const bg = st==='ok' ? 'rgba(34,197,94,.18)' : (st==='nok' ? 'rgba(239,68,68,.22)' : 'rgba(128,128,128,.14)');
+        const bd = st==='ok' ? '#22c55e' : (st==='nok' ? '#ef4444' : 'var(--border)');
+        const ic = st==='ok' ? '✔' : (st==='nok' ? '✖' : '○');
+        const quem = k && k.conferente_nome ? ' · '+k.conferente_nome : '';
+        const tip = (peds[p] ? peds[p]+' · ' : '') + (st==='ok' ? 'conferido OK' : (st==='nok' ? 'marcado Não OK' : 'não conferido')) + quem;
+        return '<span title="'+escapeHtml(tip)+'" style="display:inline-block;background:'+bg+';border:1px solid '+bd+';border-radius:6px;padding:2px 7px;margin:2px 4px 2px 0;font-size:.72rem;font-weight:700">'+ic+' '+escapeHtml(p)+'</span>';
+      }).join('');
+      const vinc = c.nomesVinc.length ? c.nomesVinc.map(escapeHtml).join(', ') : '<span style="color:#ef4444;font-weight:700">ninguém vinculado</span>';
+      const aviso = lista.length ? '' : '<div style="font-size:.74rem;color:var(--text-muted)">Sem pedidos na planilha desta carga (base_data) e nenhum conferido no Cronos.</div>';
+      const prev = c.qp && c.qp!==lista.length ? ' · previsto na carga: '+c.qp : '';
+      return '<div style="border:1px solid var(--border);border-left:4px solid '+cor+';border-radius:8px;padding:10px 12px;margin-bottom:10px">'
+        +'<div style="display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;margin-bottom:6px"><b style="font-size:.85rem">Carga #'+escapeHtml(c.carga)+'</b><span style="font-size:.76rem;color:var(--text-secondary)">'+escapeHtml(c.rota)+'</span>'
+        +'<span style="font-size:.74rem;color:var(--text-muted)">status: '+escapeHtml(c.status||'—')+'</span>'
+        +'<span style="font-size:.74rem">Vinculado a: '+vinc+'</span>'
+        +'<span style="font-size:.76rem;font-weight:800;color:'+cor+'">'+conf+' de '+lista.length+' pedidos conferidos'+prev+'</span></div>'
+        +aviso+chips+'</div>';
+    }).join('');
+    box.innerHTML = '<div style="font-weight:800;font-size:.85rem;margin-bottom:8px">Cargas de '+fmt(dia)+' <span style="font-weight:600;color:var(--text-muted);font-size:.74rem">(clique de novo na coluna para fechar)</span></div>'
+      + '<div style="margin-bottom:8px;font-size:.7rem;color:var(--text-secondary)">✔ conferido OK &nbsp; ✖ marcado Não OK &nbsp; ○ não conferido</div>' + blocos;
+  }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
+}
+
 async function renderArmAderencia(){
   const box = document.getElementById('arm-aderencia-container');
   const inIni = document.getElementById('arm-ader-ini'), inFim = document.getElementById('arm-ader-fim');
@@ -49276,6 +49325,7 @@ async function renderArmAderencia(){
     ]);
     const confsUnid = (confs||[]).filter(c=>!undUsr || (c.unidade||'').trim()===undUsr);
     const r = _aderCalcular(dems, atrib, cps, confsUnid);
+    window._aderCtx = {cargas:r.cargas, cps};
     const n = r.cargas.length;
     const vinc = r.cargas.filter(c=>c.vinculada).length;
     const chkOk = r.cargas.filter(c=>c.check==='completo').length;
@@ -49345,13 +49395,13 @@ async function renderArmAderencia(){
     const seg = (v, cor, rot) => v ? `<div style="height:${Math.round(ALT*v/maxDia)}px;background:${cor}" title="${v} ${rot}"></div>` : '';
     const graf3 = `<div style="margin-bottom:8px">${leg(C_OK,'Conferência completa')}${leg(C_PARC,'Começou e não terminou')}${leg(C_NOK,'Sem nenhuma conferência')}</div>
       <div style="overflow-x:auto;padding-bottom:4px"><div style="display:flex;align-items:flex-end;gap:5px;min-width:max-content;height:${ALT+34}px">${
-        porDia.map(x=>`<div style="width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%" title="${fmtD(x.d)}: ${x.total} cargas, ${x.comp} completas, ${x.parc} parciais, ${x.sem} sem conferência">
+        porDia.map(x=>`<div class="ader-col" data-dia="${x.d}" onclick="_aderSelDia('${x.d}')" style="width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;transition:opacity .15s" title="${fmtD(x.d)}: ${x.total} cargas, ${x.comp} completas, ${x.parc} parciais, ${x.sem} sem conferência">
           <div style="font-size:.68rem;font-weight:800;margin-bottom:2px">${x.total}</div>
           <div style="width:100%;display:flex;flex-direction:column-reverse;border-radius:3px;overflow:hidden">${seg(x.comp,C_OK,'completas')}${seg(x.parc,C_PARC,'parciais')}${seg(x.sem,C_NOK,'sem conferência')}</div>
           <div style="font-size:.62rem;color:var(--text-muted);margin-top:3px;line-height:1.1;text-align:center">${fmtD(x.d)}<br>${dsem(x.d)}</div>
-        </div>`).join('')}</div></div>`;
+        </div>`).join('')}</div></div><div id="ader-dia-detalhe" style="margin-top:14px"></div>`;
     const card3 = card('Cargas do dia e quanto foi conferido',
-      'Cada coluna é um dia de saída. O número no topo é a quantidade de cargas; as cores mostram se os pedidos foram conferidos no Cronos. “Completa” quer dizer que todos os pedidos da carga foram marcados.', graf3);
+      'Cada coluna é um dia de saída. O número no topo é a quantidade de cargas; as cores mostram se os pedidos foram conferidos no Cronos. “Completa” quer dizer que todos os pedidos da carga foram marcados. Clique numa coluna para ver as cargas do dia e cada pedido, conferido ou não.', graf3);
 
     // Tabela dia a dia
     const linhasDia = r.dias.map(d=>{
