@@ -7778,6 +7778,7 @@ body.light-theme #page-frota-disponibilidade{
 #frota-disp-wrap .fu-bar>i>b{display:block;height:100%;border-radius:99px;background:var(--text-secondary)}
 #frota-disp-wrap .fu-bar.on>i>b{background:var(--red)}
 #frota-disp-wrap .fu-rk td.vz{color:var(--text-muted)}
+#frota-disp-wrap .fu-cap{font-size:.6rem;font-weight:600;color:var(--text-muted);margin-right:8px;letter-spacing:.02em}
 #frota-disp-wrap .fu-rk tfoot td{font-weight:800;border-top:2px solid var(--border-med);border-bottom:0;background:var(--bg-card2)}
 #frota-disp-wrap .fu-prod-f{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 2px 14px;font-size:.72rem;color:var(--text-muted)}
 @media (max-width:700px){
@@ -10078,7 +10079,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.211';
+const APP_VERSION = '4.89.212';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20682,7 +20683,7 @@ function _calcDispMapFrota({placas, demandas, etapas, lancamentosDisp, demandasC
   return dispMap;
 }
 
-// ── Utilização: painel "Pedidos e valor por veículo" (ranking ordenável; mesma conta da página Veículos) ──
+// ── Utilização: painel "Uso por carga, pedidos e valor por veículo" (separado em Interna / Externa; ordenável dentro de cada grupo) ──
 function fuOrdenarProd(key){
   const P = window._fuProd; if(!P) return;
   if(P.key===key) P.dir*=-1; else { P.key=key; P.dir=-1; }
@@ -20690,40 +20691,52 @@ function fuOrdenarProd(key){
 }
 function _fuHtmlProd(){
   const P = window._fuProd; if(!P) return '';
-  if(!P.ok) return `<div class="fu-prod" id="fu-prod"><div class="fu-prod-t">Pedidos e valor por veículo</div>
+  if(!P.ok) return `<div class="fu-prod" id="fu-prod"><div class="fu-prod-t">Uso por carga, pedidos e valor por veículo</div>
     <div class="fu-prod-s">Os dados de pedidos ainda não foram carregados nesta sessão. Recarregue o sistema e clique em Atualizar.</div></div>`;
-  const { linhas, tot, key, dir } = P;
-  const ord = [...linhas].sort((a,b)=>(a[key]-b[key])*dir || String(a.placa).localeCompare(String(b.placa)));
-  const max = k => Math.max(1, ...linhas.map(r=>r[k]));
-  const mE = max('ent'), mC = max('carg'), mV = max('val');
+  const { linhas, tot, key, dir, diasUteis, mediaGeral } = P;
+  const max = k => Math.max(1, ...linhas.map(r=>Math.min(r[k], k==='uc'?100:Infinity)));
+  const mE = max('ent'), mV = max('val');
   const fN = n => Number(n||0).toLocaleString('pt-BR');
   const fV = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const th = (k, rot, cls) => `<th class="s ${cls||''}${key===k?' on':''}" onclick="fuOrdenarProd('${k}')">${rot}${key===k?(dir===-1?' ▾':' ▴'):''}</th>`;
-  const tipo = u => u==='interno' ? '<span class="tp int">Interna</span>' : u==='externo' ? '<span class="tp ext">Externa</span>' : '';
-  const corpo = ord.map((r,i)=>{
+  const fP = v => v.toFixed(1).replace('.',',')+'%';
+  const mediaUC = ls => ls.length ? ls.reduce((a,r)=>a+Math.min(r.uc,100),0)/ls.length : 0;
+  const th = (k, rot) => `<th class="s${key===k?' on':''}" onclick="fuOrdenarProd('${k}')">${rot}${key===k?(dir===-1?' ▾':' ▴'):''}</th>`;
+  const GRUPOS = [['interno','FROTA INTERNA','var(--fu-int)'],['externo','FROTA EXTERNA','var(--fu-ext)'],['','SEM TIPO NO CADASTRO','var(--text-muted)']];
+  const NCOL = 7;
+  const linha = (r, i) => {
     const vazio = r.ent===0 && r.val===0;
-    const celula = (k, fmt, m) => vazio ? '<td class="vz">—</td>' : `<td class="fu-bar${key===k?' on':''}">${fmt(r[k])}<i><b style="width:${Math.round(r[k]/m*100)}%"></b></i></td>`;
-    return `<tr class="${dir===-1 && i<3 && !vazio?'t3':''}">
+    const cel = (k, fmt, m) => vazio ? '<td class="vz">—</td>' : `<td class="fu-bar${key===k?' on':''}">${fmt(r[k])}<i><b style="width:${Math.round(r[k]/m*100)}%"></b></i></td>`;
+    const acima = r.uc > 100;
+    return `<tr class="${dir===-1 && i<3 && r.cargas>0?'t3':''}">
       <td class="pos">${i+1}</td>
-      <td class="l"><span class="fu-placa">${escapeHtml(r.placa)}</span>${tipo(r.uso)}</td>
-      <td>${r.pct}%</td>
-      ${celula('ent', fN, mE)}
-      ${celula('carg', fN, mC)}
-      ${celula('val', fV, mV)}
+      <td class="l"><span class="fu-placa">${escapeHtml(r.placa)}</span></td>
+      <td>${fN(r.cargas)}</td>
+      <td class="fu-bar${key==='uc'?' on':''}"${acima?' title="Passou de 100% (mais de 1 carga por dia útil): na média da frota conta no máximo 100%"':''}>${acima?'<span class="fu-cap">conta 100% na média</span>':''}${fP(r.uc)}<i><b style="width:${Math.min(100,Math.round(r.uc))}%"></b></i></td>
+      ${cel('ent', fN, mE)}
+      ${cel('val', fV, mV)}
       <td>${vazio||tot.val<=0 ? '—' : (r.val/tot.val*100).toFixed(1).replace('.',',')+'%'}</td>
     </tr>`;
+  };
+  const blocos = GRUPOS.map(([k,nome,cor])=>({k,nome,cor,ls:linhas.filter(r=>(r.uso||'')===k)})).filter(g=>g.ls.length).map(g=>{
+    const ord = [...g.ls].sort((a,b)=>(a[key]-b[key])*dir || String(a.placa).localeCompare(String(b.placa)));
+    const sub = g.ls.reduce((a,r)=>({ent:a.ent+r.ent, cargas:a.cargas+r.cargas, val:a.val+r.val}), {ent:0,cargas:0,val:0});
+    return `<tr class="fu-grp"><td colspan="${NCOL}"><div class="fu-grp-in">
+        <span class="fu-grp-bar" style="background:${g.cor}"></span>
+        <span class="fu-grp-n">${g.nome}</span>
+        <span class="fu-grp-m">${g.ls.length} veículo${g.ls.length===1?'':'s'} · uso por carga médio <b>${fP(mediaUC(g.ls))}</b> · ${fN(sub.cargas)} cargas · ${fN(sub.ent)} pedidos · ${fV(sub.val)}</span>
+      </div></td></tr>` + ord.map(linha).join('');
   }).join('');
   return `<div class="fu-prod" id="fu-prod">
     <div class="fu-prod-h"><div>
-      <div class="fu-prod-t">Pedidos e valor por veículo</div>
-      <div class="fu-prod-s">Pedidos entregues (sem ocorrência), cargas e valor de cada veículo no mês, calculados como na página Veículos. Considera todas as unidades em que o veículo carregou. Clique numa coluna para ordenar.</div>
+      <div class="fu-prod-t">Uso por carga, pedidos e valor por veículo</div>
+      <div class="fu-prod-s">Uso por carga = cargas do mês ÷ ${diasUteis} dias úteis (Seg–Sáb, sem feriados), igual ao Painel de Indicadores; cada veículo conta no máximo 100% na média. Pedidos (sem ocorrência) e valor seguem a página Veículos e consideram todas as unidades em que o veículo carregou. Clique numa coluna para ordenar dentro de cada grupo.</div>
     </div></div>
     <div style="overflow-x:auto"><table class="fu-rk">
-      <thead><tr><th class="l">#</th><th class="l">Veículo</th>${th('pct','Uso')}${th('ent','Pedidos')}${th('carg','Cargas')}${th('val','Valor')}<th>% do valor</th></tr></thead>
-      <tbody>${corpo}</tbody>
-      <tfoot><tr><td></td><td class="l">TOTAL</td><td></td><td>${fN(tot.ent)}</td><td>${fN(tot.carg)}</td><td>${fV(tot.val)}</td><td></td></tr></tfoot>
+      <thead><tr><th class="l">#</th><th class="l">Veículo</th>${th('cargas','Cargas')}${th('uc','Uso por carga')}${th('ent','Pedidos')}${th('val','Valor')}<th>% do valor</th></tr></thead>
+      <tbody>${blocos}</tbody>
+      <tfoot><tr><td></td><td class="l">TOTAL</td><td>${fN(tot.cargas)}</td><td>${fP(mediaGeral)}</td><td>${fN(tot.ent)}</td><td>${fV(tot.val)}</td><td></td></tr></tfoot>
     </table></div>
-    <div class="fu-prod-f"><span>${linhas.length} veículos listados</span><span>ordenado por ${({pct:'Uso',ent:'Pedidos',carg:'Cargas',val:'Valor'})[key]}</span></div>
+    <div class="fu-prod-f"><span>${linhas.length} veículos listados · uso por carga médio da frota ${fP(mediaGeral)}</span><span>ordenado por ${({cargas:'Cargas',uc:'Uso por carga',ent:'Pedidos',val:'Valor'})[key]}</span></div>
   </div>`;
 }
 
@@ -20975,29 +20988,46 @@ async function renderFrotaDisp(){
 
     const lg = (st, txt) => `<span class="fu-lg"><span class="fu-cell ${st}">${st}</span>${txt}</span>`;
 
-    // ── Pedidos e valor por veículo — mesma conta da página Veículos (Principal), mês inteiro, todas as unidades do lançamento ──
+    // ── Uso por carga, pedidos e valor por veículo ──
+    // Pedidos/valor: mesma conta da página Veículos (Principal), mês inteiro, todas as unidades do lançamento.
     let rkPorPlaca = null;
     // a conta só considera placa cadastrada (VEICULOS_CACHE) — a página Veículos também carrega isso antes de calcular
     try{ if(!VEICULOS_CACHE.length) await carregarVeiculos(); }catch(e){}
     try{ if(typeof BASE_DATA!=='undefined' && BASE_DATA.length) rkPorPlaca = new Map(_calcRankingVeic(mes,'','','').lista.map(r=>[String(r.placa).toUpperCase(), r])); }catch(e){ console.warn('ranking de veículos:', e); }
+    // Uso por carga: MESMA conta do Painel de Indicadores (Distribuição → Utilização por Carga): cargas distintas do veículo no mês
+    // (Expedição com saída no mês + Lançamento + Abastecimento de Loja) ÷ dias úteis (Seg–Sáb, sem feriado, até hoje no mês corrente).
+    // O valor do veículo pode passar de 100%; só a MÉDIA limita cada veículo a 100%.
+    const cargasPlaca = {};
+    const addCarga = (p, c) => {
+      const placa = (p||'').trim().toUpperCase(); const n = Math.round(Number(c));
+      if(!placa || !n) return;
+      (cargasPlaca[placa] = cargasPlaca[placa] || new Set()).add(n);
+    };
+    (demandas||[]).filter(d=>(d.data_saida||'').slice(0,7)===mes).forEach(d=>addCarga(d.veiculo, d.carga));
+    (lancamentosDisp||[]).forEach(l=>addCarga(l.veiculo, l.carga));
+    (abastecimentos||[]).forEach(a=>addCarga(a.veiculo, a.carga));
+    const diasUteisCarga = _contarDiasUteisMes(ano, numMes-1, ehMesAtual ? Number(hojeD) : diasNoMes, new Set(feriadosMap.keys()));
     const linhasProd = veiculosData.map(x=>{
-      const r = rkPorPlaca ? rkPorPlaca.get(String(x.v.placa).toUpperCase()) : null;
-      return { placa:x.v.placa, uso:x.v.uso||'', pct:x.pct, ent:r?r.ent:0, carg:r?r.carg:0, val:r?r.val:0 };
+      const placaU = String(x.v.placa).toUpperCase();
+      const r = rkPorPlaca ? rkPorPlaca.get(placaU) : null;
+      const cargas = cargasPlaca[placaU]?.size || 0;
+      return { placa:x.v.placa, uso:x.v.uso||'', cargas, uc: diasUteisCarga>0 ? cargas/diasUteisCarga*100 : 0, ent:r?r.ent:0, val:r?r.val:0 };
     });
-    const totProd = linhasProd.reduce((a,r)=>({ent:a.ent+r.ent, carg:a.carg+r.carg, val:a.val+r.val}), {ent:0,carg:0,val:0});
+    const mediaUC = ls => ls.length ? ls.reduce((a,r)=>a+Math.min(r.uc,100),0)/ls.length : 0;
+    const totProd = linhasProd.reduce((a,r)=>({ent:a.ent+r.ent, cargas:a.cargas+r.cargas, val:a.val+r.val}), {ent:0,cargas:0,val:0});
     const comProd = linhasProd.filter(r=>r.ent>0||r.val>0).length;
     const fmtMi = v => v>=1e6 ? 'R$ '+(v/1e6).toFixed(2).replace('.',',')+' mi' : 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
     const cardPedidos = rkPorPlaca ? `<div class="fu-card">
         <div class="fu-lbl">Pedidos entregues no mês</div>
         <div class="fu-num">${totProd.ent.toLocaleString('pt-BR')}</div>
-        <div class="fu-note">${totProd.carg.toLocaleString('pt-BR')} cargas · ${comProd} veículo${comProd===1?'':'s'} com carga</div>
+        <div class="fu-note">${comProd} veículo${comProd===1?'':'s'} com pedidos</div>
       </div>` : '';
     const cardValor = rkPorPlaca ? `<div class="fu-card">
         <div class="fu-lbl">Valor movimentado no mês</div>
         <div class="fu-num" style="font-size:1.75rem">${fmtMi(totProd.val)}</div>
         <div class="fu-note">${totProd.ent>0 ? 'R$ '+Math.round(totProd.val/totProd.ent).toLocaleString('pt-BR')+' por pedido' : 'sem pedidos no mês'}</div>
       </div>` : '';
-    window._fuProd = { linhas: linhasProd, tot: totProd, key:'val', dir:-1, ok: !!rkPorPlaca, mes };
+    window._fuProd = { linhas: linhasProd, tot: totProd, mediaGeral: mediaUC(linhasProd), diasUteis: diasUteisCarga, key:'uc', dir:-1, ok: !!rkPorPlaca, mes };
     const painelProd = _fuHtmlProd();
 
     wrap.innerHTML = `
