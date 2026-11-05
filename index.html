@@ -49250,20 +49250,22 @@ function _aderPreset(tipo){
 
 // Detalhe do dia: ao clicar numa coluna do gráfico, mostra as cargas do dia e cada pedido (conferido ou não).
 // Os pedidos da carga vêm de base_data (planilha importada); o check vem de conferencia_pedidos. Só leitura.
-async function _aderSelDia(dia){
+function _aderSelDia(dia){
+  const ctx = window._aderCtx; if(!ctx) return;
+  ctx.sel = ctx.sel===dia ? '' : dia; // clicar de novo no mesmo dia limpa o filtro
+  _aderPintar();
+}
+async function _aderDetalhe(){
   const box = document.getElementById('ader-dia-detalhe');
   const ctx = window._aderCtx;
-  if(!box || !ctx) return;
-  const cols = document.querySelectorAll('.ader-col');
-  if(box.dataset.dia === dia){ box.dataset.dia = ''; box.innerHTML = ''; cols.forEach(c=>{ c.style.opacity = ''; }); return; }
-  box.dataset.dia = dia;
-  cols.forEach(c=>{ c.style.opacity = c.dataset.dia===dia ? '1' : '.4'; });
+  const dia = ctx && ctx.sel;
+  if(!box || !ctx || !dia) return;
   box.innerHTML = '<p style="color:var(--text-muted);font-size:.8rem">Carregando pedidos...</p>';
   const fmt = d => { const p = String(d).split('-'); return p[2]+'/'+p[1]+'/'+p[0]; };
   try{
-    const cs = ctx.cargas.filter(c=>c.dia===dia).sort((x,y)=>String(x.carga).localeCompare(String(y.carga),undefined,{numeric:true}));
+    const cs = (ctx.cargas||[]).filter(c=>c.dia===dia).sort((x,y)=>String(x.carga).localeCompare(String(y.carga),undefined,{numeric:true}));
     const base = await _emLotes(cs.map(c=>c.carga), 20, l=>supaFetch('base_data?carga=in.('+l.join(',')+')&select=carga,pedido,cliente&limit=1000').catch(()=>[]));
-    if(box.dataset.dia !== dia) return; // o usuário já clicou em outro dia
+    if(ctx.sel !== dia || !document.body.contains(box)) return; // o usuário já mudou o filtro
     const baseCarga = {}; base.forEach(b=>{ (baseCarga[b.carga] = baseCarga[b.carga] || {})[String(b.pedido)] = b.cliente||''; });
     const cpCarga = {}; ctx.cps.forEach(c=>{ (cpCarga[c.carga] = cpCarga[c.carga] || {})[String(c.pedido)] = c; });
     const blocos = cs.map(c=>{
@@ -49292,7 +49294,7 @@ async function _aderSelDia(dia){
         +'<span style="font-size:.76rem;font-weight:800;color:'+cor+'">'+conf+' de '+lista.length+' pedidos conferidos'+prev+'</span></div>'
         +aviso+chips+'</div>';
     }).join('');
-    box.innerHTML = '<div style="font-weight:800;font-size:.85rem;margin-bottom:8px">Cargas de '+fmt(dia)+' <span style="font-weight:600;color:var(--text-muted);font-size:.74rem">(clique de novo na coluna para fechar)</span></div>'
+    box.innerHTML = '<div style="font-weight:800;font-size:.85rem;margin-bottom:8px">Cargas de '+fmt(dia)+' <span style="font-weight:600;color:var(--text-muted);font-size:.74rem">(clique de novo na coluna para limpar o filtro)</span></div>'
       + '<div style="margin-bottom:8px;font-size:.7rem;color:var(--text-secondary)">✔ conferido OK &nbsp; ✖ marcado Não OK &nbsp; ○ não conferido</div>' + blocos;
   }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
 }
@@ -49324,8 +49326,27 @@ async function renderArmAderencia(){
       supaFetch('conferentes?ativo=eq.true&perfil=eq.conferente&select=nome,unidade&order=nome.asc').catch(()=>[])
     ]);
     const confsUnid = (confs||[]).filter(c=>!undUsr || (c.unidade||'').trim()===undUsr);
-    const r = _aderCalcular(dems, atrib, cps, confsUnid);
-    window._aderCtx = {cargas:r.cargas, cps};
+    window._aderCtx = {dems, atrib, cps, confs:confsUnid, sel:'', cargas:[]};
+    _aderPintar();
+  }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
+}
+
+// Desenha KPIs, gráficos e tabelas com os dados já carregados. Se há um dia selecionado no gráfico
+// "Cargas do dia", tudo (menos esse gráfico) passa a mostrar só aquele dia.
+function _aderPintar(){
+  const box = document.getElementById('arm-aderencia-container');
+  const ctx = window._aderCtx;
+  if(!box || !ctx) return;
+  try{
+    const rTodos = _aderCalcular(ctx.dems, ctx.atrib, ctx.cps, ctx.confs);
+    ctx.cargas = rTodos.cargas;
+    const sel = ctx.sel;
+    let r = rTodos;
+    if(sel){
+      const dF = ctx.dems.filter(d=>d.data_saida===sel);
+      const idsF = new Set(dF.map(d=>d.id)), cgF = new Set(dF.map(d=>d.carga));
+      r = _aderCalcular(dF, ctx.atrib.filter(x=>idsF.has(x.demanda_id)), ctx.cps.filter(x=>cgF.has(x.carga)), ctx.confs);
+    }
     const n = r.cargas.length;
     const vinc = r.cargas.filter(c=>c.vinculada).length;
     const chkOk = r.cargas.filter(c=>c.check==='completo').length;
@@ -49387,21 +49408,21 @@ async function renderArmAderencia(){
     const card2 = card('Pedidos conferidos por conferente', 'Total de pedidos marcados no Cronos no período (cada pedido conta uma vez).', graf2);
 
     // Gráfico 3: cargas de cada dia e quantas foram conferidas
-    const porDia = r.dias.map(d=>{
-      const cs = r.cargas.filter(c=>c.dia===d);
+    const porDia = rTodos.dias.map(d=>{
+      const cs = rTodos.cargas.filter(c=>c.dia===d);
       return {d, total:cs.length, comp:cs.filter(c=>c.check==='completo').length, parc:cs.filter(c=>c.check==='parcial').length, sem:cs.filter(c=>c.check==='nenhum').length};
     });
     const maxDia = Math.max(1, ...porDia.map(x=>x.total)), ALT = 150;
     const seg = (v, cor, rot) => v ? `<div style="height:${Math.round(ALT*v/maxDia)}px;background:${cor}" title="${v} ${rot}"></div>` : '';
     const graf3 = `<div style="margin-bottom:8px">${leg(C_OK,'Conferência completa')}${leg(C_PARC,'Começou e não terminou')}${leg(C_NOK,'Sem nenhuma conferência')}</div>
       <div style="overflow-x:auto;padding-bottom:4px"><div style="display:flex;align-items:flex-end;gap:5px;min-width:max-content;height:${ALT+34}px">${
-        porDia.map(x=>`<div class="ader-col" data-dia="${x.d}" onclick="_aderSelDia('${x.d}')" style="width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;transition:opacity .15s" title="${fmtD(x.d)}: ${x.total} cargas, ${x.comp} completas, ${x.parc} parciais, ${x.sem} sem conferência">
+        porDia.map(x=>`<div class="ader-col" data-dia="${x.d}" onclick="_aderSelDia('${x.d}')" style="width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;transition:opacity .15s;opacity:${sel&&sel!==x.d?'.4':'1'}" title="${fmtD(x.d)}: ${x.total} cargas, ${x.comp} completas, ${x.parc} parciais, ${x.sem} sem conferência">
           <div style="font-size:.68rem;font-weight:800;margin-bottom:2px">${x.total}</div>
           <div style="width:100%;display:flex;flex-direction:column-reverse;border-radius:3px;overflow:hidden">${seg(x.comp,C_OK,'completas')}${seg(x.parc,C_PARC,'parciais')}${seg(x.sem,C_NOK,'sem conferência')}</div>
           <div style="font-size:.62rem;color:var(--text-muted);margin-top:3px;line-height:1.1;text-align:center">${fmtD(x.d)}<br>${dsem(x.d)}</div>
         </div>`).join('')}</div></div><div id="ader-dia-detalhe" style="margin-top:14px"></div>`;
     const card3 = card('Cargas do dia e quanto foi conferido',
-      'Cada coluna é um dia de saída. O número no topo é a quantidade de cargas; as cores mostram se os pedidos foram conferidos no Cronos. “Completa” quer dizer que todos os pedidos da carga foram marcados. Clique numa coluna para ver as cargas do dia e cada pedido, conferido ou não.', graf3);
+      'Cada coluna é um dia de saída. O número no topo é a quantidade de cargas; as cores mostram se os pedidos foram conferidos no Cronos. “Completa” quer dizer que todos os pedidos da carga foram marcados. Clique numa coluna para filtrar a página inteira por aquele dia e ver cada pedido, conferido ou não.', graf3);
 
     // Tabela dia a dia
     const linhasDia = r.dias.map(d=>{
@@ -49445,8 +49466,11 @@ async function renderArmAderencia(){
       <div style="overflow:auto;max-height:28rem"><table style="width:100%;border-collapse:collapse"><thead><tr>${th('Conferente')}${th('Cargas','right')}${th('Pedidos conferidos','right')}${th('Dias com registro','right')}${th('% dos dias','right')}${th('Dias sem registro','right')}${th('Último registro','right')}</tr></thead><tbody>${linhasConf}</tbody></table></div></div>`;
 
     const dupla = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:0 16px">${card1}${card2}</div>`;
-    box.innerHTML = kpis + dupla + card3 + tabDia + tabConf;
+    const fmtSel = sel ? fmtD(sel)+' ('+dsem(sel)+')' : '';
+    const faixa = sel ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(59,130,246,.14);border:1px solid #3b82f6;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.8rem"><span>Mostrando só o dia <b>${fmtSel}</b>. Os números e gráficos abaixo seguem este dia.</span><button onclick="_aderSelDia('${sel}')" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.74rem;cursor:pointer;font-weight:700">Limpar filtro</button></div>` : '';
+    box.innerHTML = faixa + kpis + dupla + card3 + tabDia + tabConf;
     _featherReplace();
+    if(sel) _aderDetalhe();
   }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
 }
 
