@@ -7726,6 +7726,9 @@ body.light-theme #page-frota-disponibilidade{
 #frota-disp-wrap .fu-t td{padding:3px 2px;text-align:center;border-bottom:1px solid var(--border)}
 #frota-disp-wrap .fu-t td.wk{background:var(--fu-wk)}
 #frota-disp-wrap .fu-t td.hoje{background:var(--fu-hoje)}
+#frota-disp-wrap .fu-t td.fer{background:repeating-linear-gradient(135deg,transparent 0 5px,var(--fu-wk) 5px 10px)}
+#frota-disp-wrap .fu-t th.fer .fu-dw{color:var(--fu-warn)}
+#frota-disp-wrap .fu-t td.fer .fu-cell.S,#frota-disp-wrap .fu-t td.fer .fu-cell.P,#frota-disp-wrap .fu-t td.fer .fu-cell.C,#frota-disp-wrap .fu-t td.dom .fu-cell.S,#frota-disp-wrap .fu-t td.dom .fu-cell.P,#frota-disp-wrap .fu-t td.dom .fu-cell.C{opacity:.55}
 #frota-disp-wrap .fu-t td.dom{background:var(--fu-wk);border-left:1px solid var(--border);border-right:1px solid var(--border)}
 #frota-disp-wrap .fu-t td.fu-first{position:sticky;left:0;z-index:2;background:var(--bg-card);text-align:left;padding:7px 8px 7px 16px;white-space:nowrap}
 #frota-disp-wrap .fu-t td.fu-pct{padding:6px 10px;border-right:1px solid var(--border-med);background:var(--bg-card);position:sticky;left:130px;z-index:2}
@@ -10051,7 +10054,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.199';
+const APP_VERSION = '4.89.200';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20478,21 +20481,21 @@ async function renderFrotaUso(){
 // ── Buscar data da PRIMEIRA viagem de cada veículo (para não sujar métricas de veículos novos)
 async function _buscarPrimeiraViagemPorVeiculo(){
   try{
-    const demandas = await supaFetch('demandas_rota?select=veiculo,data_saida,ts_saiu&veiculo=not.is.null&order=data_saida.asc&limit=5000').catch(()=>[]) || [];
-    const lancamentos = await supaFetch('lancamentos?select=veiculo,ts&veiculo=not.is.null&order=ts.asc&limit=10000').catch(()=>[]) || [];
+    const [demandas, lancamentos, abast] = await Promise.all([
+      supaFetch('demandas_rota?select=veiculo,data_saida,ts_saiu&veiculo=not.is.null&order=data_saida.asc&limit=5000').catch(()=>[]),
+      supaFetch('lancamentos?select=veiculo,ts&veiculo=not.is.null&order=ts.asc&limit=10000').catch(()=>[]),
+      supaFetch('abastecimento_loja?select=veiculo,data_saida&veiculo=not.is.null&order=data_saida.asc&limit=10000').catch(()=>[])
+    ]);
     const primeiraViagemMap = {};
-    (demandas||[]).forEach(d => {
-      const v = (d.veiculo||'').trim().toUpperCase();
-      if(v && !primeiraViagemMap[v]){
-        primeiraViagemMap[v] = (d.data_saida || d.ts_saiu || '').slice(0,10);
-      }
-    });
-    (lancamentos||[]).forEach(d => {
-      const v = (d.veiculo||'').trim().toUpperCase();
-      if(v && !primeiraViagemMap[v] && d.ts){
-        primeiraViagemMap[v] = (d.ts||'').slice(0,10);
-      }
-    });
+    const considera = (placaRaw, dataRaw) => {
+      const v = (placaRaw||'').trim().toUpperCase();
+      const d = (dataRaw||'').slice(0,10);
+      if(!v || !d) return;
+      if(!primeiraViagemMap[v] || d < primeiraViagemMap[v]) primeiraViagemMap[v] = d;   // menor data entre as 3 fontes
+    };
+    (demandas||[]).forEach(d => considera(d.veiculo, d.data_saida || d.ts_saiu));
+    (lancamentos||[]).forEach(d => considera(d.veiculo, d.ts));
+    (abast||[]).forEach(d => considera(d.veiculo, d.data_saida));
     return primeiraViagemMap;
   }catch(e){
     console.warn('Erro ao buscar primeira viagem:', e);
@@ -20664,12 +20667,14 @@ async function renderFrotaDisp(){
       supaFetch(`lancamentos?select=veiculo,ts,rota,carga&veiculo=not.is.null&mes_ano=eq.${mes}&limit=5000`).catch(()=>[]),
       supaFetch(`abastecimento_loja?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&veiculo=not.is.null&select=veiculo,data_saida,carga&limit=5000`).catch(()=>[]),
       // Etapas do pátio (C carregando / P pronto): horários de cada etapa, inclusive de cargas que já saíram
-      supaFetch(`demandas_rota?select=carga,rota,veiculo,status,ts_carregamento,ts_pronto_viagem,ts_saiu&veiculo=not.is.null&status=neq.cancelado&ts_carregamento=gte.${prevMes}-01&ts_carregamento=lt.${proxMes}-01&limit=5000`).catch(()=>[])
+      supaFetch(`demandas_rota?select=carga,rota,veiculo,status,ts_carregamento,ts_pronto_viagem,ts_saiu&veiculo=not.is.null&status=neq.cancelado&ts_carregamento=gte.${prevMes}-01&ts_carregamento=lt.${proxMes}-01&limit=5000`).catch(()=>[]),
+      // Feriados cadastrados (Cadastro → Feriados): como domingo, NÃO contam na utilização
+      supaFetch(`feriados?data=gte.${mes}-01&data=lt.${proxMes}-01&select=data,nome`).catch(()=>[])
     ];
     if(ehMesAtual){
       queries.push(supaFetch(`demandas_rota?select=veiculo,status&veiculo=not.is.null&data_saida=is.null&status=in.("carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem","separacao")`).catch(()=>[]));
     }
-    const [veiculos, demandas, lancamentosDisp, abastecimentos, etapas, demandasC] = await Promise.all(queries);
+    const [veiculos, demandas, lancamentosDisp, abastecimentos, etapas, feriadosRows, demandasC] = await Promise.all(queries);
 
     const todosAtivos = (veiculos||[]).filter(v => v.ativo && !(v.placa||'').toUpperCase().includes('FRETE'));
 
@@ -20726,8 +20731,11 @@ async function renderFrotaDisp(){
       cur.setDate(cur.getDate()+1);
     }
 
-    // Dias Mon–Sab passados para cálculo de %
-    const colUteis   = colunas.filter(c => c.tipo==='dia');
+    // Dias úteis (Seg–Sáb, sem feriado cadastrado) já passados — base do cálculo de %. Domingo e feriado NÃO contam
+    // na utilização (regra do usuário, 2026-11-05): se o veículo rodou nesses dias aparece na grade, mas não entra na conta.
+    const feriadosMap = new Map((feriadosRows||[]).map(r=>[r.data, r.nome||'Feriado']));
+    const ehFeriado = dia => feriadosMap.has(mes+'-'+dia);
+    const colUteis   = colunas.filter(c => c.tipo==='dia' && !ehFeriado(c.dia));
     const colPassadas = colUteis.filter(c => !ehMesAtual || c.dia <= hojeD);
     const nPassados   = colPassadas.length;
 
@@ -20756,18 +20764,19 @@ async function renderFrotaDisp(){
 
     // ── Cabeçalho da tabela ──
     const thDias = colunas.map(({tipo, semana, dia, dow, ehSab}) => {
-      if(tipo==='dom') return `<th class="dom" title="Domingo — semana ${semana}"><span class="fu-dw">Dom</span><span class="fu-dn">${dia ? parseInt(dia) : ''}</span></th>`;
+      if(tipo==='dom') return `<th class="dom" title="Domingo — semana ${semana} (não conta na utilização)"><span class="fu-dw">Dom</span><span class="fu-dn">${dia ? parseInt(dia) : ''}</span></th>`;
       const ehHoje = ehMesAtual && dia===hojeD;
       const futuro = ehMesAtual && dia>hojeD;
-      return `<th class="${ehSab?'wk ':''}${ehHoje?'hoje ':''}${futuro?'fut':''}"><span class="fu-dw">${DIAS_ABREV[dow]}</span><span class="fu-dn">${parseInt(dia)}</span></th>`;
+      const fer = ehFeriado(dia);
+      return `<th class="${ehSab?'wk ':''}${fer?'fer ':''}${ehHoje?'hoje ':''}${futuro?'fut':''}"${fer?` title="${escapeHtml('Feriado: '+feriadosMap.get(mes+'-'+dia)+' — não conta na utilização')}"`:''}><span class="fu-dw">${fer?'Fer':DIAS_ABREV[dow]}</span><span class="fu-dn">${parseInt(dia)}</span></th>`;
     }).join('');
 
     // ── Linhas ──
     const NOME_ST = {S:'Em rota', P:'Carregado, pronto para viagem', C:'Carregando'};
-    const tituloCelula = (placa, dia, st) => {
+    const tituloCelula = (placa, dia, st, naoConta) => {
       const notas = (dispInfo[placa]?.[dia]||[]);
       const uniq = [...new Set(notas)].slice(0,4);
-      return escapeHtml(NOME_ST[st] + (uniq.length ? ' — ' + uniq.join(' | ') : ''));
+      return escapeHtml(NOME_ST[st] + (uniq.length ? ' — ' + uniq.join(' | ') : '') + (naoConta ? ' · não conta na utilização (domingo/feriado)' : ''));
     };
     const nCols = 2 + colunas.length;
 
@@ -20775,13 +20784,14 @@ async function renderFrotaDisp(){
       const celulas = colunas.map(({tipo, dia, ehSab}) => {
         const st = dia ? (dispMap[v.placa]?.[dia]||'') : '';
         if(tipo==='dom'){
-          return `<td class="dom">${st?`<span class="fu-cell ${st}" title="${tituloCelula(v.placa, dia, st)}">${st}</span>`:''}</td>`;
+          return `<td class="dom">${st?`<span class="fu-cell ${st}" title="${tituloCelula(v.placa, dia, st, true)}">${st}</span>`:''}</td>`;
         }
         const ehHoje = ehMesAtual && dia===hojeD;
         const futuro = ehMesAtual && dia>hojeD;
-        const cls = (ehSab?'wk ':'') + (ehHoje?'hoje':'');
+        const fer = ehFeriado(dia);
+        const cls = (ehSab?'wk ':'') + (fer?'fer ':'') + (ehHoje?'hoje':'');
         if(futuro) return `<td class="${cls}"></td>`;
-        return `<td class="${cls}"><span class="fu-cell ${st||'N'}"${st?` title="${tituloCelula(v.placa, dia, st)}"`:''}>${st||'·'}</span></td>`;
+        return `<td class="${cls}"><span class="fu-cell ${st||'N'}"${st?` title="${tituloCelula(v.placa, dia, st, fer)}"`:''}>${st||'·'}</span></td>`;
       }).join('');
       return `<tr class="fu-v">
         <td class="fu-first"><div class="fu-placa">${escapeHtml(v.placa)}</div>${v.tipo?`<div class="fu-mod">${escapeHtml(v.tipo)}</div>`:''}</td>
@@ -20879,7 +20889,7 @@ async function renderFrotaDisp(){
         ${lg('P','Carregado, pronto para viagem')}
         ${lg('C','Carregando (inclui aguardando NF e manifesto)')}
         <span class="fu-lg"><span class="fu-cell lgN">·</span>Não utilizado</span>
-        <span class="fu-hint">S, P e C contam como dia utilizado · passe o mouse numa célula para ver a carga</span>
+        <span class="fu-hint">S, P e C contam como dia utilizado · domingo e feriado não entram no cálculo (se rodou, aparece, mas não conta) · passe o mouse numa célula para ver a carga</span>
       </div>
 
       <div class="fu-scroll">
