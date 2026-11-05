@@ -21,9 +21,9 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-05, Gabriel: Crédito Manual — Editar e Excluir lançamentos no histórico (admin e perfil Devolução) — v4.89.209
+## 2026-11-05, Gabriel: Crédito Manual — Editar e Excluir lançamentos no histórico (admin e perfil Devolução) — v4.89.217
 Onde: `index.html`, página Distribuição › Histórico — Crédito Manual: `renderCreditoManual` (coluna "Ações" com ✏️ Editar e 🗑 Excluir) e funções novas
-`cmEditar`, `cmFecharEditar`, `cmSalvarEdicao`, `cmExcluir` (logo depois de `renderCreditoManual`). `APP_VERSION`/`version.json` 4.89.208 → 4.89.209.
+`cmEditar`, `cmFecharEditar`, `cmSalvarEdicao`, `cmExcluir` (logo depois de `renderCreditoManual`). `APP_VERSION`/`version.json` 4.89.208 → 4.89.217 (nasceu como 4.89.209 e foi mesclada com a main, que andou até 4.89.216).
 Por quê: pedido do Gabriel: quem é admin ou tem o perfil "Devolução" (chave `devolu__o`, mesma regra do Editar das ocorrências, `_podeEditarOcorrencia`)
 pode editar ou excluir lançamentos do histórico. Os outros perfis não veem a coluna nem os botões. A permissão é só da tela (tabelas sem RLS).
 Editar: janela com pedido, código do cliente, valor do pedido, valor do crédito, emissão da nota (calendário claro), nota, peso faltante e evidência
@@ -36,6 +36,16 @@ Testes: `node check.js` ok; 29 testes de lógica (permissões por perfil, só-mu
 com erro) + 27 do preenchimento automático, todos passando. Sem teste com a tabela real e login (precisa de teste do Gabriel).
 Como desfazer: `git revert` do commit desta entrada (some a coluna Ações; linhas já editadas/excluídas ficam como estão no banco).
 Pendente/risco: decidir se vale guardar histórico de edição/exclusão (quem e quando; precisaria de coluna ou tabela nova); teste visual do Gabriel.
+## 2026-11-04, Gabriel: nova página "Aderência conferente" no menu lateral, abaixo de Ocorrências (vínculo do conferente e check de conferência por dia) — v4.89.215 (PUBLICADO em 05/11/2026, commit c0acd1b)
+Onde: `index.html`: item de menu `data-page="aderencia"` (visível para `admin` e `adm_armazem`) logo após "Ocorrências", página `page-aderencia`, gancho em `showPage`, funções novas `_aderCalcular` e `renderArmAderencia`. `version.json` e `APP_VERSION` 4.89.214 → 4.89.215. (Primeiro foi feita como aba dentro do Armazém; o Gabriel pediu uma seção abaixo de Ocorrências e a aba foi removida.)
+Por quê: pedido do Gabriel: acompanhar diariamente se o conferente vincula a carga e faz o check de conferência no Cronos e identificar quem não está preenchendo. Escopo escolhido: só rotas externas (cargas de `demandas_rota`); as internas (Ceasa, Petrolina, Juazeiro) são conferidas no FDSAS. Só leitura: não grava nada e não cria tabela. Vínculo = linha em `atribuicoes_armazem` da demanda; check = pedidos distintos em `conferencia_pedidos` (ok/nok) contra `quantidade_pedidos`; dia = `data_saida`; cargas canceladas ficam de fora. Mostra KPIs do mês, tabela dia a dia (cargas sem conferente e quem vinculou) e tabela por conferente (do que menos preencheu ao que mais). Teste com outubro/2026: 63 cargas, 24 vinculadas, 14 com check completo, 39 saíram sem vínculo.
+Como desfazer: `git revert` do commit desta entrada.
+Atualização 2026-11-05 (mesma entrada): a página ganhou filtro de data inicial/final (com atalhos Este mês, Mês passado e 7 dias) ligado a tudo, gráfico de pedidos vinculados x conferidos por conferente, gráfico de pedidos conferidos por conferente (OK e Não OK) e gráfico de cargas do dia x conferidas. Só leitura, nada gravado. Pedidos vinculados = soma dos pedidos previstos das cargas vinculadas ao conferente (o vínculo é por carga); se outra pessoa conferiu no lugar, o primeiro aparece com sobra. Quando dois conferentes marcam o mesmo pedido, ele conta para os dois.
+Atualização 2026-11-05 (2): clicar numa coluna do gráfico "Cargas do dia" abre embaixo as cargas do dia e cada pedido, conferido (OK), Não OK ou não conferido; os pedidos vêm de `base_data` e o check de `conferencia_pedidos`. Só leitura.
+Atualização 2026-11-05 (3): o dia clicado no gráfico "Cargas do dia" passa a filtrar a página inteira (KPIs, os dois gráficos por conferente e as tabelas); clicar de novo ou em "Limpar filtro" volta ao período todo. Só leitura.
+Atualização 2026-11-05 (4): removida a opção "Ocultar quem não registrou nada" (a tabela Por conferente mostra sempre todos).
+Pendente/risco: conferentes que só atuam em rota interna (FDSAS) aparecem com zero; há a opção "Ocultar quem não registrou nada". Cargas de coleta não são separadas das demais.
+
 ## 2026-11-05, Gabriel: Crédito Manual — só código do cliente e valor do pedido são automáticos — v4.89.208
 Onde: `index.html`, página Distribuição › Histórico — Crédito Manual (`page-credito-manual`): campo do pedido (busca ao digitar e ao sair do
 campo), aviso embaixo do pedido, CSS `.cm-auto` e funções `cmAutoPreencher`, `cmPedidoMudou`, `_cmTravar`, `_cmDestravarAuto`, `cmLimparForm`.
