@@ -9950,7 +9950,7 @@ body.light-theme{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.195';
+const APP_VERSION = '4.89.196';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -52332,7 +52332,7 @@ async function renderAgendamentos(){
   let demandasMes = [];
   try{
     const [_y,_m]=mesFiltro.split('-').map(Number);const _prox=_m===12?`${_y+1}-01`:`${_y}-${String(_m+1).padStart(2,'0')}`;
-    demandasMes = await supaFetch('demandas_rota?select=id,carga,rota,data_saida,status,valor_total,valor_meta,ts_separacao,ts_carregamento,ts_aguardando_nf,ts_saiu,ts_fim_viagem&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
+    demandasMes = await supaFetch('demandas_rota?select=id,carga,rota,data_saida,status,motorista,veiculo,ajudante,quantidade_pedidos,quantidade_clientes,valor_total,valor_meta,ts_separacao,ts_carregamento,ts_aguardando_nf,ts_saiu,ts_fim_viagem&data_saida=gte.'+mesFiltro+'-01&data_saida=lt.'+_prox+'-01&order=data_saida.asc') || [];
   }catch(e){}
   // Agendamentos salvos gravam a rota normalizada (normalizarRota) no Supabase;
   // demandas_rota guarda a rota como veio da planilha/lançamento (ex.: "PETRO").
@@ -52375,7 +52375,7 @@ async function renderAgendamentos(){
   // "Saiu" = agendamento marcado como realizado OU carga da mesma rota+data (ou vinculada pelo nº da carga) com status saiu/fim_viagem/concluido.
   // Só "lançada" na pré-carga NÃO conta como saída. Saiu na data ou antes = verde, mesmo com motivo gravado; motivo só pinta de vermelho quando não há data de saída para provar o contrário; motivo sem saída registrada segue cinza e é contado no topo.
   var _SAIU_ST=['saiu','fim_viagem','concluido']; var _ANDAM=function(st){ return !!st && _SAIU_ST.indexOf(st)<0 && st!=='cancelado'; }; /* carga na Expedicao que ainda NAO saiu */
-  var _dMapKpi={}, _demLista={}, _saiuSet={}, _formPorRD={}, _dataCargaSaiu={}, _formVinc={}, _nPed={}, _formIds=[];
+  var _dMapKpi={}, _demLista={}, _saiuSet={}, _formPorRD={}, _dataCargaSaiu={}, _formVinc={}, _nPed={}, _formIds=[], _porCarga={};
   demandasMes.forEach(function(d){
     var k=_rotaChave(d.rota)+'|'+(d.data_saida||'');
     _dMapKpi[k]=d.status;
@@ -52387,9 +52387,10 @@ async function renderAgendamentos(){
   try{
     var _cv=[...new Set(arr.map(function(a){ return a.carga; }).filter(function(c){ return c && /^\d+$/.test(String(c)); }).map(String))];
     if(_cv.length){
-      var _dv=await _emLotes(_cv,100,function(ids){ return supaFetch('demandas_rota?carga=in.('+ids.join(',')+')&select=carga,data_saida,status&limit=2000',{_quiet:true}); });
+      var _dv=await _emLotes(_cv,100,function(ids){ return supaFetch('demandas_rota?carga=in.('+ids.join(',')+')&select=carga,rota,data_saida,status,motorista,veiculo,ajudante,ts_saiu,valor_total,quantidade_pedidos,quantidade_clientes&limit=2000',{_quiet:true}); });
       _dv.forEach(function(d){
         var c=String(d.carga);
+        var _pr=_porCarga[c]; if(!_pr || (_SAIU_ST.indexOf(d.status)>=0 && _SAIU_ST.indexOf(_pr.status)<0)) _porCarga[c]=d;   // dados da carga vinculada (motorista, veículo, carimbo de saída)
         if(_SAIU_ST.indexOf(d.status)>=0){ if(d.data_saida && (!_dataCargaSaiu[c] || d.data_saida<_dataCargaSaiu[c])) _dataCargaSaiu[c]=d.data_saida; }
         else if(_ANDAM(d.status)){ _formVinc[c]=true; _formIds.push(c); }
       });
@@ -52504,6 +52505,61 @@ async function renderAgendamentos(){
   };
   var _ESTLAB = {agendada:'Agendada / sem saída registrada',formacao:'Carga na Expedição, ainda não saiu',ok:'Saiu na data',atraso:'Saiu com atraso'};
 
+  // ── Balão ao passar o mouse no chip: tudo que o sistema sabe da saída (nada suposto; o que não consta aparece como "não informado") ──
+  var _STCARGA={pendente:'pendente',separacao:'em separação',carregamento:'em carregamento',aguardando_nf:'aguardando NF',aguardando_manifesto:'aguardando manifesto',pronto_viagem:'pronto para viagem',formacao:'em formação',saiu:'em rota',fim_viagem:'fim de viagem',concluido:'concluído'};
+  function _fd2(d){ return d? _DSEM[new Date(d+'T12:00:00').getDay()].slice(0,3)+' '+d.slice(8,10)+'/'+d.slice(5,7) : '—'; }
+  function _fdh(ts){ if(!ts) return ''; return new Date(ts).toLocaleString('pt-BR',{timeZone:'America/Bahia',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).replace(',',''); }
+  function _defNome(v){ v=(v||'').trim(); return (!v || /^a definir/i.test(v)) ? '<span style="opacity:.7">não definido</span>' : escapeHtml(v); }
+  function _tipAg(a, est){
+    var E=escapeHtml, linha=function(r,v){ return '<div><span style="color:var(--text-muted)">'+r+':</span> '+v+'</div>'; };
+    var h='<div style="font-weight:800;font-size:.8rem;margin-bottom:4px">'+E((a.rota||'').toUpperCase())+' <span style="font-weight:600;opacity:.85">— '+E(_ESTLAB[est])+'</span></div>';
+    h+=linha('Agendada para',E(_fd2(a.data)));
+    // cargas da Expedição ligadas a este agendamento: a vinculada pelo nº da carga + as da mesma rota e data de saída
+    var cs=[], vistos={}, add=function(d){ if(d && d.carga && !vistos[d.carga] && d.status!=='cancelado'){ vistos[d.carga]=1; cs.push(d); } };
+    if(a.carga) add(_porCarga[String(a.carga)]);
+    (_demLista[_rotaChave(a.rota)+'|'+a.data]||[]).forEach(add);
+    var saiuC=cs.filter(function(d){ return _SAIU_ST.indexOf(d.status)>=0; });
+    var mostrar=(est==='ok'||est==='atraso') ? (saiuC.length?saiuC:cs) : cs;
+    if(!mostrar.length) h+='<div style="margin-top:4px;color:var(--text-muted)">'+(a.carga?'Carga #'+E(a.carga)+' não encontrada na Expedição.':'Nenhuma carga da Expedição ligada a esta saída.')+'</div>';
+    mostrar.slice(0,3).forEach(function(d){
+      var saiu=_SAIU_ST.indexOf(d.status)>=0;
+      h+='<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">';
+      h+='<div style="font-weight:700">Carga #'+E(d.carga)+' <span style="font-weight:500;color:var(--text-muted)">· '+E(_STCARGA[d.status]||d.status||'')+'</span></div>';
+      if(saiu){
+        var dif=d.data_saida?Math.round((new Date(d.data_saida+'T12:00:00')-new Date(a.data+'T12:00:00'))/864e5):null;
+        var obs=dif===null?'':dif>0?' <span style="color:var(--text-muted)">('+dif+(dif===1?' dia':' dias')+' depois do agendado)</span>':dif<0?' <span style="color:var(--text-muted)">('+(-dif)+(dif===-1?' dia':' dias')+' antes do agendado)</span>':' <span style="color:var(--text-muted)">(na data agendada)</span>';
+        h+=linha('Saiu em',E(_fd2(d.data_saida))+obs);
+        h+=linha('Registro no sistema',d.ts_saiu?E(_fdh(d.ts_saiu)):'<span style="opacity:.7">sem horário registrado</span>');
+      } else {
+        h+=linha('Saída prevista na carga',E(_fd2(d.data_saida)));
+      }
+      h+=linha('Motorista',_defNome(d.motorista))+linha('Veículo',_defNome(d.veiculo));
+      if((d.ajudante||'').trim()) h+=linha('Ajudante',E(d.ajudante));
+      var tp=[];
+      if(Number(d.quantidade_pedidos)>0) tp.push(d.quantidade_pedidos+(d.quantidade_pedidos===1?' pedido':' pedidos'));
+      if(Number(d.quantidade_clientes)>0) tp.push(d.quantidade_clientes+(d.quantidade_clientes===1?' cliente':' clientes'));
+      if(Number(d.valor_total)>0) tp.push(_fmtBRL(d.valor_total));
+      if(tp.length) h+=linha('Carga',E(tp.join(' · ')));
+      h+='</div>';
+    });
+    var _semSaida=cs.length-mostrar.length;
+    if(_semSaida>0 && (est==='ok'||est==='atraso')) h+='<div style="margin-top:4px;color:var(--text-muted)">Há mais '+_semSaida+(_semSaida===1?' carga':' cargas')+' desta rota e data sem saída registrada.</div>';
+    else if(mostrar.length>3) h+='<div style="margin-top:4px;color:var(--text-muted)">+ '+(mostrar.length-3)+' carga(s) — clique no dia para ver todas.</div>';
+    // motivo do atraso
+    var mk=getMKey(a);
+    if(mk && mk!=='saiu_data_correta'){
+      var nomeM=((MLABEL[mk]||a.motivo_label||mk)+'').replace(/^[^A-Za-zÀ-ÿ]+/,'');
+      var quem=(a.usuario_acao && a.atualizado_em)?' <span style="color:var(--text-muted)">· registrado por '+E(a.usuario_acao)+' em '+E(_fdh(a.atualizado_em))+'</span>':'';
+      h+='<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">'
+        +linha(est==='ok'?'Motivo gravado no agendamento':'Motivo do atraso','<b>'+E(nomeM)+'</b>'+quem)
+        +(est==='ok'?'<div style="color:var(--text-muted)">Não conta: a carga saiu na data agendada ou antes.</div>':'')+'</div>';
+    } else if(est==='atraso'){
+      h+='<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">'+linha('Motivo do atraso','<b>não informado</b> <span style="color:var(--text-muted)">— clique no chip para registrar</span>')+'</div>';
+    }
+    if(a.obs) h+=linha('Obs.',E(a.obs));
+    return h;
+  }
+
   // Subtrair N dias úteis (seg–sex) de uma data
   function _diasUteisAntes(dataStr,n){ var d=new Date(dataStr+'T12:00:00'),c=0; while(c<n){ d.setDate(d.getDate()-1); if(d.getDay()!==0&&d.getDay()!==6) c++; } return d.toISOString().slice(0,10); }
 
@@ -52577,9 +52633,9 @@ async function renderAgendamentos(){
           var podeToggle=(est!=='ok')&&(est==='atraso'||naoSaiu||eH||fechVencido);
           s+='<div style="margin-bottom:3px'+(_dimRota(a.rota)?';opacity:.22':'')+'">'
             +'<div style="display:flex;align-items:center;gap:2px">'
-              +'<div onclick="'+(podeToggle?'toggleMotivoAgend(\''+a.id+'\')':'')+'" title="'+a.rota+' — '+_ESTLAB[est]+(mKey?' • '+(MLABEL[mKey]||mKey):'')+'" style="cursor:'+(podeToggle?'pointer':'default')+';'+_CHIP[est]+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px;flex:1;min-width:0">'
+              +'<div onclick="'+(podeToggle?'toggleMotivoAgend(\''+a.id+'\')':'')+'" data-agtip="'+escapeHtml(_tipAg(a,est))+'" style="cursor:'+(podeToggle?'pointer':'default')+';'+_CHIP[est]+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px;flex:1;min-width:0">'
                 +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rotaC+(a.carga?'&nbsp;<span style="font-size:.55rem;opacity:.8">#'+a.carga+'</span>':'')+'</span>'
-                +(mKey&&mKey!=='saiu_data_correta'?'<span style="font-size:.58rem" title="'+(MLABEL[mKey]||mKey)+'">'+_ic('alert-triangle',9)+'</span>':'')
+                +(mKey&&mKey!=='saiu_data_correta'?'<span style="font-size:.58rem">'+_ic('alert-triangle',9)+'</span>':'')
               +'</div>'
               +'<button onclick="abrirModalAgendamento(\''+a.id+'\')" title="Editar agendamento (nº carga, data, obs...)" style="background:rgba(255,255,255,.06);color:var(--text-muted);border:none;border-radius:4px;padding:1px 4px;font-size:.6rem;cursor:pointer;flex-shrink:0;line-height:1.4" onmouseover="this.style.background=\'rgba(255,255,255,.14)\'" onmouseout="this.style.background=\'rgba(255,255,255,.06)\'">'+_ic('edit-2',10)+'</button>'
               +(USUARIO_LOGADO?.perfil==='admin'?'<button onclick="excluirAgendamento(\''+a.id+'\')" title="Excluir agendamento" style="background:rgba(255,255,255,.06);color:var(--text-muted);border:none;border-radius:4px;padding:1px 4px;font-size:.6rem;cursor:pointer;flex-shrink:0;line-height:1.4" onmouseover="this.style.background=\'rgba(255,255,255,.14)\'" onmouseout="this.style.background=\'rgba(255,255,255,.06)\'">'+_ic('trash-2',10)+'</button>':'')
@@ -52701,6 +52757,8 @@ async function renderAgendamentos(){
           var vCor=pct===null?'var(--text-primary)':pct>=100?'#059669':'#dc2626';
           linhasDem+='<div style="display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">'
             +cel('Carga','#'+d.carga,'var(--text-primary)',escapeHtml(({pendente:'pendente',separacao:'em separação',carregamento:'em carregamento',aguardando_nf:'aguardando NF',aguardando_manifesto:'aguardando manifesto',pronto_viagem:'pronto para viagem',saiu:'em rota',fim_viagem:'fim de viagem',concluido:'concluído'})[d.status]||d.status||''))
+            +cel('Motorista',_defNome(d.motorista),'',escapeHtml((d.veiculo||'').trim()&&!/^a definir/i.test(d.veiculo)?d.veiculo:'veículo não definido'))
+            +cel('Saída',escapeHtml(_fd2(d.data_saida)),'',d.ts_saiu?'registrada '+escapeHtml(_fdh(d.ts_saiu)):'sem horário registrado')
             +cel('Valor',_fmtBRL(vt),vCor,vm>0?pct+'% da meta de '+_fmtBRL(vm):'sem meta')
             +cel('Separação',sep,'','até iniciar o carregamento')
             +cel('Carregamento',car,'','até aguardar NF')
@@ -52732,6 +52790,25 @@ async function renderAgendamentos(){
   window._agendRenderDia(window._agendDiaSel);
   _featherReplace();
 }
+
+// Balão dos chips do Calendário de Saídas (atributo data-agtip, já escapado): aparece na hora, segue o mouse e some ao sair
+(function(){
+  var tip=null;
+  function box(){ if(!tip){ tip=document.createElement('div'); tip.id='agend-tip'; tip.style.cssText='position:fixed;z-index:99999;max-width:340px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-med);border-radius:10px;padding:10px 12px;font-size:.74rem;line-height:1.55;box-shadow:0 10px 28px rgba(0,0,0,.4);pointer-events:none;display:none'; document.body.appendChild(tip); } return tip; }
+  function pos(e){
+    var t=box(), w=t.offsetWidth, h=t.offsetHeight, x=e.clientX+14, y=e.clientY+16;
+    if(x+w>window.innerWidth-8) x=Math.max(8,e.clientX-w-14);
+    if(y+h>window.innerHeight-8) y=Math.max(8,e.clientY-h-12);
+    t.style.left=x+'px'; t.style.top=y+'px';
+  }
+  document.addEventListener('mouseover',function(e){
+    var el=e.target&&e.target.closest?e.target.closest('[data-agtip]'):null, t=box();
+    if(!el){ t.style.display='none'; return; }
+    t.innerHTML=el.getAttribute('data-agtip'); t.style.display='block'; pos(e);
+  });
+  document.addEventListener('mousemove',function(e){ if(tip && tip.style.display==='block') pos(e); });
+  document.addEventListener('scroll',function(){ if(tip) tip.style.display='none'; },true);
+})();
 
 // Calendário de Rotas: filtro por rota, clique no dia e atalho para o painel de motivo da rota
 function _agendSetFiltroRota(v){ window._agendFiltroRota=v||''; renderAgendamentos(); }
