@@ -10055,7 +10055,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.209';
+const APP_VERSION = '4.89.210';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -24437,13 +24437,15 @@ async function confirmarSaidaRota(){
         `agendamentos_rotas?rota=eq.${encodeURIComponent(rotaNorm)}&data=eq.${dataAgend}&status=neq.realizado&select=id`
       ).catch(()=>[]) || [];
       if(agendSupa.length){
+        let _patchOk = true;
         await supaFetch(`agendamentos_rotas?id=eq.${agendSupa[0].id}`,{
           method:'PATCH', body:JSON.stringify(payload)
-        }).catch(()=>{});
+        }).catch(()=>{ _patchOk = false; });
         // Atualizar cache local também
         const arr = getAgendamentos();
-        const idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
-        if(idx >= 0){ Object.assign(arr[idx], payload); _agendCache = arr; }
+        let idx = arr.findIndex(a=>a.id===agendSupa[0].id);
+        if(idx < 0) idx = arr.findIndex(a=>(a.rota||'').trim().toUpperCase()===rotaNorm && a.data===dataAgend);
+        if(idx >= 0){ Object.assign(arr[idx], payload); _agendCache = arr; if(_patchOk) _agendBaseAtualiza(arr[idx]); }
       } else {
         // Fallback: cache local caso Supabase não retorne (offline ou rota não agendada formalmente)
         const arr = getAgendamentos();
@@ -52108,16 +52110,62 @@ async function saveAgendamentos(arr){
   await _syncAgendSupabase(arr, deletados); // fonte verdadeira (Supabase)
 }
 
+// ── Gravação INCREMENTAL de agendamentos ────────────────────────────────
+// Antes: toda gravação reenviava o array INTEIRO (merge-duplicates) a partir do cache
+// da aba. Uma aba velha (ou qualquer salvar) sobrescrevia vínculo de carga/motivo que
+// outro usuário tinha acabado de gravar (05/11: vínculos do Calendário de Saídas voltaram
+// ao estado inicial). Agora cada aba guarda uma FOTO do que veio do banco (_agendBase) e
+// só envia as LINHAS/CAMPOS que ela mesma alterou; linha nova só entra se não existir.
+const _AGEND_CAMPOS = ['rota','data','obs','mes_ano','status','criado_em','lancado','motivo_atraso','motivo_label','acao','carga','atualizado_em','usuario_acao'];
+let _agendBase = new Map(); // id -> foto normalizada da linha como está no banco
+function _agendNorm(a){
+  return {
+    rota: normalizarRota(a.rota||''),
+    data: a.data||null,
+    obs: a.obs||null,
+    mes_ano: a.mes_ano||null,
+    status: a.status||'agendado',
+    criado_em: a.criado_em||null,
+    lancado: !!a.lancado,
+    motivo_atraso: a.motivo_atraso||null,
+    motivo_label: a.motivo_label||null,
+    acao: a.acao||null,
+    carga: a.carga||null,
+    atualizado_em: a.atualizado_em||null,
+    usuario_acao: a.usuario_acao||null
+  };
+}
+function _agendBaseAtualiza(a){ if(a && a.id!=null) _agendBase.set(a.id, _agendNorm(a)); }
+function _agendBaseReinicia(lista){ _agendBase = new Map(); (lista||[]).forEach(_agendBaseAtualiza); }
+
 async function _syncAgendSupabase(arr, deletados=[]){
+  const falhas = [];
   try{
     if(deletados.length){
       await supaFetch('agendamentos_rotas?id=in.('+deletados.join(',')+')', {method:'DELETE', prefer:'return=minimal'});
+      deletados.forEach(id=>_agendBase.delete(id));
     }
-    if(arr.length){
+  }catch(e){ falhas.push(e.message); }
+
+  const novos = [], alterados = [];
+  arr.forEach(a=>{
+    if(a.id==null) return;
+    const atual = _agendNorm(a);
+    const base = _agendBase.get(a.id);
+    if(!base){ novos.push(a); return; }
+    const diff = {};
+    _AGEND_CAMPOS.forEach(c=>{ if(atual[c] !== base[c]) diff[c] = atual[c]; });
+    if(Object.keys(diff).length) alterados.push({a, diff, atual});
+  });
+
+  // Linhas novas: ignore-duplicates — se a linha já existe no banco (criada por outra aba)
+  // NÃO é sobrescrita.
+  if(novos.length){
+    try{
       await supaFetch('agendamentos_rotas?on_conflict=id', {
         method:'POST',
-        prefer:'resolution=merge-duplicates,return=minimal',
-        body: JSON.stringify(arr.map(a=>({
+        prefer:'resolution=ignore-duplicates,return=minimal',
+        body: JSON.stringify(novos.map(a=>({
           id: a.id,
           rota: normalizarRota(a.rota||''),
           data: (a.data||hojeDataBRT()),
@@ -52134,10 +52182,23 @@ async function _syncAgendSupabase(arr, deletados=[]){
           usuario_acao: a.usuario_acao||null
         })))
       });
-    }
-  }catch(e){
-    console.warn('[Agend] Sync Supabase falhou:',e.message);
-    showToast('⚠️ Salvo localmente, mas falhou ao sincronizar com o banco: '+e.message,'warning');
+      novos.forEach(_agendBaseAtualiza);
+    }catch(e){ falhas.push(e.message); }
+  }
+
+  // Linhas existentes: PATCH só dos campos que esta aba mudou
+  for(const {a, diff, atual} of alterados){
+    try{
+      await supaFetch('agendamentos_rotas?id=eq.'+encodeURIComponent(a.id), {
+        method:'PATCH', prefer:'return=minimal', body: JSON.stringify(diff)
+      });
+      _agendBase.set(a.id, atual);
+    }catch(e){ falhas.push(e.message); }
+  }
+
+  if(falhas.length){
+    console.warn('[Agend] Sync Supabase falhou:', falhas[0]);
+    showToast('⚠️ Salvo localmente, mas falhou ao sincronizar com o banco: '+falhas[0],'warning');
   }
 }
 
@@ -52146,9 +52207,11 @@ async function loadAgendamentosFromDB(){
     const db = await supaFetch('agendamentos_rotas?select=*&order=data.asc');
     if(db && db.length > 0){
       _agendCache = db;
+      _agendBaseReinicia(db);
       console.log('[Agend] '+db.length+' agendamentos carregados do banco');
     } else {
       _agendCache = [];
+      _agendBaseReinicia([]);
       console.log('[Agend] Nenhum agendamento encontrado no banco');
     }
   }catch(e){
