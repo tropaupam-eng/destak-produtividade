@@ -10104,7 +10104,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.218';
+const APP_VERSION = '4.89.219';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -35738,10 +35738,16 @@ async function _pnDadosVeiculos(mes, und){
   const R = _semAbastecimento(await _calcularBaseFiltrada(mes, 'RI', und));
   const cargas = [...new Set(R.bd.map(r=>Math.round(Number(r.carga))).filter(Boolean))];
   if(!cargas.length) throw _pnSemDado('sem cargas internas no mês');
-  const [lancs, cad] = await Promise.all([
+  const [lancs, cad, ucBase] = await Promise.all([
     _pnEmLotes(cargas, 200, l=>supaFetch(`lancamentos?carga=in.(${l.join(',')})&veiculo=not.is.null&select=carga,veiculo&limit=5000`)),
     supaFetch('veiculos?select=placa,uso'),
+    // Uso por carga = cargas distintas do veículo no mês (Expedição + Lançamento + Abastecimento de Loja) ÷ dias úteis:
+    // MESMA função da visão anual do Painel e da página Utilização (Distribuição). Se falhar, o ranking segue sem a coluna.
+    _calcCargasEDiasUteisMes(mes, '').catch(()=>null),
   ]);
+  const diasUteisUC = ucBase ? ucBase.diasUteisMes : 0;
+  const cargasMesDe = new Map();
+  if(ucBase) Object.entries(ucBase.cargasPorVeic).forEach(([pl,set])=>{ const k = _pnPlaca(pl); cargasMesDe.set(k, (cargasMesDe.get(k)||0) + set.size); });
   const usoDe = new Map((cad||[]).map(v=>[_pnPlaca(v.placa), (v.uso||'').toLowerCase()]));
   const veicDaCarga = new Map();
   lancs.forEach(l=>{ const c = Math.round(Number(l.carga)), p = _pnPlaca(l.veiculo); if(c && p && !veicDaCarga.has(c)) veicDaCarga.set(c, p); });
@@ -35754,13 +35760,18 @@ async function _pnDadosVeiculos(mes, und){
     const p = veicDaCarga.get(c); if(!p || usoDe.get(p) !== 'interno') return;
     const o = por.get(p) || { placa:p, cargas:new Set(), ped:0, val:0 }; o.cargas.add(c); o.ped++; o.val += Number(r.valor)||0; por.set(p, o);
   });
-  const lista = [...por.values()].map(o=>({ placa:o.placa, cargas:o.cargas.size, ped:o.ped, val:o.val }));
+  const lista = [...por.values()].map(o=>{
+    const cm = cargasMesDe.get(o.placa);
+    return { placa:o.placa, cargas:o.cargas.size, ped:o.ped, val:o.val, cargasMes: (ucBase && cm!=null) ? cm : null, uc: (ucBase && diasUteisUC>0) ? (cm||0)/diasUteisUC*100 : null };
+  });
   if(!lista.length) throw _pnSemDado('nenhum veículo interno com pedidos no mês');
   const rv = [...lista].sort((a,b)=>b.val-a.val), rp = [...lista].sort((a,b)=>b.ped-a.ped);
   lista.forEach(o=>{ o.rv = rv.indexOf(o)+1; o.rp = rp.indexOf(o)+1; });
-  return { rv, rp, lista };
+  return { rv, rp, lista, diasUteis: diasUteisUC, temUC: !!ucBase };
 }
-function _pnNotaVeiculos(P){ return _pnh.nota('Base: pedidos das cargas com rota interna (R.I.) lançada em '+P.rot+', por veículo lançado na carga; carga sem rota (abastecimento de loja) fica de fora. Só veículos de uso interno (cadastro do veículo). Ranking dos 10 primeiros.'); }
+const _pnFmtUC = v => v==null ? '—' : v.toFixed(1).replace('.',',')+'%';
+function _pnNotaVeiculos(P, D){ return _pnh.nota('Base: pedidos das cargas com rota interna (R.I.) lançada em '+P.rot+', por veículo lançado na carga; carga sem rota (abastecimento de loja) fica de fora. Só veículos de uso interno (cadastro do veículo). Ranking dos 10 primeiros.'
+  + (D && D.temUC ? ' Uso por carga = todas as cargas do veículo no mês (Expedição, Lançamento e Abastecimento de Loja, inclusive rota externa) ÷ '+D.diasUteis+' dias úteis (seg–sáb, sem feriados) — a mesma conta da página Utilização; pode passar de 100% (na média da frota cada veículo conta no máximo 100%). Por isso as cargas do uso podem ser mais que a coluna Cargas, que só conta rota interna.' : '')); }
 async function _pnHtmlTopVeiculos(mes, und, ctx, por){
   const P = _pnPeriodoMes(mes);
   ctx.cache = ctx.cache || {};
@@ -35769,20 +35780,21 @@ async function _pnHtmlTopVeiculos(mes, und, ctx, por){
   const max = Math.max(...top.map(o=>por === 'valor' ? o.val : o.ped), 1);
   const linhas = top.map((o,i)=>{
     const principal = por === 'valor' ? _pnh.v(o.val) : _pnh.n(o.ped)+' pedidos';
-    const sec = por === 'valor' ? _pnh.n(o.ped)+' pedidos · '+_pnh.n(o.cargas)+' cargas' : _pnh.v(o.val)+' · '+_pnh.n(o.cargas)+' cargas';
+    const ucTxt = D.temUC ? ' · uso por carga '+_pnFmtUC(o.uc) : '';
+    const sec = (por === 'valor' ? _pnh.n(o.ped)+' pedidos · '+_pnh.n(o.cargas)+' cargas' : _pnh.v(o.val)+' · '+_pnh.n(o.cargas)+' cargas') + ucTxt;
     const pct = (por === 'valor' ? o.val : o.ped) / max * 100;
     return `<div style="display:flex;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid var(--border)">
         <span style="width:30px;font-size:.85rem;font-weight:700;color:var(--text-muted)">${String(i+1).padStart(2,'0')}</span>
         <span style="width:110px;font-size:1rem;font-weight:700">${_pnh.esc(o.placa)}</span>
         <div style="flex:1;height:12px;background:var(--border);border-radius:6px"><div style="height:12px;width:${Math.max(1, pct).toFixed(1)}%;background:${i === 0 ? '#E8000D' : '#f0f0f8'};border-radius:6px"></div></div>
         <span style="width:190px;text-align:right;font-size:1rem;font-weight:700">${principal}</span>
-        <span style="width:230px;text-align:right;font-size:.82rem;color:var(--text-secondary)">${sec}</span></div>`;
+        <span style="width:330px;text-align:right;font-size:.82rem;color:var(--text-secondary)">${sec}</span></div>`;
   }).join('');
   const lider = top[0];
   const corpo = `<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin:-6px 0 14px"><span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">VEÍCULOS</span><span style="font-size:1.8rem;font-weight:700">${D.lista.length}</span></div>
       ${_pnh.caixa(linhas, 'var(--red)')}
       <div style="font-size:.95rem;font-weight:600;margin-top:14px">Líder: ${_pnh.esc(lider.placa)} — ${por === 'valor' ? _pnh.v(lider.val) : _pnh.n(lider.ped)+' pedidos'}</div>
-      ${_pnNotaVeiculos(P)}`;
+      ${_pnNotaVeiculos(P, D)}`;
   return por === 'valor'
     ? _pnh.casca('FROTA INTERNA · RANKING POR VALOR · '+P.nome, 'Top veículos por valor', corpo, 'OPERAÇÕES / MONITORAMENTO')
     : _pnh.casca('FROTA INTERNA · RANKING POR PEDIDOS NO VEÍCULO · '+P.nome, 'Top veículos por pedidos', corpo, 'OPERAÇÕES / MONITORAMENTO');
@@ -35794,8 +35806,8 @@ async function _pnHtmlComparativoVeiculos(mes, und, ctx){
   const top = D.rv.slice(0, 10);
   const th = (t, al)=>`<div style="font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);text-align:${al||'left'}">${t}</div>`;
   const cel = (t, al, neg)=>`<div style="font-size:1rem;font-weight:${neg ? 700 : 600};text-align:${al||'left'}">${t}</div>`;
-  const grade = 'display:grid;grid-template-columns:130px 90px 190px 100px 110px 90px 160px;gap:0 14px;align-items:center';
-  const linhas = top.map(o=>`<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)">${cel(_pnh.esc(o.placa), 'left', true)}${cel(o.rv+'º', 'center')}${cel(_pnh.v(o.val), 'right')}${cel(o.rp+'º', 'center')}${cel(_pnh.n(o.ped), 'right')}${cel(_pnh.n(o.cargas), 'right')}${cel(o.ped ? _pnh.v(o.val/o.ped) : '—', 'right')}</div>`).join('');
+  const grade = 'display:grid;grid-template-columns:' + (D.temUC ? '120px 80px 170px 90px 90px 80px 130px 110px' : '130px 90px 190px 100px 110px 90px 160px') + ';gap:0 14px;align-items:center';
+  const linhas = top.map(o=>`<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)">${cel(_pnh.esc(o.placa), 'left', true)}${cel(o.rv+'º', 'center')}${cel(_pnh.v(o.val), 'right')}${cel(o.rp+'º', 'center')}${cel(_pnh.n(o.ped), 'right')}${cel(_pnh.n(o.cargas), 'right')}${cel(o.ped ? _pnh.v(o.val/o.ped) : '—', 'right')}${D.temUC ? cel(_pnFmtUC(o.uc), 'right') : ''}</div>`).join('');
   const ticket = o=>o.ped ? o.val/o.ped : 0;
   const liderV = D.rv[0], liderP = D.rp[0], maisCargas = [...D.lista].sort((a,b)=>b.cargas-a.cargas)[0];
   const bullets = [
@@ -35803,9 +35815,9 @@ async function _pnHtmlComparativoVeiculos(mes, und, ctx){
     `${_pnh.esc(liderP.placa)}: ${liderP.rp === 1 && liderP.rv === 1 ? '1º em pedidos e em valor' : '1º em pedidos ('+_pnh.n(liderP.ped)+') e '+liderP.rv+'º em valor ('+_pnh.v(liderP.val)+')'} — ${_pnh.v(ticket(liderP))} por pedido.`,
     `${_pnh.esc(maisCargas.placa)}: mais cargas do mês (${_pnh.n(maisCargas.cargas)}) e ${maisCargas.rv}º em valor.`,
   ];
-  const corpo = `${_pnh.caixa(`<div style="${grade};padding-bottom:8px;border-bottom:1px solid var(--border-med)">${th('VEÍCULO')}${th('POS. VALOR', 'center')}${th('VALOR', 'right')}${th('POS. PEDIDOS', 'center')}${th('PEDIDOS', 'right')}${th('CARGAS', 'right')}${th('R$ / PEDIDO', 'right')}</div>${linhas}`, 'var(--red)')}
+  const corpo = `${_pnh.caixa(`<div style="${grade};padding-bottom:8px;border-bottom:1px solid var(--border-med)">${th('VEÍCULO')}${th('POS. VALOR', 'center')}${th('VALOR', 'right')}${th('POS. PEDIDOS', 'center')}${th('PEDIDOS', 'right')}${th('CARGAS', 'right')}${th('R$ / PEDIDO', 'right')}${D.temUC ? th('USO POR CARGA', 'right') : ''}</div>${linhas}`, 'var(--red)')}
       <div style="margin-top:18px"><div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:6px">LEITURA</div>${bullets.map(b=>`<div style="font-size:.92rem;line-height:1.6;color:var(--text-secondary)">• ${b}</div>`).join('')}</div>
-      ${_pnNotaVeiculos(P)}`;
+      ${_pnNotaVeiculos(P, D)}`;
   return _pnh.casca('FROTA INTERNA · VALOR × PEDIDOS · '+P.nome, 'Comparativo — valor × pedidos', corpo, 'OPERAÇÕES / MONITORAMENTO');
 }
 
