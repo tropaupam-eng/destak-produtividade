@@ -7739,6 +7739,12 @@ body.light-theme #page-frota-disponibilidade{
 #frota-disp-wrap .fu-cell.P{background:var(--fu-p-bg);color:var(--fu-p)}
 #frota-disp-wrap .fu-cell.C{background:var(--fu-c-bg);color:var(--fu-c)}
 #frota-disp-wrap .fu-cell.N{color:var(--text-muted);opacity:.28;font-weight:500}
+#frota-disp-wrap .fu-cell.N.man{opacity:.95;color:var(--text-primary)}
+#frota-disp-wrap .fu-cell.M{background:transparent;color:var(--text-primary);border:1.5px dashed var(--text-secondary)}
+#frota-disp-wrap .fu-cell.man{position:relative}
+#frota-disp-wrap .fu-cell.man::after{content:'';position:absolute;top:-3px;right:-3px;width:7px;height:7px;border-radius:50%;background:var(--red);border:1px solid var(--bg-card)}
+#frota-disp-wrap .fu-cell.clk{cursor:pointer}
+#frota-disp-wrap .fu-cell.clk:hover{outline:2px solid var(--text-secondary);outline-offset:1px;opacity:1}
 #frota-disp-wrap .fu-t td.dom .fu-cell{width:18px;height:18px;font-size:.6rem}
 #frota-disp-wrap .fu-grp td{padding:0;border-bottom:1px solid var(--border-med);background:var(--bg-card2)}
 #frota-disp-wrap .fu-grp-in{position:sticky;left:0;display:flex;align-items:center;gap:12px;padding:10px 16px;width:max-content;max-width:100vw}
@@ -10049,7 +10055,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.208';
+const APP_VERSION = '4.89.209';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20472,10 +20478,11 @@ async function renderFrotaUso(){
 // ── Buscar data da PRIMEIRA viagem de cada veículo (para não sujar métricas de veículos novos)
 async function _buscarPrimeiraViagemPorVeiculo(){
   try{
-    const [demandas, lancamentos, abast] = await Promise.all([
+    const [demandas, lancamentos, abast, manuais] = await Promise.all([
       supaFetch('demandas_rota?select=veiculo,data_saida,ts_saiu&veiculo=not.is.null&order=data_saida.asc&limit=5000').catch(()=>[]),
       supaFetch('lancamentos?select=veiculo,ts&veiculo=not.is.null&order=ts.asc&limit=10000').catch(()=>[]),
-      supaFetch('abastecimento_loja?select=veiculo,data_saida&veiculo=not.is.null&order=data_saida.asc&limit=10000').catch(()=>[])
+      supaFetch('abastecimento_loja?select=veiculo,data_saida&veiculo=not.is.null&order=data_saida.asc&limit=10000').catch(()=>[]),
+      supaFetch('frota_uso_manual?select=placa,data&tipo=eq.uso&limit=5000').catch(()=>[])
     ]);
     const primeiraViagemMap = {};
     const considera = (placaRaw, dataRaw) => {
@@ -20487,6 +20494,7 @@ async function _buscarPrimeiraViagemPorVeiculo(){
     (demandas||[]).forEach(d => considera(d.veiculo, d.data_saida || d.ts_saiu));
     (lancamentos||[]).forEach(d => considera(d.veiculo, d.ts));
     (abast||[]).forEach(d => considera(d.veiculo, d.data_saida));
+    (manuais||[]).forEach(d => considera(d.placa, d.data));   // lançamento manual de dia utilizado também vale como início de uso
     return primeiraViagemMap;
   }catch(e){
     console.warn('Erro ao buscar primeira viagem:', e);
@@ -20500,6 +20508,7 @@ async function _buscarPrimeiraViagemPorVeiculo(){
 //   'S' em rota (da saída real até o fim da rota na Expedição = ts_fim_viagem)
 //   'P' carregado, pronto para viagem, aguardando sair (ts_pronto_viagem → ts_saiu)
 //   'C' carregando (ts_carregamento → ts_pronto_viagem; inclui aguardando NF e aguardando manifesto)
+//   'M' lançamento MANUAL de dia utilizado (tabela frota_uso_manual; também existe o ajuste 'sem_uso', que tira o dia)
 // Prioridade no mesmo dia: S > P > C. Lançamento (Distribuição) e Abastecimento de Loja (Armazém) marcam SÓ o dia
 // (internos marcam somente o dia do lançamento — o R.I. não "espalha" mais até o fim do mês).
 // `info` (opcional) recebe, por placa/dia, as notas de tooltip; `stats` (opcional) recebe as horas de cada etapa.
@@ -20516,7 +20525,7 @@ function _dispHoraBRT(ts){
   if(isNaN(d)) return '';
   return d.toLocaleString('pt-BR', {timeZone:'America/Bahia', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
 }
-function _calcDispMapFrota({placas, demandas, etapas, lancamentosDisp, demandasC, abastecimentos, primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD, info, stats}){
+function _calcDispMapFrota({placas, demandas, etapas, lancamentosDisp, demandasC, abastecimentos, primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD, info, stats, ajustes, manual, auto}){
   const dispMap = {};
   placas.forEach(p => { dispMap[p] = {}; });
   // mesFim chega como meia-noite do ÚLTIMO dia do mês, mas os dias abaixo são marcados às 12:00 — sem isso a
@@ -20623,6 +20632,22 @@ function _calcDispMapFrota({placas, demandas, etapas, lancamentosDisp, demandasC
     });
   }
 
+  // Ajustes manuais (tabela frota_uso_manual) — aplicados por último, valem sobre o que o sistema marcou:
+  //   uso     = dia SEM registro do sistema, lançado à mão como utilizado → estado 'M' (conta como dia utilizado)
+  //   sem_uso = dia que o sistema marcou (S/P/C) mas o veículo não rodou → o dia deixa de contar
+  // `auto` (opcional) recebe o mapa ANTES dos ajustes e `manual` o registro de cada ajuste, pra tela mostrar os dois.
+  if(auto) placas.forEach(p => { auto[p] = Object.assign({}, dispMap[p]); });
+  (ajustes||[]).forEach(a => {
+    const placa = (a.placa||'').trim().toUpperCase();
+    if(!dispMap[placa] || !a.data) return;
+    const dia = parseDia(String(a.data));
+    if(dia < mesInicio || dia > mesFim) return;
+    const k = String(a.data).slice(8,10);
+    if(manual) (manual[placa] || (manual[placa] = {}))[k] = a;
+    if(a.tipo === 'uso'){ if(!dispMap[placa][k]) dispMap[placa][k] = 'M'; }
+    else if(a.tipo === 'sem_uso'){ delete dispMap[placa][k]; }
+  });
+
   return dispMap;
 }
 
@@ -20651,6 +20676,8 @@ async function renderFrotaDisp(){
 
     // ── Buscar data da PRIMEIRA viagem (para não contar dias antes da primeira viagem)
     const primeiraViagemMap = await _buscarPrimeiraViagemPorVeiculo();
+    // Ajustes manuais do mês (lançar dia utilizado / marcar dia como não utilizado)
+    const pAjustes = supaFetch(`frota_uso_manual?data=gte.${mes}-01&data=lt.${proxMes}-01&select=placa,data,tipo,motivo,usuario,criado_em,atualizado_em&limit=5000`).catch(()=>[]);
 
     const queries = [
       supaFetch('veiculos?select=placa,tipo,unidade,ativo,compartilhado,uso&order=placa.asc'),
@@ -20667,6 +20694,7 @@ async function renderFrotaDisp(){
       queries.push(supaFetch(`demandas_rota?select=veiculo,status&veiculo=not.is.null&data_saida=is.null&status=in.("carregamento","aguardando_nf","aguardando_manifesto","pronto_viagem","separacao")`).catch(()=>[]));
     }
     const [veiculos, demandas, lancamentosDisp, abastecimentos, etapas, feriadosRows, demandasC] = await Promise.all(queries);
+    const ajustesRows = (await pAjustes) || [];
 
     const todosAtivos = (veiculos||[]).filter(v => v.ativo && !(v.placa||'').toUpperCase().includes('FRETE'));
 
@@ -20696,10 +20724,11 @@ async function renderFrotaDisp(){
     const mesFim    = new Date(ano, numMes-1, diasNoMes);
 
     // ── Mapa de status: dispMap[placa][dia] = 'S' | 'P' | 'C' (todos contam como dia utilizado) ──
-    const dispInfo = {}, dispStats = {};
+    const dispInfo = {}, dispStats = {}, manualMap = {}, autoMap = {};
     const dispMap = _calcDispMapFrota({
       placas: todos.map(v=>v.placa), demandas, etapas, lancamentosDisp, demandasC, abastecimentos,
-      primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD, info: dispInfo, stats: dispStats
+      primeiraViagemMap, mesInicio, mesFim, ehMesAtual, hojeObj, hojeD, info: dispInfo, stats: dispStats,
+      ajustes: ajustesRows, manual: manualMap, auto: autoMap
     });
 
     // ── Estrutura de colunas: separadores Dom (por semana) + dias Mon–Sat ──
@@ -20766,11 +20795,16 @@ async function renderFrotaDisp(){
 
     // ── Linhas ──
     const NOME_ST = {S:'Em rota', P:'Carregado, pronto para viagem', C:'Carregando'};
-    const tituloCelula = (placa, dia, st, naoConta) => {
+    const tituloCelula = (placa, dia, st, naoConta, man, clicavel) => {
       const notas = (dispInfo[placa]?.[dia]||[]);
       const uniq = [...new Set(notas)].slice(0,4);
-      return escapeHtml(NOME_ST[st] + (uniq.length ? ' — ' + uniq.join(' | ') : '') + (naoConta ? ' · não conta na utilização (domingo/feriado)' : ''));
+      const sa = autoMap[placa]?.[dia] || '';   // o que o SISTEMA marcou (antes de qualquer ajuste manual)
+      let t = sa ? ((man && man.tipo==='sem_uso') ? 'O sistema marcou: ' : '') + NOME_ST[sa] + (uniq.length ? ' — ' + uniq.join(' | ') : '') + (naoConta ? ' · não conta na utilização (domingo/feriado)' : '') : '';
+      if(man) t += (t?' · ':'') + 'AJUSTE MANUAL (' + (man.tipo==='uso' ? 'dia utilizado' : 'não utilizado') + '): ' + man.motivo + ' — ' + (man.usuario||'sem usuário') + ((man.atualizado_em||man.criado_em) ? ', ' + _dispHoraBRT(man.atualizado_em||man.criado_em) : '');
+      if(clicavel) t += (t?' · ':'') + 'clique para ' + (man ? 'ver ou alterar o ajuste' : (sa ? 'ajustar este dia' : 'lançar manualmente'));
+      return escapeHtml(t);
     };
+    const podeAjustar = USUARIO_LOGADO?.perfil==='admin' || (typeof podeEditar==='function' && podeEditar('frota-disponibilidade'));
     const nCols = 2 + colunas.length;
 
     const linhaVeiculo = ({v, pct}) => {
@@ -20784,7 +20818,9 @@ async function renderFrotaDisp(){
         const fer = ehFeriado(dia);
         const cls = (ehSab?'wk ':'') + (fer?'fer ':'') + (ehHoje?'hoje':'');
         if(futuro) return `<td class="${cls}"></td>`;
-        return `<td class="${cls}"><span class="fu-cell ${st||'N'}"${st?` title="${tituloCelula(v.placa, dia, st, fer)}"`:''}>${st||'·'}</span></td>`;
+        const man = manualMap[v.placa]?.[dia] || null;
+        const tt = tituloCelula(v.placa, dia, st, fer, man, podeAjustar);
+        return `<td class="${cls}"><span class="fu-cell ${st||'N'}${man?' man':''}${podeAjustar?' clk':''}"${tt?` title="${tt}"`:''}${podeAjustar?` data-fu-placa="${escapeHtml(v.placa)}" data-fu-data="${mes}-${dia}"`:''}>${st||'·'}</span></td>`;
       }).join('');
       return `<tr class="fu-v">
         <td class="fu-first"><div class="fu-placa">${escapeHtml(v.placa)}</div>${v.tipo?`<div class="fu-mod">${escapeHtml(v.tipo)}</div>`:''}</td>
@@ -20816,7 +20852,7 @@ async function renderFrotaDisp(){
     const emViagemHoje  = hojeEm('S');
     const prontoHoje     = hojeEm('P');
     const carregandoHoje = hojeEm('C');
-    const ociosHoje      = ehMesAtual ? todos.length - emViagemHoje - prontoHoje - carregandoHoje : 0;
+    const ociosHoje      = ehMesAtual ? todos.filter(v=>!dispMap[v.placa]?.[hojeD]).length : 0;   // sem nenhum estado (S, P, C ou lançamento manual)
     const media = a => (a && a.length) ? a.reduce((x,y)=>x+y,0)/a.length : null;
     const fmtH = h => h==null ? '—' : (h>=48 ? (h/24).toFixed(1).replace('.',',')+' dias' : h.toFixed(1).replace('.',',')+' h');
     const mEspera = media(dispStats.esperaH), mCarreg = media(dispStats.carregH);
@@ -20881,8 +20917,10 @@ async function renderFrotaDisp(){
         ${lg('S','Em rota (da saída até a rota finalizada na Expedição; lançamento e abastecimento de loja só no dia)')}
         ${lg('P','Carregado, pronto para viagem')}
         ${lg('C','Carregando (inclui aguardando NF e manifesto)')}
+        ${lg('M','Lançamento manual (dia utilizado, lançado à mão)')}
+        <span class="fu-lg"><span class="fu-cell N man">·</span>Ponto vermelho = dia com ajuste manual</span>
         <span class="fu-lg"><span class="fu-cell lgN">·</span>Não utilizado</span>
-        <span class="fu-hint">S, P e C contam como dia utilizado · domingo e feriado não entram no cálculo (se rodou, aparece, mas não conta) · passe o mouse numa célula para ver a carga</span>
+        <span class="fu-hint">S, P, C e M contam como dia utilizado · domingo e feriado não entram no cálculo (se rodou, aparece, mas não conta) · passe o mouse numa célula para ver a carga${podeAjustar ? ' · clique numa célula para lançar ou ajustar o dia manualmente' : ''}</span>
       </div>
 
       <div class="fu-scroll">
@@ -20898,11 +20936,83 @@ async function renderFrotaDisp(){
         </table>
       </div>`;
     _featherReplace();
+    window._fuCtx = { auto: autoMap, manual: manualMap, info: dispInfo, mes };
+    wrap.onclick = e => { const c = e.target.closest && e.target.closest('[data-fu-placa]'); if(c) frotaDispAjuste(c.getAttribute('data-fu-placa'), c.getAttribute('data-fu-data')); };
 
   }catch(e){
     wrap.innerHTML = `<div class="fu-empty" style="color:var(--fu-bad)">Erro ao carregar: ${escapeHtml(e.message)}</div>`;
     console.error('renderFrotaDisp:', e);
   }
+}
+
+// ── Utilização de Frotas Fixas: lançamento / ajuste MANUAL de um dia de um veículo ──
+// Só existem duas situações possíveis, e a tela oferece a que faz sentido:
+//   dia SEM registro do sistema → "lançar como dia utilizado" (tipo 'uso', aparece como M)
+//   dia COM registro do sistema (S/P/C) → "marcar como não utilizado" (tipo 'sem_uso', o dia deixa de contar)
+// Motivo é obrigatório; ficam gravados quem fez e quando (tabela frota_uso_manual, 1 linha por placa e dia).
+function frotaDispFecharAjuste(){ const o = document.getElementById('fu-aj-ov'); if(o) o.remove(); }
+function frotaDispAjuste(placa, data){
+  const ctx = window._fuCtx || {};
+  const k = data.slice(8,10);
+  const auto = ctx.auto?.[placa]?.[k] || '';
+  const man = ctx.manual?.[placa]?.[k] || null;
+  const notas = [...new Set(ctx.info?.[placa]?.[k] || [])].slice(0,6);
+  const NOME = {S:'Em rota', P:'Carregado, pronto para viagem', C:'Carregando'};
+  const tipo = auto ? 'sem_uso' : 'uso';
+  const dt = new Date(data+'T12:00:00');
+  const dsem = ['domingo','segunda','terça','quarta','quinta','sexta','sábado'][dt.getDay()];
+  const e = escapeHtml;
+  const sist = auto
+    ? '<b>'+e(NOME[auto])+'</b>'+(notas.length ? '<div style="margin-top:4px;color:var(--text-secondary)">'+notas.map(e).join('<br>')+'</div>' : '')
+    : 'Nenhum registro do sistema neste dia (sem carga, lançamento ou abastecimento de loja).';
+  const acao = tipo === 'uso'
+    ? '<b>Lançar como dia utilizado</b><div style="color:var(--text-secondary);margin-top:2px">O veículo rodou, mas o sistema não registrou. O dia passa a contar como utilizado e aparece como <b>M</b>.</div>'
+    : '<b>Marcar como não utilizado</b><div style="color:var(--text-secondary);margin-top:2px">O sistema marcou este dia, mas o veículo não rodou. O dia deixa de contar como utilizado.</div>';
+  const atual = man ? '<div style="margin-bottom:10px;padding:8px 10px;border:1px dashed var(--border-med);border-radius:8px;font-size:.76rem;color:var(--text-secondary)">Ajuste atual: <b style="color:var(--text-primary)">'+(man.tipo==='uso'?'dia utilizado':'não utilizado')+'</b> — '+e(man.usuario||'sem usuário')+((man.atualizado_em||man.criado_em)?', '+e(_dispHoraBRT(man.atualizado_em||man.criado_em)):'')+'</div>' : '';
+  frotaDispFecharAjuste();
+  const ov = document.createElement('div');
+  ov.id = 'fu-aj-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.onclick = ev => { if(ev.target === ov) frotaDispFecharAjuste(); };
+  ov.innerHTML = '<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-med);border-radius:14px;width:100%;max-width:460px;padding:20px 22px;box-shadow:0 20px 50px rgba(0,0,0,.5);font-size:.84rem;line-height:1.5">'
+    + '<div style="font-size:1.05rem;font-weight:800;font-family:ui-monospace,Consolas,monospace">'+e(placa)+'</div>'
+    + '<div style="color:var(--text-secondary);margin-bottom:14px">'+e(dsem)+', '+e(data.slice(8,10)+'/'+data.slice(5,7)+'/'+data.slice(0,4))+'</div>'
+    + '<div style="font-size:.64rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)">O que o sistema registrou</div>'
+    + '<div style="margin:4px 0 14px">'+sist+'</div>'
+    + atual
+    + '<div style="font-size:.64rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)">Ajuste</div>'
+    + '<div style="margin:4px 0 12px">'+acao+'</div>'
+    + '<label style="display:block;font-size:.64rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px">Motivo (obrigatório)</label>'
+    + '<textarea id="fu-aj-motivo" rows="3" maxlength="300" placeholder="Ex.: veículo rodou sem carga lançada no sistema" style="width:100%;box-sizing:border-box;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:.84rem;resize:vertical">'+e(man ? man.motivo : '')+'</textarea>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px">'
+    + (man ? '<button onclick="frotaDispRemoverAjuste(\''+e(placa)+'\',\''+e(data)+'\')" style="margin-right:auto;background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.8rem;font-weight:600;cursor:pointer">Remover ajuste</button>' : '')
+    + '<button onclick="frotaDispFecharAjuste()" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:600;cursor:pointer">Cancelar</button>'
+    + '<button onclick="frotaDispSalvarAjuste(\''+e(placa)+'\',\''+e(data)+'\',\''+tipo+'\')" style="background:var(--red);color:#fff;border:0;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:700;cursor:pointer">Salvar</button>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  const ta = document.getElementById('fu-aj-motivo'); if(ta) ta.focus();
+}
+async function frotaDispSalvarAjuste(placa, data, tipo){
+  const motivo = (document.getElementById('fu-aj-motivo')?.value || '').trim();
+  if(motivo.length < 5){ showToast('Informe o motivo do ajuste (mínimo 5 caracteres)','warning'); return; }
+  try{
+    await supaFetch('frota_uso_manual?on_conflict=placa,data', {
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({ placa, data, tipo, motivo, usuario: USUARIO_LOGADO?.nome || null, atualizado_em: new Date().toISOString() })
+    });
+    frotaDispFecharAjuste();
+    showToast('Ajuste manual salvo','success');
+    await renderFrotaDisp();
+  }catch(err){ showToast('Erro ao salvar o ajuste: '+err.message,'error'); }
+}
+async function frotaDispRemoverAjuste(placa, data){
+  try{
+    await supaFetch('frota_uso_manual?placa=eq.'+encodeURIComponent(placa)+'&data=eq.'+data, { method:'DELETE', prefer:'return=minimal' });
+    frotaDispFecharAjuste();
+    showToast('Ajuste manual removido — o dia volta ao que o sistema registrou','success');
+    await renderFrotaDisp();
+  }catch(err){ showToast('Erro ao remover o ajuste: '+err.message,'error'); }
 }
 
 // ── Frota > Status Atual: quadro por situação (Em rota | Disponíveis | Manutenção) ──
@@ -36979,7 +37089,9 @@ async function carregarPainelDisponibilidade(){
     const feriadosMesSet = new Set(((await supaFetch(`feriados?data=gte.${mesRef}-01&data=lt.${proxMesRef}-01&select=data`).catch(()=>[])) || []).map(r=>r.data).filter(Boolean));
     const diasUteisMes = _contarDiasUteisMes(anoRef, numMesRef-1, diasDecorridosRef, feriadosMesSet);
 
+    const ajustesRef = (await supaFetch(`frota_uso_manual?data=gte.${mesRef}-01&data=lt.${proxMesRef}-01&select=placa,data,tipo,motivo,usuario,criado_em,atualizado_em&limit=5000`).catch(()=>[])) || [];
     const dispMapRef = _calcDispMapFrota({
+      ajustes: ajustesRef,
       placas: veiculos.map(v=>v.placa),
       demandas: viagensMes, etapas: etapasRef, lancamentosDisp: lancamentosDispRefRire, demandasC: null, abastecimentos: abastecimentosRef,
       primeiraViagemMap: primeiraViagemMapRef,
