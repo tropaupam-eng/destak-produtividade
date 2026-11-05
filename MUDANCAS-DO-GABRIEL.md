@@ -21,14 +21,58 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-04, Gabriel: nova página "Aderência conferente" no menu lateral, abaixo de Ocorrências (vínculo do conferente e check de conferência por dia) — v4.89.193 (NÃO publicado)
-Onde: `index.html`: item de menu `data-page="aderencia"` (visível para `admin` e `adm_armazem`) logo após "Ocorrências", página `page-aderencia`, gancho em `showPage`, funções novas `_aderCalcular` e `renderArmAderencia`. `version.json` e `APP_VERSION` 4.89.192 → 4.89.193. (Primeiro foi feita como aba dentro do Armazém; o Gabriel pediu uma seção abaixo de Ocorrências e a aba foi removida.)
+## 2026-11-04, Gabriel: nova página "Aderência conferente" no menu lateral, abaixo de Ocorrências (vínculo do conferente e check de conferência por dia) — v4.89.215 (publicado em 05/11/2026)
+Onde: `index.html`: item de menu `data-page="aderencia"` (visível para `admin` e `adm_armazem`) logo após "Ocorrências", página `page-aderencia`, gancho em `showPage`, funções novas `_aderCalcular` e `renderArmAderencia`. `version.json` e `APP_VERSION` 4.89.214 → 4.89.215. (Primeiro foi feita como aba dentro do Armazém; o Gabriel pediu uma seção abaixo de Ocorrências e a aba foi removida.)
 Por quê: pedido do Gabriel: acompanhar diariamente se o conferente vincula a carga e faz o check de conferência no Cronos e identificar quem não está preenchendo. Escopo escolhido: só rotas externas (cargas de `demandas_rota`); as internas (Ceasa, Petrolina, Juazeiro) são conferidas no FDSAS. Só leitura: não grava nada e não cria tabela. Vínculo = linha em `atribuicoes_armazem` da demanda; check = pedidos distintos em `conferencia_pedidos` (ok/nok) contra `quantidade_pedidos`; dia = `data_saida`; cargas canceladas ficam de fora. Mostra KPIs do mês, tabela dia a dia (cargas sem conferente e quem vinculou) e tabela por conferente (do que menos preencheu ao que mais). Teste com outubro/2026: 63 cargas, 24 vinculadas, 14 com check completo, 39 saíram sem vínculo.
 Como desfazer: `git revert` do commit desta entrada.
-Atualização 2026-11-05 (mesma entrada, ainda não publicada): a página ganhou filtro de data inicial/final (com atalhos Este mês, Mês passado e 7 dias) ligado a tudo, gráfico de pedidos vinculados x conferidos por conferente, gráfico de pedidos conferidos por conferente (OK e Não OK) e gráfico de cargas do dia x conferidas. Só leitura, nada gravado. Pedidos vinculados = soma dos pedidos previstos das cargas vinculadas ao conferente (o vínculo é por carga); se outra pessoa conferiu no lugar, o primeiro aparece com sobra. Quando dois conferentes marcam o mesmo pedido, ele conta para os dois.
+Atualização 2026-11-05 (mesma entrada): a página ganhou filtro de data inicial/final (com atalhos Este mês, Mês passado e 7 dias) ligado a tudo, gráfico de pedidos vinculados x conferidos por conferente, gráfico de pedidos conferidos por conferente (OK e Não OK) e gráfico de cargas do dia x conferidas. Só leitura, nada gravado. Pedidos vinculados = soma dos pedidos previstos das cargas vinculadas ao conferente (o vínculo é por carga); se outra pessoa conferiu no lugar, o primeiro aparece com sobra. Quando dois conferentes marcam o mesmo pedido, ele conta para os dois.
 Atualização 2026-11-05 (2): clicar numa coluna do gráfico "Cargas do dia" abre embaixo as cargas do dia e cada pedido, conferido (OK), Não OK ou não conferido; os pedidos vêm de `base_data` e o check de `conferencia_pedidos`. Só leitura.
 Atualização 2026-11-05 (3): o dia clicado no gráfico "Cargas do dia" passa a filtrar a página inteira (KPIs, os dois gráficos por conferente e as tabelas); clicar de novo ou em "Limpar filtro" volta ao período todo. Só leitura.
+Atualização 2026-11-05 (4): removida a opção "Ocultar quem não registrou nada" (a tabela Por conferente mostra sempre todos).
 Pendente/risco: conferentes que só atuam em rota interna (FDSAS) aparecem com zero; há a opção "Ocultar quem não registrou nada". Cargas de coleta não são separadas das demais.
+
+## 2026-11-05, Gabriel: Crédito Manual — só código do cliente e valor do pedido são automáticos — v4.89.208
+Onde: `index.html`, página Distribuição › Histórico — Crédito Manual (`page-credito-manual`): campo do pedido (busca ao digitar e ao sair do
+campo), aviso embaixo do pedido, CSS `.cm-auto` e funções `cmAutoPreencher`, `cmPedidoMudou`, `_cmTravar`, `_cmDestravarAuto`, `cmLimparForm`.
+`APP_VERSION`/`version.json` 4.89.207 → 4.89.208.
+Por quê: pedido do Gabriel, ajustando a v4.89.202 (que tinha deixado tudo manual): pelo Nº do pedido o ERP (`pedidos_info_erp`: codigo_cliente, valor,
+cliente, situacao; se faltar o valor, `base_data`) preenche SÓ o código do cliente e o valor do pedido. Emissão da nota, número da nota, valor do
+crédito, peso faltante e evidência por foto continuam manuais (destacados). Campo preenchido pelo ERP fica travado e escuro (`.cm-auto`); se o ERP não
+trouxe o dado (pedido não encontrado), o campo fica livre e destacado para digitar. Embaixo do pedido aparece o nome do cliente e, em pedido
+cancelado (situação CA), um aviso vermelho que NÃO bloqueia. Trocar o pedido apaga na hora os dados travados do anterior; sair do campo sem mudar o
+pedido não refaz a busca nem apaga o que foi digitado; "Limpar" destrava tudo. Salvar grava os valores como estão no campo (cópia do momento). Só LÊ
+o banco (duas consultas por pedido); nada é gravado por esta mudança. Dado sobre emissão/nota deixou de ser consultado.
+Testes: `node check.js` ok; 27 testes de lógica (preenche/trava, cancelado, fallback, não encontrado, trocar pedido, corrida de buscas, Limpar, erro e
+nova tentativa, salvar, marcação da tela) passando. Sem teste com a tabela real se ela ainda não existir; teste visual do Gabriel pendente.
+Como desfazer: `git revert` do commit desta entrada (volta ao 4.89.207, tudo manual).
+Pendente/risco: tabela `credito_manual_historico` ainda precisa existir para salvar (ver entrada de 05/11 anterior); valor do pedido é o do ERP
+(soma dos itens), que pode diferir do valor impresso na nota.
+## 2026-11-05, Gabriel: Campos de data com ícone do calendário claro (Crédito Manual e Ocorrências) — v4.89.203
+Onde: `index.html`: `#cm-emissao` (Histórico — Crédito Manual › Data de emissão da nota) passa de `.cm-semcal` (sem ícone) para `.cm-data` (ícone do
+calendário claro + linha separadora); `#l-ocorr-data` (Distribuição › Ocorrências › Data da ocorrência) ganha a classe `.cm-data` (o ícone saía escuro,
+quase invisível no tema escuro). Removido o CSS `.cm-semcal`, que não é mais usado (a emissão não vem mais do ERP). `APP_VERSION`/`version.json` 4.89.202 → 4.89.203.
+Por quê: pedido do Gabriel: "crie o ícone de selecionar a data, como em Distribuição_Ocorrências" e "deixe o ícone BRANCO, como os outros".
+Conferido em página de teste com o mesmo CSS, tema escuro e claro (ícone claro no escuro, escuro no claro). Não mexe em dado nem em estrutura de banco.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: nenhum conhecido; teste visual do Gabriel em localhost.
+
+## 2026-11-04, Gabriel: Ocorrências (Distribuição) — mostra quem conferiu a carga e quem separou o pedido (FDSAS) — v4.89.193 (PUBLICADO em 04/11/2026, commit 136b11a)
+Onde: `index.html`: variável `_ocorrFdsas` e função `_ocorrFdsasInfo` (novas), `carregarOcorrenciasDistrib` (lê uma
+linha de `configuracoes`) e `_renderOcorrenciasGeneric` (chips "Conferiu (FDSAS)", "Separou (FDSAS)" e aviso de situação).
+`version.json` e `APP_VERSION` 4.89.192 → 4.89.193.
+Por quê: acompanhamento de devolução da expedição interna do CD, para chegar à causa raiz (treinamento etc.). O FDSAS
+guarda quem conferiu cada carga e quem separou cada pedido; a tela já mostrava "sem conferente registrado" para a rota interna.
+Como funciona: o Apps Script da planilha de integração (conta logisticadestak.emb) cruza as ocorrências de rota interna da
+unidade `1 - CD` com as abas do FDSAS e grava o resultado, por id de ocorrência, em UMA linha da tabela `configuracoes`
+(chave `fdsas_responsaveis`, mesmo padrão do MFV `mfv_v2`). A tela só LÊ essa linha. O campo `conferente` da ocorrência
+NÃO é alterado. Sem a linha, ou para ocorrência fora do CD, a lista fica exatamente como antes.
+Dado no Supabase: tabela `configuracoes`, chave `fdsas_responsaveis`, valor anterior: não existia (criada pelo script).
+Sem tabela nem coluna novas, sem dinheiro. É a ponte provisória: a versão definitiva, com tabelas próprias no Cronos, será
+pedida ao Daniel.
+Como desfazer: `git revert` do commit desta entrada (a tela volta ao normal) e, se quiser, apagar a linha
+(`delete from configuracoes where chave = 'fdsas_responsaveis'`) e desativar o gatilho `gerarRelatorio` no Apps Script.
+Pendente/risco: o nome de quem separou/conferiu fica numa linha de configuracoes legível com a chave pública do Cronos (o
+banco não tem controle de acesso, como a auditoria já aponta); levar ao Daniel. Teste visual do Gabriel em localhost antes de publicar.
 
 ## 2026-11-04, Gabriel: Ocorrências (Distribuição): valor TOTAL do produto na devolução parcial (troca do unitário) — v4.89.186
 Onde: `index.html`: formulário Registrar Ocorrência: coluna "Valor do produto (R$) *" no lugar de "Valor unit." (nome pedido pelo Gabriel: "valor do produto", não "valor total"); `_ocorrValorTotalItem` (era `_ocorrPrecoItem`), `_ocorrQtdMudou` (nova), `_ocorrMarcarPrecoVazio`, `_ocorrRecalcValorDevolvido`, `salvarOcorrenciaLanc`.
@@ -54,6 +98,18 @@ Rótulo no histórico (pedido do Gabriel, 04/11): parcial registrada a partir de
 As anteriores seguem como estavam ("devolvido" ou "(valor do pedido)").
 Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. O valor depende de digitação.
+
+## 2026-11-05, Gabriel: Histórico — Crédito Manual: todos os campos manuais + SQL da tabela — v4.89.202
+Onde: `index.html`, página Distribuição › Histórico — Crédito Manual (`page-credito-manual`). Tirado o preenchimento automático: o pedido não consulta mais
+`pedidos_info_erp`/`base_data`; código do cliente, valor do pedido, emissão e nota ficam em branco, editáveis e destacados como os outros.
+Removidos `cmAutoPreencher`, `cmPedidoMudou`, `_cmTravar`, `_cmDestravarAuto` e o CSS `.cm-auto`; texto da tela agora diz que é tudo manual.
+Obrigatórios continuam: pedido, valor do crédito e evidência por foto (Sim/Não); os demais são opcionais como antes.
+`APP_VERSION`/`version.json` 4.89.201 → 4.89.202 (a main andou para 4.89.201 com outra mudança; sem conflito de texto, só o número).
+TABELA (ESTRUTURA DE BANCO, quem cria é o Daniel): arquivo novo `supabase/migrations/20261105_credito_manual_historico.sql` (IF NOT EXISTS, sem RLS, não
+mexe em dado nenhum) com as colunas que o código já usa. Confirmado em 05/11 por leitura que a tabela NÃO existe (PGRST205). Enquanto não for criada, a lista
+mostra o aviso e salvar também falha. NÃO foi criada por mim (só tenho a chave anon, que não faz DDL).
+Como desfazer: `git revert` do commit desta entrada (volta o preenchimento automático). Se a tabela for criada e precisar sair: drop table public.credito_manual_historico (só se estiver vazia).
+Pendente/risco: Daniel criar a tabela (dinheiro + estrutura: avisar antes de publicar); teste visual do Gabriel em localhost.
 
 ## 2026-10-30, Gabriel: Carregamento no Prazo (Visão Anual): clique nas barras de EVOLUÇÃO MENSAL filtra o mês — v4.89.126
 Onde: `index.html`: `_toggleMesCarregAno` (nova), `carregarPainelCarregamentoPrazoAno` (passa `onMesClick`/`mesSelIdx`/`pctView` ao
