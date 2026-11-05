@@ -65,15 +65,15 @@ Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: teste visual do Gabriel em localhost antes de publicar. O valor depende de digitação.
 
 ## 2026-11-05, Gabriel: Histórico — Crédito Manual: todos os campos manuais + SQL da tabela — v4.89.201
-Onde: , página Distribuição › Histórico — Crédito Manual (). Tirado o preenchimento automático: o pedido não consulta mais
-/; código do cliente, valor do pedido, emissão e nota ficam em branco, editáveis e destacados como os outros.
-Removidos , , ,  e o CSS ; texto da tela agora diz que é tudo manual.
+Onde: `index.html`, página Distribuição › Histórico — Crédito Manual (`page-credito-manual`). Tirado o preenchimento automático: o pedido não consulta mais
+`pedidos_info_erp`/`base_data`; código do cliente, valor do pedido, emissão e nota ficam em branco, editáveis e destacados como os outros.
+Removidos `cmAutoPreencher`, `cmPedidoMudou`, `_cmTravar`, `_cmDestravarAuto` e o CSS `.cm-auto`; texto da tela agora diz que é tudo manual.
 Obrigatórios continuam: pedido, valor do crédito e evidência por foto (Sim/Não); os demais são opcionais como antes.
-/ 4.89.200 → 4.89.201.
-TABELA (ESTRUTURA DE BANCO, quem cria é o Daniel): arquivo novo  (IF NOT EXISTS, sem RLS, não
+`APP_VERSION`/`version.json` 4.89.200 → 4.89.201.
+TABELA (ESTRUTURA DE BANCO, quem cria é o Daniel): arquivo novo `supabase/migrations/20261105_credito_manual_historico.sql` (IF NOT EXISTS, sem RLS, não
 mexe em dado nenhum) com as colunas que o código já usa. Confirmado em 05/11 por leitura que a tabela NÃO existe (PGRST205). Enquanto não for criada, a lista
 mostra o aviso e salvar também falha. NÃO foi criada por mim (só tenho a chave anon, que não faz DDL).
-Como desfazer:  do commit desta entrada (volta o preenchimento automático). Se a tabela for criada e precisar sair: drop table public.credito_manual_historico (só se estiver vazia).
+Como desfazer: `git revert` do commit desta entrada (volta o preenchimento automático). Se a tabela for criada e precisar sair: drop table public.credito_manual_historico (só se estiver vazia).
 Pendente/risco: Daniel criar a tabela (dinheiro + estrutura: avisar antes de publicar); teste visual do Gabriel em localhost.
 
 ## 2026-10-30, Gabriel: Carregamento no Prazo (Visão Anual): clique nas barras de EVOLUÇÃO MENSAL filtra o mês — v4.89.126
