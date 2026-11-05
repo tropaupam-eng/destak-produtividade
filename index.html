@@ -10172,7 +10172,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.224';
+const APP_VERSION = '4.89.225';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20917,7 +20917,7 @@ function _fuHtmlProd(){
       <td class="pos">${i+1}</td>
       <td class="l"><span class="fu-placa">${escapeHtml(r.placa)}</span></td>
       <td>${fN(r.cargas)}</td>
-      <td class="fu-bar${key==='uc'?' on':''}"${acima?' title="Passou de 100% (mais de 1 carga por dia útil): na média da frota conta no máximo 100%"':''}>${r.man?'<span class="fu-cap" title="Inclui '+r.man+' carga'+(r.man===1?'':'s')+' lançada'+(r.man===1?'':'s')+' manualmente (Painel de Indicadores › Monitoramento)">M</span>':''}${acima?'<span class="fu-cap">conta 100% na média</span>':''}${fP(r.uc)}<i><b style="width:${Math.min(100,Math.round(r.uc))}%"></b></i></td>
+      <td class="fu-bar${key==='uc'?' on':''}"${acima?' title="Passou de 100% (mais de 1 carga por dia útil): na média da frota conta no máximo 100%"':''}>${r.man?'<span class="fu-cap" title="Ajuste manual de cargas: '+_fmtAjusteManual(r.man)+' (Painel de Indicadores › Monitoramento)">M</span>':''}${acima?'<span class="fu-cap">conta 100% na média</span>':''}${fP(r.uc)}<i><b style="width:${Math.min(100,Math.round(r.uc))}%"></b></i></td>
       ${cel('ent', fN, mE)}
       ${cel('val', fV, mV)}
       <td>${vazio||tot.val<=0 ? '—' : (r.val/tot.val*100).toFixed(1).replace('.',',')+'%'}</td>
@@ -35841,11 +35841,11 @@ async function _pnDadosVeiculos(mes, und){
   if(!lista.length) throw _pnSemDado('nenhum veículo interno com pedidos no mês');
   const rv = [...lista].sort((a,b)=>b.val-a.val), rp = [...lista].sort((a,b)=>b.ped-a.ped);
   lista.forEach(o=>{ o.rv = rv.indexOf(o)+1; o.rp = rp.indexOf(o)+1; });
-  return { rv, rp, lista, diasUteis: diasUteisUC, temUC: !!ucBase, temManual: lista.some(o=>o.manual>0) };
+  return { rv, rp, lista, diasUteis: diasUteisUC, temUC: !!ucBase, temManual: lista.some(o=>o.manual!==0) };
 }
 const _pnFmtUC = v => v==null ? '—' : v.toFixed(1).replace('.',',')+'%';
 function _pnNotaVeiculos(P, D){ return _pnh.nota('Base: pedidos das cargas com rota interna (R.I.) lançada em '+P.rot+', por veículo lançado na carga; carga sem rota (abastecimento de loja) fica de fora. Só veículos de uso interno (cadastro do veículo). Ranking dos 10 primeiros.'
-  + (D && D.temUC ? ' Uso por carga = todas as cargas do veículo no mês (Expedição, Lançamento e Abastecimento de Loja, inclusive rota externa) ÷ '+D.diasUteis+' dias úteis (seg–sáb, sem feriados) — a mesma conta da página Utilização; pode passar de 100% (na média da frota cada veículo conta no máximo 100%). Por isso as cargas do uso podem ser mais que a coluna Cargas, que só conta rota interna.' + (D.temManual ? ' M = inclui cargas lançadas manualmente (motivo e autor registrados).' : '') : '')); }
+  + (D && D.temUC ? ' Uso por carga = todas as cargas do veículo no mês (Expedição, Lançamento e Abastecimento de Loja, inclusive rota externa) ÷ '+D.diasUteis+' dias úteis (seg–sáb, sem feriados) — a mesma conta da página Utilização; pode passar de 100% (na média da frota cada veículo conta no máximo 100%). Por isso as cargas do uso podem ser mais que a coluna Cargas, que só conta rota interna.' + (D.temManual ? ' M = ajustado por lançamento manual de cargas (motivo e autor registrados).' : '') : '')); }
 async function _pnHtmlTopVeiculos(mes, und, ctx, por){
   const P = _pnPeriodoMes(mes);
   ctx.cache = ctx.cache || {};
@@ -35881,13 +35881,22 @@ async function _carregarCargasManualMes(mes){
   return (await supaFetch(`frota_cargas_manual?data=gte.${mes}-01&data=lt.${prox}-01&select=id,placa,data,qtd,motivo,usuario,criado_em,atualizado_em&order=data.asc&limit=2000`).catch(()=>[])) || [];
 }
 function _somarCargasManuais(setPorPlaca, rows){
-  (rows||[]).forEach(r=>{
-    const p = String(r.placa||'').trim().toUpperCase(); const n = Math.max(0, Math.round(Number(r.qtd)||0));
-    if(!p || !n) return;
-    const s = setPorPlaca[p] || (setPorPlaca[p] = new Set());
-    for(let i=0;i<n;i++) s.add('M:'+r.data+':'+i);
+  // 1º passo: lançamentos que SOMAM; 2º passo: os que DESCONTAM (tiram da contagem, nunca abaixo de zero).
+  // O que vale é a QUANTIDADE de cargas do veículo no mês; o desconto não aponta uma carga específica.
+  const lista = (rows||[]).map(r=>({ p:String(r.placa||'').trim().toUpperCase(), data:r.data, n:Math.round(Number(r.qtd)||0) })).filter(r=>r.p && r.n);
+  lista.filter(r=>r.n>0).forEach(r=>{
+    const s = setPorPlaca[r.p] || (setPorPlaca[r.p] = new Set());
+    for(let i=0;i<r.n;i++) s.add('M:'+r.data+':'+i);
+  });
+  lista.filter(r=>r.n<0).forEach(r=>{
+    const s = setPorPlaca[r.p]; if(!s) return;
+    for(let i=0;i<-r.n && s.size>0;i++){
+      const manual = [...s].filter(x=>typeof x==='string');   // desconta primeiro de cargas manuais, depois das reais (as mais recentes)
+      s.delete(manual.length ? manual[manual.length-1] : [...s].pop());
+    }
   });
 }
+function _fmtAjusteManual(n){ return (n>0?'+':'')+n; }
 function _totaisCargasManuais(rows){
   const o = {}; (rows||[]).forEach(r=>{ const p = String(r.placa||'').trim().toUpperCase(); if(p) o[p] = (o[p]||0) + (Number(r.qtd)||0); });
   return o;
@@ -35915,11 +35924,11 @@ async function _pnManualAbrir(placaPre){
   ov.onclick = ev => { if(ev.target === ov) _pnManualFechar(); };
   ov.innerHTML = '<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-med);border-radius:14px;width:100%;max-width:520px;max-height:92vh;overflow:auto;padding:20px 22px;box-shadow:0 20px 50px rgba(0,0,0,.5);font-size:.84rem;line-height:1.5">'
     + '<div style="font-size:1.05rem;font-weight:800">Lançar cargas manualmente</div>'
-    + '<div style="color:var(--text-secondary)">Uso por carga de '+e(mesTxt)+'. Só soma cargas ao veículo (não tira) e aparece com <b>M</b> no ranking, na Utilização e no Painel de Distribuição.</div>'
+    + '<div style="color:var(--text-secondary)">Uso por carga de '+e(mesTxt)+'. Número positivo <b>soma</b> cargas ao veículo; negativo <b>desconta</b> (ex.: -1 para carga lançada errada). Aparece com <b>M</b> no ranking, na Utilização e no Painel de Distribuição.</div>'
     + '<label style="'+lbl+'">Veículo</label>'
     + '<select id="pn-man-placa" style="'+inp+'" onchange="_pnManualMarcarExistente()"><option value="">Selecione…</option>'+veics.map(v=>'<option value="'+e(String(v.placa).toUpperCase())+'"'+(String(v.placa).toUpperCase()===preU?' selected':'')+'>'+e(String(v.placa).toUpperCase())+(v.uso?' — '+e(v.uso):'')+'</option>').join('')+'</select>'
     + '<div style="display:flex;gap:12px"><div style="flex:1"><label style="'+lbl+'">Data</label><input id="pn-man-data" type="date" min="'+mes+'-01" max="'+maxData+'" value="'+maxData+'" style="'+inp+'" onchange="_pnManualMarcarExistente()"></div>'
-    + '<div style="width:120px"><label style="'+lbl+'">Cargas</label><input id="pn-man-qtd" type="number" min="1" max="50" step="1" value="1" style="'+inp+'"></div></div>'
+    + '<div style="width:120px"><label style="'+lbl+'">Cargas (+/−)</label><input id="pn-man-qtd" type="number" min="-50" max="50" step="1" value="1" style="'+inp+'"></div></div>'
     + '<div id="pn-man-aviso" style="font-size:.76rem;color:var(--text-secondary);margin-top:6px"></div>'
     + '<label style="'+lbl+'">Motivo (obrigatório)</label>'
     + '<textarea id="pn-man-motivo" rows="3" maxlength="300" placeholder="Ex.: veículo rodou sem carga lançada no sistema" style="'+inp+';resize:vertical"></textarea>'
@@ -35936,14 +35945,14 @@ async function _pnManualAtualizarLista(){
   const rows = await _carregarCargasManualMes(mes);
   window._pnManualRows = rows;
   const e = escapeHtml;
-  box.innerHTML = rows.length ? '<table style="width:100%;border-collapse:collapse">'+rows.map(r=>'<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 6px 6px 0;font-weight:700;white-space:nowrap">'+e(r.placa)+'</td><td style="padding:6px;white-space:nowrap">'+e(r.data.slice(8,10)+'/'+r.data.slice(5,7))+'</td><td style="padding:6px;white-space:nowrap">+'+e(String(r.qtd))+'</td><td style="padding:6px;color:var(--text-secondary)">'+e(r.motivo)+'<div style="font-size:.7rem;color:var(--text-muted)">'+e(r.usuario||'sem usuário')+'</div></td><td style="padding:6px 0 6px 6px;text-align:right"><button onclick="_pnManualRemover(\''+e(r.id)+'\')" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:600;cursor:pointer">Remover</button></td></tr>').join('')+'</table>'
+  box.innerHTML = rows.length ? '<table style="width:100%;border-collapse:collapse">'+rows.map(r=>'<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 6px 6px 0;font-weight:700;white-space:nowrap">'+e(r.placa)+'</td><td style="padding:6px;white-space:nowrap">'+e(r.data.slice(8,10)+'/'+r.data.slice(5,7))+'</td><td style="padding:6px;white-space:nowrap">'+e(_fmtAjusteManual(r.qtd))+'</td><td style="padding:6px;color:var(--text-secondary)">'+e(r.motivo)+'<div style="font-size:.7rem;color:var(--text-muted)">'+e(r.usuario||'sem usuário')+'</div></td><td style="padding:6px 0 6px 6px;text-align:right"><button onclick="_pnManualRemover(\''+e(r.id)+'\')" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:600;cursor:pointer">Remover</button></td></tr>').join('')+'</table>'
     : '<span style="color:var(--text-muted)">Nenhum lançamento manual neste mês.</span>';
 }
 function _pnManualMarcarExistente(){
   const p = document.getElementById('pn-man-placa')?.value, d = document.getElementById('pn-man-data')?.value, av = document.getElementById('pn-man-aviso');
   if(!av) return;
   const ex = (window._pnManualRows||[]).find(r=>r.placa===p && r.data===d);
-  av.textContent = ex ? 'Já existe lançamento deste veículo neste dia ('+ex.qtd+' carga'+(ex.qtd===1?'':'s')+'): salvar substitui.' : '';
+  av.textContent = ex ? 'Já existe lançamento deste veículo neste dia ('+_fmtAjusteManual(ex.qtd)+' carga'+(Math.abs(ex.qtd)===1?'':'s')+'): salvar substitui.' : '';
 }
 async function _pnManualSalvar(){
   const placa = (document.getElementById('pn-man-placa')?.value || '').trim().toUpperCase();
@@ -35953,7 +35962,7 @@ async function _pnManualSalvar(){
   const mes = window._pnManualMes || window._painelIndMesSel || hojeDataBRT().slice(0,7);
   if(!placa){ showToast('Escolha o veículo','warning'); return; }
   if(!data || data.slice(0,7) !== mes || data > hojeDataBRT()){ showToast('Escolha uma data dentro do mês selecionado, até hoje','warning'); return; }
-  if(!(qtd >= 1 && qtd <= 50)){ showToast('Informe de 1 a 50 cargas','warning'); return; }
+  if(!(Number.isInteger(qtd) && qtd !== 0 && qtd >= -50 && qtd <= 50)){ showToast('Informe de 1 a 50 cargas para somar, ou de -1 a -50 para descontar','warning'); return; }
   if(motivo.length < 5){ showToast('Informe o motivo (mínimo 5 caracteres)','warning'); return; }
   try{
     await supaFetch('frota_cargas_manual?on_conflict=placa,data', {
@@ -35961,7 +35970,7 @@ async function _pnManualSalvar(){
       prefer:'resolution=merge-duplicates,return=minimal',
       body: JSON.stringify({ placa, data, qtd, motivo, usuario: USUARIO_LOGADO?.nome || null, atualizado_em: new Date().toISOString() })
     });
-    showToast('Cargas lançadas manualmente','success');
+    showToast(qtd>0 ? 'Cargas somadas manualmente' : 'Cargas descontadas manualmente','success');
     document.getElementById('pn-man-motivo').value = '';
     await _pnManualAtualizarLista(); _pnManualMarcarExistente();
     _pnRecarregarRanking();
@@ -35998,7 +36007,7 @@ async function _pnHtmlRankingTriplo(mes, und, ctx){
   const btnMan = placa => naTela ? `<button type="button" class="abs-limpar-filtros" onclick="_pnManualAbrir('${placa}')" title="Lançar cargas manualmente para ${placa}" style="background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:2px 0;width:34px;font-size:.9rem;font-weight:700;color:var(--text-primary);cursor:pointer">+</button>` : '';
   const linhas = top.map((o,i)=>{
     const abaixo = D.temUC && o.uc < PN_META_USO;
-    return `<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)"><span style="font-size:1rem;font-weight:700">${_pnh.esc(o.placa)}</span>${celula(_pnh.v(o.val), o.val/mV*100, i === 0 ? '#E8000D' : '#f0f0f8')}${celula(_pnh.n(o.ped), o.ped/mP*100, '#f0f0f8')}${D.temUC ? celula(_pnFmtUC(o.uc)+(o.manual ? ' · M+'+o.manual : ''), Math.min(o.uc, mU)/mU*100, abaixo ? '#E8000D' : '#f0f0f8', 150) : '<span style="color:var(--text-muted)">—</span>'}${btnMan(o.placa)}</div>`;
+    return `<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)"><span style="font-size:1rem;font-weight:700">${_pnh.esc(o.placa)}</span>${celula(_pnh.v(o.val), o.val/mV*100, i === 0 ? '#E8000D' : '#f0f0f8')}${celula(_pnh.n(o.ped), o.ped/mP*100, '#f0f0f8')}${D.temUC ? celula(_pnFmtUC(o.uc)+(o.manual ? ' · M'+_fmtAjusteManual(o.manual) : ''), Math.min(o.uc, mU)/mU*100, abaixo ? '#E8000D' : '#f0f0f8', 150) : '<span style="color:var(--text-muted)">—</span>'}${btnMan(o.placa)}</div>`;
   }).join('');
   const abaixoN = D.temUC ? top.filter(o=>o.uc < PN_META_USO).length : 0;
   const corpo = `<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin:-6px 0 14px">${naTela ? '<button type="button" class="abs-limpar-filtros" onclick="_pnManualAbrir(\'\')" title="Lançar cargas manualmente (soma ao Uso por carga)" style="margin-right:auto;align-self:center;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;color:var(--text-primary);cursor:pointer">+ Lançar cargas manualmente</button>' : ''}<span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">VEÍCULOS</span><span style="font-size:1.8rem;font-weight:700">${D.lista.length}</span></div>
@@ -37447,6 +37456,12 @@ async function carregarPainelDisponibilidade(){
     const tipoVeicSel = window._painelIndFrotaTipoSel || '';
     const veiculosTodos = [...veiculosCadastro, ...veiculosExtra];
     const veiculos = tipoVeicSel ? veiculosTodos.filter(v=>v.uso===tipoVeicSel) : veiculosTodos;
+    // Sem veículo para o filtro (ex.: unidade sem frota externa): não mostra "0% — meta não atingida", que seria um número inventado.
+    // Mesma mensagem da página Utilização de Frotas Fixas.
+    if(!veiculos.length){
+      container.innerHTML = '<div style="text-align:center;padding:48px 20px;color:var(--text-muted)">Nenhum veículo ativo encontrado para o filtro selecionado.</div>';
+      return;
+    }
 
     // Veículo "vinculado" à unidade filtrada = cadastro (veiculos.unidade)
     // bate com undSel. Um veículo compartilhado ou que só fez uma demanda
