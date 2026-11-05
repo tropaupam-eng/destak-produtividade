@@ -21,6 +21,24 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Erro Conferente — filtro cruzado nos gráficos (menos no de dia) — v4.89.222
+Onde: `index.html`, página Armazém › Erro Conferente: JS reescrito (`_errconfRender`, `_errconfPassa`, `errconfFiltrar`, `errconfLimparFiltros`,
+`_errconfDestruirGraficos`, `carregarErroConferente`) e marcação (faixa de filtros `errconf-filtros` e uma mensagem "sem dados" por gráfico).
+`APP_VERSION`/`version.json` 4.89.221 → 4.89.222.
+Por quê: pedido do Gabriel: "tirando o gráfico de linha, quero poder filtrar por qualquer um dos outros gráficos". Clicar numa barra (conferente, produto) ou numa
+fatia/legenda (tipo do erro, quanto dá para atribuir) filtra os outros gráficos, o gráfico por dia e os cartões; clicar de novo no mesmo item tira o filtro; os
+filtros somam (conferente + produto + tipo). Cada gráfico continua mostrando tudo da sua própria dimensão, com o item escolhido em destaque e o resto apagado.
+Faixa "Filtros:" com um chip por filtro (✕ tira só ele) e "✕ Limpar filtros". Gráfico por dia (renomeado "Ocorrências por dia") não é clicável e segue os filtros.
+"Quanto dá para atribuir": clicar em "Sem conferência vinculada" mostra no dashboard e nos cartões as ocorrências de Armazém SEM conferente (hoje 23: Falta 19 e
+Inversão 4), com o cartão cinza "Sem conferência vinculada"; escolher um conferente sai desse modo e vice-versa. Para isso passou a buscar os produtos de TODAS as ocorrências
+de Armazém (em lotes de 80), não só das atribuídas. KPIs do topo continuam do conjunto todo. Combinação sem ocorrência: cartões avisam com botão de limpar e cada gráfico
+mostra "sem dados". Atualizar zera os filtros. O redesenho acontece fora do clique do gráfico (setTimeout), balões e cliques protegidos contra lista vazia (lições do
+erro `dataIndex`/`handleEvent`). Só LÊ o banco; nada é gravado.
+Testes: `node check.js` ok; 42 testes novos (cada gráfico com e sem filtro, filtros somados, destaque, "sem conferência", sair do modo, combinação vazia, destruir/recriar, falhas,
+sem Chart.js, só Armazém) — substituem os de 4.89.220/221 (a estrutura mudou); conferido com mouse real na página de teste com dados reais (clique filtra, chips, barra apagada) e
+sem erros de JavaScript.
+Como desfazer: `git revert` do commit desta entrada (volta ao dashboard sem filtro, 4.89.221).
+Pendente/risco: teste visual do Gabriel em localhost; poucos dados (5 atribuídas) deixam alguns filtros com pouco efeito.
 ## 2026-11-05, Gabriel: Erro Conferente — dashboard com 5 gráficos e produtos no erro — v4.89.221
 Onde: `index.html`, página Armazém › Erro Conferente: bloco novo `errconf-dash` (entre os KPIs e os cartões), função nova `_errconfRenderDash` e
 ajustes em `carregarErroConferente` (guarda cada erro atribuído, busca os itens e desenha). `APP_VERSION`/`version.json` 4.89.220 → 4.89.221. Empilhada na
