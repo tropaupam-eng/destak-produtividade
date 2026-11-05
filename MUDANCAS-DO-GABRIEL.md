@@ -21,6 +21,15 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Campos de data com ícone do calendário claro (Crédito Manual e Ocorrências) — v4.89.203
+Onde: `index.html`: `#cm-emissao` (Histórico — Crédito Manual › Data de emissão da nota) passa de `.cm-semcal` (sem ícone) para `.cm-data` (ícone do
+calendário claro + linha separadora); `#l-ocorr-data` (Distribuição › Ocorrências › Data da ocorrência) ganha a classe `.cm-data` (o ícone saía escuro,
+quase invisível no tema escuro). Removido o CSS `.cm-semcal`, que não é mais usado (a emissão não vem mais do ERP). `APP_VERSION`/`version.json` 4.89.202 → 4.89.203.
+Por quê: pedido do Gabriel: "crie o ícone de selecionar a data, como em Distribuição_Ocorrências" e "deixe o ícone BRANCO, como os outros".
+Conferido em página de teste com o mesmo CSS, tema escuro e claro (ícone claro no escuro, escuro no claro). Não mexe em dado nem em estrutura de banco.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: nenhum conhecido; teste visual do Gabriel em localhost.
+
 ## 2026-11-04, Gabriel: Ocorrências (Distribuição) — mostra quem conferiu a carga e quem separou o pedido (FDSAS) — v4.89.193 (PUBLICADO em 04/11/2026, commit 136b11a)
 Onde: `index.html`: variável `_ocorrFdsas` e função `_ocorrFdsasInfo` (novas), `carregarOcorrenciasDistrib` (lê uma
 linha de `configuracoes`) e `_renderOcorrenciasGeneric` (chips "Conferiu (FDSAS)", "Separou (FDSAS)" e aviso de situação).
