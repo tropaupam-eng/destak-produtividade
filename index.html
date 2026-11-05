@@ -10045,7 +10045,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.203';
+const APP_VERSION = '4.89.205';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -31361,7 +31361,7 @@ async function renderDashInterna(){
     // Mesmo critério de "sem In Full" usado pelo OTIF — substitui o antigo
     // base_data.ocorrencia===1 no "Valor Entregue" e no ranking abaixo.
     const _ocorrSetDash = new Set();
-    (_dadosOtif?.ocorrRows||[]).forEach(o=>{ if(o.pedido && o.status!=='resolvida') _ocorrSetDash.add(String(o.pedido)); });
+    (_dadosOtif?.ocorrRows||[]).forEach(o=>{ if(_ocorrPenalizaInFull(o)) _ocorrSetDash.add(String(o.pedido)); });
     const _cortesSetDash = _pedidosComCorteOuTrocaPosRo(_dadosOtif?.cortesRows);
     const _semInFullDash = ped => _ocorrSetDash.has(String(ped)) || _cortesSetDash.has(String(ped));
 
@@ -31884,6 +31884,16 @@ function _inicioPrazoRI(dataPedido, horaPedido, feriadosSet){
 // status/atualizado_em/entrou_ro_em (ver montagem em carregarDadosOtifMes).
 // Usada tanto pelo cálculo principal (_computeOtifStats) quanto pelo
 // Painel de TV (mesmo critério, ver 'Corte de quantidade também penaliza').
+// Decisão do usuário em 2026-11-05: ocorrência cujo motivo é "Desistência do Cliente" NÃO conta contra o In Full
+// (o cliente desistiu — não foi falha da operação). Vale por ocorrência: se o mesmo pedido tiver OUTRA ocorrência
+// (avaria, falta, inversão...) ele continua fora do In Full. Compara pelo nome do motivo (sem acento/caixa) para
+// valer também se o motivo for recadastrado com outro id.
+function _motivoEhDesistenciaCliente(nome){
+  return String(nome||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase().startsWith('desistencia do cliente');
+}
+function _ocorrPenalizaInFull(o){
+  return !!(o && o.pedido && o.status!=='resolvida' && !_motivoEhDesistenciaCliente(o.motivo_nome));
+}
 function _pedidosComCorteOuTrocaPosRo(cortesRows){
   const set = new Set();
   (cortesRows||[]).forEach(r=>{
@@ -31959,7 +31969,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   // Ocorrência já resolvida (status='resolvida') não deve mais penalizar o In Full —
   // sem isso, um pedido com avaria corrigida fica "fora do In Full" para sempre.
   const ocorrSet=new Set();
-  (ocorrRows||[]).forEach(o=>{ if(o.pedido && o.status!=='resolvida') ocorrSet.add(String(o.pedido)); });
+  (ocorrRows||[]).forEach(o=>{ if(_ocorrPenalizaInFull(o)) ocorrSet.add(String(o.pedido)); });
   // Corte (parcial ou total) e troca de mercadoria pós-RO também penalizam
   // o In Full — decisão do usuário em 2026-08-17 (corte parcial) e
   // 2026-09-22 (ampliado pra corte total/troca, restrito a pós-RO).
@@ -32217,7 +32227,7 @@ async function _carregarOtifMes(mes, und){
     const [rEnt, rEntProx, rOcorr, rMotEnt, rAgendPed, rCortes, rEntrouRo] = await Promise.all([
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entrega_datas?pedido=in.(${chunk.join(',')})&mes_ano=eq.${proximo}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
-      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00-03:00&criado_em=lt.${proximo}-01T00:00:00-03:00&select=pedido,tipo,status&limit=5000`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`ocorrencias_distribuicao?pedido=in.(${chunk.join(',')})&criado_em=gte.${mes}-01T00:00:00-03:00&criado_em=lt.${proximo}-01T00:00:00-03:00&select=pedido,tipo,status,motivo_id,motivo_nome&limit=5000`,{_quiet:true}).catch(()=>[]),
       supaFetch(`entregas_motorista?pedido=in.(${chunk.join(',')})&select=pedido,data_confirmacao&limit=5000`,{_quiet:true}).catch(()=>[]),
       supaFetch(`agendamentos_pedidos?pedido=in.(${chunk.join(',')})&select=pedido,data_entrega`,{_quiet:true}).catch(()=>[]),
       // Sem status=eq.ativo aqui — precisamos também dos itens 'removido' (troca/corte
@@ -32243,6 +32253,11 @@ async function _carregarOtifMes(mes, und){
     (rCortes||[]).forEach(r=>{ r.entrou_ro_em = roMapChunk.get(String(r.pedido)) || null; });
     cortesRows   = cortesRows.concat(rCortes || []);
   }
+  // Corte cujo motivo registrado é "Cliente desistiu do produto" (Registro de motivos) também é desistência: não penaliza
+  try{
+    const desist = await supaFetch('motivos_corte_pedido?motivo_key=eq.cliente_desistiu&select=pedido&limit=5000',{_quiet:true}).catch(()=>[]);
+    if(desist && desist.length){ const ds = new Set(desist.map(r=>String(r.pedido))); cortesRows = cortesRows.filter(r=>!ds.has(String(r.pedido))); }
+  }catch(e){}
   const agendPedMap = new Map((agendPedRows||[]).map(r=>[String(r.pedido), r.data_entrega]));
   // stats: filtrado por data_pedido do mês (para Dashboard e widget)
   // statsAll: sem filtro de mês (para TV — mostra todos os pedidos das cargas do mês)
@@ -33311,7 +33326,7 @@ async function renderOtifDiario(){
       const k=String(e.pedido);
       if(e.data_entrega&&(!entMap[k]||e.data_entrega<entMap[k])) entMap[k]=e.data_entrega;
     });
-    const ocorrSet = new Set((ocorrRows||[]).filter(o=>o.status!=='resolvida').map(o=>String(o.pedido)).filter(Boolean));
+    const ocorrSet = new Set((ocorrRows||[]).filter(_ocorrPenalizaInFull).map(o=>String(o.pedido)));
     // Corte (parcial/total) e troca pós-RO também penalizam o In Full (mesmo critério de _computeOtifStats)
     const cortesRowsHoje = dadosMes?.cortesRows||[];
     const cortesSet = _pedidosComCorteOuTrocaPosRo(cortesRowsHoje);
@@ -34867,6 +34882,13 @@ const PN_ROTEIRO = [
   { tipo:'card', n:26, titulo:'Pedidos por rota — Rota interna', fontes:[['pedidos-rotas',0,0]], rire:'RI', sem:'Pedidos & Rotas' },
   // Externa logo depois da interna (pedido do usuário, 2026-11-04: 'externa e interna juntas'); no modelo ABC era o slide 21, na seção Distribuição
   { tipo:'card', n:21, titulo:'Pedidos por rota — Rota externa', fontes:[['pedidos-rotas',0,0]], rire:'RE', sem:'Pedidos & Rotas' },
+  // Cards da aba Pedidos & Rotas que ainda não estavam no deck (pedido do usuário, 2026-11-05). Fontes = índices de _painelIndTarefas('pedidos-rotas'):
+  // 3 = visão anual (segue o rire do slide), 5 = OTIF geral, 6 = Por que não foi In Full, 7 = Motivos por Setor. Os de registro (6/7 de cortes e atrasos) são telas de trabalho, não entram.
+  { tipo:'card', n:null, titulo:'Pedidos por rota — Rota interna (visão anual)', fontes:[['pedidos-rotas',3,0]], rire:'RI', anual:true },
+  { tipo:'card', n:null, titulo:'Pedidos por rota — Rota externa (visão anual)', fontes:[['pedidos-rotas',3,0]], rire:'RE', anual:true },
+  { tipo:'card', n:null, titulo:'OTIF geral — Rota interna + externa',           fontes:[['pedidos-rotas',5,0]], rire:'' },
+  { tipo:'card', n:null, titulo:'Por que não foi In Full',                      fontes:[['pedidos-rotas',6,0]], rire:'' },
+  { tipo:'card', n:null, titulo:'Motivos por setor (In Full e On Time)',        fontes:[['pedidos-rotas',7,0]], rire:'' },
   { tipo:'dados', n:28, titulo:'Venda por rota', dados:'vendaPorRota' },
   { tipo:'card', n:29, titulo:'Produtividade — valor por mês',            fontes:[['produtividade',0,0]], anual:true },
   { tipo:'card', n:30, titulo:'OTIF geral — visão anual',                 fontes:[['otif-ano',0,0]], rire:'', anual:true },
@@ -39508,7 +39530,9 @@ async function _calcCausasInFull(mes, undSel){
     const regPartes = await Promise.all(chunks.map(c=>supaFetch(`motivos_corte_pedido?pedido=in.(${c.join(',')})&select=*`,{_quiet:true}).catch(()=>[])));
     const corteReg = {}; regPartes.flat().forEach(r=>{ corteReg[String(r.pedido)] = r; });
     const ocPorPed = {};
-    partes.flat().forEach(o=>{ (ocPorPed[String(o.pedido)] = ocPorPed[String(o.pedido)] || []).push(o); });
+    // Desistência do Cliente não penaliza o In Full (ver _ocorrPenalizaInFull): fica fora da classificação, senão um pedido que está
+    // fora do In Full por OUTRO motivo (ex.: corte pós-romaneio) apareceria rotulado como desistência.
+    partes.flat().filter(o=>!_motivoEhDesistenciaCliente(o.motivo_nome)).forEach(o=>{ (ocPorPed[String(o.pedido)] = ocPorPed[String(o.pedido)] || []).push(o); });
     // 3) corte do ERP pós-romaneio (mesma regra de _pedidosComCorteOuTrocaPosRo), separando corte parcial de item removido
     const corteInfo = {};
     (d.cortesRows||[]).forEach(r=>{
@@ -39626,7 +39650,7 @@ async function carregarPainelOtifCausasInFull(){
           ${linhas.map(rowCausa).join('')}
         </div>
         ${confHtml}
-        <div style="font-size:.78rem;color:var(--text-muted);margin-top:14px;line-height:1.5">Cada pedido aparece em uma causa só. Se tiver mais de uma, vale a primeira nesta ordem: armazém, logística, entrega, vendedor, cliente, outros; ocorrência lançada vale antes de corte do ERP. "Fora do In Full" = o mesmo critério do OTIF (ocorrência não resolvida, ou corte/troca depois do romaneio). "Desistência do Cliente" e "Erro do vendedor" hoje contam contra o In Full — é o critério atual do OTIF.</div>
+        <div style="font-size:.78rem;color:var(--text-muted);margin-top:14px;line-height:1.5">Cada pedido aparece em uma causa só. Se tiver mais de uma, vale a primeira nesta ordem: armazém, logística, entrega, vendedor, cliente, outros; ocorrência lançada vale antes de corte do ERP. "Fora do In Full" = o mesmo critério do OTIF (ocorrência não resolvida, ou corte/troca depois do romaneio). "Desistência do Cliente" (ocorrência, ou corte registrado como "Cliente desistiu do produto") não conta contra o In Full; "Erro do vendedor" continua contando.</div>
         ` : '<p style="color:var(--text-muted);padding:20px 0">Nenhum pedido fora do In Full neste mês.</p>'}
         <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
           <span>PAINEL DE INDICADORES · OTIF</span>
