@@ -21,6 +21,23 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Erro Conferente — dashboard com 5 gráficos e produtos no erro — v4.89.221
+Onde: `index.html`, página Armazém › Erro Conferente: bloco novo `errconf-dash` (entre os KPIs e os cartões), função nova `_errconfRenderDash` e
+ajustes em `carregarErroConferente` (guarda cada erro atribuído, busca os itens e desenha). `APP_VERSION`/`version.json` 4.89.220 → 4.89.221. Empilhada na
+mudança "só setor Armazém" (4.89.220, ainda não publicada): vão juntas.
+Por quê: pedido do Gabriel: ver os produtos que foram com erro e criar dashboards com os dados do erro de conferente. Os produtos existem: todas as 28
+ocorrências de Armazém têm itens detalhados em `ocorrencias_distribuicao_itens` (produto e quantidade). Usa só os erros ATRIBUÍDOS (mesma regra dos cartões:
+motivo do setor Armazém em pedido que o conferente deu como OK). Cinco gráficos: (1) erros por conferente (barras, balão com o tipo); (2) produtos com
+mais erros (top 8; barra = nº de ocorrências, balão = quantidade devolvida somada, porque as unidades dos produtos são diferentes); (3) tipo do erro (rosca
+por motivo); (4) erros por dia (linha, dias sem erro entram com zero; data impossível, como ano 0026, fica de fora e uma nota avisa); (5) quanto dá para
+atribuir (rosca: atribuídas x sem conferência vinculada). Os cartões por conferente também passam a mostrar o produto e a quantidade de cada ocorrência.
+Cores da paleta validada do Dashboard Devolução (vermelho para erro); gráficos sem clique, balões protegidos contra lista vazia (lição do erro `dataIndex`).
+Com os dados de hoje são 5 erros: Jaqueline 4 e Pedro Victor 1; produtos: sacolas, kit marmita, noz moscada. Só LÊ o banco; nada é gravado. Falha ao buscar os
+produtos não derruba a tela (o gráfico de produtos avisa). Sem Chart.js, o bloco some e os cartões seguem.
+Testes: `node check.js` ok; 18 testes novos (dados de cada gráfico, produtos, dia sem erro, data inválida, destruir/recriar, falhas, balões) + 12 da regra de
+Armazém; página de teste com os dados reais e Chart.js verdadeiro conferida visualmente (rótulos dos eixos corrigidos para não cortar nomes).
+Como desfazer: `git revert` do commit desta entrada (some o dashboard; a regra "só Armazém" fica).
+Pendente/risco: poucos dados (5 erros) deixam alguns gráficos simples; teste visual do Gabriel em localhost.
 ## 2026-11-05, Gabriel: Erro Conferente — só ocorrências com motivo do setor Armazém — v4.89.220
 Onde: `index.html`, página Armazém › Erro Conferente: `carregarErroConferente` (busca `motivos_devolucao` e filtra por setor `armazem`; a busca de
 ocorrências passa a trazer `motivo_id,motivo_nome`), subtítulo da tela e mensagem de lista vazia. `APP_VERSION`/`version.json` 4.89.218 → 4.89.220 (a main andou).

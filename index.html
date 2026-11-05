@@ -4228,6 +4228,35 @@ body.light-theme{
     <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Conferente com Mais Erros</div><div class="kpi-value" id="errconf-kpi-top" style="font-size:1.1rem">—</div></div>
     <div class="kpi-card" style="border-top-color:var(--text-muted)"><div class="kpi-label">Ocorrências sem Conferência Vinculada</div><div class="kpi-value" id="errconf-kpi-sem-vinculo">—</div></div>
   </div>
+  <!-- Dashboard do Erro Conferente (pedido do Gabriel, 2026-11-05): mesmos erros atribuídos dos cartões, em gráficos -->
+  <div id="errconf-dash" style="display:none;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;margin-bottom:20px">
+    <div style="background:var(--bg-card2);border-radius:12px;padding:20px 22px;border-top:3px solid var(--red)">
+      <div style="font-size:1rem;font-weight:700;color:var(--text-primary)">Erros por conferente</div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin:2px 0 10px">Ocorrências de Armazém em pedidos que ele deu como OK</div>
+      <div style="position:relative;height:280px"><canvas id="errconf-ch-conf" role="img" aria-label="Gráfico de barras: erros por conferente"></canvas></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:20px 22px;border-top:3px solid var(--red)">
+      <div style="font-size:1rem;font-weight:700;color:var(--text-primary)">Produtos com mais erros</div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin:2px 0 10px">Cada barra conta ocorrências; a quantidade devolvida (na unidade de cada produto) aparece no balão</div>
+      <div style="position:relative;height:280px"><canvas id="errconf-ch-prod" role="img" aria-label="Gráfico de barras: produtos com mais erros"></canvas></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:20px 22px;border-top:3px solid var(--red)">
+      <div style="font-size:1rem;font-weight:700;color:var(--text-primary)">Tipo do erro</div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin:2px 0 10px">Motivo lançado na ocorrência</div>
+      <div style="position:relative;height:280px"><canvas id="errconf-ch-motivo" role="img" aria-label="Gráfico de rosca: motivo dos erros"></canvas></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:20px 22px;border-top:3px solid var(--red)">
+      <div style="font-size:1rem;font-weight:700;color:var(--text-primary)">Erros por dia</div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin:2px 0 10px">Dia da ocorrência (fuso de Brasília)</div>
+      <div style="position:relative;height:280px"><canvas id="errconf-ch-dia" role="img" aria-label="Gráfico de linha: erros por dia"></canvas></div>
+      <div id="errconf-nota-dia" style="font-size:.74rem;color:var(--text-muted);margin-top:8px"></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:20px 22px;border-top:3px solid var(--text-muted)">
+      <div style="font-size:1rem;font-weight:700;color:var(--text-primary)">Quanto dá para atribuir</div>
+      <div style="font-size:.76rem;color:var(--text-muted);margin:2px 0 10px">Ocorrências de Armazém: com conferência OK (atribuídas) e sem conferência vinculada</div>
+      <div style="position:relative;height:280px"><canvas id="errconf-ch-cobertura" role="img" aria-label="Gráfico de rosca: ocorrências atribuídas e sem conferência vinculada"></canvas></div>
+    </div>
+  </div>
   <div id="errconf-container">
     <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
   </div>
@@ -10141,7 +10170,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.220';
+const APP_VERSION = '4.89.221';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -55783,6 +55812,126 @@ async function atribuirVendedorCliente(clienteChave, codigo){
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
 
+// ── Dashboard do Erro Conferente (pedido do Gabriel, 2026-11-05) ─────────────────────────────────
+// Mesmos erros atribuídos dos cartões (ocorrência de Armazém em pedido que o conferente deu como OK), em cinco gráficos:
+// por conferente, produtos com mais erros, tipo do erro, erros por dia e quanto dá para atribuir. Cores da paleta validada
+// do Dashboard Devolução. Sem clique nos gráficos (nada redesenha dentro de evento); balões protegidos contra lista vazia.
+let _errconfCharts = {};
+function _errconfRenderDash(erros, itensPorOcorr, semVinculo){
+  const wrap = document.getElementById('errconf-dash');
+  if(!wrap) return;
+  Object.keys(_errconfCharts).forEach(k => { try{ _errconfCharts[k]?.destroy(); }catch(e){} _errconfCharts[k] = null; });
+  if(!erros.length || typeof Chart === 'undefined'){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'grid';
+
+  const tema = document.body.classList.contains('light-theme') ? 'claro' : 'escuro';
+  const cores = DEVOL_CORES[tema], cinza = DEVOL_CINZA[tema];
+  const css = getComputedStyle(document.body);
+  const tinta = css.getPropertyValue('--text-primary').trim() || (tema==='claro' ? '#0b0b0b' : '#f0efec');
+  const tintaSec = css.getPropertyValue('--text-secondary').trim() || '#94a3b8';
+  const grade = css.getPropertyValue('--border').trim() || (tema==='claro' ? '#d9deea' : '#2a2a3a');
+  const superficie = css.getPropertyValue('--bg-card2').trim() || (tema==='claro' ? '#f0f4fc' : '#1c1c28');
+  const corErro = cores[7];                                          // vermelho da paleta: é "erro"
+  const fmtNum = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits:2 });
+  const quebrar = (txt, max) => {
+    const linhas = []; let atual = '';
+    String(txt).split(' ').forEach(p => { if((atual+' '+p).trim().length > max && atual){ linhas.push(atual); atual = p; } else atual = (atual+' '+p).trim(); });
+    if(atual) linhas.push(atual);
+    return linhas.length > 2 ? [linhas[0], linhas.slice(1).join(' ').slice(0, max-1)+'…'] : linhas;
+  };
+  const valorNoFim = { id:'errconfValorNoFim', afterDatasetsDraw(chart){
+    const { ctx } = chart; ctx.save(); ctx.font = '700 12px "Segoe UI",system-ui,Arial,sans-serif'; ctx.fillStyle = tinta; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    chart.getDatasetMeta(0).data.forEach((barra, i) => { ctx.fillText(String(chart.data.datasets[0].data[i]), barra.x + 6, barra.y); });
+    ctx.restore();
+  } };
+  const barras = (chave, canvasId, itens, rotuloBalao, linhasExtra) => {
+    const canvas = document.getElementById(canvasId); if(!canvas) return;
+    canvas.setAttribute('aria-label', 'Gráfico de barras: ' + itens.map(f => f.nome + ' ' + f.n).join('; '));
+    _errconfCharts[chave] = new Chart(canvas, {
+      type:'bar',
+      data:{ labels:itens.map(f => quebrar(f.nome, 22)), datasets:[{ data:itens.map(f => f.n), backgroundColor:corErro, borderRadius:4, borderSkipped:false, maxBarThickness:30 }] },
+      options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, layout:{ padding:{ right:34 } },
+        scales:{ x:{ beginAtZero:true, ticks:{ precision:0, color:tintaSec, font:{size:11} }, grid:{ color:grade }, border:{ display:false } },
+                 y:{ ticks:{ color:tinta, font:{size:11, weight:'600'}, autoSkip:false }, grid:{ display:false }, border:{ color:grade } } },
+        plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+          title: c => (c && c[0] && itens[c[0].dataIndex]) ? itens[c[0].dataIndex].nome : '',
+          label: c => ' ' + c.raw + ' ' + rotuloBalao + (c.raw === 1 ? '' : 's'),
+          afterLabel: c => (linhasExtra && itens[c.dataIndex]) ? linhasExtra(itens[c.dataIndex]) : [] } } } },
+      plugins:[valorNoFim]
+    });
+  };
+  const rosca = (chave, canvasId, fatias, rotulo) => {
+    const canvas = document.getElementById(canvasId); if(!canvas) return;
+    const total = fatias.reduce((a, f) => a + f.n, 0);
+    canvas.setAttribute('aria-label', 'Gráfico de rosca: ' + fatias.map(f => f.nome + ' ' + f.n).join('; '));
+    _errconfCharts[chave] = new Chart(canvas, {
+      type:'doughnut',
+      data:{ labels:fatias.map(f => f.nome), datasets:[{ data:fatias.map(f => f.n), backgroundColor:fatias.map(f => f.cor), borderColor:superficie, borderWidth:2 }] },
+      options:{ responsive:true, maintainAspectRatio:false, cutout:'58%',
+        plugins:{ legend:{ position:'bottom', labels:{ color:tintaSec, boxWidth:12, padding:14, font:{size:12} } },
+          tooltip:{ callbacks:{ label: c => ' ' + c.label + ': ' + c.raw + ' ' + rotulo + (c.raw === 1 ? '' : 's') + (total ? ' (' + (c.raw / total * 100).toFixed(1).replace('.', ',') + '%)' : '') } } } }
+    });
+  };
+
+  // 1) por conferente
+  const porConf = {};
+  erros.forEach(e => { const c = porConf[e.nome] || (porConf[e.nome] = { nome:e.nome, n:0, tipos:{} }); c.n++; const t = e.o.motivo_nome || '—'; c.tipos[t] = (c.tipos[t]||0) + 1; });
+  const itensConf = Object.values(porConf).sort((a, b) => b.n - a.n || a.nome.localeCompare(b.nome));
+  barras('conf', 'errconf-ch-conf', itensConf, 'erro', c => Object.entries(c.tipos).map(([t, n]) => '   ' + t + ': ' + n));
+
+  // 2) produtos com mais erros (por nº de ocorrências; quantidade no balão)
+  const porProd = {};
+  erros.forEach(e => (itensPorOcorr[e.o.id] || []).forEach(i => {
+    const nome = String(i.produto || 'Produto').trim();
+    const p = porProd[nome] || (porProd[nome] = { nome, n:0, qtd:0 }); p.n++; p.qtd += Number(i.quantidade) || 0;
+  }));
+  const itensProd = Object.values(porProd).sort((a, b) => b.n - a.n || b.qtd - a.qtd || a.nome.localeCompare(b.nome)).slice(0, 8);
+  if(itensProd.length) barras('prod', 'errconf-ch-prod', itensProd, 'ocorrência', p => ['   Quantidade devolvida: ' + fmtNum(p.qtd)]);
+  else { const c = document.getElementById('errconf-ch-prod'); if(c && c.parentElement) c.parentElement.innerHTML = '<div style="padding:40px 10px;text-align:center;color:var(--text-muted);font-size:.85rem">Sem produtos detalhados nessas ocorrências.</div>'; }
+
+  // 3) tipo do erro (motivo)
+  const porMotivo = {};
+  erros.forEach(e => { const m = e.o.motivo_nome || 'Sem motivo'; porMotivo[m] = (porMotivo[m]||0) + 1; });
+  const fatiasMotivo = Object.entries(porMotivo).sort((a, b) => b[1] - a[1]).map(([nome, n], i) => ({ nome, n, cor: nome === 'Sem motivo' ? cinza : cores[i % cores.length] }));
+  rosca('motivo', 'errconf-ch-motivo', fatiasMotivo, 'erro');
+
+  // 4) erros por dia (dia = data da ocorrência em Brasília; data impossível fica de fora e é avisada)
+  const diaDe = iso => { const t = new Date(iso).getTime(); return isNaN(t) ? '' : new Date(t - 3*3600e3).toISOString().slice(0, 10); };
+  const porDia = {}; let dataInvalida = 0;
+  erros.forEach(e => { const d = diaDe(e.o.criado_em); if(!(d >= '2000-01-01')){ dataInvalida++; return; } porDia[d] = (porDia[d]||0) + 1; });
+  const dias = Object.keys(porDia).sort();
+  const nota = document.getElementById('errconf-nota-dia');
+  if(nota) nota.textContent = dataInvalida ? dataInvalida + ' erro' + (dataInvalida===1?'':'s') + ' com data inválida ' + (dataInvalida===1?'fica':'ficam') + ' fora deste gráfico' : '';
+  const canvasDia = document.getElementById('errconf-ch-dia');
+  if(canvasDia){
+    if(!dias.length){ if(canvasDia.parentElement) canvasDia.parentElement.innerHTML = '<div style="padding:40px 10px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhum erro com data válida.</div>'; }
+    else {
+      const passo = 86400000, ini = Date.parse(dias[0] + 'T00:00:00Z'), fim = Date.parse(dias[dias.length-1] + 'T00:00:00Z');
+      const eixo = []; for(let t = ini; t <= fim && eixo.length < 400; t += passo) eixo.push(new Date(t).toISOString().slice(0, 10));
+      const lista = eixo.length < 400 ? eixo : dias;
+      const valores = lista.map(d => porDia[d] || 0);
+      const fmtDia = d => d.slice(8, 10) + '/' + d.slice(5, 7);
+      canvasDia.setAttribute('aria-label', 'Gráfico de linha: erros por dia. Total ' + valores.reduce((a, b) => a + b, 0));
+      _errconfCharts.dia = new Chart(canvasDia, {
+        type:'line',
+        data:{ labels:lista.map(fmtDia), datasets:[{ label:'Erros', data:valores, borderColor:corErro, backgroundColor:corErro, borderWidth:2, tension:0, pointRadius:lista.length <= 60 ? 3 : 0, pointHoverRadius:6, pointBorderColor:superficie, pointBorderWidth:1 }] },
+        options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false }, layout:{ padding:{ top:18, right:12 } },
+          scales:{ x:{ ticks:{ color:tintaSec, font:{size:11}, maxRotation:0, autoSkip:true, maxTicksLimit:12 }, grid:{ display:false }, border:{ color:grade } },
+                   y:{ beginAtZero:true, ticks:{ precision:0, color:tintaSec, font:{size:11} }, grid:{ color:grade }, border:{ display:false } } },
+          plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+            title: c => (c && c[0] && lista[c[0].dataIndex]) ? lista[c[0].dataIndex].slice(8, 10) + '/' + lista[c[0].dataIndex].slice(5, 7) + '/' + lista[c[0].dataIndex].slice(0, 4) : '',
+            label: c => ' ' + c.raw + ' erro' + (c.raw === 1 ? '' : 's') } } } }
+      });
+    }
+  }
+
+  // 5) quanto dá para atribuir
+  rosca('cobertura', 'errconf-ch-cobertura', [
+    { nome:'Atribuídas ao conferente (OK)', n:erros.length, cor:cores[0] },
+    { nome:'Sem conferência vinculada', n:semVinculo, cor:cinza },
+  ].filter(f => f.n > 0), 'ocorrência');
+}
+
 // Cruza ocorrências (base_data/pedido) com quem conferiu aquele pedido
 // (conferencia_pedidos). Só conta como erro do conferente quando ele deu o
 // pedido como OK e mesmo assim surgiu ocorrência depois — se ele mesmo já
@@ -55835,6 +55984,7 @@ async function carregarErroConferente(){
 
     let semVinculo = 0;
     const porConferente = {};
+    const erros = [];                 // erros atribuídos: { o: ocorrência, nome: conferente } — alimenta o dashboard
     ocorrencias.forEach(o=>{
       if(o.carga==null || o.pedido==null){ semVinculo++; return; }
       const conf = confMap[`${o.carga}_${o.pedido}`];
@@ -55847,6 +55997,7 @@ async function carregarErroConferente(){
       porConferente[nome].total++;
       porConferente[nome].porTipo[o.tipo] = (porConferente[nome].porTipo[o.tipo]||0)+1;
       porConferente[nome].itens.push(o);
+      erros.push({ o, nome });
     });
 
     const ranking = Object.values(porConferente).sort((a,b)=>b.total-a.total);
@@ -55855,6 +56006,22 @@ async function carregarErroConferente(){
     set('errconf-kpi-total', totalErros);
     set('errconf-kpi-top', ranking.length ? `${ranking[0].nome} (${ranking[0].total})` : '—');
     set('errconf-kpi-sem-vinculo', semVinculo);
+
+    // Produtos (itens devolvidos) das ocorrências atribuídas: usados nos gráficos e nos cartões. Falha aqui não derruba a tela.
+    const itensPorOcorr = {};
+    if(erros.length){
+      try{
+        const ids = erros.map(e => e.o.id);
+        const rows = await supaFetch(`ocorrencias_distribuicao_itens?ocorrencia_id=in.(${ids.join(',')})&select=ocorrencia_id,produto,quantidade&limit=2000`) || [];
+        rows.forEach(r => { (itensPorOcorr[r.ocorrencia_id] = itensPorOcorr[r.ocorrencia_id] || []).push(r); });
+      }catch(e){ console.warn('Erro Conferente: não consegui os produtos das ocorrências:', e.message); }
+    }
+    const fmtQtd = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits:2 });
+    const prodTxt = o => {
+      const its = itensPorOcorr[o.id] || [];
+      return its.length ? `<br><span style="font-size:.7rem;color:var(--text-muted)">${its.map(i => escapeHtml(i.produto||'Produto') + ' × ' + fmtQtd(i.quantidade||0)).join('; ')}</span>` : '';
+    };
+    _errconfRenderDash(erros, itensPorOcorr, semVinculo);
 
     if(!ranking.length){
       container.innerHTML = `<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">${_ic('check-circle',40)}</span>Nenhum erro de conferente identificado — todas as ocorrências ou não têm conferência vinculada, ou o conferente já tinha marcado o pedido como NOK.</p>`;
@@ -55871,7 +56038,7 @@ async function carregarErroConferente(){
         const itensHtml = r.itens.slice(0,5).map(o=>{
           const cfg = _TIPO_OCORR_CFG[o.tipo] || {label:o.tipo||'—', cor:'#6b7280'};
           return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:.75rem;color:var(--text-secondary);padding:5px 0;border-top:1px solid var(--border)">
-            <span>Carga #${o.carga} · Pedido ${o.pedido}</span>
+            <span>Carga #${o.carga} · Pedido ${o.pedido}${prodTxt(o)}</span>
             <span style="color:${cfg.cor};font-weight:700;white-space:nowrap">${cfg.label}</span>
           </div>`;
         }).join('');
