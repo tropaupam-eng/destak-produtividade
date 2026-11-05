@@ -21,6 +21,20 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Erro Conferente — só ocorrências com motivo do setor Armazém — v4.89.220
+Onde: `index.html`, página Armazém › Erro Conferente: `carregarErroConferente` (busca `motivos_devolucao` e filtra por setor `armazem`; a busca de
+ocorrências passa a trazer `motivo_id,motivo_nome`), subtítulo da tela e mensagem de lista vazia. `APP_VERSION`/`version.json` 4.89.218 → 4.89.220 (a main andou).
+Por quê: pedido do Gabriel ("só setor Armazém"). A tela contava como erro do conferente toda ocorrência de pedido que ele tinha dado OK, de qualquer setor de
+motivo (só excluía os tipos erro_pedido e corte). Dos 23 erros que aparecia, só 5 eram de motivo Armazém (Falta no Carregamento); 12 eram Desistência do Cliente
+(Mercado), 3 Produto Avariado (Logística), 2 de Distribuição e 1 sem motivo. Agora entram só os motivos do setor Armazém (Falta/Inversão no Carregamento e Sobra
+de Produto), mantendo as exclusões de erro_pedido e corte e a regra "conferente deu OK". O setor vem de `motivos_devolucao` por id; ocorrência antiga só com o
+nome do motivo casa pelo nome; ocorrência sem motivo não entra. O KPI "sem conferência vinculada" passa a contar só entre as ocorrências de Armazém. Com os dados
+de hoje: 5 erros atribuídos, 23 sem conferência vinculada, mais erros Jaqueline Lopes da Silva (4).
+Se a busca dos motivos falhar, a tela mostra o erro (não volta a contar tudo). Só LÊ o banco; nada é gravado.
+Testes: `node check.js` ok; 12 testes (função real com dados falsos: só Armazém, antigo pelo nome, sem motivo fora, NOK/sem conferência/sem carga como "sem vínculo",
+lista vazia, falha nos motivos) + conferência com os dados reais (5 erros, igual à análise feita antes da mudança).
+Como desfazer: `git revert` do commit desta entrada (volta a contar todos os setores).
+Pendente/risco: se depois quiserem incluir Produto Avariado (Logística), é só ampliar o filtro; teste visual do Gabriel.
 ## 2026-11-05, Gabriel: Menu — "Aderência conferente" passa de Distribuição para Armazém — v4.89.218
 Onde: `index.html`, menu lateral: o item `data-page="aderencia"` saiu da seção Distribuição (ficava depois de Ocorrências) e foi para o fim da seção
 Armazém, depois de "Erro Conferente". `APP_VERSION`/`version.json` 4.89.217 → 4.89.218.

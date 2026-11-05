@@ -4219,7 +4219,7 @@ body.light-theme{
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;flex-wrap:wrap;gap:14px">
     <div>
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:8px"><span data-feather="alert-triangle" style="width:19px;height:19px"></span> Erro Conferente</h2>
-      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Ocorrências lançadas em pedidos que o conferente já tinha dado como OK — erro atribuído a quem conferiu</p>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Ocorrências lançadas em pedidos que o conferente já tinha dado como OK — erro atribuído a quem conferiu · só motivos do setor Armazém</p>
     </div>
     <button onclick="carregarErroConferente()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
   </div>
@@ -10141,7 +10141,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.219';
+const APP_VERSION = '4.89.220';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -55799,9 +55799,17 @@ async function carregarErroConferente(){
     // estoque no CD) ficam de fora — nenhum dos dois é algo que o conferente
     // tinha como evitar checando a carga contra o pedido. Não é erro de
     // conferência.
-    const ocorrencias = await supaFetch(
-      'ocorrencias_distribuicao?select=id,pedido,carga,rota,tipo,descricao,status,criado_em&tipo=not.in.(erro_pedido,corte)&order=criado_em.desc&limit=1000'
-    ) || [];
+    // Pedido do Gabriel, 2026-11-05: além disso, só entram ocorrências cujo MOTIVO é do setor Armazém (Falta/Inversão no
+    // Carregamento, Sobra de Produto). Antes entravam motivos de outros setores (ex.: Desistência do Cliente, do Mercado, que o
+    // conferente não tem como evitar) e os cartões ficavam inflados. O setor vem de motivos_devolucao (por id; ocorrência
+    // antiga só com o nome do motivo casa pelo nome). Ocorrência sem motivo não entra.
+    const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
+    const setorPorId = {}, setorPorNome = {};
+    motivos.forEach(m => { setorPorId[m.id] = m.setor; setorPorNome[String(m.nome||'').trim().toLowerCase()] = m.setor; });
+    const ehArmazem = o => (setorPorId[o.motivo_id] || setorPorNome[String(o.motivo_nome||'').trim().toLowerCase()]) === 'armazem';
+    const ocorrencias = (await supaFetch(
+      'ocorrencias_distribuicao?select=id,pedido,carga,rota,tipo,descricao,status,criado_em,motivo_id,motivo_nome&tipo=not.in.(erro_pedido,corte)&order=criado_em.desc&limit=1000'
+    ) || []).filter(ehArmazem);
 
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
 
@@ -55809,7 +55817,7 @@ async function carregarErroConferente(){
       set('errconf-kpi-total', 0);
       set('errconf-kpi-top', '—');
       set('errconf-kpi-sem-vinculo', 0);
-      container.innerHTML = `<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">${_ic('check-circle',40)}</span>Nenhuma ocorrência registrada.</p>`;
+      container.innerHTML = `<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">${_ic('check-circle',40)}</span>Nenhuma ocorrência de motivo do setor Armazém registrada.</p>`;
       _featherReplace();
       return;
     }
