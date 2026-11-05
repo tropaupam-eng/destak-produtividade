@@ -21,6 +21,21 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Crédito Manual — Editar e Excluir lançamentos no histórico (admin e perfil Devolução) — v4.89.209
+Onde: `index.html`, página Distribuição › Histórico — Crédito Manual: `renderCreditoManual` (coluna "Ações" com ✏️ Editar e 🗑 Excluir) e funções novas
+`cmEditar`, `cmFecharEditar`, `cmSalvarEdicao`, `cmExcluir` (logo depois de `renderCreditoManual`). `APP_VERSION`/`version.json` 4.89.208 → 4.89.209.
+Por quê: pedido do Gabriel: quem é admin ou tem o perfil "Devolução" (chave `devolu__o`, mesma regra do Editar das ocorrências, `_podeEditarOcorrencia`)
+pode editar ou excluir lançamentos do histórico. Os outros perfis não veem a coluna nem os botões. A permissão é só da tela (tabelas sem RLS).
+Editar: janela com pedido, código do cliente, valor do pedido, valor do crédito, emissão da nota (calendário claro), nota, peso faltante e evidência
+(Sim/Não); mesmas validações do lançamento (pedido só números, crédito > 0, peso >= 0, evidência obrigatória). Só o que mudou vai ao banco
+(`PATCH credito_manual_historico?id=eq.<id>`); campo apagado vira null. Excluir: pergunta antes (mostra pedido e valor, "não pode ser desfeita") e faz
+`DELETE` só da linha escolhida (`credito_manual_historico?id=eq.<id>`).
+Dados em produção: altera/apaga linhas da tabela nova `credito_manual_historico` SOMENTE por ação de um usuário permitido na tela. NÃO guarda o valor
+anterior nem quem editou/excluiu (exigiria coluna/tabela nova de histórico: estrutura de banco, não feito). Excluir não tem volta.
+Testes: `node check.js` ok; 29 testes de lógica (permissões por perfil, só-mudou-vai-ao-banco, validações, erro ao salvar, excluir confirmado/cancelado/
+com erro) + 27 do preenchimento automático, todos passando. Sem teste com a tabela real e login (precisa de teste do Gabriel).
+Como desfazer: `git revert` do commit desta entrada (some a coluna Ações; linhas já editadas/excluídas ficam como estão no banco).
+Pendente/risco: decidir se vale guardar histórico de edição/exclusão (quem e quando; precisaria de coluna ou tabela nova); teste visual do Gabriel.
 ## 2026-11-05, Gabriel: Crédito Manual — só código do cliente e valor do pedido são automáticos — v4.89.208
 Onde: `index.html`, página Distribuição › Histórico — Crédito Manual (`page-credito-manual`): campo do pedido (busca ao digitar e ao sair do
 campo), aviso embaixo do pedido, CSS `.cm-auto` e funções `cmAutoPreencher`, `cmPedidoMudou`, `_cmTravar`, `_cmDestravarAuto`, `cmLimparForm`.
