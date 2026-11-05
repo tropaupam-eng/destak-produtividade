@@ -10172,7 +10172,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.223';
+const APP_VERSION = '4.89.224';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20917,7 +20917,7 @@ function _fuHtmlProd(){
       <td class="pos">${i+1}</td>
       <td class="l"><span class="fu-placa">${escapeHtml(r.placa)}</span></td>
       <td>${fN(r.cargas)}</td>
-      <td class="fu-bar${key==='uc'?' on':''}"${acima?' title="Passou de 100% (mais de 1 carga por dia útil): na média da frota conta no máximo 100%"':''}>${acima?'<span class="fu-cap">conta 100% na média</span>':''}${fP(r.uc)}<i><b style="width:${Math.min(100,Math.round(r.uc))}%"></b></i></td>
+      <td class="fu-bar${key==='uc'?' on':''}"${acima?' title="Passou de 100% (mais de 1 carga por dia útil): na média da frota conta no máximo 100%"':''}>${r.man?'<span class="fu-cap" title="Inclui '+r.man+' carga'+(r.man===1?'':'s')+' lançada'+(r.man===1?'':'s')+' manualmente (Painel de Indicadores › Monitoramento)">M</span>':''}${acima?'<span class="fu-cap">conta 100% na média</span>':''}${fP(r.uc)}<i><b style="width:${Math.min(100,Math.round(r.uc))}%"></b></i></td>
       ${cel('ent', fN, mE)}
       ${cel('val', fV, mV)}
       <td>${vazio||tot.val<=0 ? '—' : (r.val/tot.val*100).toFixed(1).replace('.',',')+'%'}</td>
@@ -21212,12 +21212,15 @@ async function renderFrotaDisp(){
     (demandas||[]).filter(d=>(d.data_saida||'').slice(0,7)===mes).forEach(d=>addCarga(d.veiculo, d.carga));
     (lancamentosDisp||[]).forEach(l=>addCarga(l.veiculo, l.carga));
     (abastecimentos||[]).forEach(a=>addCarga(a.veiculo, a.carga));
+    const manRowsUC = await _carregarCargasManualMes(mes);
+    _somarCargasManuais(cargasPlaca, manRowsUC);
+    const manualUC = _totaisCargasManuais(manRowsUC);
     const diasUteisCarga = _contarDiasUteisMes(ano, numMes-1, ehMesAtual ? Number(hojeD) : diasNoMes, new Set(feriadosMap.keys()));
     const linhasProd = veiculosData.map(x=>{
       const placaU = String(x.v.placa).toUpperCase();
       const r = rkPorPlaca ? rkPorPlaca.get(placaU) : null;
       const cargas = cargasPlaca[placaU]?.size || 0;
-      return { placa:x.v.placa, uso:x.v.uso||'', cargas, uc: diasUteisCarga>0 ? cargas/diasUteisCarga*100 : 0, ent:r?r.ent:0, val:r?r.val:0 };
+      return { placa:x.v.placa, uso:x.v.uso||'', cargas, man: manualUC[placaU]||0, uc: diasUteisCarga>0 ? cargas/diasUteisCarga*100 : 0, ent:r?r.ent:0, val:r?r.val:0 };
     });
     const mediaUC = ls => ls.length ? ls.reduce((a,r)=>a+Math.min(r.uc,100),0)/ls.length : 0;
     const totProd = linhasProd.reduce((a,r)=>({ent:a.ent+r.ent, cargas:a.cargas+r.cargas, val:a.val+r.val}), {ent:0,cargas:0,val:0});
@@ -35815,6 +35818,8 @@ async function _pnDadosVeiculos(mes, und){
     _calcCargasEDiasUteisMes(mes, '').catch(()=>null),
   ]);
   const diasUteisUC = ucBase ? ucBase.diasUteisMes : 0;
+  const manualDe = new Map();
+  if(ucBase && ucBase.manualPorPlaca) Object.entries(ucBase.manualPorPlaca).forEach(([pl,q])=>manualDe.set(_pnPlaca(pl), q));
   const cargasMesDe = new Map();
   if(ucBase) Object.entries(ucBase.cargasPorVeic).forEach(([pl,set])=>{ const k = _pnPlaca(pl); cargasMesDe.set(k, (cargasMesDe.get(k)||0) + set.size); });
   const usoDe = new Map((cad||[]).map(v=>[_pnPlaca(v.placa), (v.uso||'').toLowerCase()]));
@@ -35831,16 +35836,16 @@ async function _pnDadosVeiculos(mes, und){
   });
   const lista = [...por.values()].map(o=>{
     const cm = cargasMesDe.get(o.placa);
-    return { placa:o.placa, cargas:o.cargas.size, ped:o.ped, val:o.val, cargasMes: (ucBase && cm!=null) ? cm : null, uc: (ucBase && diasUteisUC>0) ? (cm||0)/diasUteisUC*100 : null };
+    return { placa:o.placa, cargas:o.cargas.size, ped:o.ped, val:o.val, cargasMes: (ucBase && cm!=null) ? cm : null, manual: manualDe.get(o.placa) || 0, uc: (ucBase && diasUteisUC>0) ? (cm||0)/diasUteisUC*100 : null };
   });
   if(!lista.length) throw _pnSemDado('nenhum veículo interno com pedidos no mês');
   const rv = [...lista].sort((a,b)=>b.val-a.val), rp = [...lista].sort((a,b)=>b.ped-a.ped);
   lista.forEach(o=>{ o.rv = rv.indexOf(o)+1; o.rp = rp.indexOf(o)+1; });
-  return { rv, rp, lista, diasUteis: diasUteisUC, temUC: !!ucBase };
+  return { rv, rp, lista, diasUteis: diasUteisUC, temUC: !!ucBase, temManual: lista.some(o=>o.manual>0) };
 }
 const _pnFmtUC = v => v==null ? '—' : v.toFixed(1).replace('.',',')+'%';
 function _pnNotaVeiculos(P, D){ return _pnh.nota('Base: pedidos das cargas com rota interna (R.I.) lançada em '+P.rot+', por veículo lançado na carga; carga sem rota (abastecimento de loja) fica de fora. Só veículos de uso interno (cadastro do veículo). Ranking dos 10 primeiros.'
-  + (D && D.temUC ? ' Uso por carga = todas as cargas do veículo no mês (Expedição, Lançamento e Abastecimento de Loja, inclusive rota externa) ÷ '+D.diasUteis+' dias úteis (seg–sáb, sem feriados) — a mesma conta da página Utilização; pode passar de 100% (na média da frota cada veículo conta no máximo 100%). Por isso as cargas do uso podem ser mais que a coluna Cargas, que só conta rota interna.' : '')); }
+  + (D && D.temUC ? ' Uso por carga = todas as cargas do veículo no mês (Expedição, Lançamento e Abastecimento de Loja, inclusive rota externa) ÷ '+D.diasUteis+' dias úteis (seg–sáb, sem feriados) — a mesma conta da página Utilização; pode passar de 100% (na média da frota cada veículo conta no máximo 100%). Por isso as cargas do uso podem ser mais que a coluna Cargas, que só conta rota interna.' + (D.temManual ? ' M = inclui cargas lançadas manualmente (motivo e autor registrados).' : '') : '')); }
 async function _pnHtmlTopVeiculos(mes, und, ctx, por){
   const P = _pnPeriodoMes(mes);
   ctx.cache = ctx.cache || {};
@@ -35868,6 +35873,115 @@ async function _pnHtmlTopVeiculos(mes, und, ctx, por){
     ? _pnh.casca('FROTA INTERNA · RANKING POR VALOR · '+P.nome, 'Top veículos por valor', corpo, 'OPERAÇÕES / MONITORAMENTO')
     : _pnh.casca('FROTA INTERNA · RANKING POR PEDIDOS NO VEÍCULO · '+P.nome, 'Top veículos por pedidos', corpo, 'OPERAÇÕES / MONITORAMENTO');
 }
+// ── Cargas lançadas MANUALMENTE (tabela frota_cargas_manual): só SOMAM ao Uso por carga, com motivo obrigatório ──
+// Entram na mesma conta em todo lugar (Monitoramento, Utilização, Painel Distribuição mensal e anual): cada carga manual vira
+// uma entrada sintética no Set de cargas do veículo ('M:data:i'), então nunca colide com número de carga real.
+async function _carregarCargasManualMes(mes){
+  const prox = _proximoMes(mes);
+  return (await supaFetch(`frota_cargas_manual?data=gte.${mes}-01&data=lt.${prox}-01&select=id,placa,data,qtd,motivo,usuario,criado_em,atualizado_em&order=data.asc&limit=2000`).catch(()=>[])) || [];
+}
+function _somarCargasManuais(setPorPlaca, rows){
+  (rows||[]).forEach(r=>{
+    const p = String(r.placa||'').trim().toUpperCase(); const n = Math.max(0, Math.round(Number(r.qtd)||0));
+    if(!p || !n) return;
+    const s = setPorPlaca[p] || (setPorPlaca[p] = new Set());
+    for(let i=0;i<n;i++) s.add('M:'+r.data+':'+i);
+  });
+}
+function _totaisCargasManuais(rows){
+  const o = {}; (rows||[]).forEach(r=>{ const p = String(r.placa||'').trim().toUpperCase(); if(p) o[p] = (o[p]||0) + (Number(r.qtd)||0); });
+  return o;
+}
+function _pnManualFechar(){ const o = document.getElementById('pn-man-ov'); if(o) o.remove(); }
+async function _pnManualAbrir(placaPre){
+  const mes = window._painelIndMesSel || hojeDataBRT().slice(0,7);
+  window._pnManualMes = mes;   // o mês do formulário fica fixo enquanto ele estiver aberto
+  const hoje = hojeDataBRT();
+  const ehAtual = mes === hoje.slice(0,7);
+  const [ano, nm] = mes.split('-').map(Number);
+  const ultDia = new Date(ano, nm, 0).getDate();
+  const maxData = ehAtual ? hoje : mes+'-'+String(ultDia).padStart(2,'0');
+  try{ if(!(VEICULOS_CACHE||[]).length) await carregarVeiculos(); }catch(e){}
+  const e = escapeHtml;
+  const veics = (VEICULOS_CACHE||[]).filter(v=>v.placa && v.ativo!==false && !/FRETE/i.test(v.placa)).sort((a,b)=>String(a.placa).localeCompare(String(b.placa)));
+  const preU = String(placaPre||'').toUpperCase();
+  const mesTxt = mes.slice(5,7)+'/'+mes.slice(0,4);
+  const lbl = 'display:block;font-size:.64rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin:12px 0 4px';
+  const inp = 'width:100%;box-sizing:border-box;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:.84rem';
+  _pnManualFechar();
+  const ov = document.createElement('div');
+  ov.id = 'pn-man-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.onclick = ev => { if(ev.target === ov) _pnManualFechar(); };
+  ov.innerHTML = '<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-med);border-radius:14px;width:100%;max-width:520px;max-height:92vh;overflow:auto;padding:20px 22px;box-shadow:0 20px 50px rgba(0,0,0,.5);font-size:.84rem;line-height:1.5">'
+    + '<div style="font-size:1.05rem;font-weight:800">Lançar cargas manualmente</div>'
+    + '<div style="color:var(--text-secondary)">Uso por carga de '+e(mesTxt)+'. Só soma cargas ao veículo (não tira) e aparece com <b>M</b> no ranking, na Utilização e no Painel de Distribuição.</div>'
+    + '<label style="'+lbl+'">Veículo</label>'
+    + '<select id="pn-man-placa" style="'+inp+'" onchange="_pnManualMarcarExistente()"><option value="">Selecione…</option>'+veics.map(v=>'<option value="'+e(String(v.placa).toUpperCase())+'"'+(String(v.placa).toUpperCase()===preU?' selected':'')+'>'+e(String(v.placa).toUpperCase())+(v.uso?' — '+e(v.uso):'')+'</option>').join('')+'</select>'
+    + '<div style="display:flex;gap:12px"><div style="flex:1"><label style="'+lbl+'">Data</label><input id="pn-man-data" type="date" min="'+mes+'-01" max="'+maxData+'" value="'+maxData+'" style="'+inp+'" onchange="_pnManualMarcarExistente()"></div>'
+    + '<div style="width:120px"><label style="'+lbl+'">Cargas</label><input id="pn-man-qtd" type="number" min="1" max="50" step="1" value="1" style="'+inp+'"></div></div>'
+    + '<div id="pn-man-aviso" style="font-size:.76rem;color:var(--text-secondary);margin-top:6px"></div>'
+    + '<label style="'+lbl+'">Motivo (obrigatório)</label>'
+    + '<textarea id="pn-man-motivo" rows="3" maxlength="300" placeholder="Ex.: veículo rodou sem carga lançada no sistema" style="'+inp+';resize:vertical"></textarea>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button onclick="_pnManualFechar()" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:600;cursor:pointer">Cancelar</button>'
+    + '<button onclick="_pnManualSalvar()" style="background:var(--red);color:#fff;border:0;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:700;cursor:pointer">Salvar</button></div>'
+    + '<div style="'+lbl+';margin-top:20px">Lançamentos manuais do mês</div><div id="pn-man-lista" style="font-size:.8rem">Carregando…</div></div>';
+  document.body.appendChild(ov);
+  await _pnManualAtualizarLista();
+  _pnManualMarcarExistente();
+}
+async function _pnManualAtualizarLista(){
+  const mes = window._pnManualMes || window._painelIndMesSel || hojeDataBRT().slice(0,7);
+  const box = document.getElementById('pn-man-lista'); if(!box) return;
+  const rows = await _carregarCargasManualMes(mes);
+  window._pnManualRows = rows;
+  const e = escapeHtml;
+  box.innerHTML = rows.length ? '<table style="width:100%;border-collapse:collapse">'+rows.map(r=>'<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 6px 6px 0;font-weight:700;white-space:nowrap">'+e(r.placa)+'</td><td style="padding:6px;white-space:nowrap">'+e(r.data.slice(8,10)+'/'+r.data.slice(5,7))+'</td><td style="padding:6px;white-space:nowrap">+'+e(String(r.qtd))+'</td><td style="padding:6px;color:var(--text-secondary)">'+e(r.motivo)+'<div style="font-size:.7rem;color:var(--text-muted)">'+e(r.usuario||'sem usuário')+'</div></td><td style="padding:6px 0 6px 6px;text-align:right"><button onclick="_pnManualRemover(\''+e(r.id)+'\')" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:600;cursor:pointer">Remover</button></td></tr>').join('')+'</table>'
+    : '<span style="color:var(--text-muted)">Nenhum lançamento manual neste mês.</span>';
+}
+function _pnManualMarcarExistente(){
+  const p = document.getElementById('pn-man-placa')?.value, d = document.getElementById('pn-man-data')?.value, av = document.getElementById('pn-man-aviso');
+  if(!av) return;
+  const ex = (window._pnManualRows||[]).find(r=>r.placa===p && r.data===d);
+  av.textContent = ex ? 'Já existe lançamento deste veículo neste dia ('+ex.qtd+' carga'+(ex.qtd===1?'':'s')+'): salvar substitui.' : '';
+}
+async function _pnManualSalvar(){
+  const placa = (document.getElementById('pn-man-placa')?.value || '').trim().toUpperCase();
+  const data = document.getElementById('pn-man-data')?.value || '';
+  const qtd = Math.round(Number(document.getElementById('pn-man-qtd')?.value));
+  const motivo = (document.getElementById('pn-man-motivo')?.value || '').trim();
+  const mes = window._pnManualMes || window._painelIndMesSel || hojeDataBRT().slice(0,7);
+  if(!placa){ showToast('Escolha o veículo','warning'); return; }
+  if(!data || data.slice(0,7) !== mes || data > hojeDataBRT()){ showToast('Escolha uma data dentro do mês selecionado, até hoje','warning'); return; }
+  if(!(qtd >= 1 && qtd <= 50)){ showToast('Informe de 1 a 50 cargas','warning'); return; }
+  if(motivo.length < 5){ showToast('Informe o motivo (mínimo 5 caracteres)','warning'); return; }
+  try{
+    await supaFetch('frota_cargas_manual?on_conflict=placa,data', {
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({ placa, data, qtd, motivo, usuario: USUARIO_LOGADO?.nome || null, atualizado_em: new Date().toISOString() })
+    });
+    showToast('Cargas lançadas manualmente','success');
+    document.getElementById('pn-man-motivo').value = '';
+    await _pnManualAtualizarLista(); _pnManualMarcarExistente();
+    _pnRecarregarRanking();
+  }catch(err){ showToast('Erro ao salvar: '+err.message,'error'); }
+}
+async function _pnManualRemover(id){
+  try{
+    await supaFetch('frota_cargas_manual?id=eq.'+encodeURIComponent(id), { method:'DELETE', prefer:'return=minimal' });
+    showToast('Lançamento manual removido','success');
+    await _pnManualAtualizarLista(); _pnManualMarcarExistente();
+    _pnRecarregarRanking();
+  }catch(err){ showToast('Erro ao remover: '+err.message,'error'); }
+}
+async function _pnRecarregarRanking(){
+  window._pnCtxPainel = null;
+  for(const [id, ch] of [['painel-ind-frota-triplo-container','rankingTriplo'],['painel-ind-frota-valor-container','topValor'],['painel-ind-frota-pedidos-container','topPedidos'],['painel-ind-frota-comparativo-container','comparativoVeic']]){
+    try{ await _pnCarregarCardDados(id, ch); }catch(e){}
+  }
+}
+
 // Ranking da frota — valor, pedidos e uso por carga LADO A LADO, mesma ordem de veículos (pedido do usuário, 05/11: exemplo 2 dos gráficos).
 const PN_META_USO = 85;   // mesma meta da Utilização / Painel Distribuição
 async function _pnHtmlRankingTriplo(mes, und, ctx){
@@ -35878,15 +35992,17 @@ async function _pnHtmlRankingTriplo(mes, und, ctx){
   const mV = Math.max(...top.map(o=>o.val), 1), mP = Math.max(...top.map(o=>o.ped), 1);
   const mU = Math.max(100, ...top.map(o=>o.uc||0));
   const th = t=>`<div style="font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted)">${t}</div>`;
-  const celula = (txt, pct, cor)=>`<div style="display:flex;align-items:center;gap:10px"><div style="flex:1;height:12px;background:var(--border);border-radius:6px"><div style="height:12px;width:${Math.max(1, pct).toFixed(1)}%;background:${cor};border-radius:6px"></div></div><span style="width:120px;text-align:right;font-size:.95rem;font-weight:700">${txt}</span></div>`;
-  const grade = 'display:grid;grid-template-columns:100px 1fr 1fr 1fr;gap:0 22px;align-items:center';
+  const naTela = !!(ctx && ctx.naTela);
+  const celula = (txt, pct, cor, larg)=>`<div style="display:flex;align-items:center;gap:10px"><div style="flex:1;height:12px;background:var(--border);border-radius:6px"><div style="height:12px;width:${Math.max(1, pct).toFixed(1)}%;background:${cor};border-radius:6px"></div></div><span style="width:${larg||120}px;text-align:right;font-size:.95rem;font-weight:700;white-space:nowrap">${txt}</span></div>`;
+  const grade = 'display:grid;grid-template-columns:100px 1fr 1fr 1fr'+(naTela ? ' 34px' : '')+';gap:0 22px;align-items:center';
+  const btnMan = placa => naTela ? `<button type="button" class="abs-limpar-filtros" onclick="_pnManualAbrir('${placa}')" title="Lançar cargas manualmente para ${placa}" style="background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:2px 0;width:34px;font-size:.9rem;font-weight:700;color:var(--text-primary);cursor:pointer">+</button>` : '';
   const linhas = top.map((o,i)=>{
     const abaixo = D.temUC && o.uc < PN_META_USO;
-    return `<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)"><span style="font-size:1rem;font-weight:700">${_pnh.esc(o.placa)}</span>${celula(_pnh.v(o.val), o.val/mV*100, i === 0 ? '#E8000D' : '#f0f0f8')}${celula(_pnh.n(o.ped), o.ped/mP*100, '#f0f0f8')}${D.temUC ? celula(_pnFmtUC(o.uc), Math.min(o.uc, mU)/mU*100, abaixo ? '#E8000D' : '#f0f0f8') : '<span style="color:var(--text-muted)">—</span>'}</div>`;
+    return `<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)"><span style="font-size:1rem;font-weight:700">${_pnh.esc(o.placa)}</span>${celula(_pnh.v(o.val), o.val/mV*100, i === 0 ? '#E8000D' : '#f0f0f8')}${celula(_pnh.n(o.ped), o.ped/mP*100, '#f0f0f8')}${D.temUC ? celula(_pnFmtUC(o.uc)+(o.manual ? ' · M+'+o.manual : ''), Math.min(o.uc, mU)/mU*100, abaixo ? '#E8000D' : '#f0f0f8', 150) : '<span style="color:var(--text-muted)">—</span>'}${btnMan(o.placa)}</div>`;
   }).join('');
   const abaixoN = D.temUC ? top.filter(o=>o.uc < PN_META_USO).length : 0;
-  const corpo = `<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin:-6px 0 14px"><span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">VEÍCULOS</span><span style="font-size:1.8rem;font-weight:700">${D.lista.length}</span></div>
-      ${_pnh.caixa(`<div style="${grade};padding-bottom:8px;border-bottom:1px solid var(--border-med)">${th('VEÍCULO')}${th('VALOR')}${th('PEDIDOS')}${th('USO POR CARGA · META '+PN_META_USO+'%')}</div>${linhas}`, 'var(--red)')}
+  const corpo = `<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin:-6px 0 14px">${naTela ? '<button type="button" class="abs-limpar-filtros" onclick="_pnManualAbrir(\'\')" title="Lançar cargas manualmente (soma ao Uso por carga)" style="margin-right:auto;align-self:center;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 12px;font-size:.78rem;font-weight:700;color:var(--text-primary);cursor:pointer">+ Lançar cargas manualmente</button>' : ''}<span style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">VEÍCULOS</span><span style="font-size:1.8rem;font-weight:700">${D.lista.length}</span></div>
+      ${_pnh.caixa(`<div style="${grade};padding-bottom:8px;border-bottom:1px solid var(--border-med)">${th('VEÍCULO')}${th('VALOR')}${th('PEDIDOS')}${th('USO POR CARGA · META '+PN_META_USO+'%')}${naTela ? '<div></div>' : ''}</div>${linhas}`, 'var(--red)')}
       ${D.temUC ? `<div style="font-size:.95rem;font-weight:600;margin-top:14px">${abaixoN ? abaixoN+(abaixoN === 1 ? ' veículo' : ' veículos')+' do ranking abaixo da meta de '+PN_META_USO+'% (barra vermelha)' : 'Todos os veículos do ranking acima da meta de '+PN_META_USO+'%'}.</div>` : ''}
       ${_pnNotaVeiculos(P, D)}`;
   return _pnh.casca('FROTA INTERNA · VALOR, PEDIDOS E USO POR CARGA · '+P.nome, 'Ranking da frota', corpo, 'OPERAÇÕES / MONITORAMENTO');
@@ -37434,6 +37550,10 @@ async function carregarPainelDisponibilidade(){
     // 17 cargas em setembro) ficava com 0 cargas.
     abastecimentosRef
       .forEach(a=>_addCarga(a.veiculo, a.carga));
+    // Cargas lançadas manualmente (Painel > Monitoramento > Ranking da frota) — mesma regra da Utilização
+    const manRowsDisp = await _carregarCargasManualMes(mesRef);
+    _somarCargasManuais(cargasPorVeic, manRowsDisp);
+    const manualDisp = _totaisCargasManuais(manRowsDisp);
     // Total de cargas SÓ dos veículos listados (respeita o filtro Tipo de Veículo) — antes somava a
     // frota inteira e a "Aprov. por Carga" misturava interna com externa.
     const totalCargasMes = veiculos.reduce((a,v)=>a+(cargasPorVeic[(v.placa||'').trim().toUpperCase()]?.size||0),0);
@@ -37454,8 +37574,8 @@ async function carregarPainelDisponibilidade(){
     viagensMes.filter(v=>(v.data_saida||'').slice(0,7)===mesRef).forEach(v=>_tagTipo(v.veiculo, v.carga, v.rota, false));
     lancamentosDispRefRire.forEach(l=>_tagTipo(l.veiculo, l.carga, l.rota, false));
     abastecimentosRef.forEach(a=>_tagTipo(a.veiculo, a.carga, null, true));
-    const _resumoTipos = placa => { const m = tipoCargaPorVeic[placa] || {}; const o = {ri:0,re:0,ab:0,sr:0}; Object.values(m).forEach(t=>o[t]++); return o; };
-    const _txtTipos = o => `interna ${o.ri} · externa ${o.re} · abastecimento ${o.ab}${o.sr?` · sem rota ${o.sr}`:''}`;
+    const _resumoTipos = placa => { const m = tipoCargaPorVeic[placa] || {}; const o = {ri:0,re:0,ab:0,sr:0,man:manualDisp[placa]||0}; Object.values(m).forEach(t=>o[t]++); return o; };
+    const _txtTipos = o => `interna ${o.ri} · externa ${o.re} · abastecimento ${o.ab}${o.sr?` · sem rota ${o.sr}`:''}${o.man?` · manual ${o.man}`:''}`;
 
     // Utilização por carga: mesma fórmula já usada na Visão Anual (cargas ÷
     // dias úteis do período), aplicada ao mês selecionado — pedido do
@@ -37842,12 +37962,15 @@ async function _calcCargasEDiasUteisMes(mesRef, undSel){
     ).catch(()=>[]) || [];
     abastRef.forEach(a=>_addCarga(a.veiculo, a.carga));
   }
+  const manRows = await _carregarCargasManualMes(mesRef);
+  _somarCargasManuais(cargasPorVeic, manRows);
+  const manualPorPlaca = _totaisCargasManuais(manRows);
 
   // Placas que lançaram carga de verdade nessa unidade neste mês — usado
   // pelo caller pra completar a lista de veículos além do cadastro.
   const placasLancNaUnidade = new Set(lancamentosDispRef.filter(l=>!undSel || (l.und||'').trim()===undSel).map(l=>(l.veiculo||'').trim().toUpperCase()).filter(Boolean));
 
-  return { diasUteisMes, cargasPorVeic, placasLancNaUnidade };
+  return { diasUteisMes, cargasPorVeic, placasLancNaUnidade, manualPorPlaca };
 }
 
 async function carregarPainelDisponibilidadeAno(){
