@@ -21,7 +21,7 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-04, Gabriel: nova página "Aderência conferente" no menu lateral, abaixo de Ocorrências (vínculo do conferente e check de conferência por dia) — v4.89.215 (publicado em 05/11/2026)
+## 2026-11-04, Gabriel: nova página "Aderência conferente" no menu lateral, abaixo de Ocorrências (vínculo do conferente e check de conferência por dia) — v4.89.215 (PUBLICADO em 05/11/2026, commit c0acd1b)
 Onde: `index.html`: item de menu `data-page="aderencia"` (visível para `admin` e `adm_armazem`) logo após "Ocorrências", página `page-aderencia`, gancho em `showPage`, funções novas `_aderCalcular` e `renderArmAderencia`. `version.json` e `APP_VERSION` 4.89.214 → 4.89.215. (Primeiro foi feita como aba dentro do Armazém; o Gabriel pediu uma seção abaixo de Ocorrências e a aba foi removida.)
 Por quê: pedido do Gabriel: acompanhar diariamente se o conferente vincula a carga e faz o check de conferência no Cronos e identificar quem não está preenchendo. Escopo escolhido: só rotas externas (cargas de `demandas_rota`); as internas (Ceasa, Petrolina, Juazeiro) são conferidas no FDSAS. Só leitura: não grava nada e não cria tabela. Vínculo = linha em `atribuicoes_armazem` da demanda; check = pedidos distintos em `conferencia_pedidos` (ok/nok) contra `quantidade_pedidos`; dia = `data_saida`; cargas canceladas ficam de fora. Mostra KPIs do mês, tabela dia a dia (cargas sem conferente e quem vinculou) e tabela por conferente (do que menos preencheu ao que mais). Teste com outubro/2026: 63 cargas, 24 vinculadas, 14 com check completo, 39 saíram sem vínculo.
 Como desfazer: `git revert` do commit desta entrada.
