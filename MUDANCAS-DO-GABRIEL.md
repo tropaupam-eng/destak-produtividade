@@ -21,6 +21,16 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-05, Gabriel: Menu — "Aderência conferente" passa de Distribuição para Armazém — v4.89.218
+Onde: `index.html`, menu lateral: o item `data-page="aderencia"` saiu da seção Distribuição (ficava depois de Ocorrências) e foi para o fim da seção
+Armazém, depois de "Erro Conferente". `APP_VERSION`/`version.json` 4.89.217 → 4.89.218.
+Por quê: pedido do Gabriel. Só mudou o lugar do item no menu; página, regras de acesso (`data-perfil="admin,adm_armazem"`), funções e dados continuam
+exatamente iguais. Conferido por leitura do HTML: o item aparece 1 vez só, e as duas seções ficaram com a ordem esperada.
+Observação (não mexida): "aderencia" não está em `PAGINAS`/`PAGINAS_GRUPOS`, então perfis personalizados não conseguem receber essa página pela tela de
+Perfis (só admin e adm_armazem a veem). Se quiser liberar a outros perfis, é uma mudança à parte.
+Testes: `node check.js` ok. Nenhum dado tocado.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: baixo (só o lugar do item); teste visual do Gabriel.
 ## 2026-11-05, Gabriel: Crédito Manual — Editar e Excluir lançamentos no histórico (admin e perfil Devolução) — v4.89.217
 Onde: `index.html`, página Distribuição › Histórico — Crédito Manual: `renderCreditoManual` (coluna "Ações" com ✏️ Editar e 🗑 Excluir) e funções novas
 `cmEditar`, `cmFecharEditar`, `cmSalvarEdicao`, `cmExcluir` (logo depois de `renderCreditoManual`). `APP_VERSION`/`version.json` 4.89.208 → 4.89.217 (nasceu como 4.89.209 e foi mesclada com a main, que andou até 4.89.216).
