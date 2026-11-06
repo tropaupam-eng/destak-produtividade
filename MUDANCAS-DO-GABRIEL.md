@@ -21,6 +21,23 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-06, Gabriel: Dashboard Devolução — período padrão = mês atual e carga só do período — v4.89.230
+Onde: `index.html`, Análise › Dashboard Devolução: campos de data (agora `onchange="devolPeriodoMudou()"`), botão "Mês atual" (era "Limpar datas"), funções novas `_devolMesAtual`,
+`_devolPeriodoNormalizado`, `devolPeriodoMudou` e ajustes em `carregarDashDevolucao`, `devolLimparDatas` e `renderDashDevolucao` (visibilidade do botão).
+`APP_VERSION`/`version.json` 4.89.229 → 4.89.230.
+Por quê: pedido do Gabriel: abrir já no mês atual, porque do jeito que estava podia ficar muito dado e pesar o banco. A tela buscava TODAS as ocorrências (até 5000) e TODOS os
+itens da tabela (até 5000) a cada abertura, e isso só cresce. Agora: (1) data inicial e final já vêm com o mês atual (dia 1 ao último dia, fuso de Brasília; vira o mês só à
+meia-noite de Brasília); (2) só o período escolhido é buscado no banco (`criado_em` >= início 00:00 e <= fim 23:59:59,999 em -03:00); (3) os itens vêm só das ocorrências do período,
+em lotes de 80 (antes, a tabela inteira); (4) mudar uma data recarrega depois de 300 ms de pausa (uma busca, não uma por clique); (5) campo de data vazio é preenchido
+(só a final: inicial = dia 1 do mês dela; só a inicial: final = último dia do mês dela), então nunca busca "tudo"; (6) o botão "Mês atual" volta ao padrão e só aparece quando o
+período é outro; intervalo invertido continua avisando e não busca. Ocorrência com data impossível (ano 0026) fica fora, como já ficava quando havia filtro de data.
+Medido com os dados de hoje (só leitura): novembro 26 ocorrências de 173 no total (143 em outubro), e a contagem do filtro no banco bate com a do filtro no navegador;
+itens do lote de outubro 199 contra 382 da tabela inteira. O que sai da tela (setor, motivos, barras, vendedor, tipo de unidade) continua igual para o período escolhido.
+Dados: só LÊ o banco; nada é gravado.
+Testes: `node check.js` ok; 21 testes de lógica (mês atual e viradas de mês/fuso/bissexto, busca só do período, itens em lote, campo vazio, invertido, debounce, botão) +
+conferência da consulta com os dados reais.
+Como desfazer: `git revert` do commit desta entrada (volta a carregar tudo, sem período padrão).
+Pendente/risco: quem quiser ver tudo escolhe um intervalo grande à mão (o limite de 5000 linhas continua). Teste visual do Gabriel.
 ## 2026-11-05, Gabriel: Erro Conferente — filtro cruzado nos gráficos (menos no de dia) — v4.89.222
 Onde: `index.html`, página Armazém › Erro Conferente: JS reescrito (`_errconfRender`, `_errconfPassa`, `errconfFiltrar`, `errconfLimparFiltros`,
 `_errconfDestruirGraficos`, `carregarErroConferente`) e marcação (faixa de filtros `errconf-filtros` e uma mensagem "sem dados" por gráfico).

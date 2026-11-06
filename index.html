@@ -3553,10 +3553,10 @@ body.light-theme{
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <label for="devol-data-ini" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data inicial</label>
-      <input type="date" class="devol-data" id="devol-data-ini" onchange="renderDashDevolucao()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <input type="date" class="devol-data" id="devol-data-ini" onchange="devolPeriodoMudou()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
       <label for="devol-data-fim" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data final</label>
-      <input type="date" class="devol-data" id="devol-data-fim" onchange="renderDashDevolucao()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
-      <button type="button" id="devol-limpar-datas" onclick="devolLimparDatas()" title="Remove as datas e mostra todo o período" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap"><span data-feather="x" style="width:11px;height:11px;vertical-align:-2px"></span> Limpar datas</button>
+      <input type="date" class="devol-data" id="devol-data-fim" onchange="devolPeriodoMudou()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <button type="button" id="devol-limpar-datas" onclick="devolLimparDatas()" title="Volta o período para o mês atual" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap"><span data-feather="calendar" style="width:11px;height:11px;vertical-align:-2px"></span> Mês atual</button>
       <span id="devol-total" style="font-size:.82rem;font-weight:700;color:var(--text-secondary)"></span>
     </div>
   </div>
@@ -10175,7 +10175,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.229';
+const APP_VERSION = '4.89.230';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -27484,8 +27484,32 @@ function _devolVendNome(o){
 function devolSelecionarVend(nome){ _devolVendSel = (nome == null || _devolVendSel === nome) ? null : nome; renderDashDevolucao(); }
 let _devolSetorSel = null;   // setor clicado em "Motivos por setor" (filtra "Motivos de devolução")
 
+// Período padrão = mês atual (fuso de Brasília), do dia 1 ao último dia (pedido do Gabriel, 2026-11-06: sem isso a tela puxava
+// TODAS as ocorrências e itens do banco, e isso só cresce). Só o período escolhido é buscado; campo vazio é preenchido (nunca
+// busca "tudo"); mudar uma data recarrega.
+function _devolMesAtual(){
+  const a = new Date(Date.now() - 3*3600000), y = a.getUTCFullYear(), m = a.getUTCMonth(), p = n => String(n).padStart(2, '0');
+  const ultimo = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return { ini: y + '-' + p(m + 1) + '-01', fim: y + '-' + p(m + 1) + '-' + p(ultimo) };
+}
+function _devolPeriodoNormalizado(){
+  const iniEl = document.getElementById('devol-data-ini'), fimEl = document.getElementById('devol-data-fim');
+  let ini = iniEl?.value || '', fim = fimEl?.value || '';
+  const mes = _devolMesAtual();
+  if(!ini && !fim){ ini = mes.ini; fim = mes.fim; }
+  else if(!ini){ ini = fim.slice(0, 8) + '01'; }
+  else if(!fim){ const [y, m] = ini.split('-').map(Number); fim = ini.slice(0, 8) + String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0'); }
+  if(iniEl) iniEl.value = ini;
+  if(fimEl) fimEl.value = fim;
+  return { ini, fim };
+}
+let _devolPeriodoTimer = null;
+function devolPeriodoMudou(){ clearTimeout(_devolPeriodoTimer); _devolPeriodoTimer = setTimeout(carregarDashDevolucao, 300); }
+
 async function carregarDashDevolucao(){
   _devolSetorSel = null; _devolVendSel = null;
+  const { ini: periodoIni, fim: periodoFim } = _devolPeriodoNormalizado();
+  if(periodoIni > periodoFim){ renderDashDevolucao(); return; }      // intervalo invertido: a tela avisa, nada é buscado
   const msg = document.getElementById('devol-msg');
   const grid = document.getElementById('devol-grid');
   const grid2 = document.getElementById('devol-grid2');
@@ -27493,7 +27517,9 @@ async function carregarDashDevolucao(){
   if(msg){ msg.style.display=''; msg.textContent='Carregando...'; }
   if(grid) grid.style.display='none'; if(grid2) grid2.style.display='none'; if(grid3) grid3.style.display='none';
   try{
-    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,conferente,quantidade,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000') || [];
+    // só o período escolhido (dia inteiro, fuso de Brasília, nas duas pontas)
+    const filtroData = '&criado_em=gte.' + encodeURIComponent(periodoIni + 'T00:00:00-03:00') + '&criado_em=lte.' + encodeURIComponent(periodoFim + 'T23:59:59.999-03:00');
+    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,conferente,quantidade,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000' + filtroData) || [];
     const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
     _devolMotivos = { id:{}, nome:{} };
     motivos.forEach(m=>{
@@ -27534,8 +27560,12 @@ async function carregarDashDevolucao(){
     // referências são buscadas por pedido, em lotes, e guardadas na sessão (não repete a busca ao reabrir a aba).
     _devolItens = {};
     try{
-      const itens = await supaFetch('ocorrencias_distribuicao_itens?select=ocorrencia_id,produto,quantidade&limit=5000',{_quiet:true}) || [];
-      itens.forEach(i=>{ (_devolItens[i.ocorrencia_id] = _devolItens[i.ocorrencia_id] || []).push({ produto:i.produto, quantidade:Number(i.quantidade)||0 }); });
+      // itens só das ocorrências do período, em lotes (antes vinha a tabela inteira)
+      const idsOcorr = _devolOcorr.map(o => o.id);
+      for(let i = 0; i < idsOcorr.length; i += 80){
+        const itens = await supaFetch('ocorrencias_distribuicao_itens?ocorrencia_id=in.(' + idsOcorr.slice(i, i + 80).join(',') + ')&select=ocorrencia_id,produto,quantidade&limit=5000',{_quiet:true}) || [];
+        itens.forEach(it=>{ (_devolItens[it.ocorrencia_id] = _devolItens[it.ocorrencia_id] || []).push({ produto:it.produto, quantidade:Number(it.quantidade)||0 }); });
+      }
       const pedidosRef = [...new Set(_devolOcorr.filter(o=>_devolItens[o.id]).map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p) && !_devolPedidosRef.has(p)))];
       for(let i=0;i<pedidosRef.length;i+=60){
         const lote = pedidosRef.slice(i,i+60);
@@ -27552,8 +27582,9 @@ async function carregarDashDevolucao(){
 
 function devolLimparDatas(){
   const a = document.getElementById('devol-data-ini'), b = document.getElementById('devol-data-fim');
-  if(a) a.value = ''; if(b) b.value = '';
-  renderDashDevolucao();
+  const mes = _devolMesAtual();
+  if(a) a.value = mes.ini; if(b) b.value = mes.fim;
+  carregarDashDevolucao();
 }
 
 // Setor do motivo de uma ocorrência (por id; pelo nome quando não há id). null = sem motivo/setor.
@@ -27577,7 +27608,7 @@ function renderDashDevolucao(){
   const ini = iniEl?.value || '', fim = fimEl?.value || '';
   if(iniEl) iniEl.max = fim; if(fimEl) fimEl.min = ini;   // o seletor de data já bloqueia intervalo invertido
   const btnLimpar = document.getElementById('devol-limpar-datas');
-  if(btnLimpar) btnLimpar.style.display = (ini || fim) ? '' : 'none';
+  if(btnLimpar){ const mes = _devolMesAtual(); btnLimpar.style.display = (ini !== mes.ini || fim !== mes.fim) ? '' : 'none'; }
   if(ini && fim && ini > fim){
     if(totalEl) totalEl.textContent = '';
     if(msg){ msg.style.display=''; msg.textContent='A data inicial é maior que a data final. Ajuste o período.'; }
