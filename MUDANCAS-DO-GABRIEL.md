@@ -21,10 +21,10 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-06, Gabriel: Dashboard Devolução — período padrão = mês atual e carga só do período — v4.89.230
+## 2026-11-06, Gabriel: Dashboard Devolução — período padrão = mês atual e carga só do período — v4.89.231
 Onde: `index.html`, Análise › Dashboard Devolução: campos de data (agora `onchange="devolPeriodoMudou()"`), botão "Mês atual" (era "Limpar datas"), funções novas `_devolMesAtual`,
 `_devolPeriodoNormalizado`, `devolPeriodoMudou` e ajustes em `carregarDashDevolucao`, `devolLimparDatas` e `renderDashDevolucao` (visibilidade do botão).
-`APP_VERSION`/`version.json` 4.89.229 → 4.89.230.
+`APP_VERSION`/`version.json` 4.89.229 → 4.89.231 (nasceu como 4.89.230; a main já estava na 4.89.230 com outra mudança, então subiu mais uma).
 Por quê: pedido do Gabriel: abrir já no mês atual, porque do jeito que estava podia ficar muito dado e pesar o banco. A tela buscava TODAS as ocorrências (até 5000) e TODOS os
 itens da tabela (até 5000) a cada abertura, e isso só cresce. Agora: (1) data inicial e final já vêm com o mês atual (dia 1 ao último dia, fuso de Brasília; vira o mês só à
 meia-noite de Brasília); (2) só o período escolhido é buscado no banco (`criado_em` >= início 00:00 e <= fim 23:59:59,999 em -03:00); (3) os itens vêm só das ocorrências do período,
