@@ -3951,6 +3951,11 @@ body.light-theme{
       <span style="font-size:.78rem;color:var(--text-muted);font-weight:600">até</span>
       <select id="patr-mes-ate" onchange="carregarNivelServico()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:7px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)"></select>
       <select id="patr-filtro-und" onchange="carregarNivelServico()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:7px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)"><option value="">Todas as unidades</option></select>
+      <select id="ns-filtro-rire" onchange="filtrarNivelServico()" style="border:1.5px solid var(--border-med);border-radius:8px;padding:7px 10px;font-size:.83rem;background:var(--bg-input);color:var(--text-primary)">
+        <option value="">R.I. + R.E.</option>
+        <option value="R.I.">R.I. (Interna)</option>
+        <option value="R.E.">R.E. (Externa)</option>
+      </select>
       <button onclick="carregarNivelServico(true)" style="background:var(--bg-hover);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:.82rem;color:var(--text-secondary);cursor:pointer"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
     </div>
   </div>
@@ -3987,6 +3992,28 @@ body.light-theme{
     <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
   </div>
 </div></div>
+
+<!-- ══ NÍVEL DE SERVIÇO — registrar motivo manual (atraso ou in full) ══ -->
+<div id="modal-ns-motivo" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:600;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:16px;width:100%;max-width:440px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.35)">
+    <div style="background:linear-gradient(135deg,#0D0D0D,#E8000D);padding:20px 24px;color:#fff">
+      <h3 id="ns-motivo-titulo" style="font-size:1.05rem;font-weight:800;margin-bottom:3px">Registrar motivo</h3>
+      <p id="ns-motivo-sub" style="font-size:.8rem;opacity:.75">Pedido #—</p>
+    </div>
+    <div style="padding:22px 24px">
+      <label style="font-size:.73rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Motivo</label>
+      <select id="ns-motivo-select" onchange="document.getElementById('ns-motivo-outro').style.display = this.value==='__outro__' ? 'block' : 'none'"
+        style="width:100%;border:1.5px solid var(--border-med);border-radius:10px;padding:10px 12px;font-size:.9rem;background:var(--bg-input);color:var(--text-primary);outline:none;box-sizing:border-box;margin-bottom:10px">
+      </select>
+      <input type="text" id="ns-motivo-outro" placeholder="Descreva o motivo..." style="display:none;width:100%;border:1.5px solid var(--border-med);border-radius:10px;padding:10px 12px;font-size:.9rem;background:var(--bg-input);color:var(--text-primary);outline:none;box-sizing:border-box">
+      <div id="ns-motivo-msg" style="display:none;margin-top:12px;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600"></div>
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button onclick="fecharModalMotivoNs()" style="flex:1;background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:10px;padding:11px;font-size:.88rem;font-weight:600;cursor:pointer">Cancelar</button>
+        <button onclick="salvarMotivoNs()" id="ns-motivo-btn-salvar" style="flex:2;background:linear-gradient(135deg,#E8000D,#ff2010);color:#fff;border:none;border-radius:10px;padding:11px;font-size:.88rem;font-weight:700;cursor:pointer">Salvar motivo</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ══ COMERCIAL — ROTAS ══ -->
 <div class="page" id="page-comercial-rotas"><div class="container">
@@ -10148,7 +10175,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.228';
+const APP_VERSION = '4.89.229';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -57068,11 +57095,19 @@ let _nsLoadedKey = null;
 async function _nsProcessarMes(mes, und){
   const dados = await _carregarOtifMes(mes, und||undefined);
   const cargasArr = [...(dados.cargasMes||new Set())];
+  const pedidosArr = [...new Set((dados.bdRows||[]).map(b=>Math.round(Number(b.pedido))).filter(Boolean))];
 
-  const [demRows, agendRotasRows] = await Promise.all([
+  const [demRows, agendRotasRows, motivosManuaisRows] = await Promise.all([
     cargasArr.length ? supaFetch(`demandas_rota?carga=in.(${cargasArr.join(',')})&select=carga,status,veiculo,motorista`,{_quiet:true}).catch(()=>[]) : [],
     cargasArr.length ? supaFetch(`agendamentos_rotas?carga=in.(${cargasArr.join(',')})&motivo_atraso=not.is.null&select=carga,motivo_atraso,motivo_label`,{_quiet:true}).catch(()=>[]) : [],
+    pedidosArr.length ? supaFetch(`nivel_servico_motivos?pedido=in.(${pedidosArr.join(',')})&select=pedido,tipo,motivo`,{_quiet:true}).catch(()=>[]) : [],
   ]);
+
+  // Motivo registrado manualmente na própria tela (clique em "Registrar
+  // motivo") — sempre tem prioridade sobre a detecção automática, porque é
+  // uma correção explícita de quem está olhando o pedido.
+  const motivoManualMap = {};
+  (motivosManuaisRows||[]).forEach(m=>{ motivoManualMap[`${m.pedido}|${m.tipo}`] = m.motivo; });
 
   // Carga pode ter mais de um registro em demandas_rota (reenvio/correção) —
   // fica com o status mais avançado no pipeline, mais representativo de onde
@@ -57111,10 +57146,15 @@ async function _nsProcessarMes(mes, und){
       // (ícone Feather) só é usado na tabela principal.
       let atrasoCategoria=null, atrasoTxt=null, atrasoIcone=null, aberto=false;
       if(!onTime){
+        const manualAtraso = motivoManualMap[`${pedido}|atraso`];
         const ck = carga!=null ? String(carga) : null;
         const dem = ck ? demStatusMap[ck] : null;
         const motivoRota = ck ? motivoRotaMap[ck] : null;
-        if(motivoRota && motivoRota.motivo_label){
+        if(manualAtraso){
+          atrasoCategoria = 'manual';
+          atrasoTxt = manualAtraso;
+          atrasoIcone = 'edit-3';
+        } else if(motivoRota && motivoRota.motivo_label){
           atrasoCategoria = motivoRota.motivo_atraso || 'outro';
           atrasoTxt = motivoRota.motivo_label;
           atrasoIcone = 'alert-circle';
@@ -57143,7 +57183,12 @@ async function _nsProcessarMes(mes, und){
       let infullCategoria=null, infullTxt=null, infullIcone=null;
       if(!inFull){
         const pk = String(pedido);
-        if(ocorrMotivoMap[pk]){
+        const manualInfull = motivoManualMap[`${pedido}|infull`];
+        if(manualInfull){
+          infullCategoria = 'manual';
+          infullTxt = manualInfull;
+          infullIcone = 'edit-3';
+        } else if(ocorrMotivoMap[pk]){
           infullCategoria = 'ocorrencia';
           infullTxt = ocorrMotivoMap[pk];
           infullIcone = 'alert-triangle';
@@ -57270,7 +57315,9 @@ function filtrarNivelServico(){
   const q    = (document.getElementById('ns-busca')?.value||'').trim().toUpperCase();
   const rota = document.getElementById('ns-filtro-rota')?.value||'';
   const tipo = document.getElementById('ns-filtro-tipo')?.value||'';
+  const rire = document.getElementById('ns-filtro-rire')?.value||'';
   let filtrado = _nsCache;
+  if(rire) filtrado = filtrado.filter(a=>a.rire===rire);
   if(rota) filtrado = filtrado.filter(a=>a.rota===rota);
   if(tipo==='ontime') filtrado = filtrado.filter(a=>!a.onTime && a.inFull);
   else if(tipo==='infull') filtrado = filtrado.filter(a=>a.onTime && !a.inFull);
@@ -57329,14 +57376,99 @@ function _renderNivelServicoTabela(lista){
           <td style="padding:10px 14px;text-align:center;color:var(--text-secondary)">${fmtD(a.dataPedido)}</td>
           <td style="padding:10px 14px;text-align:center">${badge(a.onTime,'On Time','Atrasado')}</td>
           <td style="padding:10px 14px;text-align:center">${badge(a.inFull,'In Full','Incompleto')}</td>
-          <td style="padding:10px 14px;color:var(--text-secondary)">${a.atrasoTxt?`<span style="display:inline-flex;align-items:center;gap:5px">${_ic(a.atrasoIcone||'circle',12)} ${escapeHtml(a.atrasoTxt)}</span>`:'—'}</td>
-          <td style="padding:10px 14px;color:var(--text-secondary)">${a.infullTxt?`<span style="display:inline-flex;align-items:center;gap:5px">${_ic(a.infullIcone||'circle',12)} ${escapeHtml(a.infullTxt)}</span>`:'—'}</td>
+          <td style="padding:10px 14px;color:var(--text-secondary)">${!a.onTime?`<span onclick="abrirModalMotivoNs(${a.pedido},'atraso')" title="Clique pra registrar/corrigir o motivo" style="cursor:pointer;display:inline-flex;align-items:center;gap:5px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${_ic(a.atrasoIcone||'circle',12)} ${a.atrasoTxt?escapeHtml(a.atrasoTxt):'<i>Clique para registrar o motivo</i>'}</span>`:'—'}</td>
+          <td style="padding:10px 14px;color:var(--text-secondary)">${!a.inFull?`<span onclick="abrirModalMotivoNs(${a.pedido},'infull')" title="Clique pra registrar/corrigir o motivo" style="cursor:pointer;display:inline-flex;align-items:center;gap:5px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${_ic(a.infullIcone||'circle',12)} ${a.infullTxt?escapeHtml(a.infullTxt):'<i>Clique para registrar o motivo</i>'}</span>`:'—'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
     </div>
   </div>`;
   _featherReplace();
+}
+
+// ── Registrar motivo manual (Nível de Serviço) ──────────────────────────────
+// Listas iguais às categorias já usadas no resto do sistema (Calendário de
+// Rotas pro atraso; motivos_devolucao pro in full), pra não inventar
+// terminologia nova — mas gravadas numa tabela própria (nivel_servico_motivos),
+// porque nem todo pedido tem um agendamento ou uma ocorrência formal pra
+// anexar o motivo.
+const NS_MOTIVOS_ATRASO = ['Atraso de Rota', 'Comercial', 'Sem Veículo', 'Sem Motorista', 'Atraso no Carregamento'];
+const NS_MOTIVOS_INFULL = ['Falta no Carregamento', 'Inversão no Carregamento', 'Produto Avariado', 'Preço Incorreto', 'Pedido Digitado com a Quantidade Incorreta', 'Demora na Entrega', 'Inversão na Entrega'];
+const NS_MOTIVO_SEM_DETALHE = new Set(['Sem registro de status da carga', 'Sem detalhe registrado']);
+
+let _nsMotivoAlvo = null; // { pedido, tipo }
+
+function abrirModalMotivoNs(pedido, tipo){
+  _nsMotivoAlvo = { pedido, tipo };
+  const titulo = document.getElementById('ns-motivo-titulo');
+  const sub = document.getElementById('ns-motivo-sub');
+  const sel = document.getElementById('ns-motivo-select');
+  const outro = document.getElementById('ns-motivo-outro');
+  const msg = document.getElementById('ns-motivo-msg');
+  if(msg) msg.style.display = 'none';
+  if(outro){ outro.style.display = 'none'; outro.value = ''; }
+  if(titulo) titulo.textContent = tipo==='atraso' ? 'Motivo do atraso (fora do On Time)' : 'Motivo do corte/ocorrência (fora do In Full)';
+  if(sub) sub.textContent = 'Pedido #' + pedido;
+
+  const opcoes = tipo==='atraso' ? NS_MOTIVOS_ATRASO : NS_MOTIVOS_INFULL;
+  const atual = _nsCache.find(p=>p.pedido===pedido);
+  const valorAtual = atual ? (tipo==='atraso' ? atual.atrasoTxt : atual.infullTxt) : null;
+  if(sel){
+    sel.innerHTML = '<option value="">Selecione...</option>' + opcoes.map(o=>`<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('') + '<option value="__outro__">Outro (descrever)</option>';
+    if(valorAtual && opcoes.includes(valorAtual)){
+      sel.value = valorAtual;
+    } else if(valorAtual && !NS_MOTIVO_SEM_DETALHE.has(valorAtual)){
+      sel.value = '__outro__';
+      if(outro){ outro.style.display = 'block'; outro.value = valorAtual; }
+    } else {
+      sel.value = '';
+    }
+  }
+  const btn = document.getElementById('ns-motivo-btn-salvar');
+  if(btn){ btn.disabled = false; btn.textContent = 'Salvar motivo'; }
+  document.getElementById('modal-ns-motivo').style.display = 'flex';
+}
+
+function fecharModalMotivoNs(){
+  const modal = document.getElementById('modal-ns-motivo');
+  if(modal) modal.style.display = 'none';
+  _nsMotivoAlvo = null;
+}
+
+async function salvarMotivoNs(){
+  if(!_nsMotivoAlvo) return;
+  const sel = document.getElementById('ns-motivo-select');
+  const outro = document.getElementById('ns-motivo-outro');
+  const msg = document.getElementById('ns-motivo-msg');
+  const btn = document.getElementById('ns-motivo-btn-salvar');
+  const showMsg = (txt, tipo='erro') => {
+    if(!msg) return;
+    msg.textContent = txt;
+    msg.style.cssText = `display:block;margin-top:12px;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;
+      background:${tipo==='ok'?'#f0fdf4':'#fef2f2'};
+      border:1px solid ${tipo==='ok'?'#86efac':'#fecaca'};
+      color:${tipo==='ok'?'#166534':'#dc2626'}`;
+  };
+  let motivo = sel?.value || '';
+  if(motivo === '__outro__') motivo = (outro?.value||'').trim();
+  if(!motivo){ showMsg('Escolha ou descreva um motivo'); return; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Salvando...'; }
+  try{
+    await supaFetch('nivel_servico_motivos?on_conflict=pedido,tipo', {
+      method: 'POST',
+      prefer: 'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify({
+        pedido: _nsMotivoAlvo.pedido, tipo: _nsMotivoAlvo.tipo, motivo,
+        atualizado_em: new Date().toISOString(),
+        criado_por: USUARIO_LOGADO?.nome || USUARIO_LOGADO?.email || null,
+      })
+    });
+    showMsg('✅ Motivo salvo!', 'ok');
+    setTimeout(()=>{ fecharModalMotivoNs(); carregarNivelServico(); }, 500);
+  }catch(e){
+    showMsg('Erro ao salvar: ' + e.message);
+    if(btn){ btn.disabled = false; btn.textContent = 'Salvar motivo'; }
+  }
 }
 
 function renderDatasEntrega(){
