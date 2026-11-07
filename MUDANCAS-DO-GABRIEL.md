@@ -21,6 +21,22 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-07, Gabriel: Ocorrências (Distribuição) — rota aparece ao digitar o pedido, mesmo com base_data sem rota — v4.89.234
+Onde: `index.html`, `_ocorrAutoFillCompleto` (campo "Rota" do formulário Registrar Ocorrência). `APP_VERSION`/`version.json` 4.89.233 → 4.89.234.
+Causa: a rota vinha só de `base_data.rota` pelo pedido, e essa coluna está VAZIA em 40-60% dos pedidos (lido em 07/11: ago 777 de 3.131; set 1.527 de 3.382;
+out 1.086 de 2.657; nov 319 de 532). Ex.: pedido 68204 (carga 16057) existe, trouxe cliente/carga, mas sem rota, e a tela dizia "(pedido não encontrado)".
+O que muda: se o `base_data` não tem rota, usa a rota da CARGA: primeiro `lancamentos.rota`, depois `demandas_rota.rota` (Expedição). Mensagens: "(rota da carga #N,
+preenchida automaticamente)"; "(pedido encontrado, mas sem rota no sistema — escolha a rota)" (antes dizia "pedido não encontrado" mesmo achando o pedido); "(pedido não
+encontrado)" só quando o pedido não existe. Rota que não está no cadastro (RN, CASA NOVA, BOM JESUS...) agora é criada como opção no campo em vez de ficar em branco.
+Se a pessoa digita outro pedido durante a busca, a resposta antiga não sobrescreve mais o campo.
+Alcance medido (out/nov, amostra de 272 cargas com pedido sem rota): 80 resolvem por lancamentos/demandas_rota; 192 NÃO têm rota em tabela nenhuma (base_data,
+lancamentos, demandas_rota, agendamentos_rotas); `pedidos_info_erp.rota_codigo_erp` é só um código numérico do ERP ("001" serve a rotas diferentes), não dá para virar nome.
+Para esses 192, a pessoa escolhe a rota à mão (a mensagem agora diz isso).
+Sem mudança de dado nem de estrutura de banco; só leitura.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco (Daniel/ERP): a CAUSA RAIZ é a importação/integração que grava `base_data` sem `rota` (e sem `und`/`rire`) em quase metade dos pedidos desde agosto.
+Isso também afeta indicadores que usam `base_data.rota`. Vale investigar a origem (planilha ou Edge Function do ERP).
+
 ## 2026-11-06, Gabriel: Dashboard Devolução — período padrão = mês atual e carga só do período — v4.89.231
 Onde: `index.html`, Análise › Dashboard Devolução: campos de data (agora `onchange="devolPeriodoMudou()"`), botão "Mês atual" (era "Limpar datas"), funções novas `_devolMesAtual`,
 `_devolPeriodoNormalizado`, `devolPeriodoMudou` e ajustes em `carregarDashDevolucao`, `devolLimparDatas` e `renderDashDevolucao` (visibilidade do botão).

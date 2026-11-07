@@ -10180,7 +10180,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.233';
+const APP_VERSION = '4.89.234';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19847,21 +19847,35 @@ async function _ocorrAutoFillCompleto(){
     return;
   }
 
+  // Coloca a rota no select; se a rota não está no cadastro (ex.: RN, CASA NOVA) cria a opção na hora, senão o select
+  // ficava em branco sem aviso.
+  const colocarRota = r => {
+    if(!rotaEl || !r) return;
+    if(![...rotaEl.options].some(o => o.value === r)) rotaEl.add(new Option(r, r));
+    rotaEl.value = r;
+  };
   try{
     const bd = await supaFetch(`base_data?pedido=eq.${encodeURIComponent(pedido)}&select=rota,carga,cliente&limit=1`) || [];
+    if((document.getElementById('l-ocorr-pedido')?.value||'').trim() !== pedido) return;   // o pedido mudou durante a busca
+    const achouPedido = bd.length > 0;
     const carga   = bd[0]?.carga ?? null;
-    const rota    = (bd[0]?.rota||'').toUpperCase();
+    let rota      = (bd[0]?.rota||'').toUpperCase().trim();
     const cliente = bd[0]?.cliente || '';
+    let rotaDaCarga = false;
 
-    if(rota && rotaEl){ rotaEl.value = rota; if(hint) hint.textContent='(rota preenchida automaticamente)'; }
-    else if(hint) hint.textContent = pedido.length>=3 ? '(pedido não encontrado)' : '';
-
+    // base_data vem sem rota em ~40-60% dos pedidos (lançamento da planilha/ERP): a rota da CARGA está em lancamentos e
+    // demandas_rota. Pedido do Gabriel, 2026-11-07: "ao digitar o código do pedido não aparece a rota".
     let motorista='', veiculo='', conferente='';
     if(carga!=null){
       const [lanc, confArm] = await Promise.all([
-        supaFetch(`lancamentos?carga=eq.${carga}&select=motorista,veiculo&limit=1`).catch(()=>[]),
+        supaFetch(`lancamentos?carga=eq.${carga}&select=motorista,veiculo,rota&limit=1`).catch(()=>[]),
         supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_nome=not.is.null&select=conferente_nome,pedido_inicio,pedido_fim`).catch(()=>[]),
       ]);
+      if(!rota && (lanc?.[0]?.rota||'').trim()){ rota = lanc[0].rota.toUpperCase().trim(); rotaDaCarga = true; }
+      if(!rota){
+        const dm = await supaFetch(`demandas_rota?carga=eq.${carga}&rota=not.is.null&select=rota&limit=1`).catch(()=>[]);
+        if((dm?.[0]?.rota||'').trim()){ rota = dm[0].rota.toUpperCase().trim(); rotaDaCarga = true; }
+      }
       motorista = lanc?.[0]?.motorista || '';
       veiculo   = lanc?.[0]?.veiculo || '';
       const pedNum = Number(pedido);
@@ -19873,6 +19887,15 @@ async function _ocorrAutoFillCompleto(){
       const cp = await supaFetch(`conferencia_pedidos?pedido=eq.${encodeURIComponent(pedido)}&conferente_nome=not.is.null&select=conferente_nome&limit=1`) || [];
       if(cp[0]?.conferente_nome) conferente = cp[0].conferente_nome;
     }catch(e){}
+    if((document.getElementById('l-ocorr-pedido')?.value||'').trim() !== pedido) return;   // o pedido mudou durante a busca
+
+    if(rota){
+      colocarRota(rota);
+      if(hint) hint.textContent = rotaDaCarga ? `(rota da carga #${carga}, preenchida automaticamente)` : '(rota preenchida automaticamente)';
+    } else if(hint){
+      hint.textContent = !achouPedido ? (pedido.length>=3 ? '(pedido não encontrado)' : '')
+        : '(pedido encontrado, mas sem rota no sistema — escolha a rota)';
+    }
 
     setInfo('l-ocorr-info-cliente', cliente);
     setInfo('l-ocorr-info-carga', carga!=null ? '#'+carga : '—');
