@@ -10180,7 +10180,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.234';
+const APP_VERSION = '4.89.235';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -38394,8 +38394,54 @@ async function _cargasDaUnidadeNoMes(mes, unidade){
   return new Set(rows.map(r=>String(Math.round(Number(r.carga)))).filter(Boolean));
 }
 
-// ── Liberação no Prazo: cargas AGENDADAS no mês (mes_ano), que saíram (ts_saiu)
-// na data agendada (data_saida) ou antes. Compara SAÍDA real vs SAÍDA agendada. ──
+// ── Liberação no Prazo — FONTE: Calendário de Saídas (agendamentos_rotas) ─────────────
+// Pedido do usuário (2026-11-07): o indicador tem que vir do Calendário de rotas, não da
+// Expedição. Usa a MESMA regra de cor do calendário (renderAgendamentos / card "Calendário de
+// rotas" do Painel): verde = saiu na data, vermelho = saiu com atraso, resto = ainda sem saída.
+//  - NO PRAZO     = saídas verdes (saiu na data agendada ou antes);
+//  - FORA DO PRAZO = saídas vermelhas + rotas que já passaram da data e não têm saída registrada;
+//  - rota de hoje ou de data futura que ainda não saiu NÃO é julgada (ainda dá tempo).
+// "Saiu" = agendamento realizado OU carga da mesma rota e data (ou vinculada pelo nº da carga) com
+// status saiu/fim_viagem/concluido na Expedição; só "lançada" na pré-carga não conta.
+const _LIB_MOTIVOS = { comercial:'Comercial não fechou', veiculo:'Sem veículo', motorista:'Sem motorista', atraso_rota:'Atraso de rota', atraso_carregamento:'Atraso no carregamento', atraso_documentacao:'Atraso na documentação' };
+async function _liberacaoCalendarioMes(mes, undSel, rireSel){
+  const [ano, mm] = mes.split('-').map(Number);
+  const ini = mes+'-01', fim = mes+'-'+String(new Date(ano, mm, 0).getDate()).padStart(2,'0');
+  const SAIU = 'in.(saiu,fim_viagem,concluido)';
+  const chave = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
+  const cargasUnidade = await _cargasDaUnidadeNoMes(mes, undSel);
+  const rowsRaw = await supaFetch('agendamentos_rotas?data=gte.'+ini+'&data=lte.'+fim+'&select=id,rota,data,status,lancado,carga,motivo_atraso,motivo_label,acao&order=data.asc&limit=2000') || [];
+  const rows = rowsRaw.filter(a=>{
+    if(!(a.rota||'').trim()) return false;
+    if(cargasUnidade && a.carga && !cargasUnidade.has(String(a.carga))) return false;
+    return _passaFiltroRire(a.rota, rireSel);
+  });
+  const dem = rows.length ? (await supaFetch('demandas_rota?data_saida=gte.'+ini+'&data_saida=lte.'+fim+'&status='+SAIU+'&select=carga,rota,data_saida&limit=5000') || []) : [];
+  const cargasVinc = [...new Set(rows.map(r=>r.carga).filter(Boolean).map(String))].filter(c=>/^\d+$/.test(c));
+  const demCarga = cargasVinc.length ? await _pnEmLotes(cargasVinc, 100, ids=>supaFetch('demandas_rota?carga=in.('+ids.join(',')+')&status='+SAIU+'&select=carga,data_saida')) : [];
+  const saiuSet = new Set(dem.map(d=>chave(d.rota)+'|'+d.data_saida));
+  const dataCarga = new Map();
+  (demCarga||[]).forEach(d=>{ const k = String(d.carga), o = dataCarga.get(k); if(!o || d.data_saida < o) dataCarga.set(k, d.data_saida); });
+  const ATOM = { sem_veiculo:'veiculo', sem_motorista:'motorista', valor:'comercial', atraso_rota:'atraso_rota' };
+  const motivoDe = a => { let k = a.motivo_atraso || ATOM[a.acao] || ''; if(k === 'outro') k = 'atraso_carregamento'; return k === 'saiu_data_correta' ? '' : k; };
+  const estadoDe = a => {
+    const mot = motivoDe(a), dc = a.carga ? dataCarga.get(String(a.carga)) : null;
+    if(dc && dc > a.data) return 'atraso';
+    if((dc && dc <= a.data) || saiuSet.has(chave(a.rota)+'|'+a.data)) return 'ok';
+    if(a.status === 'realizado') return mot ? 'atraso' : 'ok';
+    return 'sem_saida';
+  };
+  const hoje = hojeDataBRT();
+  let noPrazo = 0, fora = 0;
+  const itens = rows.map(a=>{
+    const est = estadoDe(a);
+    const foraPrazo = est === 'atraso' || (est === 'sem_saida' && a.data < hoje);
+    if(est === 'ok') noPrazo++; else if(foraPrazo) fora++;
+    return { a, est, foraPrazo, mot: motivoDe(a) };
+  });
+  return { itens, noPrazo, fora, hoje, motivoDe };
+}
+
 async function carregarPainelConferenciaPrazo(mesSelecionado){
   const container = document.getElementById('painel-ind-conferencia-prazo-container');
   if(!container) return;
@@ -38404,109 +38450,46 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
 
   try {
     const mes = mesSelecionado || window._painelIndMesSel || new Date().toISOString().slice(0,7);
-    const cargasUnidade = await _cargasDaUnidadeNoMes(mes, window._painelIndUndSel||'');
     const rireSel = window._painelIndRireSel || '';
+    const { itens, noPrazo, fora, hoje } = await _liberacaoCalendarioMes(mes, window._painelIndUndSel||'', rireSel);
 
-    // Buscar cargas agendadas no mês (mes_ano) com data_saida — inclui quem
-    // ainda não saiu (ts_saiu vazio). Antes exigia ts_saiu preenchido, o que
-    // excluía do denominador inteiro quem nunca chegou a sair — carga agendada
-    // que simplesmente não saiu é o pior caso de "fora do prazo", não devia
-    // sumir da conta. Só exclui 'cancelado' (nunca foi pra valer).
-    const demandasRaw = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&status=neq.cancelado&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
-    // Mesma carga pode ter mais de uma linha em demandas_rota (visto em
-    // Carregamento no Prazo — cargas 14542/14939, duas linhas "concluido"
-    // com datas diferentes). Desempate: mantém a saída mais antiga.
-    const _porCargaDedupLib = {};
-    demandasRaw.forEach(d=>{
-      const atual = _porCargaDedupLib[d.carga];
-      if(!atual || (d.data_saida && d.data_saida < atual.data_saida)) _porCargaDedupLib[d.carga] = d;
-    });
-    const demandas = Object.values(_porCargaDedupLib);
-
-    // "Extra" (mesmo critério de renderAgendamentos e de Carregamento no
-    // Prazo): carga que saiu sem nunca ter sido agendada não tem prazo de
-    // entrega definido, então não pode ser cobrada por prazo de saída —
-    // conta sempre como no prazo. Só carga agendada tem data-limite real.
-    const agendamentosMes = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga,status,lancado&limit=2000`).catch(()=>[]) || [];
-    const _rotaChaveLib = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
-    const agendKeysLib   = new Set(agendamentosMes.map(a=>_rotaChaveLib(a.rota)+'|'+a.data));
-    const agendCargasLib = new Set(agendamentosMes.filter(a=>a.carga).map(a=>String(a.carga)));
-    const _ehAgendadaLib = d => agendKeysLib.has(_rotaChaveLib(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargasLib.has(String(d.carga)));
-
-    // "Hoje" em BRT, pra decidir se uma carga agendada que ainda não saiu já
-    // venceu o prazo ou se ainda dá tempo (não julga cedo demais).
-    const _dataLocalBRTLib = dataLocalBRT;
-    const hojeBRT = hojeDataBRT();
-
-    let noPrazo = 0, fora = 0;
-    demandas.forEach(d=>{
-      if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
-      if(!_passaFiltroRire(d.rota, rireSel)) return;
-      if(!_ehAgendadaLib(d)){ noPrazo++; return; } // extra — sem prazo definido, conta a favor
-
-      if(!d.ts_saiu){
-        // Nunca saiu — só julga se o prazo já venceu (senão ainda dá tempo,
-        // fica de fora da conta por enquanto, não é justo julgar cedo demais).
-        if(d.data_saida < hojeBRT) fora++;
-        return;
-      }
-      const saidaReal = _dataLocalBRTLib(d.ts_saiu);
-      if(saidaReal <= d.data_saida) noPrazo++; else fora++;
-    });
-
-    // ── Esperado × Atendido por semana — fonte: agendamentos_rotas (o
-    // PLANEJAMENTO real), não demandas_rota. demandas_rota tem "extras":
-    // cargas que saíram sem nunca terem sido agendadas (mesmo conceito de
-    // "extras" já usado na tela Rota → Agendamento). "Esperado" conta só
-    // quem estava no planejamento — extras ficam de fora.
-    // "Atendido" usa o MESMO critério de "saiu" do Calendário de Rotas
-    // (renderAgendamentos → _mkCal): status='realizado' OU lancado OU a
-    // demanda vinculada (mesma chave ROTA+DATA) já está em saiu/fim_viagem/
-    // concluido. Rota+data exato (não carga) é o vínculo usado lá porque o
-    // nº de carga do agendamento é preenchido manualmente e não é confiável.
-    const demandasMesTodas = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&select=data_saida,rota,status&limit=5000`).catch(()=>[]) || [];
-    const _demMapLib = {};
-    demandasMesTodas.forEach(d=>{ _demMapLib[(d.rota||'').trim().toUpperCase()+'|'+(d.data_saida||'')] = d.status; });
-
-    // Semana é a da data agendada — mesmo critério de _calcPedidosPorSemana
-    const _semDoMesLib = _semanaMesSeg;
-    const semData = Array.from({length:5},()=>({esperado:0, atendido:0}));
-
-    agendamentosMes.forEach(a=>{
-      if(cargasUnidade && a.carga && !cargasUnidade.has(String(a.carga))) return;
-      if(!_passaFiltroRire(a.rota, rireSel)) return;
-
-      const s = _semDoMesLib(a.data);
-      if(s<1 || s>5) return;
+    // ── Esperado × Atendido por SEMANA DO CALENDÁRIO (domingo a sábado — a mesma linha do
+    // Calendário de Saídas: 1ª semana = dia 1 até o 1º sábado). No mês em andamento só aparecem
+    // as semanas até a de hoje; semanas futuras não são cobradas. "Atendido" = saiu (verde ou vermelho).
+    const [ano, mm] = mes.split('-').map(Number);
+    const primeiroDow = new Date(ano, mm-1, 1).getDay();
+    const diasMes = new Date(ano, mm, 0).getDate();
+    const nSem = Math.ceil((primeiroDow + diasMes) / 7);
+    const semDe = dataStr => Math.floor((Number(dataStr.slice(8,10)) - 1 + primeiroDow) / 7) + 1;
+    const mesAtual = hoje.slice(0,7) === mes;
+    const ultSem = mesAtual ? semDe(hoje) : nSem;
+    const semData = Array.from({length: ultSem}, ()=>({esperado:0, atendido:0}));
+    itens.forEach(x=>{
+      const s = semDe(x.a.data);
+      if(s < 1 || s > ultSem) return;
       semData[s-1].esperado++;
-
-      const demSt = _demMapLib[(a.rota||'').trim().toUpperCase()+'|'+a.data];
-      const saiu = a.status==='realizado' || a.lancado || ['saiu','fim_viagem','concluido'].includes(demSt);
-      if(saiu) semData[s-1].atendido++;
+      if(x.est === 'ok' || x.est === 'atraso') semData[s-1].atendido++;
     });
 
-    // ── Atrasos e motivos — vêm de agendamentos_rotas (tela de Agendamento
-    // de Rotas), onde o motivo do atraso é registrado manualmente. demandas_rota
-    // não guarda motivo nenhum, só a saída em si.
-    const atrasosRaw = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&status=eq.atrasado&select=rota,data,carga,motivo_atraso,motivo_label&order=data.desc&limit=500`).catch(()=>[]) || [];
-    const atrasos = atrasosRaw.filter(a=>{
-      if(cargasUnidade && a.carga && !cargasUnidade.has(String(a.carga))) return false;
-      if(!_passaFiltroRire(a.rota, rireSel)) return false;
-      return true;
-    });
+    // ── Atrasos e motivos — as saídas fora do prazo do calendário (saíram com atraso ou passaram
+    // da data sem saída registrada), com o motivo registrado no agendamento.
+    const _limpa = t => String(t||'').replace(/^[^A-Za-zÀ-ÿ]+/,'').trim();
+    const atrasos = itens.filter(x=>x.foraPrazo).map(x=>{
+      const a = x.a;
+      const label = (a.motivo_atraso === 'outro' && _limpa(a.motivo_label)) ? _limpa(a.motivo_label)
+                  : (x.mot ? (_LIB_MOTIVOS[x.mot] || _limpa(a.motivo_label) || x.mot) : 'Não informado');
+      return { rota:a.rota, data:a.data, motivo_label:label };
+    }).sort((p,q)=> p.data < q.data ? 1 : p.data > q.data ? -1 : 0);
     const motivosMap = {};
-    atrasos.forEach(a=>{
-      const label = a.motivo_label || 'Não informado';
-      motivosMap[label] = (motivosMap[label]||0)+1;
-    });
+    atrasos.forEach(a=>{ motivosMap[a.motivo_label] = (motivosMap[a.motivo_label]||0)+1; });
     const motivosResumo = Object.entries(motivosMap).sort((a,b)=>b[1]-a[1]);
 
     const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
     container.innerHTML = renderRelatorioNoPrazoSimples({
       indicadorNum:'03', titulo:'Liberação no Prazo', eyebrow:'SAÍDA DO VEÍCULO'+eyebrowRire, area:'OPERAÇÕES / DISTRIBUIÇÃO',
       mesRef: mes, metaPct: 90, noPrazoCount: noPrazo, foraCount: fora,
-      noPrazoDesc: 'Veículo saiu até a data agendada',
-      foraDesc: 'Veículo saiu depois da data agendada'
+      noPrazoDesc: 'Saiu na data agendada (Calendário de Saídas)',
+      foraDesc: 'Saiu depois da data, ou passou da data sem saída registrada'
     }) + renderLiberacaoSemanalMotivos({ semData, motivosResumo, atrasos });
     _featherReplace();
 
@@ -38518,42 +38501,10 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
   }
 }
 
-// Núcleo de cálculo de carregarPainelConferenciaPrazo, sem a parte de
-// esperado×atendido por semana/atrasos (só usada no card mensal) — extraído
-// pra poder rodar em loop pelos 12 meses do ano na visão anual.
+// Núcleo da Liberação no Prazo por mês (mesma fonte do card mensal: Calendário de Saídas),
+// usado em loop pelos 12 meses do ano na visão anual.
 async function _calcLiberacaoNoPrazoMes(mes, undSel, rireSel){
-  const cargasUnidade = await _cargasDaUnidadeNoMes(mes, undSel);
-  const demandasRaw = await supaFetch(`demandas_rota?mes_ano=eq.${mes}&data_saida=not.is.null&status=neq.cancelado&select=carga,data_saida,ts_saiu,rota&limit=5000`) || [];
-  const _porCargaDedupLib = {};
-  demandasRaw.forEach(d=>{
-    const atual = _porCargaDedupLib[d.carga];
-    if(!atual || (d.data_saida && d.data_saida < atual.data_saida)) _porCargaDedupLib[d.carga] = d;
-  });
-  const demandas = Object.values(_porCargaDedupLib);
-
-  const agendamentosMes = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga,status,lancado&limit=2000`).catch(()=>[]) || [];
-  const _rotaChaveLib = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
-  const agendKeysLib   = new Set(agendamentosMes.map(a=>_rotaChaveLib(a.rota)+'|'+a.data));
-  const agendCargasLib = new Set(agendamentosMes.filter(a=>a.carga).map(a=>String(a.carga)));
-  const _ehAgendadaLib = d => agendKeysLib.has(_rotaChaveLib(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargasLib.has(String(d.carga)));
-
-  const _dataLocalBRTLib = dataLocalBRT;
-  const hojeBRT = hojeDataBRT();
-
-  let noPrazo = 0, fora = 0;
-  demandas.forEach(d=>{
-    if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return;
-    if(!_passaFiltroRire(d.rota, rireSel)) return;
-    if(!_ehAgendadaLib(d)){ noPrazo++; return; }
-
-    if(!d.ts_saiu){
-      if(d.data_saida < hojeBRT) fora++;
-      return;
-    }
-    const saidaReal = _dataLocalBRTLib(d.ts_saiu);
-    if(saidaReal <= d.data_saida) noPrazo++; else fora++;
-  });
-
+  const { noPrazo, fora } = await _liberacaoCalendarioMes(mes, undSel, rireSel);
   return { noPrazo, fora };
 }
 
@@ -38592,8 +38543,8 @@ async function carregarPainelConferenciaPrazoAno(){
       indicador: 'INDICADOR 03 · SAÍDA DO VEÍCULO'+eyebrowRire, titulo: 'Liberação no Prazo', area: 'OPERAÇÕES / DISTRIBUIÇÃO',
       anoSel, pctAnual, metaNum: 90, invertido: true, bMes,
       composicaoItems: [
-        {label:'NO PRAZO', valor: noPrazoTotal, desc:'Veículo saiu até a data agendada.'},
-        {label:'FORA DO PRAZO', valor: foraTotal, desc:'Veículo saiu depois da data agendada.'},
+        {label:'NO PRAZO', valor: noPrazoTotal, desc:'Saiu na data agendada (Calendário de Saídas).'},
+        {label:'FORA DO PRAZO', valor: foraTotal, desc:'Saiu depois da data, ou passou da data sem saída registrada.'},
       ],
       baseTxt: `${noPrazoTotal+foraTotal} registros no ano`
     });
