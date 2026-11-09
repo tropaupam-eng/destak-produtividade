@@ -21,6 +21,21 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-09, Gabriel: Aderência à conferência — indicador "pedidos conferidos ÷ total de pedidos" — v4.89.255
+Onde: `index.html`, Armazém › Aderência à conferência: `_aderPintar` (bloco novo `indicador`, antes dos cartões) e o cartão antigo "Pedidos conferidos no Cronos" removido.
+`APP_VERSION`/`version.json` 4.89.254 → 4.89.255.
+Por quê: pedido do Gabriel: um indicador de aderência à conferência com a memória de cálculo "pedidos conferidos ÷ total de pedidos". Aparece no topo da página: o percentual grande,
+uma barra, e a memória escrita com os números (ex.: "103 ÷ 215 = 47,9%") e uma nota explicando as definições. Total = pedidos previstos nas cargas que SAÍRAM no período
+(`quantidade_pedidos` da carga; conferido com os dados: bate com o número de pedidos da planilha em todas as cargas de outubro e novembro). Conferido = pedido marcado em
+`conferencia_pedidos` como OK ou Não OK, contado uma vez; "pendente" não conta. Por carga, os conferidos nunca passam do total da carga (em outubro 2 cargas tinham mais conferidos do que
+o previsto e 3 conferidos estavam fora da planilha: sem o limite o indicador poderia passar de 100%). Cargas que ainda não saíram ficam de fora. Com um dia escolhido no gráfico, o indicador
+passa a ser só do dia ("dia escolhido"). Total zero mostra "—". Sem meta nem cor por faixa (nenhuma meta foi definida). O cartão antigo "Pedidos conferidos no Cronos" saiu porque era a mesma
+razão sem o limite por carga: dois números diferentes confundiriam. Com os dados de 01 a 09/11: 103 ÷ 215 = 47,9% (outubro, mesma conta: 331 ÷ 737 = 44,9% antes do limite por carga).
+Só LÊ o banco; nada é gravado.
+Testes: `node check.js` ok; 24 testes (indicador, memória escrita, dia escolhido, limite por carga, OK/Não OK/pendente, total zero, barra) + conferência com os dados reais por uma conta
+independente (103 ÷ 215 = 47,9%); conferido visualmente numa página de teste com dados reais.
+Como desfazer: `git revert` do commit desta entrada (some o indicador; volta o cartão antigo).
+Pendente/risco: se quiserem meta (ex.: 90%) com cor verde/vermelho, é só definir o valor. Teste visual do Gabriel.
 ## 2026-11-09, Gabriel: Aderência — nome passa para "Aderência à conferência" — v4.89.246
 Onde: `index.html`: rótulo do item no menu Armazém (`data-page="aderencia"`) e título da página (`<h2>` de `page-aderencia`). `APP_VERSION`/`version.json` 4.89.242 → 4.89.243.
 Por quê: pedido do Gabriel: trocar "Aderência conferente" por "Aderência à conferência". Só texto: página, regras de acesso (admin e adm_armazem), funções e dados iguais. O título do topo da tela segue o
