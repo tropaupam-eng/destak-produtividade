@@ -35469,6 +35469,7 @@ const PN_ROTEIRO = [
   { tipo:'card', n:17, titulo:'Utilização de Frotas Fixas',               fontes:[['disponibilidade',0,0]] },
   { tipo:'card', n:18, titulo:'Utilização de Frotas Fixas (visão anual)', fontes:[['disponibilidade',1,0]], anual:true },
   { tipo:'card', n:19, titulo:'Liberação no Prazo',                       fontes:[['conferencia-prazo',0,0],['carregamento-prazo',1,0]], rire:'RE' },
+  { tipo:'dados', n:null, titulo:'Liberação no Prazo — calendário', dados:'liberacaoCalendario' },   // semanal: só a semana escolhida (colorida) + acumulado do mês
   { tipo:'card', n:20, titulo:'Liberação no Prazo (visão anual)',         fontes:[['conferencia-prazo',1,0]], rire:'RE', anual:true },
   { tipo:'dados', n:23, titulo:'Média de dias por rota', dados:'diasPorRota' },
   { tipo:'dados', n:24, titulo:'Calendário de rotas', dados:'calendarioRotas' },
@@ -36141,6 +36142,7 @@ async function _pnHtmlDados(chave, mes, und, ctx){
   if(chave === 'diasPorRota') return _pnHtmlDiasPorRota(mes, und);
   if(chave === 'calendarioRotas') return _pnHtmlCalendarioRotas(mes, !!(ctx && ctx.naTela));
   if(chave === 'carregCalendario') return _pnHtmlCarregamentoCalendario(mes, und, ctx);
+  if(chave === 'liberacaoCalendario') return _pnHtmlLiberacaoCalendario(mes, und, ctx);
   if(chave === 'vendaPorRota') return _pnHtmlVendaPorRota(mes, und);
   if(chave === 'rankingTriplo') return _pnHtmlRankingTriplo(mes, und, ctx);
   if(chave === 'topValor') return _pnHtmlTopVeiculos(mes, und, ctx, 'valor');
@@ -38297,98 +38299,125 @@ function renderRelatorioNoPrazoSimples({indicadorNum, titulo, eyebrow, area, mes
   `;
 }
 
-// Card "Rotas Liberadas por Semana" + "Atrasos e Motivos" — complemento do
-// indicador de Liberação no Prazo. Semana é a da SAÍDA AGENDADA (mesmo
-// critério de _calcPedidosPorSemana). Motivos vêm de agendamentos_rotas
-// (mesma tela/tabela usada em Rota → Agendamento pra registrar por que uma
-// rota atrasou), não de demandas_rota — que não guarda motivo nenhum.
-function renderLiberacaoSemanalMotivos({semData, motivosResumo, atrasos}){
-  const totalAtrasos = atrasos.length;
-  const totalMotivos = motivosResumo.reduce((a,[,n])=>a+n,0) || 1;
-  const coresMotivo = ['#ef4444','#fb923c','#f472b6','rgba(255,255,255,.55)','rgba(255,255,255,.4)','rgba(255,255,255,.28)'];
-  const listaMotivos = motivosResumo.length ? motivosResumo.map(([label,n],i)=>{
-    const pct = Math.round(n/totalMotivos*100);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-      <span style="width:10px;height:10px;border-radius:2px;background:${coresMotivo[i%coresMotivo.length]};flex-shrink:0"></span>
-      <span style="flex:1;font-size:.92rem;font-weight:600;color:var(--text-primary)">${escapeHtml(label)}</span>
-      <span style="font-size:.87rem;color:var(--text-secondary)">${pct}%</span>
-      <span style="font-size:.92rem;font-weight:700;color:var(--text-primary);min-width:26px;text-align:right">${n}</span>
-    </div>`;
-  }).join('') : `<p style="color:var(--text-muted);font-size:.92rem;text-align:center;padding:20px">Nenhum atraso registrado no mês</p>`;
+// ── Calendário da Liberação no Prazo (Painel > Liberação no Prazo e deck) — pedido do usuário, 09/11 ──
+// Esperado = rotas agendadas no Calendário de Saídas; Atendido = rotas que saíram (no prazo ou com atraso).
+// Verde = saiu no prazo · Vermelho = saiu com atraso ou passou da data sem saída · Cinza = ainda a sair (data de hoje em diante)
+// e, no deck Semanal, todas as rotas das OUTRAS semanas. À direita: Atrasos e Motivos (os motivos do Calendário de Saídas).
+// Na tela: o mês inteiro, com Esperado × Atendido de cada semana ao lado. No deck Semanal (ctx.semanaIdx): só a semana escolhida
+// com número e cor; o acumulado do mês até ela vem no bloco de totais.
+async function _pnHtmlLiberacaoCalendario(mes, und, ctx, pre){
+  const naTela = !!(ctx && ctx.naTela);
+  const rireSel = naTela ? (window._painelIndRireSel || '') : 'RE';   // deck: rotas externas, igual ao slide da Liberação no Prazo
+  const P = _pnPeriodoMes(mes);
+  const D = pre || await _liberacaoCalendarioMes(mes, und, rireSel);
+  if(!D.itens.length) throw _pnSemDado('sem rotas agendadas no Calendário de Saídas em '+P.nome.toLowerCase());
+  const semIdx = (!naTela && ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
+  const primeiro = new Date(P.ano, P.mes-1, 1).getDay(), dias = new Date(P.ano, P.mes, 0).getDate();
+  const nSem = Math.ceil((primeiro + dias) / 7);
+  const semDe = ds => Math.floor((Number(String(ds).slice(8,10)) - 1 + primeiro) / 7);   // 0-based, domingo a sábado
+  const sems = _calcSemanas(mes);
+  const mm2 = String(P.mes).padStart(2,'0');
+  const ddmm = d => String(d).padStart(2,'0')+'/'+mm2;
+  const hoje = D.hoje || hojeDataBRT();
 
-  const listaAtrasos = atrasos.slice(0,8).map(a=>{
-    const dataFmt = a.data ? a.data.split('-').reverse().join('/') : '—';
-    return `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:.85rem">
-      <div style="display:flex;justify-content:space-between;gap:8px">
-        <span style="font-weight:700;color:var(--text-primary)">${escapeHtml(a.rota||'—')}</span>
-        <span style="color:var(--text-muted)">${dataFmt}</span>
-      </div>
-      <div style="color:var(--text-secondary);margin-top:1px">${escapeHtml(a.motivo_label||'Não informado')}</div>
-    </div>`;
-  }).join('');
-  const maisAtrasos = atrasos.length>8 ? `<div style="text-align:center;padding-top:8px;font-size:.81rem;color:var(--text-muted)">+ ${atrasos.length-8} atraso${atrasos.length-8===1?'':'s'} não listado${atrasos.length-8===1?'':'s'}</div>` : '';
-
-  const totalEsperado = semData.reduce((a,s)=>a+s.esperado,0);
-  const totalAtendido = semData.reduce((a,s)=>a+s.atendido,0);
-  const pctAtendimento = totalEsperado>0 ? Math.round(totalAtendido/totalEsperado*100) : 0;
-
-  return `
-    <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;margin-top:24px;position:relative">
-      <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
-      <div style="font-size:.81rem;font-weight:700;letter-spacing:2px;color:var(--text-muted)">LIBERAÇÃO NO PRAZO · POR SEMANA</div>
-      <h2 style="font-size:2.69rem;font-weight:300;letter-spacing:1px;margin:8px 0 0;text-transform:uppercase">Esperado × Atendido por Semana</h2>
-      <div style="width:56px;height:3px;background:var(--red);margin:18px 0 28px"></div>
-
-      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:20px;align-items:start">
-        <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--red)">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-            <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">ESPERADO (AGENDADO) × ATENDIDO — POR SEMANA</div>
-            <div style="font-size:.87rem;color:var(--text-secondary)">${totalAtendido} de ${totalEsperado} atendidas · ${pctAtendimento}%</div>
-          </div>
-          <div style="position:relative;height:240px"><canvas id="chart-painel-liberacao-semanal"></canvas></div>
-        </div>
-        <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
-          <div style="font-size:1.18rem;font-weight:700;letter-spacing:.3px">ATRASOS E MOTIVOS</div>
-          <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">${totalAtrasos} ATRASO${totalAtrasos===1?'':'S'} NO MÊS</div>
-          <div style="margin-top:14px">${listaMotivos}</div>
-          ${atrasos.length? `<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:12px">
-            <div style="font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-bottom:6px">ÚLTIMOS ATRASOS</div>
-            ${listaAtrasos}
-            ${maisAtrasos}
-          </div>` : ''}
-        </div>
-      </div>
-
-      <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
-        <span>PAINEL DE METAS · ACOMPANHAMENTO MENSAL</span>
-        <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
-      </div>
-    </div>
-  `;
-}
-
-let _cPainelLiberacaoSemanal = null;
-function _renderGraficoLiberacaoSemanal(semData){
-  const ctx = document.getElementById('chart-painel-liberacao-semanal');
-  if(_cPainelLiberacaoSemanal){ _cPainelLiberacaoSemanal.destroy(); _cPainelLiberacaoSemanal=null; }
-  if(!ctx) return;
-  _cPainelLiberacaoSemanal = new Chart(ctx,{
-    data:{
-      labels: semData.map((_,i)=>'S'+(i+1)),
-      datasets:[
-        { type:'bar', label:'Atendido', data: semData.map(s=>s.atendido), backgroundColor:'#f0f0f8', borderRadius:3, order:2 },
-        { type:'line', label:'Esperado (Agendado)', data: semData.map(s=>s.esperado), borderColor:'#ef4444', backgroundColor:'#ef4444', borderWidth:2, borderDash:[5,3], pointRadius:4, pointBackgroundColor:'#ef4444', tension:0, fill:false, order:1 }
-      ]
-    },
-    options:{
-      responsive:true, maintainAspectRatio:false,
-      scales:{ x:{ grid:{display:false} }, y:{ beginAtZero:true, ticks:{precision:0}, grid:{color:'rgba(255,255,255,.08)'} } },
-      plugins:{
-        legend:{ position:'bottom', labels:{ color:'rgba(240,240,248,.6)', font:{size:10,weight:'600'}, boxWidth:10, padding:8 } },
-        tooltip:{ callbacks:{ footer: items=>{ if(!items || !items[0]) return ''; const i=items[0].dataIndex; const s=semData[i]; if(!s) return ''; const pct=s.esperado>0?Math.round(s.atendido/s.esperado*100):0; return 'Atendimento: '+pct+'%'; } } }
-      }
-    }
+  // classe de cada rota: ok / fora / aSair
+  const cls = x => x.est === 'ok' ? 'ok' : x.foraPrazo ? 'fora' : 'aSair';
+  const T = Array.from({length:nSem}, ()=>({ esperado:0, atendido:0, ok:0, fora:0, aSair:0 }));
+  const porDia = new Map();
+  D.itens.forEach(x=>{
+    const w = semDe(x.a.data); if(w < 0 || w >= nSem) return;
+    const c = cls(x);
+    T[w].esperado++; T[w][c]++;
+    if(x.est === 'ok' || x.est === 'atraso') T[w].atendido++;
+    if(!porDia.has(x.a.data)) porDia.set(x.a.data, []);
+    porDia.get(x.a.data).push({ rota:String(x.a.rota||'').trim().toUpperCase(), c, w });
   });
+  const soma = (de, ate)=>{ const r = { esperado:0, atendido:0, ok:0, fora:0, aSair:0 }; for(let i=de;i<=ate && i<nSem;i++) Object.keys(r).forEach(k=>{ r[k] += T[i][k]; }); return r; };
+  const pct = (n, d)=> d > 0 ? _pnh.p1(n/d*100)+'%' : '—';
+
+  const ESTILO = {
+    aSair: 'background:rgba(148,163,184,.14);color:var(--text-secondary)',
+    ok:    'background:rgba(22,163,74,.20);color:#16a34a',
+    fora:  'background:rgba(220,38,38,.18);color:#dc2626',
+  };
+  const ORDEM = { fora:0, ok:1, aSair:2 };
+  // no deck Semanal só a semana escolhida tem cor; as outras rotas ficam em cinza
+  const chip = x=>{ const c = (semIdx !== null && x.w !== semIdx) ? 'aSair' : x.c; return `<div style="font-size:.7rem;font-weight:700;line-height:1.3;border-radius:4px;padding:2px 5px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${ESTILO[c]}" title="${_pnh.esc(x.rota)}">${_pnh.esc(x.rota)}</div>`; };
+  const altura = semIdx !== null ? 96 : 84;
+  const cel = d=>{
+    const key = mes+'-'+String(d).padStart(2,'0');
+    const itens = (porDia.get(key) || []).slice().sort((a,b)=>ORDEM[a.c]-ORDEM[b.c] || a.rota.localeCompare(b.rota)).map(chip).join('');
+    const hojeCel = key === hoje ? 'border-color:var(--red);' : '';
+    return `<div style="min-height:${altura}px;background:var(--bg-card2);border:1px solid var(--border);${hojeCel}border-radius:6px;padding:5px 6px"><div style="font-size:.76rem;font-weight:700;color:var(--text-muted)">${d}</div>${itens}</div>`;
+  };
+  const vazia = `<div style="min-height:${altura}px;border-radius:6px"></div>`;
+  const resumoSem = (t, ativa)=>{
+    const corpo = ativa
+      ? `<div>Esperado <b style="color:var(--text-primary)">${t.esperado}</b></div>
+         <div>Atendido <b style="color:var(--text-primary)">${t.atendido}</b></div>
+         <div style="color:#16a34a">No prazo <b>${t.ok}</b></div>
+         <div style="color:#dc2626">Fora <b>${t.fora}</b></div>
+         <div style="color:var(--text-muted)">A sair <b>${t.aSair}</b></div>`
+      : '';
+    return `<div style="min-height:${altura}px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:6px;padding:7px 8px;font-size:.74rem;line-height:1.5;color:var(--text-secondary)">${corpo}</div>`;
+  };
+
+  const cab = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB','ESPERADO × ATENDIDO'].map((x, i)=>`<div style="text-align:center;font-size:${i === 7 ? '.58' : '.7'}rem;font-weight:700;letter-spacing:${i === 7 ? '.4' : '1.1'}px;color:var(--text-muted);padding:4px 0">${x}</div>`).join('');
+  let cs = '';
+  for(let w = 0; w < nSem; w++){
+    for(let i = 0; i < 7; i++){
+      const d = w*7 + i - primeiro + 1;
+      cs += (d < 1 || d > dias) ? vazia : cel(d);
+    }
+    cs += resumoSem(T[w], semIdx === null || w === semIdx);
+  }
+  const grade = `<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) 96px;gap:5px">${cab}${cs}</div>`;
+
+  // totais: semana + acumulado (deck semanal) ou mês inteiro (tela / deck mensal)
+  const bloco = (rotulo, t)=>{
+    const julg = t.ok + t.fora;
+    const kpi = (r, v, sub, cor)=>`<div style="flex:1;min-width:0"><div style="font-size:1.7rem;font-weight:700;line-height:1${cor ? ';color:'+cor : ''}">${v}</div><div style="font-size:.68rem;font-weight:700;letter-spacing:1.1px;color:var(--text-muted);margin-top:6px">${r}</div>${sub ? '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:2px">'+sub+'</div>' : ''}</div>`;
+    return _pnh.caixa(`${_pnh.rot(rotulo)}
+      <div style="display:flex;gap:14px;margin-top:10px">${kpi('ESPERADO', t.esperado, 'rotas agendadas')}${kpi('ATENDIDO', t.atendido, 'rotas que saíram')}${kpi('NO PRAZO', t.ok, pct(t.ok, julg)+' das julgadas', '#16a34a')}${kpi('FORA DO PRAZO', t.fora, pct(t.fora, julg)+' das julgadas', '#dc2626')}${kpi('A SAIR', t.aSair, 'ainda dentro da data')}</div>`, 'var(--border-med)', 'margin-bottom:16px;padding:18px 22px');
+  };
+  const semIni = semIdx !== null && sems[semIdx] ? sems[semIdx] : null;
+  const wDe = semIni ? semIni.ini.getDate() : 1, wAte = semIni ? semIni.fim.getDate() : dias;
+  let topo;
+  if(semIni) topo = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">${bloco('SEMANA '+(semIdx+1)+' · '+ddmm(wDe)+' A '+ddmm(wAte), soma(semIdx, semIdx))}${bloco('ACUMULADO DO MÊS · 01/'+mm2+' A '+ddmm(wAte), soma(0, semIdx))}</div>`;
+  else topo = bloco('MÊS · 01/'+mm2+' A '+ddmm(dias), soma(0, nSem-1));
+
+  // Atrasos e motivos — as saídas fora do prazo (saíram com atraso ou passaram da data sem saída); no deck Semanal, só as da semana
+  const atrasos = D.itens.filter(x=>x.foraPrazo && (semIdx === null || semDe(x.a.data) === semIdx)).map(x=>({ rota:x.a.rota, data:x.a.data, motivo:_libRotuloMotivo(x) }))
+    .sort((p,q)=> p.data < q.data ? 1 : p.data > q.data ? -1 : 0);
+  const motivosMap = {};
+  atrasos.forEach(a=>{ motivosMap[a.motivo] = (motivosMap[a.motivo]||0)+1; });
+  const motivosResumo = Object.entries(motivosMap).sort((a,b)=>b[1]-a[1]);
+  const totalMot = atrasos.length || 1;
+  const coresMotivo = ['#ef4444','#fb923c','#f472b6','#a78bfa','#60a5fa','#9ca3af'];
+  const listaMotivos = motivosResumo.length ? motivosResumo.map(([label, n], i)=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+      <span style="width:10px;height:10px;border-radius:2px;background:${coresMotivo[i % coresMotivo.length]};flex-shrink:0"></span>
+      <span style="flex:1;font-size:.88rem;font-weight:600;color:var(--text-primary)">${_pnh.esc(label)}</span>
+      <span style="font-size:.84rem;color:var(--text-secondary)">${Math.round(n/totalMot*100)}%</span>
+      <span style="font-size:.88rem;font-weight:700;color:var(--text-primary);min-width:24px;text-align:right">${n}</span></div>`).join('')
+    : `<div style="color:var(--text-muted);font-size:.88rem;text-align:center;padding:18px">Nenhum atraso ${semIni ? 'nesta semana' : 'no mês'}</div>`;
+  const MAXL = 8;
+  const listaAtrasos = atrasos.slice(0, MAXL).map(a=>`<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+      <div style="display:flex;justify-content:space-between;gap:8px"><span style="font-weight:700;color:var(--text-primary)">${_pnh.esc(a.rota || '—')}</span><span style="color:var(--text-muted)">${a.data ? a.data.split('-').reverse().join('/') : '—'}</span></div>
+      <div style="color:var(--text-secondary);margin-top:1px">${_pnh.esc(a.motivo)}</div></div>`).join('');
+  const mais = atrasos.length > MAXL ? `<div style="text-align:center;padding-top:8px;font-size:.78rem;color:var(--text-muted)">+ ${atrasos.length - MAXL} atraso${atrasos.length - MAXL === 1 ? '' : 's'} não listado${atrasos.length - MAXL === 1 ? '' : 's'}</div>` : '';
+  const painelMotivos = _pnh.caixa(`<div style="font-size:1.1rem;font-weight:700;letter-spacing:.3px">ATRASOS E MOTIVOS</div>
+      <div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-top:2px">${atrasos.length} ATRASO${atrasos.length === 1 ? '' : 'S'} ${semIni ? 'NA SEMANA '+(semIdx+1) : 'NO MÊS'}</div>
+      <div style="margin-top:12px">${listaMotivos}</div>
+      ${atrasos.length ? `<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:10px"><div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);margin-bottom:4px">${semIni ? 'ATRASOS DA SEMANA' : 'ÚLTIMOS ATRASOS'}</div>${listaAtrasos}${mais}</div>` : ''}`, 'var(--border-med)', 'padding:20px 22px');
+
+  const legenda = [['ok','Saiu no prazo'],['fora','Saiu com atraso ou passou da data sem saída'],['aSair', semIni ? 'Ainda a sair e rotas das outras semanas' : 'Ainda a sair (data de hoje em diante)']].map(([k, tx])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${tx}</span>`).join('');
+  const corpo = `${topo}
+      <div style="display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:18px;align-items:start">
+        <div>${grade}<div style="font-size:.78rem;color:var(--text-secondary);margin-top:10px">${legenda}</div></div>
+        ${painelMotivos}
+      </div>
+      ${_pnh.nota('Fonte: Calendário de Saídas (rotas agendadas) cruzado com as saídas da Expedição. <b>Esperado</b> = rotas agendadas na semana; <b>atendido</b> = rotas que saíram (no prazo ou com atraso); <b>no prazo</b> = saiu na data agendada ou antes; <b>fora</b> = saiu depois da data ou passou da data sem saída registrada; <b>a sair</b> = rota de hoje em diante que ainda não saiu (não é julgada). % no prazo = no prazo ÷ (no prazo + fora). Os motivos são os registrados no agendamento (&quot;Não informado&quot; quando vazio). Semanas de domingo a sábado.')}`;
+  return _pnh.casca('SAÍDA DO VEÍCULO · LIBERAÇÃO NO PRAZO · '+P.nome+' '+P.ano+(rireSel === 'RI' ? ' · R.I.' : rireSel === 'RE' ? ' · R.E.' : '')+(semIni ? ' · SEMANA '+(semIdx+1) : ''), 'Esperado × atendido'+(semIni ? ' — semana '+(semIdx+1) : ' por semana'), corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
 // demandas_rota não tem coluna de unidade — deriva o conjunto de cargas de
@@ -38465,36 +38494,8 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
   try {
     const mes = mesSelecionado || window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const rireSel = window._painelIndRireSel || '';
-    const { itens, noPrazo, fora, hoje } = await _liberacaoCalendarioMes(mes, window._painelIndUndSel||'', rireSel);
-
-    // ── Esperado × Atendido por SEMANA DO CALENDÁRIO (domingo a sábado — a mesma linha do
-    // Calendário de Saídas: 1ª semana = dia 1 até o 1º sábado). No mês em andamento só aparecem
-    // as semanas até a de hoje; semanas futuras não são cobradas. "Atendido" = saiu (verde ou vermelho).
-    const [ano, mm] = mes.split('-').map(Number);
-    const primeiroDow = new Date(ano, mm-1, 1).getDay();
-    const diasMes = new Date(ano, mm, 0).getDate();
-    const nSem = Math.ceil((primeiroDow + diasMes) / 7);
-    const semDe = dataStr => Math.floor((Number(dataStr.slice(8,10)) - 1 + primeiroDow) / 7) + 1;
-    const mesAtual = hoje.slice(0,7) === mes;
-    const ultSem = mesAtual ? semDe(hoje) : nSem;
-    const semData = Array.from({length: ultSem}, ()=>({esperado:0, atendido:0}));
-    itens.forEach(x=>{
-      const s = semDe(x.a.data);
-      if(s < 1 || s > ultSem) return;
-      semData[s-1].esperado++;
-      if(x.est === 'ok' || x.est === 'atraso') semData[s-1].atendido++;
-    });
-
-    // ── Atrasos e motivos — as saídas fora do prazo do calendário (saíram com atraso ou passaram
-    // da data sem saída registrada), com o motivo registrado no agendamento.
-    const atrasos = itens.filter(x=>x.foraPrazo).map(x=>{
-      const a = x.a;
-      const label = _libRotuloMotivo(x);
-      return { rota:a.rota, data:a.data, motivo_label:label };
-    }).sort((p,q)=> p.data < q.data ? 1 : p.data > q.data ? -1 : 0);
-    const motivosMap = {};
-    atrasos.forEach(a=>{ motivosMap[a.motivo_label] = (motivosMap[a.motivo_label]||0)+1; });
-    const motivosResumo = Object.entries(motivosMap).sort((a,b)=>b[1]-a[1]);
+    const pre = await _liberacaoCalendarioMes(mes, window._painelIndUndSel||'', rireSel);
+    const { noPrazo, fora } = pre;
 
     const eyebrowRire = rireSel==='RI' ? ' · R.I.' : rireSel==='RE' ? ' · R.E.' : '';
     container.innerHTML = renderRelatorioNoPrazoSimples({
@@ -38502,10 +38503,11 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
       mesRef: mes, metaPct: 90, noPrazoCount: noPrazo, foraCount: fora,
       noPrazoDesc: 'Saiu na data agendada (Calendário de Saídas)',
       foraDesc: 'Saiu depois da data, ou passou da data sem saída registrada'
-    }) + renderLiberacaoSemanalMotivos({ semData, motivosResumo, atrasos });
+    }) + '<div style="margin-top:24px">' + await _pnHtmlLiberacaoCalendario(mes, window._painelIndUndSel||'', { naTela:true }, pre).catch(e=>{
+      if(e && e.semDado) return '<p style="text-align:center;padding:30px;color:var(--text-muted)">Sem rotas agendadas no Calendário de Saídas neste período.</p>';
+      throw e;
+    }) + '</div>';
     _featherReplace();
-
-    _renderGraficoLiberacaoSemanal(semData);
   } catch(e){
     console.error('Erro ao carregar liberação no prazo:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
