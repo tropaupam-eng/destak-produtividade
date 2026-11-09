@@ -10183,7 +10183,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.246';
+const APP_VERSION = '4.89.247';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -39219,7 +39219,7 @@ async function _carregClassificarMes(mes, undSel, rireSel){
   const [anoC, numMesC] = mes.split('-').map(Number);
   const proxMesC = numMesC===12 ? (anoC+1)+'-01' : anoC+'-'+String(numMesC+1).padStart(2,'0');
   const cargasUnidade = await _cargasDaUnidadeNoMes(mes, undSel);
-  const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&status=not.in.(cancelado,pendente,separacao,carregamento,formacao)&select=carga,data_saida,rota&limit=5000`) || [];
+  const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&status=not.in.(cancelado,pendente,separacao,carregamento,formacao)&select=carga,data_saida,rota,ts_aguardando_nf,ts_aguardando_manifesto,ts_pronto_viagem&limit=5000`) || [];
   // mesma carga pode ter mais de uma linha: fica a saída mais antiga (mesmo critério do OTIF)
   const porCargaDedup = {};
   demandas.forEach(d=>{
@@ -39230,29 +39230,23 @@ async function _carregClassificarMes(mes, undSel, rireSel){
     if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return false;
     return _passaFiltroRire(d.rota, rireSel);
   });
-  // conferência 'ok' de cada carga em QUALQUER mês (conferencia_pedidos tem 1 linha POR PEDIDO — limit alto de propósito)
-  const cargasStr = [...new Set(demandasFiltradas.map(d=>d.carga))].join(',');
-  const conferencias = cargasStr
-    ? await supaFetch(`conferencia_pedidos?carga=in.(${cargasStr})&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=50000`) || []
-    : [];
-  const ultimaConfPorCarga = {};
-  conferencias.forEach(conf => {
-    if(!ultimaConfPorCarga[conf.carga] || conf.conferido_em > ultimaConfPorCarga[conf.carga]) ultimaConfPorCarga[conf.carga] = conf.conferido_em;
-  });
   const agendamentos = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga`).catch(()=>[]) || [];
   const chave = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
   const agendKeys   = new Set(agendamentos.map(a=>chave(a.rota)+'|'+a.data));
   const agendCargas = new Set(agendamentos.filter(a=>a.carga).map(a=>String(a.carga)));
+  const agendPorCarga = new Map();   // carga vinculada -> dia agendado no calendário
+  agendamentos.forEach(a=>{ if(a.carga && !agendPorCarga.has(String(a.carga))) agendPorCarga.set(String(a.carga), a.data); });
   const ehAgendada = d => agendKeys.has(chave(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargas.has(String(d.carga)));
+  // Carregamento FINALIZADO = o conferente concluiu o carregamento (100% conferido): a carga avança para "aguardando NF" e o sistema
+  // carimba a data (ts_aguardando_nf; se faltar, a etapa seguinte). Prazo = o dia agendado no Calendário de Saídas (que não muda).
   const cargas = demandasFiltradas.map(d=>{
-    let tipo;
-    if(!ehAgendada(d)) tipo = 'extra';
-    else {
-      const ultimaConf = ultimaConfPorCarga[d.carga];
-      // sem conferência 'ok' = não dá pra confirmar que saiu no prazo — conta contra; BRT evita "fora" fantasma perto da virada do dia
-      tipo = (ultimaConf && dataLocalBRT(ultimaConf) <= d.data_saida) ? 'ok' : 'fora';
-    }
-    return { carga:d.carga, rota:(d.rota||'').trim().toUpperCase(), data:d.data_saida, tipo };
+    const fimTs = d.ts_aguardando_nf || d.ts_aguardando_manifesto || d.ts_pronto_viagem || null;
+    const finalizado = fimTs ? dataLocalBRT(fimTs) : null;   // BRT evita "fora" fantasma perto da virada do dia
+    const prevista = ehAgendada(d) ? (agendPorCarga.get(String(d.carga)) || d.data_saida) : null;   // dia agendado no Calendário de Saídas (só das programadas)
+    // dia do calendário = dia em que o carregamento foi finalizado; se foi em outro mês, cai no dia agendado / data de saída
+    const dataRef = (finalizado && finalizado.slice(0,7) === mes) ? finalizado : (prevista || d.data_saida);
+    const tipo = !prevista ? 'extra' : ((finalizado && finalizado <= prevista) ? 'ok' : 'fora');   // programada: verde se finalizou até o dia agendado, vermelho se depois
+    return { carga:d.carga, rota:(d.rota||'').trim().toUpperCase(), data:d.data_saida, dataRef, finalizado, prevista, tipo };
   });
   const previstas = agendamentos.filter(a=>{
     if(!(a.rota||'').trim() || !a.data) return false;
@@ -39282,15 +39276,17 @@ async function _pnHtmlCarregamentoCalendario(mes, und, ctx){
 
   // chips por dia (cargas expedidas na data de saída; previstas sem carga em cinza)
   const porDia = new Map();
-  const add = (data, rota, est)=>{ if(!porDia.has(data)) porDia.set(data, []); porDia.get(data).push({ rota, est }); };
+  const add = (data, rota, est, prev)=>{ if(!porDia.has(data)) porDia.set(data, []); porDia.get(data).push({ rota, est, prev }); };
   const T = Array.from({length:nSem}, ()=>({ previstas:0, expedidas:0, ok:0, fora:0, extra:0 }));
   D.cargas.forEach(c=>{
-    add(c.data, c.rota, c.tipo);
-    const w = semDe(c.data); if(w < 0 || w >= nSem) return;
+    // toda carga no dia em que o carregamento foi finalizado; programada mostra o dia agendado ("prev.") quando é outro dia
+    if(c.finalizado && c.finalizado.slice(0,7) === mes) add(c.finalizado, c.rota, c.tipo, (c.tipo !== 'extra' && c.prevista && c.prevista !== c.finalizado) ? c.prevista : null);
+    const w = semDe(c.dataRef); if(w < 0 || w >= nSem) return;
     T[w].expedidas++; T[w][c.tipo]++;
   });
-  const cargasPorChave = new Set(D.cargas.map(c=>D.chave(c.rota)+'|'+c.data));
-  const cargasVinc = new Set(D.cargas.map(c=>String(c.carga)));
+  const agendadas = D.cargas.filter(c=>c.tipo !== 'extra');
+  const cargasPorChave = new Set(agendadas.map(c=>D.chave(c.rota)+'|'+c.data));
+  const cargasVinc = new Set(agendadas.map(c=>String(c.carga)));
   D.previstas.forEach(a=>{
     const w = semDe(a.data); if(w >= 0 && w < nSem) T[w].previstas++;
     const casou = (a.carga && cargasVinc.has(a.carga)) || cargasPorChave.has(D.chave(a.rota)+'|'+a.data);
@@ -39306,7 +39302,7 @@ async function _pnHtmlCarregamentoCalendario(mes, und, ctx){
     extra:    'background:rgba(37,99,235,.20);color:#3b82f6',
   };
   const ORDEM = { fora:0, ok:1, extra:2, prevista:3 };
-  const chip = x=>`<div style="font-size:.74rem;font-weight:700;line-height:1.3;border-radius:4px;padding:2px 6px;margin-top:3px;${ESTILO[x.est]}">${_pnh.esc(x.rota)}</div>`;
+  const chip = x=>`<div style="font-size:.74rem;font-weight:700;line-height:1.3;border-radius:4px;padding:2px 6px;margin-top:3px;${ESTILO[x.est]}">${_pnh.esc(x.rota)}${x.prev ? ' <span style="font-weight:600;opacity:.85">· prev. '+x.prev.slice(8,10)+'/'+x.prev.slice(5,7)+'</span>' : ''}</div>`;
   const cel = d=>{
     const key = mes+'-'+String(d).padStart(2,'0');
     const itens = (porDia.get(key) || []).slice().sort((a,b)=>ORDEM[a.est]-ORDEM[b.est] || a.rota.localeCompare(b.rota)).map(chip).join('');
@@ -39351,23 +39347,23 @@ async function _pnHtmlCarregamentoCalendario(mes, und, ctx){
       <div style="display:flex;gap:18px;margin-top:12px">${kpi('PREVISTAS', t.previstas, 'no calendário')}${kpi('EXPEDIDAS', t.expedidas, 'cargas que saíram')}${kpi('NO PRAZO', t.ok, pct(t.ok, t.expedidas)+' das expedidas', '#16a34a')}${kpi('FORA DO PRAZO', t.fora, pct(t.fora, t.expedidas)+' das expedidas', '#dc2626')}${kpi('ROTAS EXTRAS', t.extra, pct(t.extra, t.expedidas)+' das expedidas', '#3b82f6')}</div>
       <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:10px;font-size:.84rem;color:var(--text-secondary)">Carregamento no prazo: <b style="color:var(--text-primary)">${pct(t.ok, agend)}</b> (${t.ok} de ${agend} cargas agendadas) · Extras: <b style="color:var(--text-primary)">${pct(t.extra, t.expedidas)}</b> de todas as cargas expedidas</div>`, 'var(--border-med)', 'margin-bottom:18px;padding:20px 24px');
   };
+  const hojeC = hojeDataBRT();
+  const ultW = hojeC.slice(0,7) === mes ? Math.min(nSem-1, semDe(hojeC)) : (hojeC.slice(0,7) < mes ? 0 : nSem-1);
   let topo;
   if(semIni){
     const acum = soma(0, semIdx);
     topo = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">${bloco('SEMANA '+(semIdx+1)+' · '+ddmm(wDe)+' A '+ddmm(wAte), soma(semIdx, semIdx))}${bloco('ACUMULADO DO MÊS · 01/'+mm2+' A '+ddmm(wAte), acum)}</div>`;
   } else {
     // mês em andamento: totais só até a semana de hoje (igual ao quadro por semana) — semanas futuras não são cobradas
-    const hojeC = hojeDataBRT();
-    const ultW = hojeC.slice(0,7) === mes ? Math.min(nSem-1, semDe(hojeC)) : (hojeC.slice(0,7) < mes ? 0 : nSem-1);
     const fimW = sems[ultW] ? sems[ultW].fim.getDate() : dias;
     topo = bloco('MÊS · 01/'+mm2+' A '+ddmm(fimW)+(fimW < dias ? ' (ATÉ A SEMANA DE HOJE)' : ''), soma(0, ultW));
   }
 
-  const legenda = [['ok','Carregada no prazo'],['fora','Não carregada no prazo'],['extra','Rota extra (saiu sem agendamento)'],['prevista','Prevista, ainda sem carga expedida']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
+  const legenda = [['ok','Programada carregada até a data agendada'],['fora','Programada carregada depois da data agendada'],['extra','Rota extra (sem agendamento)'],['prevista','Prevista, ainda sem carga']].map(([k, t])=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:18px"><span style="display:inline-block;width:14px;height:14px;border-radius:3px;${ESTILO[k]}"></span>${t}</span>`).join('');
   const corpo = `${topo}
       ${grade}
       <div style="font-size:.8rem;color:var(--text-secondary);margin-top:12px">${legenda}</div>
-      ${_pnh.nota('Fonte: cargas da Expedição que saíram (data de saída) cruzadas com a conferência do armazém e com o Calendário de Saídas. <b>No prazo</b> = carga agendada com a conferência concluída até a data de saída; <b>fora</b> = conferida depois da saída ou sem conferência registrada; <b>extra</b> = saiu sem agendamento, não tem prazo e não entra no % de carregamento no prazo. Cinza = rota prevista no calendário que ainda não tem carga expedida (a carga aparece na data em que saiu). Semanas de domingo a sábado. O número vem do cálculo do sistema, mesmo nos meses com planilha de Rotas Externas importada.')}`;
+      ${_pnh.nota('Fonte: Calendário de Saídas (dias e rotas previstas) cruzado com as cargas da Expedição que saíram e com a conferência do armazém. Cada carga aparece no dia em que o carregamento foi finalizado; nas programadas, "prev." mostra o dia agendado no Calendário de Saídas. <b>No prazo</b> = carga agendada cujo carregamento foi finalizado (conferente concluiu) até o dia agendado no Calendário de Saídas; <b>fora</b> = finalizado depois do dia agendado, ou sem finalização registrada; <b>extra</b> = saiu sem agendamento, não tem prazo e não entra no % de carregamento no prazo. Cinza = rota prevista no calendário que ainda não tem carga expedida. As extras (azul) não têm dia agendado. Semanas de domingo a sábado. O número vem do cálculo do sistema, mesmo nos meses com planilha de Rotas Externas importada.')}`;
   return _pnh.casca('EXPEDIÇÃO · CARREGAMENTO NO PRAZO · '+P.nome+' '+P.ano+(semIni ? ' · SEMANA '+(semIdx+1) : ''), 'Calendário de carregamento'+(semIni ? ' — semana '+(semIdx+1) : ''), corpo, 'OPERAÇÕES / EXPEDIÇÃO');
 }
 
@@ -39428,7 +39424,7 @@ function _renderCarregPrazoSemanal({ mesRef, eyebrow, metaPct, semanas }){
         <div style="display:flex;align-items:baseline"><span style="font-size:3.58rem;font-weight:700;line-height:1">${agend>0 ? pctPrazo.toFixed(1).replace('.',',') : '—'}</span>${agend>0?'<span style="font-size:1.57rem;font-weight:700;margin-left:2px">%</span>':''}</div>
         <div>
           <div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">CARREGAMENTO NO PRAZO · META ${metaPct}%</div>
-          <div style="font-size:.9rem;color:var(--text-secondary);margin-top:2px">${T.noPrazo} de ${agend} cargas agendadas com a conferência do armazém até a data de saída · ${agend>0 ? (dentroMeta?'Meta cumprida':'Meta não cumprida') : 'sem cargas agendadas expedidas'}</div>
+          <div style="font-size:.9rem;color:var(--text-secondary);margin-top:2px">${T.noPrazo} de ${agend} cargas agendadas com o carregamento finalizado até o dia agendado · ${agend>0 ? (dentroMeta?'Meta cumprida':'Meta não cumprida') : 'sem cargas agendadas expedidas'}</div>
         </div>
       </div>
 
@@ -39454,7 +39450,7 @@ function _renderCarregPrazoSemanal({ mesRef, eyebrow, metaPct, semanas }){
           <span><span style="display:inline-block;width:10px;height:10px;background:#60a5fa;border-radius:2px"></span> Extra</span>
         </div>
         <div style="margin-top:12px;font-size:.78rem;line-height:1.5;color:var(--text-muted)">
-          <b>Previstas</b> = rotas do Calendário de Saídas com data na semana. <b>Expedidas</b> = cargas que saíram na semana (pela data de saída). <b>No prazo / Fora</b> = só as cargas agendadas: conferência do armazém até a data de saída é no prazo; depois da saída, ou sem conferência registrada, é fora. <b>Extras</b> = saíram sem agendamento: não têm prazo, por isso ficam fora do % de prazo e aparecem só como quantidade e % das cargas expedidas. Semanas de domingo a sábado, até a semana de hoje.
+          <b>Previstas</b> = rotas do Calendário de Saídas com data na semana. <b>Expedidas</b> = cargas que saíram na semana (pela data de saída). <b>No prazo / Fora</b> = só as cargas agendadas: carregamento finalizado (conferente concluiu) até o dia agendado no Calendário de Saídas é no prazo; depois, ou sem finalização registrada, é fora. <b>Extras</b> = saíram sem agendamento: não têm prazo, por isso ficam fora do % de prazo e aparecem só como quantidade e % das cargas expedidas. Semanas de domingo a sábado, até a semana de hoje.
         </div>
       </div>`}
 
@@ -39510,7 +39506,7 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
       if(sm >= 1 && sm <= ultSemC) semanas[sm-1].previstas++;
     });
     dados.cargas.forEach(c=>{
-      const sm = semDeC(c.data || (mes+'-01'));
+      const sm = semDeC(c.dataRef || c.data || (mes+'-01'));
       if(sm < 1 || sm > ultSemC) return;
       const w = semanas[sm-1];
       w.expedidas++;
@@ -39534,52 +39530,10 @@ async function carregarPainelCarregamentoPrazo(mesSelecionado){
 // rodar em loop pelos 12 meses do ano na visão anual (mesma lógica do card
 // mensal, sem a formatação de saída).
 async function _calcCarregamentoNoPrazoMes(mes, undSel, rireSel){
-  const [anoC, numMesC] = mes.split('-').map(Number);
-  const proxMesC = numMesC===12 ? (anoC+1)+'-01' : anoC+'-'+String(numMesC+1).padStart(2,'0');
   if(rireSel !== 'RI'){ const dePlanilha = await _carregPrazoDaPlanilha(mes, undSel); if(dePlanilha) return dePlanilha; }   // mês com planilha de Rotas Externas (em R.I. segue o sistema)
-  const cargasUnidade = await _cargasDaUnidadeNoMes(mes, undSel);
-
-  const demandas = await supaFetch(`demandas_rota?data_saida=gte.${mes}-01&data_saida=lt.${proxMesC}-01&status=not.in.(cancelado,pendente,separacao,carregamento,formacao)&select=carga,data_saida,rota&limit=5000`) || [];
-  const porCargaDedup = {};
-  demandas.forEach(d=>{
-    const atual = porCargaDedup[d.carga];
-    if(!atual || (d.data_saida && d.data_saida < atual.data_saida)) porCargaDedup[d.carga] = d;
-  });
-  const demandasFiltradas = Object.values(porCargaDedup).filter(d=>{
-    if(cargasUnidade && !cargasUnidade.has(String(d.carga))) return false;
-    if(!_passaFiltroRire(d.rota, rireSel)) return false;
-    return true;
-  });
-
-  const cargasStr = [...new Set(demandasFiltradas.map(d=>d.carga))].join(',');
-  const conferencias = cargasStr
-    ? await supaFetch(`conferencia_pedidos?carga=in.(${cargasStr})&status=eq.ok&select=carga,conferido_em&order=carga.asc,conferido_em.asc&limit=50000`) || []
-    : [];
-
-  const ultimaConfPorCarga = {};
-  conferencias.forEach(conf => {
-    if (!ultimaConfPorCarga[conf.carga] || conf.conferido_em > ultimaConfPorCarga[conf.carga]) {
-      ultimaConfPorCarga[conf.carga] = conf.conferido_em;
-    }
-  });
-
-  const agendamentosMesCarreg = await supaFetch(`agendamentos_rotas?mes_ano=eq.${mes}&select=rota,data,carga`).catch(()=>[]) || [];
-  const _rotaChaveCarreg = r => (normalizarRota(r||'') || r || '').trim().toUpperCase();
-  const agendKeysCarreg   = new Set(agendamentosMesCarreg.map(a=>_rotaChaveCarreg(a.rota)+'|'+a.data));
-  const agendCargasCarreg = new Set(agendamentosMesCarreg.filter(a=>a.carga).map(a=>String(a.carga)));
-  const _ehAgendada = d => agendKeysCarreg.has(_rotaChaveCarreg(d.rota)+'|'+(d.data_saida||'')) || (d.carga && agendCargasCarreg.has(String(d.carga)));
-
-  const _dataLocalBRT = dataLocalBRT;
-
+  const D = await _carregClassificarMes(mes, undSel, rireSel);   // mesma classificação do quadro por semana e do calendário
   let noPrazo = 0, fora = 0;
-  demandasFiltradas.forEach(demanda=>{
-    if(!_ehAgendada(demanda)){ return; }   // extra: fora da conta (regra do usuário 09/11)
-    const ultimaConf = ultimaConfPorCarga[demanda.carga];
-    if(!ultimaConf){ fora++; return; }
-    const confData = _dataLocalBRT(ultimaConf);
-    if(confData <= demanda.data_saida) noPrazo++; else fora++;
-  });
-
+  D.cargas.forEach(c=>{ if(c.tipo === 'ok') noPrazo++; else if(c.tipo === 'fora') fora++; });
   return { noPrazo, fora };
 }
 
