@@ -10202,7 +10202,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.257';
+const APP_VERSION = '4.89.258';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -35542,6 +35542,7 @@ const PN_ROTEIRO = [
   // Carregamento no Prazo é da Expedição (pedido do usuário, 03/11); não existe no ABC.pptx (n:null)
   { tipo:'card', n:null, titulo:'Carregamento no Prazo',               fontes:[['carregamento-prazo',0,0]], rire:'RE' },
   { tipo:'dados', n:null, titulo:'Carregamento no Prazo — calendário', dados:'carregCalendario' },   // semanal: semana escolhida + acumulado do mês
+  { tipo:'dados', n:null, titulo:'Abastecimento de Loja', dados:'abastecimentoLoja' },   // cargas expedidas e para que loja foram; semanal: semana + acumulado do mês
   { tipo:'card', n:null, titulo:'Carregamento no Prazo (visão anual)', fontes:[['carregamento-prazo',2,0]], rire:'RE', anual:true },
   { tipo:'dados', n:7, titulo:'Erro de conferência', dados:'erroConferencia' },
   // ARMAZÉM — ordem pedida pelo usuário (04/11): Absenteísmo, Absenteísmo Ano,
@@ -36258,6 +36259,72 @@ async function _pnHtmlComparativoVeiculos(mes, und, ctx){
   return _pnh.casca('FROTA INTERNA · VALOR × PEDIDOS · '+P.nome, 'Comparativo — valor × pedidos', corpo, 'OPERAÇÕES / MONITORAMENTO');
 }
 
+// ── Abastecimento de Loja no deck (Gerar Apresentação) — pedido do usuário, 09/11 ──
+// Cargas de abastecimento de loja expedidas e para qual loja foram. Mensal: o mês por loja. Semanal (ctx.semanaIdx): só a semana
+// escolhida (por loja e carga a carga) + o acumulado do mês até o fim dela. Fonte: tabela abastecimento_loja (tela Abastec. Loja),
+// dia = data de saída; unidade do filtro = unidade de ORIGEM da carga (igual ao card da aba Abastecimento de Loja).
+async function _pnHtmlAbastecimentoLoja(mes, und, ctx){
+  const P = _pnPeriodoMes(mes);
+  const [anoM, numM] = mes.split('-').map(Number);
+  const proxMes = numM === 12 ? (anoM+1)+'-01' : anoM+'-'+String(numM+1).padStart(2,'0');
+  let rows = await supaFetch(`abastecimento_loja?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&select=carga,unidade,unidade_origem,quantidade,valor,confirmado,data_saida&order=data_saida.asc&limit=5000`).catch(()=>[]) || [];
+  if(und) rows = rows.filter(r=>(r.unidade_origem||'') === und);
+  if(!rows.length) throw _pnSemDado('sem abastecimento de loja com saída em '+P.nome.toLowerCase());
+  const semIdx = (ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
+  const sems = _calcSemanas(mes);
+  const semIni = semIdx !== null && sems[semIdx] ? sems[semIdx] : null;
+  const mm2 = String(P.mes).padStart(2,'0');
+  const dd = n => String(n).padStart(2,'0');
+  const diaStr = n => mes+'-'+dd(n);
+  const wDe = semIni ? semIni.ini.getDate() : 1, wAte = semIni ? semIni.fim.getDate() : new Date(P.ano, P.mes, 0).getDate();
+  const noPeriodo = (r, de, ate) => (r.data_saida||'') >= diaStr(de) && (r.data_saida||'') <= diaStr(ate);
+  const resumo = lista => ({
+    cargas: lista.length,
+    ped: lista.reduce((s,r)=>s+(Number(r.quantidade)||0), 0),
+    val: lista.reduce((s,r)=>s+(Number(r.valor)||0), 0),
+    lojas: new Set(lista.map(r=>(r.unidade||'(sem loja)').trim())).size,
+  });
+  const porLoja = lista => {
+    const m = {};
+    lista.forEach(r=>{ const k = (r.unidade||'(sem loja)').trim(); const o = m[k] = m[k] || { cargas:0, ped:0, val:0 }; o.cargas++; o.ped += Number(r.quantidade)||0; o.val += Number(r.valor)||0; });
+    return m;
+  };
+  const kpi = (r, v, sub)=>`<div style="flex:1;min-width:0"><div style="font-size:1.9rem;font-weight:700;line-height:1">${v}</div><div style="font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);margin-top:6px">${r}</div>${sub ? '<div style="font-size:.76rem;color:var(--text-secondary);margin-top:2px">'+sub+'</div>' : ''}</div>`;
+  const bloco = (rotulo, t, extra)=>_pnh.caixa(`${_pnh.rot(rotulo)}
+      <div style="display:flex;gap:18px;margin-top:12px">${kpi('CARGAS EXPEDIDAS', _pnh.n(t.cargas), 'abastecimento de loja')}${kpi('LOJAS ATENDIDAS', _pnh.n(t.lojas))}${kpi('PEDIDOS', _pnh.n(t.ped))}</div>
+      <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:10px;font-size:.84rem;color:var(--text-secondary)">Valor das cargas: <b style="color:var(--text-primary)">${_pnh.v(t.val)}</b></div>`, 'var(--border-med)', 'margin-bottom:18px;padding:20px 24px');
+  const th = 'padding:8px 10px;font-size:.72rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);text-align:right;border-bottom:1px solid var(--border-med);white-space:nowrap';
+  const td = 'padding:9px 10px;font-size:.92rem;text-align:right;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums';
+  let corpo, eyebrow;
+  if(semIni){
+    const lSem = rows.filter(r=>noPeriodo(r, wDe, wAte)), lAcum = rows.filter(r=>noPeriodo(r, 1, wAte));
+    const tS = resumo(lSem), tA = resumo(lAcum), mS = porLoja(lSem), mA = porLoja(lAcum);
+    const nomes = Object.keys(mA).sort((a,b)=>(mS[b]?.cargas||0)-(mS[a]?.cargas||0) || mA[b].cargas-mA[a].cargas || a.localeCompare(b));
+    const DIAS3 = ['dom','seg','ter','qua','qui','sex','sáb'];
+    const diasDe = n=>{ const c = {}; lSem.filter(r=>(r.unidade||'(sem loja)').trim() === n).forEach(r=>{ const k = DIAS3[new Date(r.data_saida+'T12:00:00').getDay()]+' '+r.data_saida.slice(8,10); c[k] = (c[k]||0)+1; }); return Object.entries(c).map(([k, q])=>k+(q > 1 ? ' ('+q+')' : '')).join(', ') || '—'; };
+    const linhas = nomes.map(n=>`<tr><td style="${td};text-align:left;font-weight:700">${_pnh.esc(n)}</td><td style="${td};text-align:left;color:var(--text-secondary);font-size:.84rem">${diasDe(n)}</td>
+        <td style="${td}">${mS[n] ? _pnh.n(mS[n].cargas) : '—'}</td><td style="${td}">${mS[n] ? _pnh.n(mS[n].ped) : '—'}</td><td style="${td}">${mS[n] ? _pnh.v(mS[n].val) : '—'}</td>
+        <td style="${td};border-left:1px solid var(--border-med)">${_pnh.n(mA[n].cargas)}</td><td style="${td}">${_pnh.n(mA[n].ped)}</td><td style="${td}">${_pnh.v(mA[n].val)}</td></tr>`).join('');
+    const total = `<tr style="background:var(--bg-hover)"><td style="${td};text-align:left;font-weight:700;border-bottom:none">TOTAL</td><td style="${td};border-bottom:none"></td>
+        <td style="${td};font-weight:700;border-bottom:none">${_pnh.n(tS.cargas)}</td><td style="${td};font-weight:700;border-bottom:none">${_pnh.n(tS.ped)}</td><td style="${td};font-weight:700;border-bottom:none">${_pnh.v(tS.val)}</td>
+        <td style="${td};font-weight:700;border-bottom:none;border-left:1px solid var(--border-med)">${_pnh.n(tA.cargas)}</td><td style="${td};font-weight:700;border-bottom:none">${_pnh.n(tA.ped)}</td><td style="${td};font-weight:700;border-bottom:none">${_pnh.v(tA.val)}</td></tr>`;
+    corpo = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">${bloco('SEMANA '+(semIdx+1)+' · '+dd(wDe)+'/'+mm2+' A '+dd(wAte)+'/'+mm2, tS)}${bloco('ACUMULADO DO MÊS · 01/'+mm2+' A '+dd(wAte)+'/'+mm2, tA)}</div>
+      ${_pnh.caixa(`${_pnh.rot('PARA QUE LOJA FORAM')}
+        <table style="width:100%;border-collapse:collapse;margin-top:8px"><thead><tr><th style="${th};text-align:left">LOJA</th><th style="${th};text-align:left">DIAS DE SAÍDA NA SEMANA</th><th style="${th}">CARGAS (SEMANA)</th><th style="${th}">PEDIDOS</th><th style="${th}">VALOR</th><th style="${th};border-left:1px solid var(--border-med)">CARGAS (MÊS)</th><th style="${th}">PEDIDOS</th><th style="${th}">VALOR</th></tr></thead><tbody>${linhas}${total}</tbody></table>`, 'var(--red)', 'padding:20px 24px')}`;
+    eyebrow = 'EXPEDIÇÃO · ABASTECIMENTO DE LOJA · '+P.nome+' '+P.ano+' · SEMANA '+(semIdx+1);
+  } else {
+    const t = resumo(rows), m = porLoja(rows);
+    const nomes = Object.keys(m).sort((a,b)=>m[b].cargas-m[a].cargas || m[b].val-m[a].val || a.localeCompare(b));
+    const maxC = Math.max(...nomes.map(n=>m[n].cargas), 1);
+    const linhas = nomes.map(n=>_pnh.barra(_pnh.esc(n), `${_pnh.n(m[n].cargas)} carga${m[n].cargas === 1 ? '' : 's'} · ${_pnh.n(m[n].ped)} ped · ${_pnh.v(m[n].val)}`, m[n].cargas/maxC*100, '#f0f0f8')).join('');
+    corpo = `${bloco('MÊS · '+P.nome+' '+P.ano, t)}
+      ${_pnh.caixa(`${_pnh.rot('PARA QUE LOJA FORAM')}<div style="margin-top:4px">${linhas}</div>`, 'var(--red)', 'padding:20px 24px')}`;
+    eyebrow = 'EXPEDIÇÃO · ABASTECIMENTO DE LOJA · '+P.nome+' '+P.ano;
+  }
+  const nota = _pnh.nota('Fonte: tela Abastec. Loja (tabela abastecimento_loja); o dia é a data de saída da carga. Cada carga conta uma vez e vai para a loja de destino informada no lançamento. Pedidos = quantidade informada no lançamento. Semanas de domingo a sábado.'+(und ? ' Unidade de origem: '+_pnh.esc(und)+'.' : ''));
+  return _pnh.casca(eyebrow, 'Abastecimento de Loja', corpo + nota, 'OPERAÇÕES / EXPEDIÇÃO');
+}
+
 // Mostra na tela do Painel o MESMO card que vai para o slide (mês e unidade vêm dos filtros do Painel).
 async function _pnCarregarCardDados(idCont, chave){
   const cont = document.getElementById(idCont); if(!cont) return;
@@ -36287,6 +36354,7 @@ async function _pnHtmlDados(chave, mes, und, ctx){
   if(chave === 'diasPorRota') return _pnHtmlDiasPorRota(mes, und);
   if(chave === 'calendarioRotas') return _pnHtmlCalendarioRotas(mes, !!(ctx && ctx.naTela));
   if(chave === 'carregCalendario') return _pnHtmlCarregamentoCalendario(mes, und, ctx);
+  if(chave === 'abastecimentoLoja') return _pnHtmlAbastecimentoLoja(mes, und, ctx);
   if(chave === 'liberacaoCalendario') return _pnHtmlLiberacaoCalendario(mes, und, ctx);
   if(chave === 'vendaPorRota') return _pnHtmlVendaPorRota(mes, und);
   if(chave === 'rankingTriplo') return _pnHtmlRankingTriplo(mes, und, ctx);
