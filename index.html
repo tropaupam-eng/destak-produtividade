@@ -10195,7 +10195,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.254';
+const APP_VERSION = '4.89.255';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -31679,6 +31679,52 @@ function _calcEntregasPorRota(bd, cargaRota, cargaIsRI, rireFiltro){
   return _montarRotaCalc(rotaMap);
 }
 
+// Pedidos por rota, JÁ quebrado por semana do mês — mesma resolução de rota de
+// _calcEntregasPorRota e mesma resolução de semana/mês de _calcPedidosPorSemana,
+// numa passada só. Usado pelo gráfico "Pedidos por Rota — por semana" (pedido do
+// usuário, 2026-11-09: ver a evolução semana a semana separada por rota).
+function _calcPedidosPorRotaSemana(bd, mesFiltro, cargaRota, cargaIsRI, rireFiltro){
+  const porRota = {};
+  const _semDoMes = _semanaMesSeg;
+  const visto = new Set();
+  bd.forEach(p=>{
+    const key = String(p.carga)+'_'+String(p.pedido);
+    if(visto.has(key)) return;
+    visto.add(key);
+    const _pedMes = (p.mes_ano || p.data_pedido || '').slice(0,7);
+    if(!_pedMes || _pedMes !== mesFiltro) return;
+    const c = Math.round(Number(p.carga));
+    let rota = normalizarRota(cargaRota[c]||p.rota||'') || '—';
+    if(rireFiltro === 'RI' && rota && rota !== '—'){
+      const byRI     = ROTAS_RI.has(rota);
+      const byConfig = CONFIG.rotas?.[rota]?.ri === true && cargaIsRI[c] === true;
+      const rotaRI = byRI || byConfig;
+      if(!rotaRI){
+        const bdRota = (p.rota||'').toUpperCase().trim();
+        const bdRI2  = ROTAS_RI.has(bdRota);
+        const bdCfg  = CONFIG.rotas?.[bdRota]?.ri === true && cargaIsRI[c] === true;
+        rota = (bdRota && bdRota !== rota && (bdRI2 || bdCfg)) ? bdRota : '—';
+      }
+    }
+    if(rota === 'RETIRA') return;
+    const s = _semDoMes(p.data_pedido) || p.semana_mes;
+    if(s<1 || s>5) return;
+    if(!porRota[rota]) porRota[rota] = Array.from({length:5},()=>({ped:0,val:0}));
+    porRota[rota][s-1].ped++; porRota[rota][s-1].val += Number(p.valor)||0;
+  });
+  return porRota;
+}
+
+// Soma dois mapas { rota:[{ped,val}x5] } (usado no filtro "Todos": interna + externa)
+function _somarRotaSemanaMaps(a, b){
+  const out = {};
+  [a,b].forEach(m=>Object.entries(m||{}).forEach(([r,sems])=>{
+    if(!out[r]) out[r] = Array.from({length:5},()=>({ped:0,val:0}));
+    sems.forEach((s,i)=>{ out[r][i].ped += s.ped||0; out[r][i].val += s.val||0; });
+  }));
+  return out;
+}
+
 // Monta o objeto usado pelos cards de Pedidos & Rotas a partir de { rota:{ped,val,ent} }.
 // top/labels/pedidos/totalPed (só as 10 maiores por pedido) continuam como sempre — o
 // Dashboard Interno depende deles. `todas` (TODAS as rotas) e `geral` (total real)
@@ -31801,6 +31847,7 @@ function _agregarPedidosRE(linhas, {mesStr, anoStr}={}){
   const rotaMap = {};
   const semData = [0,1,2,3,4].map(()=>({ped:0,val:0,ent:0}));
   const porMes = Array.from({length:12}, ()=>({ped:0,val:0,ent:0}));
+  const porRotaSemana = {};
   const cargasRota = {};
   linhas.forEach(p=>{
     const mes = p.data.slice(0,7);
@@ -31810,12 +31857,16 @@ function _agregarPedidosRE(linhas, {mesStr, anoStr}={}){
     r.ped++; r.val += p.val; r.ent++;
     (cargasRota[p.rota] = cargasRota[p.rota] || new Set()).add(p.carga);
     const s = _semanaMesSeg(p.data);
-    if(s>=1 && s<=5){ semData[s-1].ped++; semData[s-1].val += p.val; semData[s-1].ent++; }
+    if(s>=1 && s<=5){
+      semData[s-1].ped++; semData[s-1].val += p.val; semData[s-1].ent++;
+      if(!porRotaSemana[p.rota]) porRotaSemana[p.rota] = Array.from({length:5},()=>({ped:0,val:0}));
+      porRotaSemana[p.rota][s-1].ped++; porRotaSemana[p.rota][s-1].val += p.val;
+    }
     const m = Number(mes.slice(5,7));
     if(m>=1 && m<=12){ porMes[m-1].ped++; porMes[m-1].val += p.val; porMes[m-1].ent++; }
   });
   Object.keys(rotaMap).forEach(k=>{ rotaMap[k].cargas = cargasRota[k].size; });
-  return { rotaMap, semData, porMes };
+  return { rotaMap, semData, porMes, porRotaSemana };
 }
 
 // Junta dois mapas { rota:{ped,val,ent} } (usado no filtro "Todos": interna + externa)
@@ -31869,6 +31920,34 @@ function _calcOtifPorSemana(bd, mesFiltro, dadosOtif, hoje){
   );
 
   return semOtif;
+}
+
+// OTIF por semana E por rota — mesma passada de _computeOtifStats acima (_calcOtifPorSemana),
+// só que bucketiza também pela rota do pedido (já normalizada dentro de _computeOtifStats).
+// Pedido do usuário, 2026-11-09: mesmo tratamento por rota que "Pedidos por Rota".
+function _calcOtifPorRotaSemana(bd, mesFiltro, dadosOtif, hoje){
+  const porRota = {};
+  if(!dadosOtif) return porRota;
+  const { entRows, ocorrRows, saidaRows, lancRows, rotasRows, cortesRows,
+          pendenteTsMap, agendPedMap, feriadosSet } = dadosOtif;
+  const _semDoMesOtif = _semanaMesSeg;
+  const semanaMap = {};
+  (bd||[]).forEach(p=>{ if(p.pedido!=null && !(String(p.pedido) in semanaMap)) semanaMap[String(p.pedido)] = p.semana_mes; });
+  _computeOtifStats(bd, entRows, lancRows, saidaRows, rotasRows, ocorrRows, hoje, mesFiltro, agendPedMap, feriadosSet,
+    (ped, carga, rota, rire, dataPedido, onTime, inFull, dataFim) => {
+      const isOtif = onTime && inFull;
+      const semPedido = _semDoMesOtif(dataPedido) || semanaMap[ped];
+      const mesDataFim = dataFim ? dataFim.slice(0,7) : null;
+      const semIdx = (dataFim && mesDataFim === mesFiltro) ? _semDoMesOtif(dataFim) : semPedido;
+      if(semIdx < 1 || semIdx > 5) return;
+      const r = rota || '—';
+      if(!porRota[r]) porRota[r] = Array.from({length:5},()=>({t:0,ot:0,ifull:0,ok:0}));
+      const s = porRota[r][semIdx-1];
+      s.t++; if(onTime) s.ot++; if(inFull) s.ifull++; if(isOtif) s.ok++;
+    },
+    cortesRows, pendenteTsMap
+  );
+  return porRota;
 }
 
 async function renderDashInterna(){
@@ -39724,22 +39803,24 @@ async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, carga
   const semAbast = (lista, set) => (set && set.size) ? lista.filter(p=>!set.has(Math.round(Number(p.carga)))) : lista;
   if(rireSel === 'RI'){
     const bdVol = semAbast(bd, cargaAbast);
-    return { semData:_calcPedidosPorSemana(bdVol, mes), rotaCalc:_calcEntregasPorRota(bdVol, cargaRota, cargaIsRI, 'RI') };
+    return { semData:_calcPedidosPorSemana(bdVol, mes), rotaCalc:_calcEntregasPorRota(bdVol, cargaRota, cargaIsRI, 'RI'),
+      rotaSemana:_calcPedidosPorRotaSemana(bdVol, mes, cargaRota, cargaIsRI, 'RI') };
   }
   const exp = _agregarPedidosRE(await _carregarPedidosRE(undSel, mes+'-01'), {mesStr:mes});
   // Cada pedido cai numa única semana (a do pedido), então a soma das semanas já é o total do mês
   exp.semData.entMes = exp.semData.reduce((a,s)=>a+s.ent,0);
   if(rireSel === 'RE'){
-    return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap) };
+    return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap), rotaSemana:exp.porRotaSemana };
   }
   const ri = await _calcularBaseFiltrada(mes, 'RI', undSel);
   const riBdVol = semAbast(ri.bd, ri.cargaAbast);
   const semRI = _calcPedidosPorSemana(riBdVol, mes);
   const calcRI = _calcEntregasPorRota(riBdVol, ri.cargaRota, ri.cargaIsRI, 'RI');
+  const rotaSemanaRI = _calcPedidosPorRotaSemana(riBdVol, mes, ri.cargaRota, ri.cargaIsRI, 'RI');
   const semData = semRI.map((s,i)=>({ ped:s.ped+exp.semData[i].ped, val:s.val+exp.semData[i].val, ent:(s.ent||0)+exp.semData[i].ent }));
   semData.entMes = (semRI.entMes||0) + exp.semData.entMes;
   const rotaMapRI = Object.fromEntries(calcRI.todas);
-  return { semData, rotaCalc:_montarRotaCalc(_somarRotaMaps(rotaMapRI, exp.rotaMap)) };
+  return { semData, rotaCalc:_montarRotaCalc(_somarRotaMaps(rotaMapRI, exp.rotaMap)), rotaSemana:_somarRotaSemanaMaps(rotaSemanaRI, exp.porRotaSemana) };
 }
 
 // opts (opcional): { containerId, rire, sufixo } — usado pelo card "R.E. (externa)" que fica logo abaixo do da interna.
@@ -39767,7 +39848,7 @@ async function carregarPainelPedidosRotas(opts){
     // `bd` (lançamentos) continua sendo a base do OTIF; o VOLUME (pedidos, entregas e
     // valor por semana/rota) da rota externa vem do que foi lançado em Expedição.
     const { bd, cargaRota, cargaIsRI, cargaAbast } = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
-    const { semData, rotaCalc } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast);
+    const { semData, rotaCalc, rotaSemana } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast);
     // Força recálculo do cache de OTIF quando o mês filtrado é o corrente —
     // mesmo padrão do Dashboard Interno/Logístico/OTIF Diário/TV (todos já
     // faziam isso). Sem essa linha, esta aba era a única do sistema que podia
@@ -39777,10 +39858,26 @@ async function carregarPainelPedidosRotas(opts){
     if(mesAtual === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_painelOtifCacheKey);
     const dadosOtif = await _carregarOtifMes(mesAtual, undSel||undefined);
     const semOtif   = _calcOtifPorSemana(bd, mesAtual, dadosOtif, hoje);
+    const otifRotaSemana = _calcOtifPorRotaSemana(bd, mesAtual, dadosOtif, hoje);
 
-    container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, semData, rotaCalc, semOtif, rireSel, otifStats: dadosOtif.stats, sufixo });
+    // Mês anterior — só pra comparar a evolução semana a semana por rota (pedido
+    // do usuário, 2026-11-09: "pedidos por semana" com gráfico mostrando a
+    // crescente em referência ao mês passado, por rota). Falha aqui não quebra
+    // o card inteiro — o gráfico de comparação só fica sem a linha do mês passado.
+    const mesAnterior = _mesAnteriorStr(mesAtual);
+    let rotaSemanaAnt = {}, otifRotaSemanaAnt = {};
+    try{
+      const antBase = await _calcularBaseFiltrada(mesAnterior, rireSel, undSel);
+      const antVol  = await _volumePedidosRotasMes(mesAnterior, rireSel, undSel, antBase.bd, antBase.cargaRota, antBase.cargaIsRI, antBase.cargaAbast);
+      rotaSemanaAnt = antVol.rotaSemana || {};
+      const dadosOtifAnt = await _carregarOtifMes(mesAnterior, undSel||undefined);
+      otifRotaSemanaAnt = _calcOtifPorRotaSemana(antBase.bd, mesAnterior, dadosOtifAnt, hoje);
+    }catch(e){ console.warn('Pedidos & Rotas: sem dados do mês anterior pra comparação', e.message); }
+
+    container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, mesAnterior, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats: dadosOtif.stats, sufixo });
     _featherReplace();
     _renderGraficoPainelRotas(rotaCalc, sufixo);
+    _renderGraficosPorRotaSemana(rotaCalc, rotaSemana, rotaSemanaAnt, otifRotaSemana, otifRotaSemanaAnt, sufixo);
   } catch(e){
     console.error('Erro ao carregar Pedidos & Rotas:', e);
     container.innerHTML = '<p style="color:#dc2626;padding:20px">'+_ic('alert-triangle',14)+' Erro ao carregar dados: '+e.message+'</p>';
@@ -39788,7 +39885,7 @@ async function carregarPainelPedidosRotas(opts){
   }
 }
 
-function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rireSel, otifStats, sufixo}){
+function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats, sufixo}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
@@ -39796,6 +39893,26 @@ function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rire
   const rireLabel = rireSel==='RI' ? ' · R.I. (INTERNA)' : rireSel==='RE' ? ' · R.E. (EXTERNA)' : ' · R.I. + R.E.';
   // Valor por extenso (nada de "k") — pedido do usuário, igual ao card anual.
   const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  // Pedidos por semana E OTIF por semana, separados por rota, comparando com o
+  // mês passado (pedido do usuário, 2026-11-09) — usa as mesmas top rotas do
+  // card "Pedidos por Rota" ao lado, pra ficar fácil comparar os dois gráficos.
+  const _MESES_CURTO = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
+  const [anoAnt, mesAntN] = (mesAnterior||'').split('-').map(Number);
+  const mesAnteriorLabel = mesAntN ? _MESES_CURTO[mesAntN-1]+'/'+anoAnt : 'mês passado';
+  const TOP_N_ROTA_SEMANA = 6;
+  const rotasGrade = (rotaCalc.top||[]).slice(0, TOP_N_ROTA_SEMANA).map(([r])=>r);
+  const _legendaRotaSemana = `<div style="display:flex;gap:16px;align-items:center;font-size:.72rem;color:var(--text-muted)">
+      <span style="display:inline-flex;align-items:center;gap:5px"><span style="display:inline-block;width:14px;height:3px;background:#E8000D;border-radius:2px"></span>Este mês</span>
+      <span style="display:inline-flex;align-items:center;gap:5px"><span style="display:inline-block;width:14px;height:3px;background:#94a3b8;border-radius:2px;background-image:repeating-linear-gradient(90deg,#94a3b8 0 4px,transparent 4px 7px)"></span>${mesAnteriorLabel}</span>
+    </div>`;
+  const _htmlGradeRotaSemana = (idPrefix) => !rotasGrade.length ? '<p style="color:var(--text-muted);font-size:.92rem;text-align:center;padding:20px">Sem dados</p>' :
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px">' +
+    rotasGrade.map((r,i)=>`<div>
+        <div style="font-size:.71rem;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px" title="${escapeHtml(r)}">${escapeHtml(r)}</div>
+        <div style="position:relative;height:72px"><canvas id="${idPrefix}${sufixo||''}-${i}"></canvas></div>
+      </div>`).join('') +
+    '</div>';
 
   const maxPed = Math.max(...semData.map(s=>s.ped),1);
   const cardsPedidos = semData.map((s,i)=>{
@@ -39869,6 +39986,14 @@ function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rire
         <div style="display:flex;gap:10px;flex-wrap:wrap">${cardsPedidos}</div>
       </div>
 
+      <div id="card-ped-rota-semana${sufixo||''}" style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med);margin-bottom:20px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">PEDIDOS POR SEMANA — POR ROTA</div>
+          ${_legendaRotaSemana}
+        </div>
+        ${_htmlGradeRotaSemana('rs-ped')}
+      </div>
+
       ${semGrafico ? `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
         <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
@@ -39913,6 +40038,14 @@ function renderRelatorioPedidosRotas({mesAtual, semData, rotaCalc, semOtif, rire
         <div style="display:flex;gap:10px;flex-wrap:wrap">${cardsOtif}</div>
       </div>
 
+      <div id="card-otif-rota-semana${sufixo||''}" style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med);margin-top:20px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">OTIF POR SEMANA — POR ROTA</div>
+          ${_legendaRotaSemana}
+        </div>
+        ${_htmlGradeRotaSemana('rs-otif')}
+      </div>
+
       <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
         <span>PAINEL DE METAS · ACOMPANHAMENTO MENSAL</span>
         <span>OPERAÇÕES / DISTRIBUIÇÃO</span>
@@ -39935,6 +40068,56 @@ function _renderGraficoPainelRotas(rotaCalc, sufixo){
     options:_opcoesRoscaRotas(itens, fmtVal)
   });
   if(sufixo) _cPainelRotasPizzaExtra[sufixo] = novoGraf; else _cPainelRotasPizza = novoGraf;
+}
+
+// Gráficos pequenos "este mês x mês passado" por rota, pros dois novos blocos
+// "Pedidos por Semana — por Rota" e "OTIF por Semana — por Rota" (pedido do
+// usuário, 2026-11-09). IDs dos canvas batem com _htmlGradeRotaSemana acima,
+// sempre as mesmas N primeiras rotas de rotaCalc.top (pedido e OTIF juntos,
+// pra ficar fácil comparar os dois gráficos lado a lado).
+window._cRotaSemanaCharts = window._cRotaSemanaCharts || {};
+function _opcoesLinhaRotaSemana(ehPct){
+  return {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>c.dataset.label+': '+(c.parsed.y==null?'—':c.parsed.y+(ehPct?'%':''))}} },
+    scales:{
+      x:{ ticks:{font:{size:9},color:'#94a3b8'}, grid:{display:false} },
+      y:{ beginAtZero:true, max: ehPct?100:undefined, ticks:{font:{size:9},color:'#94a3b8', maxTicksLimit:4}, grid:{color:'rgba(148,163,184,.15)'} }
+    }
+  };
+}
+function _renderGraficosPorRotaSemana(rotaCalc, rotaSemana, rotaSemanaAnt, otifRotaSemana, otifRotaSemanaAnt, sufixo){
+  const suf = sufixo || '';
+  const TOP_N_ROTA_SEMANA = 6;
+  const rotasGrade = (rotaCalc.top||[]).slice(0, TOP_N_ROTA_SEMANA).map(([r])=>r);
+  const destruir = prefix => Object.keys(window._cRotaSemanaCharts).filter(id=>id.indexOf(prefix)===0).forEach(id=>{ window._cRotaSemanaCharts[id].destroy(); delete window._cRotaSemanaCharts[id]; });
+  destruir('rs-ped'+suf+'-'); destruir('rs-otif'+suf+'-');
+
+  rotasGrade.forEach((r,i)=>{
+    const idPed = 'rs-ped'+suf+'-'+i;
+    const ctxPed = document.getElementById(idPed);
+    if(ctxPed){
+      const atual = (rotaSemana?.[r]||[]).map(s=>s.ped);
+      const ant   = (rotaSemanaAnt?.[r]||[]).map(s=>s.ped);
+      window._cRotaSemanaCharts[idPed] = new Chart(ctxPed,{ type:'line',
+        data:{ labels:['S1','S2','S3','S4','S5'], datasets:[
+          { label:'Este mês', data:atual, borderColor:'#E8000D', backgroundColor:'#E8000D', tension:.3, borderWidth:2.5, pointRadius:2.5 },
+          { label:'Mês passado', data:ant, borderColor:'#94a3b8', backgroundColor:'#94a3b8', borderDash:[5,4], tension:.3, borderWidth:1.8, pointRadius:2 }
+        ]}, options:_opcoesLinhaRotaSemana(false) });
+    }
+    const idOtif = 'rs-otif'+suf+'-'+i;
+    const ctxOtif = document.getElementById(idOtif);
+    if(ctxOtif){
+      const _pct = w => w && w.t>0 ? Math.round(w.ok/w.t*100) : null;
+      const atual = (otifRotaSemana?.[r]||[]).map(_pct);
+      const ant   = (otifRotaSemanaAnt?.[r]||[]).map(_pct);
+      window._cRotaSemanaCharts[idOtif] = new Chart(ctxOtif,{ type:'line',
+        data:{ labels:['S1','S2','S3','S4','S5'], datasets:[
+          { label:'Este mês', data:atual, borderColor:'#E8000D', backgroundColor:'#E8000D', tension:.3, borderWidth:2.5, pointRadius:2.5, spanGaps:true },
+          { label:'Mês passado', data:ant, borderColor:'#94a3b8', backgroundColor:'#94a3b8', borderDash:[5,4], tension:.3, borderWidth:1.8, pointRadius:2, spanGaps:true }
+        ]}, options:_opcoesLinhaRotaSemana(true) });
+    }
+  });
 }
 
 // Visão anual de Pedidos & Rotas — Jan-Dez de pedidos/valor + top rotas do
@@ -52464,6 +52647,10 @@ function _loadingBloqueioHide(){
 function _proximoMes(mesStr){
   const [y,m] = mesStr.split('-').map(Number);
   return m===12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
+}
+function _mesAnteriorStr(mesStr){
+  const [y,m] = mesStr.split('-').map(Number);
+  return m===1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`;
 }
 
 // Registro das falhas de LEITURA (GET): o Painel de Indicadores usa isso para avisar "dado incompleto"
