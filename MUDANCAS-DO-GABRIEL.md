@@ -21,6 +21,24 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-09, Gabriel: Aderência — só conta cargas que saíram, mostra rotas distintas e as previstas que não saíram — v4.89.242
+Onde: `index.html`, Armazém › Aderência (conferente): `renderArmAderencia` (busca traz `ts_saiu` e separa as cargas que saíram das que não), `_aderPintar` (KPIs) e o
+texto do filtro de datas. `APP_VERSION`/`version.json` 4.89.241 → 4.89.242.
+Por quê: pedido do Gabriel: a quantidade de rotas da Aderência não batia com o real; conferir com o que é lançado em Distribuição › Expedição. Conferência (só leitura):
+Aderência e Expedição usam a MESMA tabela (`demandas_rota`); sem duplicidade e sem carga faltando (outubro 63, novembro 27 com carga e não canceladas; a Expedição só mostra as
+não concluídas, as concluídas vão para o Histórico). O que não batia: (1) o cartão "Cargas com saída no período" contava também cargas que ainda NÃO saíram (5 em novembro: em
+formação, separação, carregamento ou pronto para viagem); (2) cargas ≠ rotas: 27 cargas de novembro eram 23 combinações de rota+dia (a mesma rota saiu em duas cargas no mesmo dia).
+ORIGEM DA DATA: a previsão (`data_saida`) é lançada na Expedição ao criar a pré-carga; na saída, o modal "Registrar saída" grava `ts_saiu` (horário do clique) e SOBRESCREVE
+`data_saida` com a data digitada no modal (desde 01/10). Das saídas desde 05/10, 37 ainda têm o dia do clique diferente de data_saida: todas pelo modal (Emerson/Administrador), em
+geral data_saida 1 dia ANTES (registro no dia seguinte informando a data real da saída). Por isso NÃO foi usado ts_saiu como "dia real": contaria no dia do registro e não no da saída.
+Antes de 01/10 data_saida era a data prevista (41 de 68 cargas de setembro diferiam do dia da saída).
+O que mudou: (a) só entram nas contas as cargas que SAÍRAM (status saiu/fim_viagem/concluído, ou com `ts_saiu`) e o período filtra por `data_saida` (dia informado pela Expedição);
+(b) novo cartão "Rotas (rota + dia)" ao lado de "Cargas que saíram no período"; (c) novo cartão "Previstas, ainda não saíram" com as cargas previstas para o período que não
+saíram (primeiras 3 na legenda); some quando se escolhe um dia no gráfico; (d) percentuais e gráficos passam a considerar só as que saíram; (e) vínculo e conferência só são
+buscados para as que saíram. Com os dados de 01 a 09/11: 22 saíram, 5 ainda não saíram (= 27 previstas), 19 rotas distintas. Só LÊ o banco; nada é gravado.
+Testes: `node check.js` ok; 14 testes (saíram x pendentes, rotas distintas, percentuais, dia escolhido, listas vazias, buscas) + conferência com os dados reais.
+Como desfazer: `git revert` do commit desta entrada (volta a contar também as que não saíram).
+Pendente/risco: se algum dia a Expedição registrar a saída sem informar a data certa no modal, o dia fica errado (a tela confia nesse campo). Teste visual do Gabriel.
 ## 2026-11-07, Gabriel: Ocorrências (Distribuição) — rota aparece ao digitar o pedido, mesmo com base_data sem rota — v4.89.234
 Onde: `index.html`, `_ocorrAutoFillCompleto` (campo "Rota" do formulário Registrar Ocorrência). `APP_VERSION`/`version.json` 4.89.233 → 4.89.234.
 Causa: a rota vinha só de `base_data.rota` pelo pedido, e essa coluna está VAZIA em 40-60% dos pedidos (lido em 07/11: ago 777 de 3.131; set 1.527 de 3.382;

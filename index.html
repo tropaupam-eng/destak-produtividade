@@ -5589,7 +5589,7 @@ body.light-theme{
   <!-- Painel Aderência: vínculo da carga ao conferente e check de conferência, por dia e por conferente (rotas externas) -->
   <div id="arm-painel-aderencia">
     <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-      <p style="font-size:.78rem;color:var(--text-secondary);margin:0;max-width:62ch">Quais cargas de rotas externas tiveram o conferente vinculado e os pedidos conferidos no Cronos, dia a dia, e quais conferentes não estão preenchendo. O período filtra pela data de saída da carga. Cargas internas (Ceasa, Petrolina, Juazeiro) são conferidas no FDSAS e não entram aqui.</p>
+      <p style="font-size:.78rem;color:var(--text-secondary);margin:0;max-width:62ch">Quais cargas de rotas externas tiveram o conferente vinculado e os pedidos conferidos no Cronos, dia a dia, e quais conferentes não estão preenchendo. O período filtra pelo dia de saída informado pela Expedição ao registrar a saída da carga; cargas que ainda não saíram aparecem à parte. Cargas internas (Ceasa, Petrolina, Juazeiro) são conferidas no FDSAS e não entram aqui.</p>
       <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
         <label style="display:flex;flex-direction:column;gap:3px;font-size:.68rem;color:var(--text-muted);font-weight:700">Data inicial
           <input type="date" id="arm-ader-ini" class="devol-data" onchange="renderArmAderencia()" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.8rem">
@@ -10181,7 +10181,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.241';
+const APP_VERSION = '4.89.242';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -50349,9 +50349,14 @@ async function renderArmAderencia(){
   try{
     const undUsr = (USUARIO_LOGADO?.und||USUARIO_LOGADO?.unidade||'').trim();
     const undQ = undUsr ? `&or=(unidade.eq.${encodeURIComponent(undUsr)},unidade.is.null)` : '';
-    const dems = (await supaFetch(`demandas_rota?carga=not.is.null&status=neq.cancelado&data_saida=gte.${ini}&data_saida=lte.${fim}&select=id,carga,rota,data_saida,quantidade_pedidos,status,unidade&order=data_saida.asc&limit=3000${undQ}`) || []);
+    const todas = (await supaFetch(`demandas_rota?carga=not.is.null&status=neq.cancelado&data_saida=gte.${ini}&data_saida=lte.${fim}&select=id,carga,rota,data_saida,quantidade_pedidos,status,unidade,ts_saiu&order=data_saida.asc&limit=3000${undQ}`) || []);
+    // "Saiu" = a Expedição já registrou a saída (modal "Registrar saída": status saiu/fim_viagem/concluído, ou horário de saída).
+    // data_saida dessas cargas é o dia de saída informado pela Expedição; as que ainda não saíram só têm a data PREVISTA e
+    // ficam fora das contas (aparecem à parte, no cartão "Previstas, ainda não saíram").
+    const _saiu = d => !!d.ts_saiu || ['saiu','fim_viagem','concluido'].includes(d.status);
+    const dems = todas.filter(_saiu), pendentes = todas.filter(d=>!_saiu(d));
     if(!dems.length){
-      box.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga de rota externa com saída neste período.</p>';
+      box.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga de rota externa saiu neste período.' + (pendentes.length ? ' ' + pendentes.length + ' carga' + (pendentes.length===1?'':'s') + ' prevista' + (pendentes.length===1?'':'s') + ' para o período ainda não saiu.' : '') + '</p>';
       return;
     }
     const ids = dems.map(d=>d.id), cargas = [...new Set(dems.map(d=>d.carga))];
@@ -50362,7 +50367,7 @@ async function renderArmAderencia(){
       supaFetch('conferentes?ativo=eq.true&perfil=eq.conferente&select=nome,unidade&order=nome.asc').catch(()=>[])
     ]);
     const confsUnid = (confs||[]).filter(c=>!undUsr || (c.unidade||'').trim()===undUsr);
-    window._aderCtx = {dems, atrib, cps, confs:confsUnid, sel:'', cargas:[]};
+    window._aderCtx = {dems, pend:pendentes, atrib, cps, confs:confsUnid, sel:'', cargas:[]};
     _aderPintar();
   }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
 }
@@ -50393,12 +50398,19 @@ function _aderPintar(){
     const SEMANA = ['dom','seg','ter','qua','qui','sex','sáb'];
     const dsem = d => SEMANA[new Date(d+'T12:00:00').getDay()];
     const kpi = (label, valor, cor, sub) => `<div class="kpi-card" style="border-top-color:${cor};padding:12px 14px"><div class="kpi-label" style="font-size:.65rem">${label}</div><div class="kpi-value" style="font-size:1.6rem">${valor}</div>${sub?`<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px">${sub}</div>`:''}</div>`;
+    // Rotas = rota + dia de saída: a mesma rota pode sair em mais de uma carga no mesmo dia (cargas ≠ rotas).
+    const rotasDist = new Set(r.cargas.map(c => (typeof normalizarRota === 'function' ? (normalizarRota(c.rota||'') || c.rota || '') : (c.rota||'')) + '|' + c.dia)).size;
+    // Previstas para o período que ainda não saíram: não entram nas contas; só aparecem com a página inteira (sem dia escolhido).
+    const pend = sel ? [] : (ctx.pend || []);
+    const pendSub = pend.length ? pend.slice(0,3).map(d => '#' + escapeHtml(String(d.carga)) + ' ' + escapeHtml(d.rota||'') + ' (' + escapeHtml(d.status||'—') + ')').join(', ') + (pend.length>3 ? ' …' : '') : 'nenhuma';
     const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px">
-      ${kpi('Cargas com saída no período', n, 'var(--red)')}
+      ${kpi('Cargas que saíram no período', n, 'var(--red)')}
+      ${kpi('Rotas (rota + dia)', rotasDist, '#0ea5e9', rotasDist===n ? 'uma carga por rota' : n+' cargas; a mesma rota saiu em mais de uma carga no dia')}
       ${kpi('Com conferente vinculado', pct(vinc,n), 'var(--green)', vinc+' de '+n)}
       ${kpi('Com check completo', pct(chkOk,n), '#3b82f6', chkOk+' de '+n)}
       ${kpi('Pedidos conferidos no Cronos', pct(somaChk,somaQp), '#8b5cf6', somaChk+' de '+somaQp+' pedidos')}
       ${kpi('Saíram sem vínculo', saiuSemVinc, saiuSemVinc?'#ef4444':'var(--green)', 'carga em viagem ou concluída sem conferente')}
+      ${sel ? '' : kpi('Previstas, ainda não saíram', pend.length, pend.length?'#f59e0b':'var(--green)', pendSub)}
     </div>`;
 
     const th = (t, al) => `<th style="text-align:${al||'left'};padding:7px 10px;font-size:.68rem;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap">${t}</th>`;
