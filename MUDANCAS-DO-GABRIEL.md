@@ -21,6 +21,19 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-09, Gabriel: Aderência à conferência — % por conferente e filtro ao clicar na barra do conferente — v4.89.256
+Onde: `index.html`, Armazém › Aderência à conferência: `_aderPintar` (cálculo com os filtros de dia e de conferente, gráficos de conferente, faixa de filtros), funções novas `_aderSelConf` e
+`_aderDemsDoConf`, e o contexto `window._aderCtx` (campo `selConf`). `APP_VERSION`/`version.json` 4.89.255 → 4.89.256. Empilhada sobre o indicador (4.89.255, ainda não publicado): vão juntas.
+Por quê: pedido do Gabriel: (1) mostrar a % também no gráfico "Pedidos vinculados × conferidos, por conferente"; (2) ao clicar numa barra, os outros valores mudarem.
+(1) % por conferente = pedidos conferidos ÷ pedidos das cargas em que ele está vinculado (ex.: Jaqueline 74 ÷ 81 = 91,4%; balão mostra a conta). Pode passar de 100% se ele conferiu pedidos de
+cargas de outra pessoa; sem vínculo ("—"). O texto do gráfico explica. (2) Clicar numa barra (nos dois gráficos de conferente) filtra a página pelas cargas em que ele está vinculado OU
+conferiu pedidos (mesma regra do cálculo por conferente): cartões, indicador (com "em que X está vinculado(a) ou conferiu"), gráfico "Cargas do dia", detalhe do dia e tabelas passam a ser só
+dele; clicar de novo tira o filtro. Soma com o filtro de dia; os gráficos de conferente seguem só o dia e mostram todos, com o escolhido em destaque e os outros apagados (assim dá para trocar de
+conferente). Se o conferente escolhido não tiver nada no dia escolhido, a seleção dele é solta. A faixa azul do topo mostra os filtros ativos, cada um com seu botão de limpar. Só LÊ o banco.
+Testes: `node check.js` ok; 38 testes (% por conferente, clique, destaque, faixa, dia + conferente, soltar seleção, cargas do dia) + conferência com dados reais por conta independente (74÷81, 21÷21,
+8÷8 batem com a tela); clique de verdade com o mouse numa página de teste com dados reais (Pedro Victor: 1 carga, 21 ÷ 21 = 100,0%), sem erros de JavaScript.
+Como desfazer: `git revert` do commit desta entrada (some a % por conferente e o filtro; o indicador fica).
+Pendente/risco: teste visual do Gabriel; a % por conferente depende do vínculo da carga (quem pegou a carga no Armazém).
 ## 2026-11-09, Gabriel: Aderência à conferência — indicador "pedidos conferidos ÷ total de pedidos" — v4.89.255
 Onde: `index.html`, Armazém › Aderência à conferência: `_aderPintar` (bloco novo `indicador`, antes dos cartões) e o cartão antigo "Pedidos conferidos no Cronos" removido.
 `APP_VERSION`/`version.json` 4.89.254 → 4.89.255.

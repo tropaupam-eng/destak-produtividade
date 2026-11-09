@@ -10195,7 +10195,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.255';
+const APP_VERSION = '4.89.256';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -50543,6 +50543,21 @@ function _aderSelDia(dia){
   ctx.sel = ctx.sel===dia ? '' : dia; // clicar de novo no mesmo dia limpa o filtro
   _aderPintar();
 }
+// Filtro por conferente (pedido do Gabriel, 2026-11-09): clicar numa barra de conferente filtra a página pelas cargas em que ele está
+// vinculado OU conferiu pedidos (mesma regra de _aderCalcular); clicar de novo no mesmo conferente tira o filtro. Soma com o filtro de dia.
+function _aderSelConf(nome){
+  const ctx = window._aderCtx; if(!ctx) return;
+  ctx.selConf = ctx.selConf===nome ? '' : nome;
+  _aderPintar();
+}
+// ids das demandas (cargas) em que o conferente está vinculado ou marcou pedidos (OK/Não OK)
+function _aderDemsDoConf(ctx, nome){
+  const ids = new Set(), cargasDe = new Set();
+  ctx.atrib.forEach(a=>{ if(a.conferente_nome===nome) ids.add(a.demanda_id); });
+  ctx.cps.forEach(c=>{ if(c.conferente_nome===nome && (c.status==='ok'||c.status==='nok')) cargasDe.add(c.carga); });
+  ctx.dems.forEach(d=>{ if(cargasDe.has(d.carga)) ids.add(d.id); });
+  return ids;
+}
 async function _aderDetalhe(){
   const box = document.getElementById('ader-dia-detalhe');
   const ctx = window._aderCtx;
@@ -50619,7 +50634,7 @@ async function renderArmAderencia(){
       supaFetch('conferentes?ativo=eq.true&perfil=eq.conferente&select=nome,unidade&order=nome.asc').catch(()=>[])
     ]);
     const confsUnid = (confs||[]).filter(c=>!undUsr || (c.unidade||'').trim()===undUsr);
-    window._aderCtx = {dems, pend:pendentes, atrib, cps, confs:confsUnid, sel:'', cargas:[]};
+    window._aderCtx = {dems, pend:pendentes, atrib, cps, confs:confsUnid, sel:'', selConf:'', cargas:[]};
     _aderPintar();
   }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
 }
@@ -50632,14 +50647,21 @@ function _aderPintar(){
   if(!box || !ctx) return;
   try{
     const rTodos = _aderCalcular(ctx.dems, ctx.atrib, ctx.cps, ctx.confs);
-    ctx.cargas = rTodos.cargas;
     const sel = ctx.sel;
-    let r = rTodos;
-    if(sel){
-      const dF = ctx.dems.filter(d=>d.data_saida===sel);
-      const idsF = new Set(dF.map(d=>d.id)), cgF = new Set(dF.map(d=>d.carga));
-      r = _aderCalcular(dF, ctx.atrib.filter(x=>idsF.has(x.demanda_id)), ctx.cps.filter(x=>cgF.has(x.carga)), ctx.confs);
-    }
+    const calc = dF => { const idsF = new Set(dF.map(d=>d.id)), cgF = new Set(dF.map(d=>d.carga)); return _aderCalcular(dF, ctx.atrib.filter(x=>idsF.has(x.demanda_id)), ctx.cps.filter(x=>cgF.has(x.carga)), ctx.confs); };
+    // rBase = só o filtro de dia (gráficos de conferente: mostram todos, com o escolhido em destaque)
+    const rBase = sel ? calc(ctx.dems.filter(d=>d.data_saida===sel)) : rTodos;
+    // conferente escolhido que não aparece mais neste dia: solta a seleção
+    if(ctx.selConf && !rBase.conferentes.some(c=>c.nome===ctx.selConf && (c.pedVinc>0 || c.nPed>0))) ctx.selConf = '';
+    const selC = ctx.selConf || '';
+    const idsConf = selC ? _aderDemsDoConf(ctx, selC) : null;
+    // rConf = só o filtro de conferente (gráfico "Cargas do dia" e detalhe do dia: mostram todos os dias dele)
+    const rConf = selC ? calc(ctx.dems.filter(d=>idsConf.has(d.id))) : rTodos;
+    ctx.cargas = rConf.cargas;
+    // r = dia + conferente (cartões, indicador, tabelas)
+    const r = (sel || selC) ? calc(ctx.dems.filter(d=>(!sel || d.data_saida===sel) && (!selC || idsConf.has(d.id)))) : rTodos;
+    const aderFmtPct = v => v.toLocaleString('pt-BR', { minimumFractionDigits:1, maximumFractionDigits:1 }) + '%';
+    const cliqueConf = nome => 'onclick="_aderSelConf(' + JSON.stringify(nome).replace(/"/g, '&quot;') + ')" title="Clique para filtrar a página por este conferente (clique de novo para tirar)"';
     const n = r.cargas.length;
     const vinc = r.cargas.filter(c=>c.vinculada).length;
     const chkOk = r.cargas.filter(c=>c.check==='completo').length;
@@ -50661,7 +50683,7 @@ function _aderPintar(){
         <div style="flex:1;min-width:260px">
           <div style="height:14px;background:var(--bg-hover,rgba(128,128,128,.15));border-radius:7px;overflow:hidden"><div style="height:100%;width:${aderPct == null ? 0 : Math.min(100, aderPct).toFixed(1)}%;background:#3b82f6"></div></div>
           <div style="margin-top:8px;font-size:.82rem;color:var(--text-primary)"><b>Memória de cálculo:</b> pedidos conferidos ÷ total de pedidos = <b>${fmtInt(somaChk)} ÷ ${fmtInt(somaQp)}</b> = <b>${aderTxt}</b></div>
-          <div style="margin-top:4px;font-size:.72rem;color:var(--text-muted);max-width:90ch">Total = pedidos das ${n} carga${n===1?'':'s'} que saíram no período${sel ? ' (dia escolhido)' : ''}. Conferido = pedido marcado no Cronos como OK ou Não OK, contado uma vez. Cargas que ainda não saíram ficam de fora.</div>
+          <div style="margin-top:4px;font-size:.72rem;color:var(--text-muted);max-width:90ch">Total = pedidos das ${n} carga${n===1?'':'s'} que saíram no período${sel ? ' (dia escolhido)' : ''}${selC ? ', em que ' + escapeHtml(selC) + ' está vinculado(a) ou conferiu' : ''}. Conferido = pedido marcado no Cronos como OK ou Não OK, contado uma vez. Cargas que ainda não saíram ficam de fora.</div>
         </div>
       </div>
     </div>`;
@@ -50694,30 +50716,32 @@ function _aderPintar(){
     const C_VINC = '#3b82f6', C_OK = '#22c55e', C_NOK = '#ef4444', C_PARC = '#f59e0b';
 
     // Gráfico 1: pedidos vinculados x pedidos conferidos, por conferente
-    const g1 = r.conferentes.filter(c=>c.pedVinc>0 || c.nPed>0).sort((a,b)=> (b.pedVinc-a.pedVinc) || (b.nPed-a.nPed));
+    const g1 = rBase.conferentes.filter(c=>c.pedVinc>0 || c.nPed>0).sort((a,b)=> (b.pedVinc-a.pedVinc) || (b.nPed-a.nPed));
     const max1 = Math.max(1, ...g1.map(c=>Math.max(c.pedVinc, c.nPed)));
     const graf1 = !g1.length ? '<p style="color:var(--text-muted);font-size:.8rem">Ninguém vinculou nem conferiu neste período.</p>' :
       `<div style="margin-bottom:8px">${leg(C_VINC,'Pedidos das cargas vinculadas')}${leg(C_OK,'Pedidos conferidos')}</div>` +
       g1.map(c=>{
         const falta = Math.max(0, c.pedVinc - c.nPed);
-        return `<div style="display:grid;grid-template-columns:minmax(90px,140px) 1fr 64px;gap:8px;align-items:center;margin-bottom:8px">
+        const pctC = c.pedVinc ? aderFmtPct(100 * c.nPed / c.pedVinc) : '—';   // aderência do conferente: conferidos ÷ pedidos das cargas vinculadas
+        return `<div ${cliqueConf(c.nome)} style="display:grid;grid-template-columns:minmax(90px,140px) 1fr 64px 56px;gap:8px;align-items:center;margin-bottom:8px;cursor:pointer;border-radius:6px;padding:2px 4px;opacity:${selC && selC!==c.nome ? '.4' : '1'}${selC===c.nome ? ';background:rgba(59,130,246,.14)' : ''}">
           <div style="font-size:.76rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.nome)}">${escapeHtml(c.nome)}</div>
           <div style="display:flex;flex-direction:column;gap:3px">
             <div style="display:flex;align-items:center;gap:6px">${trilho(c.pedVinc,max1,C_VINC)}<span style="font-size:.7rem;min-width:30px;text-align:right">${c.pedVinc}</span></div>
             <div style="display:flex;align-items:center;gap:6px">${trilho(c.nPed,max1,C_OK)}<span style="font-size:.7rem;min-width:30px;text-align:right">${c.nPed}</span></div>
           </div>
           <div style="font-size:.7rem;font-weight:800;text-align:right;color:${falta?C_PARC:'var(--text-muted)'}" title="Pedidos vinculados que ficaram sem conferência por este conferente">${falta?('faltou '+falta):'—'}</div>
+          <div style="font-size:.82rem;font-weight:900;text-align:right" title="Aderência do conferente = pedidos conferidos ÷ pedidos das cargas vinculadas = ${c.nPed} ÷ ${c.pedVinc}">${pctC}</div>
         </div>`;
       }).join('');
     const card1 = card('Pedidos vinculados × conferidos, por conferente',
-      'Mostra quem pegou a carga e não terminou. O vínculo é por carga, então “vinculados” soma os pedidos previstos das cargas em que a pessoa está vinculada; “conferidos” são os pedidos que ela mesma marcou OK ou Não OK. Se outra pessoa conferiu no lugar, aparece “faltou” aqui.', graf1);
+      'Mostra quem pegou a carga e não terminou. O vínculo é por carga, então “vinculados” soma os pedidos previstos das cargas em que a pessoa está vinculada; “conferidos” são os pedidos que ela mesma marcou OK ou Não OK. Se outra pessoa conferiu no lugar, aparece “faltou” aqui. A porcentagem é a aderência do conferente: pedidos conferidos ÷ pedidos das cargas vinculadas (passa de 100% se ele conferiu pedidos de cargas de outra pessoa). Clique numa barra para filtrar a página por esse conferente.', graf1);
 
     // Gráfico 2: número de pedidos conferidos por conferente
-    const g2 = r.conferentes.filter(c=>c.nPed>0).sort((a,b)=> b.nPed-a.nPed);
+    const g2 = rBase.conferentes.filter(c=>c.nPed>0).sort((a,b)=> b.nPed-a.nPed);
     const max2 = Math.max(1, ...g2.map(c=>c.nPed));
     const graf2 = !g2.length ? '<p style="color:var(--text-muted);font-size:.8rem">Nenhum pedido conferido no Cronos neste período.</p>' :
       `<div style="margin-bottom:8px">${leg(C_OK,'OK')}${leg(C_NOK,'Não OK')}</div>` +
-      g2.map(c=>`<div style="display:grid;grid-template-columns:minmax(90px,140px) 1fr 44px;gap:8px;align-items:center;margin-bottom:7px">
+      g2.map(c=>`<div ${cliqueConf(c.nome)} style="display:grid;grid-template-columns:minmax(90px,140px) 1fr 44px;gap:8px;align-items:center;margin-bottom:7px;cursor:pointer;border-radius:6px;padding:2px 4px;opacity:${selC && selC!==c.nome ? '.4' : '1'}${selC===c.nome ? ';background:rgba(59,130,246,.14)' : ''}">
           <div style="font-size:.76rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.nome)}">${escapeHtml(c.nome)}</div>
           <div style="display:flex;height:14px;background:var(--bg-hover,rgba(128,128,128,.15));border-radius:3px;overflow:hidden">
             <div style="width:${100*c.nOk/max2}%;background:${C_OK}" title="${c.nOk} OK"></div><div style="width:${100*c.nNok/max2}%;background:${C_NOK}" title="${c.nNok} Não OK"></div>
@@ -50727,8 +50751,8 @@ function _aderPintar(){
     const card2 = card('Pedidos conferidos por conferente', 'Total de pedidos marcados no Cronos no período (cada pedido conta uma vez).', graf2);
 
     // Gráfico 3: cargas de cada dia e quantas foram conferidas
-    const porDia = rTodos.dias.map(d=>{
-      const cs = rTodos.cargas.filter(c=>c.dia===d);
+    const porDia = rConf.dias.map(d=>{
+      const cs = rConf.cargas.filter(c=>c.dia===d);
       return {d, total:cs.length, comp:cs.filter(c=>c.check==='completo').length, parc:cs.filter(c=>c.check==='parcial').length, sem:cs.filter(c=>c.check==='nenhum').length};
     });
     const maxDia = Math.max(1, ...porDia.map(x=>x.total)), ALT = 150;
@@ -50785,7 +50809,7 @@ function _aderPintar(){
 
     const dupla = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:0 16px">${card1}${card2}</div>`;
     const fmtSel = sel ? fmtD(sel)+' ('+dsem(sel)+')' : '';
-    const faixa = sel ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(59,130,246,.14);border:1px solid #3b82f6;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.8rem"><span>Mostrando só o dia <b>${fmtSel}</b>. Os números e gráficos abaixo seguem este dia.</span><button onclick="_aderSelDia('${sel}')" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.74rem;cursor:pointer;font-weight:700">Limpar filtro</button></div>` : '';
+    const faixa = (sel || selC) ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(59,130,246,.14);border:1px solid #3b82f6;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.8rem"><span>Mostrando só ${[sel ? 'o dia <b>'+fmtSel+'</b>' : '', selC ? 'o conferente <b>'+escapeHtml(selC)+'</b>' : ''].filter(Boolean).join(' · ')}. Os números e gráficos abaixo seguem ${sel && selC ? 'estes filtros' : 'este filtro'}.</span>${sel ? `<button onclick="_aderSelDia('${sel}')" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.74rem;cursor:pointer;font-weight:700">Limpar dia</button>` : ''}${selC ? `<button onclick="_aderSelConf(${JSON.stringify(selC).replace(/"/g, '&quot;')})" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.74rem;cursor:pointer;font-weight:700">Limpar conferente</button>` : ''}</div>` : '';
     box.innerHTML = faixa + indicador + kpis + dupla + card3 + tabDia + tabConf;
     _featherReplace();
     if(sel) _aderDetalhe();
