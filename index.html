@@ -3277,6 +3277,9 @@ body.light-theme{
     <button class="painel-ind-tab" onclick="mudarAbaIndicadores('frota-ranking')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="frota-ranking">
       <span data-feather="bar-chart-2" style="width:15px;height:15px"></span> Ranking da frota
     </button>
+    <button class="painel-ind-tab" onclick="mudarAbaIndicadores('devolucao')" style="display:flex;align-items:center;gap:6px;padding:12px 16px;border:none;background:none;color:var(--text-secondary);font-weight:600;cursor:pointer;border-bottom:2px solid transparent;font-size:.9rem;white-space:nowrap" data-aba="devolucao">
+      <span data-feather="corner-up-left" style="width:15px;height:15px"></span> Devolução
+    </button>
   </div>
 
   <!-- ABA 1a: Absenteísmo Expedição -->
@@ -3353,6 +3356,10 @@ body.light-theme{
   <div id="aba-venda-por-rota" class="painel-ind-aba" style="display:none">
     <div id="painel-ind-venda-por-rota-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
+  <div id="aba-devolucao" class="painel-ind-aba" style="display:none">
+    <div id="painel-ind-devolucao-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
+  </div>
+
   <div id="aba-frota-ranking" class="painel-ind-aba" style="display:none">
     <div id="painel-ind-frota-triplo-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
     <div id="painel-ind-frota-valor-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
@@ -34304,6 +34311,7 @@ function _painelIndTarefas(aba){
     case 'produtividade':               return [['painel-ind-produtividade-container', carregarPainelProdutividadeAno]];
     case 'otif-ano':                    return [['painel-ind-otif-ano-container', carregarPainelOtifAno]];
     case 'abastecimento-loja':          return [['painel-ind-abastecimento-loja-container', carregarPainelAbastecimentoLoja]];
+    case 'devolucao':                   return [['painel-ind-devolucao-container', ()=>_pnCarregarCardDados('painel-ind-devolucao-container', 'devolucao')]];
     case 'erro-conferencia':            return [['painel-ind-erro-conferencia-container', ()=>_pnCarregarCardDados('painel-ind-erro-conferencia-container', 'erroConferencia')]];
     case 'dias-por-rota':               return [['painel-ind-dias-por-rota-container', ()=>_pnCarregarCardDados('painel-ind-dias-por-rota-container', 'diasPorRota')]];
     case 'calendario-rotas':            return [['painel-ind-calendario-rotas-container', ()=>_pnCarregarCardDados('painel-ind-calendario-rotas-container', 'calendarioRotas')]];
@@ -34440,7 +34448,7 @@ const PAINEL_IND_SECOES = {
   expedicao:     { titulo:'Expedição',     abas:['abs-expedicao','carregamento-prazo','erro-conferencia','abastecimento-loja'] },
   armazem:       { titulo:'Armazém',       abas:['custo-armazem','receita-armazem','abs-recebimento-armazenagem','prazo-formacao'] },
   distribuicao:  { titulo:'Distribuição',  abas:['abs-distribuicao','disponibilidade','conferencia-prazo','pedidos-rotas','dias-por-rota','calendario-rotas'] },
-  monitoramento: { titulo:'Monitoramento', abas:['pedidos-rotas','venda-por-rota','produtividade','otif-ano','frota-ranking'] },
+  monitoramento: { titulo:'Monitoramento', abas:['pedidos-rotas','venda-por-rota','produtividade','otif-ano','frota-ranking','devolucao'] },
   // Sem seção "Frota" no Painel: Utilização de Frotas é de Distribuição (pedido do usuário, 03/11). Análise de abastecimentos,
   // disponibilidade e escala fixa (slides 36–38 do ABC) ainda não têm fonte de dados no sistema.
 };
@@ -35597,6 +35605,8 @@ const PN_ROTEIRO = [
   // Utilização por carga (frota externa e interna) — estava na Distribuição; vai para o Monitoramento (pedido do usuário, 09/11)
   { tipo:'card', n:16, titulo:'Utilização por carga — Frota externa',     fontes:[['disponibilidade',0,2]] },
   { tipo:'card', n:31, titulo:'Utilização por carga — Frota interna',     fontes:[['disponibilidade',0,1]] },
+  // Devolução = indicador próprio (era o bloco Devoluções por setor do Erro de Conferência); pedido do usuário, 09/11. Semanal: semana + acumulado do mês
+  { tipo:'dados', n:null, titulo:'Devolução', dados:'devolucao' },
   // A seção Frota do ABC (slides 35–38) não existe mais no Painel e os 3 slides dela não têm fonte de dados: só aparecem no aviso final.
   { tipo:'semFonte', n:36, titulo:'Análise de abastecimentos' },
   { tipo:'semFonte', n:37, titulo:'Disponibilidade da frota' },
@@ -36384,6 +36394,58 @@ async function _pnHtmlComercialPendentes(mes, und, ctx){
   return _pnh.casca(eyebrow, 'Rotas pendentes no Comercial', corpo + nota, 'COMERCIAL');
 }
 
+// ── Devolução (indicador próprio, Monitoramento) — pedido do usuário, 09/11 ──
+// Era o bloco "Devoluções por setor" do Erro de Conferência. Mensal: total do mês, por setor e motivos. Semanal (ctx.semanaIdx):
+// só a semana escolhida + o acumulado do mês até o fim dela. Fonte: ocorrências da Distribuição (ocorrencias_distribuicao, dia do
+// registro em horário de Salvador) com o setor do motivo (motivos_devolucao.setor). Sem filtro de unidade: a ocorrência não guarda unidade.
+async function _pnHtmlDevolucao(mes, und, ctx){
+  const P = _pnPeriodoMes(mes);
+  const dd = n => String(n).padStart(2,'0'), mm2 = dd(P.mes);
+  const ultimo = new Date(P.ano, P.mes, 0).getDate();
+  const [ocs, mots] = await Promise.all([
+    supaFetch(`ocorrencias_distribuicao?criado_em=gte.${mes}-01T00:00:00-03:00&criado_em=lte.${mes}-${dd(ultimo)}T23:59:59-03:00&select=id,motivo_id,motivo_nome,criado_em&limit=5000`),
+    supaFetch('motivos_devolucao?select=id,nome,setor')
+  ]);
+  const motById = new Map((mots||[]).map(m=>[m.id, m]));
+  const SETOR = { armazem:'Armazém', comercial:'Comercial', mercado:'Mercado', logistica:'Logística', distribuicao:'Distribuição' };
+  const lista = (ocs||[]).map(r=>{
+    const m = motById.get(r.motivo_id);
+    const s = ((m && m.setor) || '').toLowerCase();
+    return { dia: (typeof dataLocalBRT === 'function' ? dataLocalBRT(r.criado_em) : String(r.criado_em).slice(0,10)), setor: SETOR[s] ? s : '', motivo: ((m && m.nome) || r.motivo_nome || 'Sem motivo informado').trim() };
+  }).filter(r=>r.dia.slice(0,7) === mes);
+  const semIdx = (ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
+  const sems = _calcSemanas(mes);
+  const semIni = semIdx !== null && sems[semIdx] ? sems[semIdx] : null;
+  const wDe = semIni ? semIni.ini.getDate() : 1, wAte = semIni ? semIni.fim.getDate() : ultimo;
+  const noPer = (r, de, ate) => r.dia >= mes+'-'+dd(de) && r.dia <= mes+'-'+dd(ate);
+  if(!lista.length) throw _pnSemDado('sem devoluções registradas em '+P.nome.toLowerCase());
+  const parte = (itens, rotulo) => {
+    const T = itens.length;
+    const porSetor = {}; itens.forEach(r=>{ const k = r.setor || 'sem'; porSetor[k] = (porSetor[k]||0) + 1; });
+    const ordem = [...Object.keys(SETOR), 'sem'].filter(k=>porSetor[k]).sort((a,b)=>porSetor[b]-porSetor[a]);
+    const barras = T ? ordem.map(k=>_pnh.barra(k === 'sem' ? 'Sem setor' : SETOR[k], porSetor[k]+' · '+_pnh.p1(porSetor[k]/T*100)+'%', porSetor[k]/T*100, k === 'armazem' ? '#E8000D' : '#f0f0f8')).join('')
+      : '<div style="font-size:.9rem;color:var(--text-muted);padding:8px 0">Nenhuma devolução '+(semIni && rotulo.indexOf('SEMANA') === 0 ? 'nesta semana.' : 'no período.')+'</div>';
+    const porMot = {}; itens.forEach(r=>{ porMot[r.motivo] = (porMot[r.motivo]||0) + 1; });
+    const motivos = Object.entries(porMot).sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).slice(0, 6);
+    const maxM = Math.max(...motivos.map(x=>x[1]), 1);
+    const barrasMot = motivos.map(([n, q])=>_pnh.barra(_pnh.esc(n), q+' · '+_pnh.p1(q/T*100)+'%', q/maxM*100, '#f0f0f8')).join('');
+    return _pnh.caixa(`${_pnh.rot(rotulo)}
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:10px"><span style="font-size:2.2rem;font-weight:700;line-height:1">${_pnh.n(T)}</span><span style="font-size:.78rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted)">DEVOLUÇÕES</span></div>
+      <div style="margin-top:14px">${barras}</div>
+      ${T ? `<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">${_pnh.rot('PRINCIPAIS MOTIVOS')}<div style="margin-top:6px">${barrasMot}</div></div>` : ''}`, 'var(--red)', 'padding:20px 24px');
+  };
+  let corpo, eyebrow;
+  if(semIni){
+    corpo = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">${parte(lista.filter(r=>noPer(r, wDe, wAte)), 'SEMANA '+(semIdx+1)+' · '+dd(wDe)+'/'+mm2+' A '+dd(wAte)+'/'+mm2)}${parte(lista.filter(r=>noPer(r, 1, wAte)), 'ACUMULADO DO MÊS · 01/'+mm2+' A '+dd(wAte)+'/'+mm2)}</div>`;
+    eyebrow = 'MONITORAMENTO · DEVOLUÇÃO · '+P.nome+' '+P.ano+' · SEMANA '+(semIdx+1);
+  } else {
+    corpo = parte(lista, 'MÊS · '+P.nome+' '+P.ano);
+    eyebrow = 'MONITORAMENTO · DEVOLUÇÃO · '+P.nome+' '+P.ano;
+  }
+  const nota = _pnh.nota('Fonte: ocorrências de devolução registradas na Distribuição; o dia é o do registro (horário de Salvador) e o setor é o do motivo escolhido. Cada ocorrência conta uma vez. Semanas de domingo a sábado.');
+  return _pnh.casca(eyebrow, 'Devolução', corpo + nota, 'OPERAÇÕES / MONITORAMENTO');
+}
+
 // Mostra na tela do Painel o MESMO card que vai para o slide (mês e unidade vêm dos filtros do Painel).
 async function _pnCarregarCardDados(idCont, chave){
   const cont = document.getElementById(idCont); if(!cont) return;
@@ -36416,6 +36478,7 @@ async function _pnHtmlDados(chave, mes, und, ctx){
   if(chave === 'abastecimentoLoja') return _pnHtmlAbastecimentoLoja(mes, und, ctx);
   if(chave === 'comercialAbaixoMinimo') return _pnHtmlComercialAbaixoMinimo(mes, und, ctx);
   if(chave === 'comercialPendentes') return _pnHtmlComercialPendentes(mes, und, ctx);
+  if(chave === 'devolucao') return _pnHtmlDevolucao(mes, und, ctx);
   if(chave === 'liberacaoCalendario') return _pnHtmlLiberacaoCalendario(mes, und, ctx);
   if(chave === 'vendaPorRota') return _pnHtmlVendaPorRota(mes, und);
   if(chave === 'rankingTriplo') return _pnHtmlRankingTriplo(mes, und, ctx);
