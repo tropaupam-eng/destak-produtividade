@@ -21,14 +21,14 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-09, Gabriel: Aderência — nome passa para "Aderência à conferência" — v4.89.243
+## 2026-11-09, Gabriel: Aderência — nome passa para "Aderência à conferência" — v4.89.246
 Onde: `index.html`: rótulo do item no menu Armazém (`data-page="aderencia"`) e título da página (`<h2>` de `page-aderencia`). `APP_VERSION`/`version.json` 4.89.242 → 4.89.243.
 Por quê: pedido do Gabriel: trocar "Aderência conferente" por "Aderência à conferência". Só texto: página, regras de acesso (admin e adm_armazem), funções e dados iguais. O título do topo da tela segue o
 rótulo do menu. Entradas antigas deste registro mantêm o nome antigo (histórico). Empilhada na mudança da Aderência (4.89.242, ainda não publicada): vão juntas.
 Testes: `node check.js` ok; conferido por leitura que os dois textos mudaram e que não sobrou o nome antigo no menu nem no título.
 Como desfazer: `git revert` do commit desta entrada.
 Pendente/risco: baixo; teste visual do Gabriel.
-## 2026-11-09, Gabriel: Aderência — só conta cargas que saíram, mostra rotas distintas e as previstas que não saíram — v4.89.242
+## 2026-11-09, Gabriel: Aderência — só conta cargas que saíram, mostra rotas distintas e as previstas que não saíram — v4.89.246
 Onde: `index.html`, Armazém › Aderência (conferente): `renderArmAderencia` (busca traz `ts_saiu` e separa as cargas que saíram das que não), `_aderPintar` (KPIs) e o
 texto do filtro de datas. `APP_VERSION`/`version.json` 4.89.241 → 4.89.242.
 Por quê: pedido do Gabriel: a quantidade de rotas da Aderência não batia com o real; conferir com o que é lançado em Distribuição › Expedição. Conferência (só leitura):
