@@ -10181,7 +10181,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.241';
+const APP_VERSION = '4.89.242';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -38407,6 +38407,13 @@ async function _cargasDaUnidadeNoMes(mes, unidade){
 // "Saiu" = agendamento realizado OU carga da mesma rota e data (ou vinculada pelo nº da carga) com
 // status saiu/fim_viagem/concluido na Expedição; só "lançada" na pré-carga não conta.
 const _LIB_MOTIVOS = { comercial:'Comercial não fechou', veiculo:'Sem veículo', motorista:'Sem motorista', atraso_rota:'Atraso de rota', atraso_carregamento:'Atraso no carregamento', atraso_documentacao:'Atraso na documentação' };
+// Rótulo do motivo de uma saída fora do prazo, como está no Calendário de Saídas ("Não informado" se vazio).
+function _libRotuloMotivo(x){
+  const _l = t => String(t||'').replace(/^[^A-Za-zÀ-ÿ]+/,'').trim();
+  const a = x.a;
+  return (a.motivo_atraso === 'outro' && _l(a.motivo_label)) ? _l(a.motivo_label)
+       : (x.mot ? (_LIB_MOTIVOS[x.mot] || _l(a.motivo_label) || x.mot) : 'Não informado');
+}
 async function _liberacaoCalendarioMes(mes, undSel, rireSel){
   const [ano, mm] = mes.split('-').map(Number);
   const ini = mes+'-01', fim = mes+'-'+String(new Date(ano, mm, 0).getDate()).padStart(2,'0');
@@ -38476,11 +38483,9 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
 
     // ── Atrasos e motivos — as saídas fora do prazo do calendário (saíram com atraso ou passaram
     // da data sem saída registrada), com o motivo registrado no agendamento.
-    const _limpa = t => String(t||'').replace(/^[^A-Za-zÀ-ÿ]+/,'').trim();
     const atrasos = itens.filter(x=>x.foraPrazo).map(x=>{
       const a = x.a;
-      const label = (a.motivo_atraso === 'outro' && _limpa(a.motivo_label)) ? _limpa(a.motivo_label)
-                  : (x.mot ? (_LIB_MOTIVOS[x.mot] || _limpa(a.motivo_label) || x.mot) : 'Não informado');
+      const label = _libRotuloMotivo(x);
       return { rota:a.rota, data:a.data, motivo_label:label };
     }).sort((p,q)=> p.data < q.data ? 1 : p.data > q.data ? -1 : 0);
     const motivosMap = {};
@@ -38573,48 +38578,39 @@ async function carregarMotivosLiberacaoPrazo(){
   try{
     const mes = window._painelIndMesSel || new Date().toISOString().slice(0,7);
     const und = window._painelIndUndSel || '';
-    const [motivos, lancados] = await Promise.all([
-      supaFetch('motivos_liberacao_prazo?ativo=eq.true&order=nome.asc',{_quiet:true}).catch(()=>[]),
-      supaFetch(`liberacao_prazo_motivos_mes?mes_ano=eq.${mes}&unidade=eq.${encodeURIComponent(und)}`,{_quiet:true}).catch(()=>[]),
+    // Pedido do usuário (09/11): o motivo vem do Calendário de Saídas (agendamentos_rotas), não de lançamento manual.
+    // Conta as saídas FORA do prazo (mesma regra da Liberação no Prazo) pelo motivo registrado no agendamento.
+    const rireSel = window._painelIndRireSel || '';
+    const [motivosCad, cal] = await Promise.all([
+      supaFetch('motivos_liberacao_prazo?ativo=eq.true&order=nome.asc',{_quiet:true}).catch(()=>[]),   // só mantém o cache da importação de planilha
+      _liberacaoCalendarioMes(mes, und, rireSel),
     ]);
-    _motivosLiberacaoPrazoCache = motivos || [];
+    _motivosLiberacaoPrazoCache = motivosCad || [];
     const porMotivo = {};
-    (lancados||[]).forEach(l=>{ porMotivo[l.motivo_nome] = l.quantidade; });
+    Object.values(_LIB_MOTIVOS).forEach(n=>{ porMotivo[n] = 0; });
+    porMotivo['Não informado'] = 0;
+    cal.itens.filter(x=>x.foraPrazo).forEach(x=>{ const r = _libRotuloMotivo(x); porMotivo[r] = (porMotivo[r]||0) + 1; });
     const total = Object.values(porMotivo).reduce((a,b)=>a+(b||0),0);
-    const linhas = (motivos||[]).map(m=>({ nome:m.nome, qtd: porMotivo[m.nome]||0 }))
-      .sort((a,b)=>b.qtd-a.qtd);
+    const linhas = Object.entries(porMotivo).map(([nome,qtd])=>({ nome, qtd })).sort((a,b)=>b.qtd-a.qtd);
     const maxQtd = Math.max(1, ...linhas.map(l=>l.qtd));
-
-    if(!motivos || !motivos.length){
-      container.innerHTML = `
-        <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:30px 34px;color:var(--text-primary)">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <div style="font-size:1rem;font-weight:700">Análise por Motivo (Liberação no Prazo)</div>
-            <button onclick="abrirModalLancarMotivosPrazo()" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer">${_ic('plus',13)} Lançar Motivos</button>
-          </div>
-          <p style="color:var(--text-muted);font-size:.85rem;margin-top:12px">Nenhum motivo cadastrado ainda. Clique em "Lançar Motivos" pra começar.</p>
-        </div>`;
-      _featherReplace();
-      return;
-    }
 
     container.innerHTML = `
       <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:30px 34px;color:var(--text-primary);position:relative">
-        <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:355px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
+        <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:215px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
             <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">LIBERAÇÃO NO PRAZO · ${und||'TODAS AS UNIDADES'}</div>
             <div style="font-size:1.18rem;font-weight:700;margin-top:4px">Análise por Motivo</div>
+            <div style="font-size:.78rem;color:var(--text-muted);margin-top:2px">Motivos registrados no Calendário de Saídas</div>
           </div>
           <div style="display:flex;gap:8px;z-index:2;position:relative">
-            <button onclick="importarPlanilhaMotivosPrazo()" title="Ler a planilha de Rotas Externas e preencher os motivos do mês" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer">${_ic('upload',13)} Importar planilha</button>
-            <button onclick="abrirModalLancarMotivosPrazo()" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer">${_ic('edit-2',13)} Lançar Motivos</button>
+            <button onclick="importarPlanilhaMotivosPrazo()" title="Ler a planilha de Rotas Externas (alimenta o Carregamento no Prazo)" style="background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 14px;font-size:.82rem;font-weight:700;color:var(--text-primary);cursor:pointer">${_ic('upload',13)} Importar planilha</button>
           </div>
         </div>
         <div style="margin-top:18px;display:flex;flex-direction:column;gap:12px">
           ${linhas.map(l=>{
             const pct = total>0 ? (l.qtd/total*100) : 0;
-            const largura = Math.max(2, l.qtd/maxQtd*100);
+            const largura = l.qtd>0 ? Math.max(2, l.qtd/maxQtd*100) : 0;
             return `
             <div style="display:grid;grid-template-columns:200px 1fr 70px;gap:12px;align-items:center">
               <div style="font-size:.86rem;font-weight:600;color:var(--text-secondary)">${escapeHtml(l.nome)}</div>
@@ -38625,7 +38621,7 @@ async function carregarMotivosLiberacaoPrazo(){
             </div>`;
           }).join('')}
         </div>
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:.78rem;color:var(--text-muted)">${total} ${total===1?'registro':'registros'} no mês${!total?' — ainda sem lançamento pra este período/unidade':''}</div>
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:.78rem;color:var(--text-muted)">${total ? total+(total===1?' saída fora do prazo':' saídas fora do prazo')+' no mês (saiu depois da data agendada, ou passou da data sem saída registrada)' : 'Nenhuma saída fora do prazo no mês'}</div>
       </div>`;
     _featherReplace();
   }catch(e){
