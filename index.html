@@ -10209,7 +10209,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.265';
+const APP_VERSION = '4.89.266';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -35999,7 +35999,7 @@ async function _pnDadosVeiculos(mes, und, ctx){
   if(!cargas.length) throw _pnSemDado('sem cargas internas no mês');
   const [lancs, cad, ucBase] = await Promise.all([
     _pnEmLotes(cargas, 200, l=>supaFetch(`lancamentos?carga=in.(${l.join(',')})&veiculo=not.is.null&select=carga,veiculo&limit=5000`)),
-    supaFetch('veiculos?select=placa,uso'),
+    supaFetch('veiculos?select=placa,uso,unidade'),
     // Uso por carga = cargas distintas do veículo no mês (Expedição + Lançamento + Abastecimento de Loja) ÷ dias úteis:
     // MESMA função da visão anual do Painel e da página Utilização (Distribuição). Se falhar, o ranking segue sem a coluna.
     _calcCargasEDiasUteisMes(mes, '').catch(()=>null),
@@ -36032,6 +36032,9 @@ async function _pnDadosVeiculos(mes, und, ctx){
     if(per){ cargasSemDe.set(k, (cargasSemDe.get(k)||0) + contaNoPeriodo(set, per.ini, per.fim)); cargasAcDe.set(k, (cargasAcDe.get(k)||0) + contaNoPeriodo(set, per.mesIni, per.fim)); }
   });
   const usoDe = new Map((cad||[]).map(v=>[_pnPlaca(v.placa), (v.uso||'').toLowerCase()]));
+  // Unidade selecionada: só os veículos CADASTRADOS nessa unidade (pedido do usuário, 09/11) — antes entrava veículo de outra unidade que
+  // tivesse carga lançada nela. Veículo sem unidade no cadastro continua entrando pelo lançamento da unidade (mesma regra da Utilização).
+  const unidDe = new Map((cad||[]).map(v=>[_pnPlaca(v.placa), (v.unidade||'').trim()]));
   const veicDaCarga = new Map();
   lancs.forEach(l=>{ const c = Math.round(Number(l.carga)), p = _pnPlaca(l.veiculo); if(c && p && !veicDaCarga.has(c)) veicDaCarga.set(c, p); });
   const por = new Map(), visto = new Set();
@@ -36041,16 +36044,19 @@ async function _pnDadosVeiculos(mes, und, ctx){
     const rotaC = R.cargaRota[c] || '';
     if(!rotaC || rotaC === 'RETIRA' || !ROTAS_RI.has(rotaC)) return;
     const p = veicDaCarga.get(c); if(!p || usoDe.get(p) !== 'interno') return;
-    const o = por.get(p) || { placa:p, cargas:new Set(), ped:0, val:0, ac:{ cargas:new Set(), ped:0, val:0 } }; por.set(p, o);
+    if(und){ const uc = unidDe.get(p); if(uc && uc !== und) return; }   // mesma regra da Utilização: cadastro da unidade (sem unidade no cadastro entra pelo lançamento)
+    const o = por.get(p) || { placa:p, cargas:new Set(), ped:0, val:0, rotas:new Map(), ac:{ cargas:new Set(), ped:0, val:0 } }; por.set(p, o);
+    const contaRota = () => { let st = o.rotas.get(rotaC); if(!st){ st = new Set(); o.rotas.set(rotaC, st); } st.add(c); };   // rota que o veículo mais faz (nº de cargas por rota, só no período mostrado)
     const v = Number(r.valor)||0;
-    if(!per){ o.cargas.add(c); o.ped++; o.val += v; return; }
+    if(!per){ o.cargas.add(c); o.ped++; o.val += v; contaRota(); return; }
     const d = diaItem(c); if(!d) return;
-    if(d >= per.ini && d <= per.fim){ o.cargas.add(c); o.ped++; o.val += v; }
+    if(d >= per.ini && d <= per.fim){ o.cargas.add(c); o.ped++; o.val += v; contaRota(); }
     if(d >= per.mesIni && d <= per.fim){ o.ac.cargas.add(c); o.ac.ped++; o.ac.val += v; }
   });
   const lista = [...por.values()].filter(o=>!per || o.ped > 0).map(o=>{
     const cm = per ? cargasSemDe.get(o.placa) : cargasMesDe.get(o.placa);
-    const it = { placa:o.placa, cargas:o.cargas.size, ped:o.ped, val:o.val, cargasMes: (ucBase && cm!=null) ? cm : null, manual: manualDe.has(o.placa) ? manualDe.get(o.placa) : null, uc: (ucBase && diasUteisUC>0) ? (cm||0)/diasUteisUC*100 : null };
+    const rt = [...o.rotas.entries()].map(([r, st])=>({ rota:r, n:st.size })).sort((a,b)=>b.n - a.n || a.rota.localeCompare(b.rota));
+    const it = { rotaTop: rt[0] || null, placa:o.placa, cargas:o.cargas.size, ped:o.ped, val:o.val, cargasMes: (ucBase && cm!=null) ? cm : null, manual: manualDe.has(o.placa) ? manualDe.get(o.placa) : null, uc: (ucBase && diasUteisUC>0) ? (cm||0)/diasUteisUC*100 : null };
     if(per){ const ca = cargasAcDe.get(o.placa)||0; it.ac = { cargas:o.ac.cargas.size, ped:o.ac.ped, val:o.ac.val, cargasMes:ca, uc: per.diasA > 0 ? ca/per.diasA*100 : null }; }
     return it;
   });
@@ -36059,6 +36065,8 @@ async function _pnDadosVeiculos(mes, und, ctx){
   lista.forEach(o=>{ o.rv = rv.indexOf(o)+1; o.rp = rp.indexOf(o)+1; });
   return { rv, rp, lista, diasUteis: diasUteisUC, temUC: !!ucBase, temManual: lista.some(o=>o.manual!=null), sem: per, semAc: !!(per && per.ini !== per.mesIni) };
 }
+// Rota que o veículo mais fez no período mostrado (nº de cargas); "— (N cargas)" quando empata, mostra a primeira em ordem alfabética
+const _pnRotaTopTxt = o => o.rotaTop ? _pnh.esc(o.rotaTop.rota)+' <span style="font-size:.78rem;font-weight:600;color:var(--text-muted)">('+o.rotaTop.n+(o.rotaTop.n === 1 ? ' carga' : ' cargas')+')</span>' : '—';
 const _pnFmtUC = v => v==null ? '—' : v.toFixed(1).replace('.',',')+'%';
 function _pnNotaVeiculos(P, D){
   if(D && D.sem){
@@ -36082,6 +36090,7 @@ async function _pnHtmlTopVeiculos(mes, und, ctx, por){
     return `<div style="display:flex;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid var(--border)">
         <span style="width:30px;font-size:.85rem;font-weight:700;color:var(--text-muted)">${String(i+1).padStart(2,'0')}</span>
         <span style="width:110px;font-size:1rem;font-weight:700">${_pnh.esc(o.placa)}</span>
+        <span style="width:190px;font-size:.82rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_pnRotaTopTxt(o)}</span>
         <div style="flex:1;height:12px;background:var(--border);border-radius:6px"><div style="height:12px;width:${Math.max(1, pct).toFixed(1)}%;background:${i === 0 ? '#E8000D' : '#f0f0f8'};border-radius:6px"></div></div>
         <span style="width:190px;text-align:right;font-size:1rem;font-weight:700">${principal}</span>
         <span style="width:330px;text-align:right;font-size:.82rem;color:var(--text-secondary)">${sec}</span></div>`;
@@ -36252,8 +36261,8 @@ async function _pnHtmlComparativoVeiculos(mes, und, ctx){
   const top = D.rv.slice(0, 10);
   const th = (t, al)=>`<div style="font-size:.72rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);text-align:${al||'left'}">${t}</div>`;
   const cel = (t, al, neg)=>`<div style="font-size:1rem;font-weight:${neg ? 700 : 600};text-align:${al||'left'}">${t}</div>`;
-  const grade = 'display:grid;grid-template-columns:' + (D.temUC ? '120px 80px 160px 90px 90px 80px 120px 150px' : '130px 90px 190px 100px 110px 90px 160px') + ';gap:0 14px;align-items:center';
-  const linhas = top.map(o=>`<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)">${cel(_pnh.esc(o.placa), 'left', true)}${cel(o.rv+'º', 'center')}${cel(_pnh.v(o.val), 'right')}${cel(o.rp+'º', 'center')}${cel(_pnh.n(o.ped), 'right')}${cel(_pnh.n(o.cargas), 'right')}${cel(o.ped ? _pnh.v(o.val/o.ped) : '—', 'right')}${D.temUC ? cel(_pnFmtUC(o.uc)+(o.manual!=null ? ' · '+_fmtMarcaM(o.manual) : ''), 'right') : ''}</div>`).join('');
+  const grade = 'display:grid;grid-template-columns:' + (D.temUC ? '110px 70px 140px 80px 80px 70px 110px 130px 210px' : '120px 80px 170px 90px 100px 80px 140px 210px') + ';gap:0 14px;align-items:center';
+  const linhas = top.map(o=>`<div style="${grade};padding:9px 0;border-bottom:1px solid var(--border)">${cel(_pnh.esc(o.placa), 'left', true)}${cel(o.rv+'º', 'center')}${cel(_pnh.v(o.val), 'right')}${cel(o.rp+'º', 'center')}${cel(_pnh.n(o.ped), 'right')}${cel(_pnh.n(o.cargas), 'right')}${cel(o.ped ? _pnh.v(o.val/o.ped) : '—', 'right')}${D.temUC ? cel(_pnFmtUC(o.uc)+(o.manual!=null ? ' · '+_fmtMarcaM(o.manual) : ''), 'right') : ''}${cel(_pnRotaTopTxt(o), 'left')}</div>`).join('');
   const ticket = o=>o.ped ? o.val/o.ped : 0;
   const liderV = D.rv[0], liderP = D.rp[0], maisCargas = [...D.lista].sort((a,b)=>b.cargas-a.cargas)[0];
   const bullets = [
@@ -36262,7 +36271,7 @@ async function _pnHtmlComparativoVeiculos(mes, und, ctx){
     `${_pnh.esc(maisCargas.placa)}: mais cargas ${D.sem ? 'da semana' : 'do mês'} (${_pnh.n(maisCargas.cargas)}) e ${maisCargas.rv}º em valor.`,
   ];
   if(liderV === liderP) bullets.splice(1, 1);   // mesmo veículo lidera valor e pedidos: a 1ª frase já diz isso
-  const corpo = `${_pnh.caixa(`<div style="${grade};padding-bottom:8px;border-bottom:1px solid var(--border-med)">${th('VEÍCULO')}${th('POS. VALOR', 'center')}${th('VALOR', 'right')}${th('POS. PEDIDOS', 'center')}${th('PEDIDOS', 'right')}${th('CARGAS', 'right')}${th('R$ / PEDIDO', 'right')}${D.temUC ? th('USO POR CARGA', 'right') : ''}</div>${linhas}`, 'var(--red)')}
+  const corpo = `${_pnh.caixa(`<div style="${grade};padding-bottom:8px;border-bottom:1px solid var(--border-med)">${th('VEÍCULO')}${th('POS. VALOR', 'center')}${th('VALOR', 'right')}${th('POS. PEDIDOS', 'center')}${th('PEDIDOS', 'right')}${th('CARGAS', 'right')}${th('R$ / PEDIDO', 'right')}${D.temUC ? th('USO POR CARGA', 'right') : ''}${th('ROTA QUE MAIS FAZ')}</div>${linhas}`, 'var(--red)')}
       <div style="margin-top:18px"><div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:6px">LEITURA</div>${bullets.map(b=>`<div style="font-size:.92rem;line-height:1.6;color:var(--text-secondary)">• ${b}</div>`).join('')}</div>
       ${_pnNotaVeiculos(P, D)}`;
   return _pnh.casca('FROTA INTERNA · VALOR × PEDIDOS · '+P.nome+(D.sem ? ' · SEMANA '+(D.sem.idx+1) : ''), 'Comparativo — valor × pedidos', corpo, 'OPERAÇÕES / MONITORAMENTO');
@@ -36552,10 +36561,12 @@ async function _pnHtmlDevolucao(mes, und, ctx){
     supaFetch('motivos_devolucao?select=id,nome,setor')
   ]);
   const motById = new Map((mots||[]).map(m=>[m.id, m]));
-  const SETOR = { armazem:'Armazém', comercial:'Comercial', mercado:'Mercado', logistica:'Logística', distribuicao:'Distribuição' };
+  // Logística e Distribuição são o mesmo setor (pedido do usuário, 09/11): motivos cadastrados como Logística entram em Distribuição
+  const SETOR = { armazem:'Armazém', comercial:'Comercial', mercado:'Mercado', distribuicao:'Distribuição' };
   const lista = (ocs||[]).map(r=>{
     const m = motById.get(r.motivo_id);
-    const s = ((m && m.setor) || '').toLowerCase();
+    let s = ((m && m.setor) || '').toLowerCase();
+    if(s === 'logistica') s = 'distribuicao';
     return { dia: (typeof dataLocalBRT === 'function' ? dataLocalBRT(r.criado_em) : String(r.criado_em).slice(0,10)), setor: SETOR[s] ? s : '', motivo: ((m && m.nome) || r.motivo_nome || 'Sem motivo informado').trim() };
   }).filter(r=>r.dia.slice(0,7) === mes);
   const semIdx = (ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
@@ -38275,16 +38286,22 @@ async function carregarPainelDisponibilidade(){
     const _slidesPlacasHtml = _gruposSlide.map(([k, ls])=>{
       const nomeTipo = k==='interno' ? 'Frota Interna' : k==='externo' ? 'Frota Externa' : 'Sem tipo no cadastro';
       const med = _mediaPlacas(ls);
-      const linhasHtml = [...ls].sort((a,b)=> (a.visitante!==b.visitante) ? (a.visitante?1:-1) : b.pct-a.pct).map((r,i)=>{
+      const linhasArr = [...ls].sort((a,b)=> (a.visitante!==b.visitante) ? (a.visitante?1:-1) : b.pct-a.pct).map((r,i)=>{
         const tom = r.pct>=70 ? 'var(--text-primary)' : r.pct>=40 ? 'var(--text-secondary)' : 'var(--text-muted)';
         const barra = r.visitante ? 0 : Math.min(r.pct,100);
         return `<div style="position:relative;display:flex;justify-content:space-between;align-items:center;padding:7px 14px;border-bottom:1px solid var(--border);overflow:hidden">
           <div style="position:absolute;left:0;top:0;bottom:0;width:${barra}%;background:${tom};opacity:.09"></div>
-          <span style="position:relative;font-size:.9rem;font-weight:700;color:var(--text-primary);min-width:150px">${String(i+1).padStart(2,'0')} · ${r.placa}${r.visitante?' <span style="font-size:.65rem;font-weight:700;color:var(--text-muted);border:1px solid var(--border-med);border-radius:4px;padding:0 5px;margin-left:6px">VISITANTE</span>':''}</span>
+          <span style="position:relative;font-size:.9rem;font-weight:700;color:var(--text-primary);min-width:130px">${String(i+1).padStart(2,'0')} · ${r.placa}${r.visitante?' <span style="font-size:.65rem;font-weight:700;color:var(--text-muted);border:1px solid var(--border-med);border-radius:4px;padding:0 5px;margin-left:6px">VISITANTE</span>':''}</span>
           <span style="position:relative;font-size:.85rem;font-weight:600;color:var(--text-secondary);text-align:center">${r.nCargas} carga${r.nCargas===1?'':'s'} · ${r.nDiasRodados}/${diasUteisMes} dias<br><span style="font-size:.72rem;font-weight:500;color:var(--text-muted)">${_txtTipos(r.tipos)}</span></span>
           <span style="position:relative;font-size:.96rem;font-weight:700;color:${r.visitante?'var(--text-muted)':tom};text-align:right;min-width:110px">${r.visitante?'—':r.pct.toFixed(1)+'%'}${(!r.visitante && r.pct>100)?'<br><span style="font-size:.65rem;font-weight:500;color:var(--text-muted)">conta 100% na média</span>':''}</span>
         </div>`;
-      }).join('');
+      });
+      // Lista dividida em duas colunas (pedido do usuário, 09/11: usar as laterais do slide) quando há mais de 6 veículos
+      const _cabCol = `<div style="display:flex;justify-content:space-between;font-size:.69rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);padding:0 14px 6px;border-bottom:1px solid var(--border-med)"><span style="min-width:130px">PLACA</span><span>CARGAS · DIAS RODADOS / ÚTEIS</span><span style="min-width:90px;text-align:right">UTILIZAÇÃO</span></div>`;
+      const _metade = Math.ceil(linhasArr.length/2);
+      const linhasHtml = linhasArr.length > 6
+        ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 26px"><div>${_cabCol}${linhasArr.slice(0, _metade).join('')}</div><div>${_cabCol}${linhasArr.slice(_metade).join('')}</div></div>`
+        : _cabCol + linhasArr.join('');
       return `
       <div class="abs-report" data-sem-fundo="1" style="background:transparent;border-radius:16px;padding:44px 40px;color:var(--text-primary);font-family:'Segoe UI',system-ui,Arial,sans-serif;margin-bottom:24px;position:relative">
         <button class="report-download-btn" onclick="baixarImagemRelatorio(this)" title="Baixar imagem para slide" style="position:absolute;top:20px;right:20px;background:var(--bg-card2);border:1px solid var(--border-med);border-radius:8px;padding:7px 12px;font-size:.83rem;font-weight:700;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;gap:5px;z-index:2">${_ic('download',14)} Baixar Imagem</button>
@@ -38297,9 +38314,6 @@ async function carregarPainelDisponibilidade(){
             <div style="font-size:.92rem;font-weight:700;color:var(--text-primary)">MÉDIA ${med.toFixed(1)}%</div>
           </div>
           <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:10px">Cada veículo conta no máximo 100% na média (1 carga por dia útil). Interna/externa e unidade vêm do cadastro do veículo; a linha abaixo mostra quantas cargas foram em rota interna, externa e abastecimento de loja.</div>
-          <div style="display:flex;justify-content:space-between;font-size:.69rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);padding:0 14px 6px;border-bottom:1px solid var(--border-med)">
-            <span style="min-width:150px">PLACA</span><span>CARGAS · DIAS RODADOS / ÚTEIS</span><span style="min-width:110px;text-align:right">UTILIZAÇÃO</span>
-          </div>
           ${linhasHtml}
         </div>
         <div style="display:flex;justify-content:space-between;margin-top:24px;padding-top:14px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
