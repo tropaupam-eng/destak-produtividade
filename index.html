@@ -10195,7 +10195,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.253';
+const APP_VERSION = '4.89.254';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -39295,7 +39295,7 @@ async function _pnHtmlCarregamentoCalendario(mes, und, ctx){
   const naTela = !!(ctx && ctx.naTela);
   const rireSel = naTela ? ((ctx && ctx.rire != null) ? ctx.rire : (window._painelIndRireSel || '')) : 'RE';   // deck: rotas externas, igual ao slide do Carregamento no Prazo
   const P = _pnPeriodoMes(mes);
-  const D = await _carregClassificarMes(mes, und, rireSel);
+  const D = (ctx && ctx.D) || await _carregClassificarMes(mes, und, rireSel);
   if(!D.cargas.length && !D.previstas.length) throw _pnSemDado('sem rotas previstas nem cargas expedidas em '+P.nome.toLowerCase());
   const semIdx = (!naTela && ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
   const primeiro = new Date(P.ano, P.mes-1, 1).getDay(), dias = new Date(P.ano, P.mes, 0).getDate();
@@ -39307,12 +39307,12 @@ async function _pnHtmlCarregamentoCalendario(mes, und, ctx){
 
   // chips por dia (cargas expedidas na data de saída; previstas sem carga em cinza)
   const porDia = new Map();
-  const add = (data, rota, est, prev)=>{ if(!porDia.has(data)) porDia.set(data, []); porDia.get(data).push({ rota, est, prev }); };
+  const add = (data, rota, est, prev, carga)=>{ if(!porDia.has(data)) porDia.set(data, []); porDia.get(data).push({ rota, est, prev, carga }); };
   const T = Array.from({length:nSem}, ()=>({ previstas:0, expedidas:0, ok:0, fora:0, extra:0 }));
   D.cargas.forEach(c=>{
     // toda carga no dia em que o carregamento foi finalizado; programada mostra o dia agendado ("prev.") quando é outro dia
-    if(c.finalizado && c.finalizado.slice(0,7) === mes) add(c.finalizado, c.rota, c.tipo, (c.tipo !== 'extra' && c.prevista && c.prevista !== c.finalizado) ? c.prevista : null);
-    else if(c.tipo !== 'extra') add(c.dataRef, c.rota, c.tipo);   // programada finalizada em outro mês ou sem finalização: fica no dia agendado
+    if(c.finalizado && c.finalizado.slice(0,7) === mes) add(c.finalizado, c.rota, c.tipo, (c.tipo !== 'extra' && c.prevista && c.prevista !== c.finalizado) ? c.prevista : null, c.carga);
+    else if(c.tipo !== 'extra') add(c.dataRef, c.rota, c.tipo, null, c.carga);   // programada finalizada em outro mês ou sem finalização: fica no dia agendado
     const w = semDe(c.dataRef); if(w < 0 || w >= nSem) return;
     T[w].expedidas++; T[w][c.tipo]++;
   });
@@ -39336,7 +39336,14 @@ async function _pnHtmlCarregamentoCalendario(mes, und, ctx){
     extra:    'background:rgba(37,99,235,.20);color:#3b82f6',
   };
   const ORDEM = { fora:0, ok:1, extra:2, prevista:3 };
-  const chip = x=>`<div style="font-size:.74rem;font-weight:700;line-height:1.3;border-radius:4px;padding:2px 6px;margin-top:3px;${ESTILO[x.est]}">${_pnh.esc(x.rota)}${x.prev ? ' <span style="font-weight:600;opacity:.85">· prev. '+x.prev.slice(8,10)+'/'+x.prev.slice(5,7)+'</span>' : ''}</div>`;
+  const chip = x=>{
+    const info = (ctx && ctx.armInfo && x.carga != null) ? ctx.armInfo.get(String(x.carga)) : null;
+    const clic = !!(ctx && ctx.armEditavel && x.est === 'fora' && x.carga != null);
+    const mot = !clic ? '' : (info && info.arm
+      ? '<div style="font-weight:600;font-size:.68rem;opacity:.9;margin-top:1px">Motivo: '+_pnh.esc(info.arm.rotulo)+((info.status === 'diverge' || info.status === 'dist_sem') ? ' · difere da Distribuição' : '')+'</div>'
+      : '<div style="font-weight:600;font-size:.68rem;opacity:.8;margin-top:1px">Informar motivo</div>');
+    return `<div${clic ? ` onclick="_armMotivoAbrir('${x.carga}')" title="Clique para informar o motivo da demora"` : ''} style="font-size:.74rem;font-weight:700;line-height:1.3;border-radius:4px;padding:2px 6px;margin-top:3px;${ESTILO[x.est]}${clic ? ';cursor:pointer' : ''}">${_pnh.esc(x.rota)}${x.prev ? ' <span style="font-weight:600;opacity:.85">· prev. '+x.prev.slice(8,10)+'/'+x.prev.slice(5,7)+'</span>' : ''}${mot}</div>`;
+  };
   const cel = d=>{
     const key = mes+'-'+String(d).padStart(2,'0');
     const itens = (porDia.get(key) || []).slice().sort((a,b)=>ORDEM[a.est]-ORDEM[b.est] || a.rota.localeCompare(b.rota)).map(chip).join('');
@@ -50307,7 +50314,66 @@ function switchArmTab(tab, btn){
   if(tab==='calendario') renderArmCalendario().catch(e=>console.warn('calendário de carregamento:',e));
 }
 
-// Armazém › Calendário de carregamento (pedido do usuário, 09/11): o mesmo calendário do Painel de Indicadores, aqui por mês
+// Armazém › Calendário de carregamento (pedido do usuário, 09/11): o mesmo calendário do Painel de Indicadores, aqui por mês.
+// O Armazém informa o motivo da demora nas cargas em vermelho (carregamento finalizado depois do dia agendado); o motivo é comparado
+// com o da Distribuição no Calendário de Rotas (agendamentos_rotas.motivo_atraso, da mesma carga). Se não bate (ou a Distribuição
+// não informou), vira aviso em Notificações (id divmot_<carga>) — some sozinho quando os motivos passam a bater.
+const _ARM_MOTIVOS = { atraso_rota:'Atraso de Rota', comercial:'Pendência Comercial', veiculo:'Sem Veículo', motorista:'Sem Motorista', atraso_carregamento:'Atraso no Carregamento', atraso_documentacao:'Atraso na Documentação', outro:'Outro' };
+function _armNorm(t){ return String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^A-Za-z0-9]+/g,' ').trim().toLowerCase(); }
+// motivo → { chave (para comparar), rotulo (para mostrar) } ou null quando não há motivo
+function _armMotInfo(k, label){
+  k = String(k||'').trim();
+  if(!k || k === 'saiu_data_correta') return null;
+  if(_ARM_MOTIVOS[k] && k !== 'outro') return { chave:k, rotulo:_ARM_MOTIVOS[k] };
+  const txt = k === 'outro' ? (String(label||'').replace(/^[^A-Za-zÀ-ÿ]+/,'').trim() || 'Outro') : k;   // texto livre
+  return { chave:'outro:'+_armNorm(txt), rotulo:txt };
+}
+async function _armMotivosCarregar(foras){
+  const cargas = [...new Set(foras.map(c=>Number(c.carga)).filter(Boolean))];
+  if(!cargas.length) return [];
+  const [arm, dist] = await Promise.all([
+    supaFetch(`motivos_carregamento_armazem?carga=in.(${cargas.join(',')})&select=carga,motivo,motivo_label,usuario,atualizado_em`).catch(()=>[]),
+    supaFetch(`agendamentos_rotas?carga=in.(${cargas.join(',')})&select=carga,motivo_atraso,motivo_label,acao`).catch(()=>[]),
+  ]);
+  const ATOM = { sem_veiculo:'veiculo', sem_motorista:'motorista', valor:'comercial', atraso_rota:'atraso_rota' };
+  const armPor = {}, distPor = {};
+  (arm||[]).forEach(r=>{ const m = _armMotInfo(r.motivo, r.motivo_label); if(m) armPor[String(r.carga)] = { ...m, usuario:r.usuario||'', em:r.atualizado_em||'' }; });
+  (dist||[]).forEach(r=>{ const m = _armMotInfo(r.motivo_atraso || ATOM[r.acao] || '', r.motivo_label); if(m && !distPor[String(r.carga)]) distPor[String(r.carga)] = m; });
+  return foras.filter(c=>c.carga).map(c=>{
+    const a = armPor[String(c.carga)] || null, d = distPor[String(c.carga)] || null;
+    const status = !a ? 'pendente' : (!d ? 'dist_sem' : (a.chave === d.chave ? 'bate' : 'diverge'));
+    return { carga:String(c.carga), rota:c.rota, prevista:c.prevista, finalizado:c.finalizado, arm:a, dist:d, status };
+  });
+}
+const _ARM_MOT_STATUS = {
+  pendente:{ t:'Aguardando o Armazém', cor:'#94a3b8' },
+  bate:{ t:'Bate com a Distribuição', cor:'#16a34a' },
+  diverge:{ t:'Não bate com a Distribuição', cor:'#dc2626' },
+  dist_sem:{ t:'Distribuição sem motivo', cor:'#d97706' },
+};
+function _armDdmm(ds){ return ds ? String(ds).slice(8,10)+'/'+String(ds).slice(5,7) : '—'; }
+function _armMotivosTabela(lista){
+  const e = t => _pnh.esc(t);
+  const linhas = lista.slice().sort((a,b)=>(a.finalizado||'9999').localeCompare(b.finalizado||'9999') || a.rota.localeCompare(b.rota)).map(it=>{
+    const st = _ARM_MOT_STATUS[it.status];
+    const td = 'padding:9px 10px;font-size:.82rem;border-bottom:1px solid var(--border);vertical-align:middle';
+    return `<tr>
+      <td style="${td};font-weight:700">${e(it.rota)}<div style="font-size:.7rem;font-weight:500;color:var(--text-muted)">carga ${e(it.carga)}</div></td>
+      <td style="${td}">${_armDdmm(it.prevista)}</td>
+      <td style="${td}">${it.finalizado ? _armDdmm(it.finalizado) : 'sem finalização'}</td>
+      <td style="${td}">${it.arm ? e(it.arm.rotulo)+(it.arm.usuario ? '<div style="font-size:.7rem;color:var(--text-muted)">'+e(it.arm.usuario)+'</div>' : '') : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td style="${td}">${it.dist ? e(it.dist.rotulo) : '<span style="color:var(--text-muted)">não informado</span>'}</td>
+      <td style="${td};font-weight:700;color:${st.cor}">${st.t}</td>
+      <td style="${td};text-align:right"><button onclick="_armMotivoAbrir('${it.carga}')" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border-med);border-radius:7px;padding:5px 12px;font-size:.76rem;font-weight:700;cursor:pointer">${it.arm ? 'Editar' : 'Informar motivo'}</button></td>
+    </tr>`;
+  }).join('');
+  const th = 'padding:8px 10px;font-size:.68rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border-med)';
+  return `<div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-top:18px;overflow-x:auto">
+    <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:4px">CARGAS FORA DO PRAZO — MOTIVO DO ARMAZÉM × MOTIVO DA DISTRIBUIÇÃO</div>
+    <div style="font-size:.76rem;color:var(--text-secondary);margin-bottom:10px">Clique no chip vermelho do calendário ou em "Informar motivo". Se o motivo do Armazém não bater com o do Calendário de Rotas, aparece um aviso em Notificações.</div>
+    ${lista.length ? `<table style="width:100%;border-collapse:collapse;min-width:720px"><thead><tr><th style="${th}">ROTA</th><th style="${th}">AGENDADA</th><th style="${th}">CARREGAMENTO FINALIZADO</th><th style="${th}">MOTIVO DO ARMAZÉM</th><th style="${th}">MOTIVO DA DISTRIBUIÇÃO</th><th style="${th}">SITUAÇÃO</th><th style="${th}"></th></tr></thead><tbody>${linhas}</tbody></table>` : '<p style="color:var(--text-muted);font-size:.84rem;margin:6px 0 0">Nenhuma carga fora do prazo neste mês.</p>'}
+  </div>`;
+}
 async function renderArmCalendario(){
   const box = document.getElementById('arm-calendario-container');
   const inp = document.getElementById('arm-cal-mes');
@@ -50316,11 +50382,91 @@ async function renderArmCalendario(){
   const mes = inp.value;
   box.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted)">Carregando...</p>';
   try{
-    const html = await _pnHtmlCarregamentoCalendario(mes, '', { naTela:true, rire:'RE', semFuturas:true });
-    if(inp.value === mes) box.innerHTML = html;   // ignora resposta de um mês que já foi trocado
+    const D = await _carregClassificarMes(mes, '', 'RE');
+    const lista = await _armMotivosCarregar(D.cargas.filter(c=>c.tipo === 'fora'));
+    window._armMotivosLista = lista;
+    const armInfo = new Map(lista.map(it=>[it.carga, it]));
+    const html = await _pnHtmlCarregamentoCalendario(mes, '', { naTela:true, rire:'RE', semFuturas:true, D, armEditavel:true, armInfo });
+    if(inp.value !== mes) return;   // ignora resposta de um mês que já foi trocado
+    box.innerHTML = html + _armMotivosTabela(lista);
+    _armSincronizarAvisos(lista).catch(e=>console.warn('avisos de motivo:', e));
   }catch(e){
     box.innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted)">'+_pnh.esc(e && e.message ? e.message : 'Não foi possível montar o calendário.')+'</p>';
   }
+}
+// Mantém em Notificações um aviso (id divmot_<carga>) para cada carga cujo motivo do Armazém não bate com o da Distribuição.
+// Só mexe nas cargas avaliadas agora; o aviso some sozinho quando passam a bater (ou quando o motivo do Armazém é removido).
+async function _armSincronizarAvisos(lista){
+  if(!lista.length) return;
+  const avaliadas = new Set(lista.map(it=>'divmot_'+it.carga));
+  const existentes = await supaFetch(`notificacoes?id=like.divmot_*&ativo=eq.true&select=id,mensagem`, { _quiet:true }).catch(()=>[]) || [];
+  const exMap = new Map(existentes.map(x=>[x.id, x]));
+  const precisa = new Map();
+  lista.forEach(it=>{
+    if(it.status !== 'diverge' && it.status !== 'dist_sem') return;
+    precisa.set('divmot_'+it.carga, `Motivo do carregamento não bate com a Distribuição — ${it.rota} (carga ${it.carga}, agendada ${_armDdmm(it.prevista)}). Armazém: ${it.arm.rotulo}. Distribuição: ${it.dist ? it.dist.rotulo : 'sem motivo informado'}.`);
+  });
+  for(const [id, ex] of exMap){
+    if(avaliadas.has(id) && precisa.get(id) !== ex.mensagem) await supaFetch(`notificacoes?id=eq.${encodeURIComponent(id)}`, { method:'DELETE', prefer:'return=minimal', _quiet:true }).catch(()=>{});
+  }
+  for(const [id, msg] of precisa){
+    if(exMap.has(id) && exMap.get(id).mensagem === msg) continue;
+    await supaFetch('notificacoes', { method:'POST', prefer:'return=minimal', _quiet:true, body:JSON.stringify({ id, mensagem:msg, tipo:'warning', criado_por:'Calendário de carregamento (Armazém)', criado_em:new Date().toISOString(), ativo:true }) }).catch(()=>{});
+  }
+}
+function _armMotivoAbrir(carga){
+  const it = (window._armMotivosLista||[]).find(x=>x.carga === String(carga));
+  if(!it) return;
+  document.getElementById('arm-mot-modal')?.remove();
+  const e = t => _pnh.esc(t);
+  const ehOutro = it.arm && it.arm.chave.startsWith('outro:');
+  const opts = Object.entries(_ARM_MOTIVOS).map(([k, v])=>`<option value="${k}"${(it.arm && (ehOutro ? k === 'outro' : it.arm.chave === k)) ? ' selected' : ''}>${v}</option>`).join('');
+  const ov = document.createElement('div');
+  ov.id = 'arm-mot-modal';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.onclick = ev=>{ if(ev.target === ov) ov.remove(); };
+  const inpSt = 'width:100%;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:9px 11px;font-size:.88rem;margin-top:5px;box-sizing:border-box';
+  ov.innerHTML = `<div style="background:var(--bg-card);border:1px solid var(--border-med);border-radius:14px;padding:22px 24px;width:100%;max-width:460px;color:var(--text-primary)">
+    <div style="font-size:1.02rem;font-weight:800">Motivo da demora do carregamento</div>
+    <div style="font-size:.82rem;color:var(--text-secondary);margin-top:6px;line-height:1.5"><b>${e(it.rota)}</b> · carga ${e(it.carga)}<br>Agendada para ${_armDdmm(it.prevista)} · carregamento ${it.finalizado ? 'finalizado em '+_armDdmm(it.finalizado) : 'sem finalização registrada'}<br>Motivo na Distribuição (Calendário de Rotas): <b>${it.dist ? e(it.dist.rotulo) : 'não informado'}</b></div>
+    <label style="display:block;margin-top:14px;font-size:.74rem;font-weight:700;color:var(--text-muted)">Motivo do Armazém
+      <select id="arm-mot-sel" style="${inpSt}" onchange="document.getElementById('arm-mot-txt-wrap').style.display = this.value==='outro' ? 'block' : 'none'"><option value="">Selecione...</option>${opts}</select>
+    </label>
+    <label id="arm-mot-txt-wrap" style="display:${ehOutro ? 'block' : 'none'};margin-top:10px;font-size:.74rem;font-weight:700;color:var(--text-muted)">Descreva o motivo
+      <input id="arm-mot-txt" type="text" maxlength="120" value="${ehOutro ? e(it.arm.rotulo) : ''}" style="${inpSt}">
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap">
+      ${it.arm ? `<button onclick="_armMotivoRemover('${it.carga}')" style="margin-right:auto;background:none;color:var(--text-muted);border:1px solid var(--border-med);border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer">Remover motivo</button>` : ''}
+      <button onclick="document.getElementById('arm-mot-modal').remove()" style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 16px;font-size:.82rem;font-weight:700;cursor:pointer">Cancelar</button>
+      <button onclick="_armMotivoSalvar('${it.carga}')" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:.82rem;font-weight:700;cursor:pointer">Salvar</button>
+    </div></div>`;
+  document.body.appendChild(ov);
+}
+async function _armMotivoSalvar(carga){
+  const it = (window._armMotivosLista||[]).find(x=>x.carga === String(carga));
+  const sel = document.getElementById('arm-mot-sel')?.value || '';
+  const txt = (document.getElementById('arm-mot-txt')?.value || '').trim();
+  if(!it) return;
+  if(!sel){ showToast('Selecione o motivo', 'warning'); return; }
+  if(sel === 'outro' && !txt){ showToast('Descreva o motivo', 'warning'); return; }
+  try{
+    await supaFetch('motivos_carregamento_armazem?on_conflict=carga', { method:'POST', prefer:'resolution=merge-duplicates,return=minimal', body:JSON.stringify({
+      carga:Number(carga), rota:it.rota, data_agendada:it.prevista || null, finalizado:it.finalizado || null,
+      motivo:sel, motivo_label: sel === 'outro' ? txt : _ARM_MOTIVOS[sel],
+      usuario:(typeof USUARIO_LOGADO !== 'undefined' && USUARIO_LOGADO && (USUARIO_LOGADO.nome || USUARIO_LOGADO.email)) || '', atualizado_em:new Date().toISOString()
+    }) });
+    document.getElementById('arm-mot-modal')?.remove();
+    showToast('Motivo salvo', 'success');
+    await renderArmCalendario();
+  }catch(err){ showToast('Erro ao salvar: '+err.message, 'error'); }
+}
+async function _armMotivoRemover(carga){
+  try{
+    await supaFetch(`motivos_carregamento_armazem?carga=eq.${Number(carga)}`, { method:'DELETE', prefer:'return=minimal' });
+    document.getElementById('arm-mot-modal')?.remove();
+    showToast('Motivo removido', 'success');
+    await renderArmCalendario();
+  }catch(err){ showToast('Erro ao remover: '+err.message, 'error'); }
 }
 
 // ── Armazém › Aderência ───────────────────────────────────────────────
