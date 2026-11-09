@@ -21,6 +21,19 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-09, Gabriel: Painel de Indicadores › Erro de conferência: Data inicial e Data final — v4.89.256
+Onde: `index.html`. Acima do cartão (fora dele, então não vai na imagem baixada) entram "Data inicial" e "Data final" (`#pn-erroconf-ini`/`#pn-erroconf-fim`,
+classes `devol-data cm-data`: ícone claro + linha) e o botão "Mês selecionado" (só aparece com período personalizado). Funções novas: `_pnPeriodoIntervalo`,
+`_pnErroConfPeriodoAtual`, `_pnErroConfSincronizarUI`, `pnErroConfPeriodoMudou`, `pnErroConfLimparPeriodo`; alterados `_pnHtmlErroConferencia(mes, periodo)` e
+`_pnCarregarCardDados` (caso `erroConferencia`). `APP_VERSION`/`version.json` 4.89.255 → 4.89.256.
+Regras: padrão continua o mês do filtro do Painel (dia 1 até hoje); escolher datas busca só esse intervalo (dia inteiro, fuso -03:00) e muda o cabeçalho
+("03/11 A 05/11/2026"; atravessando o ano mostra os dois anos). O período vale só para o mês do filtro em que foi escolhido: trocar o mês volta ao padrão. Só uma data
+preenchida completa a outra (inicial → fim do mês dela; final → dia 1 do mês dela). Inicial maior que final avisa e não busca. O limite de 5.000 ocorrências agora é avisado
+na nota do cartão. "Gerar Apresentação" (slide 7) NÃO muda: continua usando o mês inteiro.
+Só leitura, sem mudança de dado nem de estrutura de banco.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: nenhum conhecido; teste visual do Gabriel em localhost (com login, o que eu não faço).
+
 ## 2026-11-09, Gabriel: Aderência — nome passa para "Aderência à conferência" — v4.89.246
 Onde: `index.html`: rótulo do item no menu Armazém (`data-page="aderencia"`) e título da página (`<h2>` de `page-aderencia`). `APP_VERSION`/`version.json` 4.89.242 → 4.89.243.
 Por quê: pedido do Gabriel: trocar "Aderência conferente" por "Aderência à conferência". Só texto: página, regras de acesso (admin e adm_armazem), funções e dados iguais. O título do topo da tela segue o

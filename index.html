@@ -3332,6 +3332,13 @@ body.light-theme{
     <div id="painel-ind-otif-ano-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Calculando OTIF do ano...</p></div>
   </div>
   <div id="aba-erro-conferencia" class="painel-ind-aba" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px">
+      <label for="pn-erroconf-ini" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data inicial</label>
+      <input type="date" class="devol-data cm-data" id="pn-erroconf-ini" onchange="pnErroConfPeriodoMudou()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <label for="pn-erroconf-fim" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data final</label>
+      <input type="date" class="devol-data cm-data" id="pn-erroconf-fim" onchange="pnErroConfPeriodoMudou()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <button type="button" id="pn-erroconf-limpar" onclick="pnErroConfLimparPeriodo()" title="Volta o período para o mês escolhido no filtro do Painel" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap">Mês selecionado</button>
+    </div>
     <div id="painel-ind-erro-conferencia-container"><p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p></div>
   </div>
   <div id="aba-abastecimento-loja" class="painel-ind-aba" style="display:none">
@@ -10195,7 +10202,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.255';
+const APP_VERSION = '4.89.256';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -35638,15 +35645,55 @@ async function _pnEmLotes(ids, tamanho, buscar){
 }
 const _pnPlaca = s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-// ── 1) Erro de conferência (Armazém · devoluções) — slide 7 do modelo ──
-async function _pnHtmlErroConferencia(mes){
+// Período de qualquer intervalo de datas (AAAA-MM-DD), no mesmo formato de _pnPeriodoMes. Pedido do Gabriel, 2026-11-09:
+// "Painel de Indicadores › Erro de conferência: opção de selecionar data inicial e final".
+function _pnPeriodoIntervalo(ini, fim){
+  const d = s => s.slice(8,10)+'/'+s.slice(5,7), mesmoAno = ini.slice(0,4) === fim.slice(0,4);
+  return { ini, fim, ano:Number(fim.slice(0,4)), mes:Number(fim.slice(5,7)), nome:_PNH_MESES[Number(fim.slice(5,7))-1],
+    rot: (mesmoAno ? d(ini) : d(ini)+'/'+ini.slice(0,4))+' A '+d(fim) };
+}
+// Erro de conferência: período escolhido nas datas (vale só para o mês do filtro em que foi escolhido; trocar o mês volta ao padrão).
+window._pnErroConfPeriodo = window._pnErroConfPeriodo || null;   // { mes, ini, fim }
+function _pnErroConfPeriodoAtual(mes){
+  const c = window._pnErroConfPeriodo;
+  if(c && c.mes === mes && c.ini && c.fim) return { ini:c.ini, fim:c.fim, custom:true };
   const P = _pnPeriodoMes(mes);
+  return { ini:P.ini, fim:P.fim, custom:false };
+}
+function _pnErroConfSincronizarUI(per){
+  const a = document.getElementById('pn-erroconf-ini'), b = document.getElementById('pn-erroconf-fim'), x = document.getElementById('pn-erroconf-limpar');
+  if(a && a.value !== per.ini) a.value = per.ini;
+  if(b && b.value !== per.fim) b.value = per.fim;
+  if(x) x.style.display = per.custom ? '' : 'none';
+}
+let _pnErroConfTimer = null;
+function pnErroConfPeriodoMudou(){
+  const mes = window._painelIndMesSel || new Date().toISOString().slice(0,7);
+  let ini = document.getElementById('pn-erroconf-ini')?.value || '', fim = document.getElementById('pn-erroconf-fim')?.value || '';
+  const base = _pnPeriodoMes(mes);
+  if(!ini && !fim){ window._pnErroConfPeriodo = null; }
+  else {
+    if(!ini) ini = fim.slice(0,8)+'01';                       // só a final: começa no dia 1 do mês dela
+    if(!fim){ const [y, m] = ini.split('-').map(Number); fim = ini.slice(0,8)+String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2,'0'); }   // só a inicial: vai até o fim do mês dela
+    window._pnErroConfPeriodo = (ini === base.ini && fim === base.fim) ? null : { mes, ini, fim };
+  }
+  clearTimeout(_pnErroConfTimer);
+  _pnErroConfTimer = setTimeout(()=>{ _pnCarregarCardDados('painel-ind-erro-conferencia-container', 'erroConferencia').catch(()=>{}); }, 300);
+}
+function pnErroConfLimparPeriodo(){
+  window._pnErroConfPeriodo = null;
+  _pnCarregarCardDados('painel-ind-erro-conferencia-container', 'erroConferencia').catch(()=>{});
+}
+
+// ── 1) Erro de conferência (Armazém · devoluções) — slide 7 do modelo ──
+async function _pnHtmlErroConferencia(mes, periodo){
+  const P = periodo ? _pnPeriodoIntervalo(periodo.ini, periodo.fim) : _pnPeriodoMes(mes);
   const [oc, mot] = await Promise.all([
     supaFetch(`ocorrencias_distribuicao?criado_em=gte.${P.ini}T00:00:00-03:00&criado_em=lte.${P.fim}T23:59:59-03:00&select=id,conferente,motivo_id,motivo_nome&limit=5000`),
     supaFetch('motivos_devolucao?select=id,nome,setor'),
   ]);
   const ocs = oc || [];
-  if(!ocs.length) throw _pnSemDado('sem devoluções registradas no mês');
+  if(!ocs.length) throw _pnSemDado('sem devoluções registradas no período');
   const motById = new Map((mot||[]).map(m=>[m.id, m]));
   const SET = { armazem:'Armazém', comercial:'Comercial', mercado:'Mercado', logistica:'Logística', distribuicao:'Distribuição' };
   const setorDe = r => (motById.get(r.motivo_id)?.setor || '').toLowerCase();
@@ -35673,14 +35720,14 @@ async function _pnHtmlErroConferencia(mes){
     `, 'var(--red)');
   const dir = _pnh.caixa(`
       ${_pnh.rot('MOTIVOS DOS ERROS')}
-      ${listaMot.map(([nome,n])=>_pnh.barra(_pnh.esc(nome), n+' · '+pctTxt(n, A), n/A*100, '#f0f0f8')).join('') || '<p style="color:var(--text-muted)">Sem erros do armazém no mês.</p>'}
+      ${listaMot.map(([nome,n])=>_pnh.barra(_pnh.esc(nome), n+' · '+pctTxt(n, A), n/A*100, '#f0f0f8')).join('') || '<p style="color:var(--text-muted)">Sem erros do armazém no período.</p>'}
       <div style="height:18px"></div>
       ${_pnh.rot('DEVOLUÇÕES POR SETOR')}
       ${listaSet.map(([s,n])=>_pnh.barra(SET[s] || (s.charAt(0).toUpperCase()+s.slice(1)), n+' · '+_pnh.p1(n/T*100)+'%', n/T*100, s === 'armazem' ? '#E8000D' : '#f0f0f8')).join('')}
       <div style="font-size:.95rem;font-weight:700;margin-top:6px">${_pnh.n(T)} devoluções no período</div>
     `, 'var(--border-med)');
   const corpo = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">${esq}${dir}</div>
-      ${_pnh.nota('Fonte: ocorrências de devolução (Distribuição) de '+P.rot+'. Erro de conferência = ocorrência com motivo cadastrado no setor Armazém (falta ou inversão no carregamento); o conferente é o que foi registrado na ocorrência. Todas as unidades.')}`;
+      ${_pnh.nota('Fonte: ocorrências de devolução (Distribuição) de '+P.rot+'. Erro de conferência = ocorrência com motivo cadastrado no setor Armazém (falta ou inversão no carregamento); o conferente é o que foi registrado na ocorrência. Todas as unidades.'+(ocs.length >= 5000 ? ' <b>Atenção: o período tem mais de 5.000 ocorrências e só as 5.000 primeiras entraram na conta; reduza o período.</b>' : ''))}`;
   return _pnh.casca('EXPEDIÇÃO · DEVOLUÇÕES · '+P.rot+'/'+P.ano, 'Erro de conferência', corpo, 'OPERAÇÕES / EXPEDIÇÃO');
 }
 
@@ -36140,7 +36187,14 @@ async function _pnCarregarCardDados(idCont, chave){
     const und = window._painelIndUndSel || '';
     const ctx = (window._pnCtxPainel && window._pnCtxPainel.chave === mes+'|'+und) ? window._pnCtxPainel : (window._pnCtxPainel = { chave:mes+'|'+und });
     ctx.naTela = true;   // card da aba do Painel (o deck usa o próprio ctx, sem esta marca)
-    cont.innerHTML = await _pnHtmlDados(chave, mes, und, ctx);
+    if(chave === 'erroConferencia'){
+      const per = _pnErroConfPeriodoAtual(mes);
+      _pnErroConfSincronizarUI(per);
+      if(per.ini > per.fim){ cont.innerHTML = '<p style="text-align:center;padding:40px;color:#dc2626">A data inicial é maior que a data final. Ajuste o período.</p>'; return; }
+      cont.innerHTML = await _pnHtmlErroConferencia(mes, per.custom ? per : null);
+    } else {
+      cont.innerHTML = await _pnHtmlDados(chave, mes, und, ctx);
+    }
     if(typeof _featherReplace === 'function') _featherReplace();
   }catch(e){
     cont.innerHTML = e && e.semDado
