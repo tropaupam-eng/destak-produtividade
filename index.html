@@ -10181,7 +10181,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.237';
+const APP_VERSION = '4.89.238';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -37125,7 +37125,7 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
   const metaNum = meta != null ? meta : 2; // meta mensal padrão do sistema (ou meta configurável do módulo oficial, quando informada)
 
   const semanasView = semanasPrecalc.map(s => ({
-    pct: s.pct||0, ocorrencias: s.faltas+s.atestados,
+    pct: s.pct||0, ocorrencias: s.faltas+s.atestados, futura: s.pct === null,   // semana que ainda não começou (pct nulo): não aparece, igual ao módulo oficial
     label: s.chartLabel, sub: `${_fmtDia(s.ini)}–${_fmtDia(s.fim)}`
   }));
 
@@ -37172,6 +37172,7 @@ function renderRelatorioAbsenteismo({titulo, indicador, area, mesAtual, stats, s
   const dentroDaMetaMes = stats.percentualNum <= metaNum;
 
   const barras = semanasView.map((sem,idx)=>{
+    if(sem.futura) return '';   // o índice (idx) continua o da lista completa, então clique/seleção não mudam
     const pct = sem.pct;
     const alturaPct = Math.min(100, (pct/eixoMax)*100);
     const alturaMeta = Math.min(100, (metaNum/eixoMax)*100);
@@ -46099,6 +46100,14 @@ function setAbsRecMes(mes){ _setAbsMesGenerico(mes,'abs-rec-filtro-mes','rec-abs
 // Fonte única de Absenteísmo Armazém — usada pelo módulo oficial (Armazém →
 // Absenteísmo) e pelo Painel de Indicadores → Absenteísmo Armazém. Nenhuma
 // outra tela deve recalcular isso por conta própria — sempre chamar esta função.
+const _ABS_FERIADOS_NAC = new Set([
+  '2025-01-01','2025-04-17','2025-04-18','2025-04-21','2025-05-01',
+  '2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-12-25',
+  '2026-01-01','2026-04-02','2026-04-03','2026-04-21','2026-05-01',
+  '2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-12-25',
+  '2027-01-01','2027-03-25','2027-03-26','2027-04-21','2027-05-01',
+  '2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-12-25',
+]);
 async function _calcularAbsenteismoArmazem(mes, filtros={}){
   const { tipo = '', nome = '', unidade = '', area = '' } = filtros;
 
@@ -46111,8 +46120,8 @@ async function _calcularAbsenteismoArmazem(mes, filtros={}){
   // — sem area (tela consolidada "Abs. Armazém (Geral)"), comportamento idêntico
   // ao de antes da divisão em Expedição/Recebimento e Armazenagem (2026-10-01).
   let urlConfsBase = undUsuario
-    ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade,area_armazem&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
-    : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade,area_armazem&order=nome.asc&limit=500`;
+    ? `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade,area_armazem,criado_em&order=nome.asc&unidade=eq.${encodeURIComponent(undUsuario)}&limit=500`
+    : `conferentes?select=id,nome,perfil,ativo,data_demissao,unidade,area_armazem,criado_em&order=nome.asc&limit=500`;
   if(area) urlConfsBase += `&area_armazem=eq.${encodeURIComponent(area)}`;
 
   // Período de referência — calculado aqui para filtrar demissões corretamente
@@ -46191,10 +46200,40 @@ async function _calcularAbsenteismoArmazem(mes, filtros={}){
       ativo: cf.ativo,
       data_demissao: cf.data_demissao||null,
       area_armazem: cf.area_armazem||null,
+      criado_em: cf.criado_em||null,
       pedidosConf: pedConf[nomeUp]||0,
       dias: lancMap[nomeUp] || {}
     };
   });
+
+  // REGRA DO USUÁRIO (2026-11-09): "se não tem lançamento, fica como PRESENTE". Antes só entrava como presente quem tinha
+  // registro no dia (abastecimento ou presença automática de motorista/ajudante); conferente/separador/empilhadeira presente
+  // não tinha linha nenhuma e ficava FORA do denominador, mas o atestado/falta dele entrava no numerador — o percentual
+  // saía inflado (Expedição de novembro: 1 atestado em 11 "dias" = 9,1% numa equipe de 29 pessoas).
+  // Agora cada dia de trabalho (segunda a sábado, sem feriado nacional, até hoje) de cada pessoa ativa sem registro conta
+  // como presente. Falta, atestado, folga e férias lançados continuam valendo; nada é gravado no banco (só cálculo).
+  // Início da contagem = o mais antigo entre o cadastro da pessoa e o primeiro registro dela; fim = demissão, se houver.
+  {
+    const fimISO = mesRef + '-' + String(new Date(Date.UTC(Number(mesRef.slice(0,4)), Number(mesRef.slice(5,7)), 0)).getUTCDate()).padStart(2,'0');
+    const hojeISO = hojeDataBRT();
+    const limiteISO = hojeISO < fimISO ? hojeISO : fimISO;
+    const diasUteisArm = [];
+    for(let d = new Date(periodoInicio + 'T12:00:00Z'); ; d.setUTCDate(d.getUTCDate()+1)){
+      const iso = d.toISOString().slice(0,10);
+      if(iso > limiteISO) break;
+      if(d.getUTCDay() !== 0 && !_ABS_FERIADOS_NAC.has(iso)) diasUteisArm.push(iso);
+    }
+    Object.values(porFunc).forEach(f => {
+      const criadoISO = f.criado_em ? new Date(new Date(f.criado_em).getTime() - 3*3600*1000).toISOString().slice(0,10) : '';
+      const primeiroReg = Object.keys(f.dias).sort()[0] || '';
+      const inicioISO = [criadoISO, primeiroReg].filter(Boolean).sort()[0] || periodoInicio;
+      diasUteisArm.forEach(iso => {
+        if(iso < inicioISO) return;
+        if(f.data_demissao && iso > f.data_demissao) return;
+        if(!f.dias[iso]) f.dias[iso] = 'presente';
+      });
+    });
+  }
 
   // KPIs
   const funcs = Object.keys(porFunc).sort();
