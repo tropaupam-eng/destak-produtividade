@@ -21,6 +21,18 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-10, Gabriel: Armazém › Aderência à conferência: pedido com ocorrência de motivo Armazém fica laranja — v4.89.274
+Onde: `index.html`, `_aderDetalhe` (lista de pedidos de cada carga, ao clicar num dia do gráfico). Para os pedidos do dia busca em `ocorrencias_distribuicao`
+(pedido, motivo_id, motivo_nome) e em `motivos_devolucao` (setor); se o motivo é do setor Armazém (por id, ou pelo nome quando a ocorrência não tem id; sem
+diferenciar acento/maiúscula), o chip do pedido fica LARANJA (`#f97316`) em vez de verde/vermelho/cinza e mantém o ✔/✖/○ da conferência. A dica do chip mostra
+"ocorrência de devolução (Armazém): <motivo>"; a legenda ganha "laranja = pedido com ocorrência de devolução de motivo Armazém". Outro setor não pinta. Se a consulta
+das ocorrências falhar, os chips ficam como antes. Não muda a contagem "X de Y pedidos conferidos" nem os números do indicador. `APP_VERSION`/`version.json` 4.89.273 → 4.89.274.
+Só leitura; sem mudança de dado nem de estrutura de banco.
+Conferido em 10/11 nos dados reais: 12 ocorrências de Armazém desde 01/11 (motivos Falta no Carregamento, Inversão no Carregamento, Sobra de Produto); nenhuma cai nas cargas de
+08/11 do print do Gabriel (por isso o 70429 ainda não fica laranja: não existe ocorrência dele). Dias para ver o laranja: 04/11 (carga 16017: pedidos 69004 e 68970) e 02/11 (carga 16185: pedido 69499).
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: nenhum conhecido; só aparece na rota externa (a tela só lista cargas de rota externa).
+
 ## 2026-11-09, Gabriel: Painel de Indicadores › Erro de conferência: Data inicial e Data final — v4.89.256
 Onde: `index.html`. Acima do cartão (fora dele, então não vai na imagem baixada) entram "Data inicial" e "Data final" (`#pn-erroconf-ini`/`#pn-erroconf-fim`,
 classes `devol-data cm-data`: ícone claro + linha) e o botão "Mês selecionado" (só aparece com período personalizado). Funções novas: `_pnPeriodoIntervalo`,

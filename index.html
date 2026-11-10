@@ -10222,7 +10222,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.273';
+const APP_VERSION = '4.89.274';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -51578,6 +51578,22 @@ async function _aderDetalhe(){
     if(ctx.sel !== dia || !document.body.contains(box)) return; // o usuário já mudou o filtro
     const baseCarga = {}; base.forEach(b=>{ (baseCarga[b.carga] = baseCarga[b.carga] || {})[String(b.pedido)] = b.cliente||''; });
     const cpCarga = {}; ctx.cps.forEach(c=>{ (cpCarga[c.carga] = cpCarga[c.carga] || {})[String(c.pedido)] = c; });
+    // Pedido com ocorrência de devolução (Distribuição › Ocorrências) cujo motivo é do setor Armazém: chip LARANJA, qualquer que seja o estado da
+    // conferência (o ✔/✖/○ continua). Pedido do Gabriel, 2026-11-10. Só leitura; se a consulta falhar, os chips ficam como antes.
+    const todosPeds = [...new Set(cs.flatMap(c=>[...Object.keys(baseCarga[c.carga]||{}), ...Object.keys(cpCarga[c.carga]||{})]))];
+    const [ocsDev, motsDev] = await Promise.all([
+      _emLotes(todosPeds, 60, l=>supaFetch('ocorrencias_distribuicao?pedido=in.('+l.join(',')+')&select=pedido,motivo_id,motivo_nome&limit=1000').catch(()=>[])),
+      supaFetch('motivos_devolucao?select=id,nome,setor').catch(()=>[]),
+    ]);
+    if(ctx.sel !== dia || !document.body.contains(box)) return; // o usuário já mudou o filtro
+    const _semAcento = s => String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+    const setorMot = { id:{}, nome:{} };
+    (motsDev||[]).forEach(m=>{ const s = _semAcento(m.setor); setorMot.id[m.id] = s; setorMot.nome[_semAcento(m.nome)] = s; });
+    const ocArm = {};
+    (ocsDev||[]).forEach(o=>{
+      const s = setorMot.id[o.motivo_id] || setorMot.nome[_semAcento(o.motivo_nome)] || '';
+      if(s === 'armazem') (ocArm[String(o.pedido)] = ocArm[String(o.pedido)] || []).push(o.motivo_nome || 'Armazém');
+    });
     const blocos = cs.map(c=>{
       const peds = Object.assign({}, baseCarga[c.carga]||{});
       const chk = cpCarga[c.carga] || {};
@@ -51587,11 +51603,13 @@ async function _aderDetalhe(){
       const cor = c.check==='completo' ? '#22c55e' : (c.check==='parcial' ? '#f59e0b' : '#ef4444');
       const chips = lista.map(p=>{
         const k = chk[p], st = k && k.status;
-        const bg = st==='ok' ? 'rgba(34,197,94,.18)' : (st==='nok' ? 'rgba(239,68,68,.22)' : 'rgba(128,128,128,.14)');
-        const bd = st==='ok' ? '#22c55e' : (st==='nok' ? '#ef4444' : 'var(--border)');
+        const oc = ocArm[p];   // ocorrência de motivo Armazém neste pedido
+        const bg = oc ? 'rgba(249,115,22,.26)' : (st==='ok' ? 'rgba(34,197,94,.18)' : (st==='nok' ? 'rgba(239,68,68,.22)' : 'rgba(128,128,128,.14)'));
+        const bd = oc ? '#f97316' : (st==='ok' ? '#22c55e' : (st==='nok' ? '#ef4444' : 'var(--border)'));
         const ic = st==='ok' ? '✔' : (st==='nok' ? '✖' : '○');
         const quem = k && k.conferente_nome ? ' · '+k.conferente_nome : '';
-        const tip = (peds[p] ? peds[p]+' · ' : '') + (st==='ok' ? 'conferido OK' : (st==='nok' ? 'marcado Não OK' : 'não conferido')) + quem;
+        const tip = (peds[p] ? peds[p]+' · ' : '') + (st==='ok' ? 'conferido OK' : (st==='nok' ? 'marcado Não OK' : 'não conferido')) + quem
+          + (oc ? ' · ocorrência de devolução (Armazém): '+[...new Set(oc)].join(', ') : '');
         return '<span title="'+escapeHtml(tip)+'" style="display:inline-block;background:'+bg+';border:1px solid '+bd+';border-radius:6px;padding:2px 7px;margin:2px 4px 2px 0;font-size:.72rem;font-weight:700">'+ic+' '+escapeHtml(p)+'</span>';
       }).join('');
       const vinc = c.nomesVinc.length ? c.nomesVinc.map(escapeHtml).join(', ') : '<span style="color:#ef4444;font-weight:700">ninguém vinculado</span>';
@@ -51605,7 +51623,7 @@ async function _aderDetalhe(){
         +aviso+chips+'</div>';
     }).join('');
     box.innerHTML = '<div style="font-weight:800;font-size:.85rem;margin-bottom:8px">Cargas de '+fmt(dia)+' <span style="font-weight:600;color:var(--text-muted);font-size:.74rem">(clique de novo na coluna para limpar o filtro)</span></div>'
-      + '<div style="margin-bottom:8px;font-size:.7rem;color:var(--text-secondary)">✔ conferido OK &nbsp; ✖ marcado Não OK &nbsp; ○ não conferido</div>' + blocos;
+      + '<div style="margin-bottom:8px;font-size:.7rem;color:var(--text-secondary)">✔ conferido OK &nbsp; ✖ marcado Não OK &nbsp; ○ não conferido &nbsp; <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(249,115,22,.26);border:1px solid #f97316;vertical-align:-1px"></span> laranja = pedido com ocorrência de devolução de motivo Armazém</div>' + blocos;
   }catch(e){ box.innerHTML = '<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
 }
 
