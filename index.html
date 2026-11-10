@@ -10222,7 +10222,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.267';
+const APP_VERSION = '4.89.268';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -11134,8 +11134,14 @@ function dataLocalBRT(tsISO){
   const dl = new Date(d.getTime() - 3*3600000);
   return dl.getUTCFullYear()+'-'+String(dl.getUTCMonth()+1).padStart(2,'0')+'-'+String(dl.getUTCDate()).padStart(2,'0');
 }
+// Deck semanal (pedido do usuário, 09/11: "dados da semana 1, nada da semana 2"): enquanto o deck é gerado, `window._pnHojeSemana` = sábado da
+// semana escolhida; se essa semana já fechou, "hoje" vira esse dia e tudo que é "do mês até hoje" para nele. Fora da geração do deck, é o dia real.
+function _pnHojeReal(){ return dataLocalBRT(new Date().toISOString()); }
+// Data "como estava em" no deck semanal (sábado da semana escolhida, se essa semana já fechou); null no uso normal.
+function _pnAsOf(){ const o = window._pnHojeSemana; return (o && o < _pnHojeReal()) ? o : null; }
 function hojeDataBRT(){
-  return dataLocalBRT(new Date().toISOString());
+  const real = _pnHojeReal(), o = window._pnHojeSemana;
+  return (o && o < real) ? o : real;
 }
 
 async function pushLancamento(l){
@@ -32603,6 +32609,7 @@ function _pedidosComCorteOuTrocaPosRo(cortesRows){
   (cortesRows||[]).forEach(r=>{
     if(!r.pedido || !r.entrou_ro_em || !r.atualizado_em) return; // sem RO registrado (pedido antigo sem histórico) -> não penaliza
     if(r.atualizado_em < r.entrou_ro_em) return; // mudança foi ANTES de entrar em RO -> não penaliza
+    { const _ao = _pnAsOf(); if(_ao && String(r.atualizado_em).slice(0,10) > _ao) return; } // deck semanal: corte feito depois da semana escolhida ainda não existia
     const corte = r.status==='ativo' && Number(r.quantidade_atual) < Number(r.quantidade_original);
     const removidoTotal = r.status==='removido';
     if(corte || removidoTotal) set.add(String(r.pedido));
@@ -32685,6 +32692,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
   let entRE=0,onTimeRE=0,inFullRE=0,otifRE=0;
   for(const [ped,bd] of Object.entries(pedMap)){
     if(mesFiltro && bd.dataPedido && !bd.dataPedido.startsWith(mesFiltro)) continue; // pedido fora do mês
+    { const _ao = _pnAsOf(); if(_ao && bd.dataPedido && String(bd.dataPedido).slice(0,10) > _ao) continue; } // deck semanal: pedido feito depois da semana escolhida
     const ent=entMap[ped]||{};
     const carga=bd.carga;
     // Prazo em horas: cadastro tem prioridade; null = rota sem OTIF; undefined = usa padrão RI/RE
@@ -32764,6 +32772,7 @@ function _computeOtifStats(bdRows, entRows, lancRows, saidaRows, rotasRows, ocor
       if(_proxyTs){ dataFim=_proxyTs; hasEntregaReal=true; }
       else if(dataFim) hasEntregaReal=true;
     }
+    { const _ao = _pnAsOf(); if(_ao && dataFim && String(dataFim).slice(0,10) > _ao){ dataFim = null; hasEntregaReal = false; } } // deck semanal: como estava no sábado da semana
     const _hojeTs=(hojeStr||hojeDataBRT())+'T23:59:59';
     const _isRI=bd.rire==='R.I.';
     if(!dataFim){
@@ -35587,8 +35596,10 @@ const PN_ROTEIRO = [
   { tipo:'card', n:15, titulo:'Absenteísmo — Distribuição (visão anual)', fontes:[['abs-distribuicao',1,0]], anual:true },
   { tipo:'dados', n:null, titulo:'Erro de motorista', dados:'erroMotorista' },   // mesmo molde do Erro de conferência (setor Distribuição)
   { tipo:'card', n:17, titulo:'Utilização de Frotas Fixas',               fontes:[['disponibilidade',0,0]] },
+  { tipo:'dados', n:null, titulo:'Utilização de Frotas Fixas — dias de uso (frota interna)', dados:'utilDiasInterna' },
+  { tipo:'dados', n:null, titulo:'Utilização de Frotas Fixas — dias de uso (frota externa)', dados:'utilDiasExterna' },
   { tipo:'card', n:18, titulo:'Utilização de Frotas Fixas (visão anual)', fontes:[['disponibilidade',1,0]], anual:true },
-  { tipo:'card', n:19, titulo:'Liberação no Prazo',                       fontes:[['conferencia-prazo',0,0],['carregamento-prazo',1,0]], rire:'RE' },
+  { tipo:'dados', n:19, titulo:'Liberação no Prazo', dados:'liberacaoResumo' },   // % junta no prazo + extras; Análise por Motivo ao lado (letras maiores)
   { tipo:'dados', n:null, titulo:'Liberação no Prazo — calendário', dados:'liberacaoCalendario' },   // semanal: só a semana escolhida (colorida) + acumulado do mês
   { tipo:'card', n:20, titulo:'Liberação no Prazo (visão anual)',         fontes:[['conferencia-prazo',1,0]], rire:'RE', anual:true },
   { tipo:'dados', n:23, titulo:'Média de dias por rota', dados:'diasPorRota' },
@@ -35748,6 +35759,19 @@ function _pnPeriodoMes(mes){
   const hoje = hojeDataBRT();
   const fim = (hoje.slice(0,7) === mes && hoje < mes+'-'+String(ult).padStart(2,'0')) ? hoje : mes+'-'+String(ult).padStart(2,'0');
   return { ini:mes+'-01', fim, ano:a, mes:m, rot:'01/'+String(m).padStart(2,'0')+' A '+fim.slice(8,10)+'/'+String(m).padStart(2,'0'), nome:_PNH_MESES[m-1] };
+}
+// Último dia (sábado, ou fim do mês) da semana escolhida no deck semanal; null fora do deck semanal.
+function _pnDataLimiteSemana(mes){
+  const c = window._pnCorteSemana; if(!c || c.idx == null) return null;
+  const sems = _calcSemanas(mes), sf = Number(c.idx) >= 4 ? sems[sems.length-1] : sems[Number(c.idx)];
+  if(!sf) return null;
+  const d = sf.fim;
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function _pnPeriodoCorte(mes){
+  const lim = _pnDataLimiteSemana(mes); if(!lim || lim.slice(0,7) !== mes) return null;
+  const real = _pnHojeReal();
+  return { ini:mes+'-01', fim: lim < real ? lim : real };
 }
 function _pnMesSeguinte(mes){ const [a, m] = mes.split('-').map(Number); return m === 12 ? (a+1)+'-01' : a+'-'+String(m+1).padStart(2,'0'); }
 function _pnMesAnterior(mes){ const [a, m] = mes.split('-').map(Number); return m === 1 ? (a-1)+'-12' : a+'-'+String(m-1).padStart(2,'0'); }
@@ -35915,7 +35939,8 @@ async function _pnHtmlErroMotorista(mes, periodo){
 // ── 2) Média de dias por rota — slide 23 do modelo ──
 async function _pnHtmlDiasPorRota(mes, und){
   const P = _pnPeriodoMes(mes);
-  const cargas = (await _carregarExpedicaoRE(und)).filter(c=>c.mes === mes);
+  const _limD = _pnDataLimiteSemana(mes);
+  const cargas = (await _carregarExpedicaoRE(und)).filter(c=>c.mes === mes && (!_limD || c.dataRef <= _limD));
   if(!cargas.length) throw _pnSemDado('sem cargas externas no mês');
   const ids = cargas.map(c=>c.carga);
   const dems = await _pnEmLotes(ids, 150, l=>supaFetch(`demandas_rota?carga=in.(${l.join(',')})&select=id,carga`));
@@ -35926,7 +35951,7 @@ async function _pnHtmlDiasPorRota(mes, und){
   const dia = s=>Date.UTC(+s.slice(0,4), +s.slice(5,7)-1, +s.slice(8,10)) / 86400000;
   const porRota = new Map(); let soma = 0, viagens = 0, descartadas = 0;
   cargas.forEach(c=>{
-    const ret = retPorCarga.get(c.carga); if(!ret) return;
+    const ret = retPorCarga.get(c.carga); if(!ret || (_limD && String(ret).slice(0,10) > _limD)) return;
     const d = dia(ret) - dia(c.dataRef) + 1;
     if(!(d >= 1)){ descartadas++; return; }
     const o = porRota.get(c.rota) || { nome:c.rota, v:0, s:0 }; o.v++; o.s += d; porRota.set(c.rota, o);
@@ -36043,7 +36068,9 @@ async function _pnHtmlVendaPorRota(mes, und){
   // passado e o total vendido nesse mês até o momento"; vale no lugar do mesmo período de 03/11). Sem % de variação, que compararia partes diferentes.
   const hojeSsa = new Date().toLocaleDateString('en-CA', { timeZone:'America/Bahia' });
   const d2 = n=>String(n).padStart(2,'0');
-  const diaCorte = mes === hojeSsa.slice(0,7) ? Number(hojeSsa.slice(8,10)) : null;
+  let diaCorte = mes === hojeSsa.slice(0,7) ? Number(hojeSsa.slice(8,10)) : null;
+  const _limV = _pnDataLimiteSemana(mes);
+  if(_limV && _limV.slice(0,7) === mes) diaCorte = diaCorte === null ? Number(_limV.slice(8,10)) : Math.min(diaCorte, Number(_limV.slice(8,10)));
   const doMes = (R, m, inteiro)=>R.bd.filter(p=>{
     if((p.mes_ano || p.data_pedido || '').slice(0,7) !== m) return false;
     if(diaCorte === null || inteiro) return true;
@@ -36444,18 +36471,22 @@ function _pnCartaoCarga(c, compacto){
   const abaixo = temMeta && c.val < c.meta;
   const pct = temMeta ? Math.min(c.val/c.meta*100, 100) : 0;
   const dtf = d => d ? d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4) : '—';
-  const lin = t => '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+_pnh.esc(t)+'</div>';
-  const pessoas = (!compacto && (c.mot || c.veic)) ? '<div style="font-size:.7rem;color:var(--text-muted);margin-top:6px;line-height:1.45">'+(c.mot ? lin(c.mot) : '')+(c.veic ? lin(c.veic) : '')+'</div>' : '';
+  // Cada informação numa linha própria (bloco, sem quebra): texto em linha que quebra de linha saía sobreposto no PowerPoint
+  const lin = (t, st) => '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(st || '')+'">'+t+'</div>';
+  const pessoas = (!compacto && (c.mot || c.veic)) ? '<div style="font-size:.7rem;color:var(--text-muted);margin-top:6px;line-height:1.45">'+(c.mot ? lin(_pnh.esc(c.mot)) : '')+(c.veic ? lin(_pnh.esc(c.veic)) : '')+'</div>' : '';
+  const valor = c.semCarga ? '<div style="margin-top:8px;font-size:.88rem;font-weight:700;color:var(--text-secondary)">sem carga formada</div>'
+    : '<div style="margin-top:8px;font-size:.98rem;font-weight:800;line-height:1.25;white-space:nowrap;color:'+(abaixo ? '#ef4444' : 'var(--text-primary)')+'">'+R(c.val)+'</div>'
+      + (temMeta ? '<div style="font-size:.8rem;font-weight:700;line-height:1.3;white-space:nowrap;color:var(--text-muted)">/ '+R(c.meta)+'</div>'
+        + '<div style="height:5px;background:var(--border);border-radius:3px;margin-top:5px"><div style="height:5px;width:'+(c.val > 0 ? Math.max(pct, 3).toFixed(1) : 0)+'%;background:'+(abaixo ? '#ef4444' : '#16a34a')+';border-radius:3px"></div></div>' : '');
   return `<div style="background:var(--bg-card2);border:1px solid var(--border);border-top:3px solid ${c.accent || '#6366f1'};border-radius:10px;padding:11px 13px;min-width:0">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px"><span style="font-size:.92rem;font-weight:800;line-height:1.15;overflow-wrap:anywhere">${_pnh.esc(c.rota)}</span><span style="font-size:.68rem;font-weight:700;color:var(--text-muted);white-space:nowrap">${c.carga ? '#'+_pnh.esc(c.carga) : '#—'}</span></div>
       <div style="margin-top:6px"><span style="display:inline-block;font-size:.66rem;font-weight:700;border-radius:20px;padding:2px 9px;background:${c.badgeBg || 'rgba(99,102,241,.22)'};color:${c.badgeCor || '#a5b4fc'}">${_pnh.esc(c.badge)}</span></div>
-      ${c.semCarga ? '<div style="margin-top:8px;font-size:.88rem;font-weight:700;color:var(--text-secondary)">sem carga formada</div>'
-        : `<div style="margin-top:8px;font-size:.95rem;font-weight:800;line-height:1.25;color:${abaixo ? '#ef4444' : 'var(--text-primary)'}">${R(c.val)}${temMeta ? ' <span style="font-weight:700;color:var(--text-muted)">/ '+R(c.meta)+'</span>' : ''}</div>
-      ${temMeta ? `<div style="height:5px;background:var(--border);border-radius:3px;margin-top:6px"><div style="height:5px;width:${c.val > 0 ? Math.max(pct, 3).toFixed(1) : 0}%;background:${abaixo ? '#ef4444' : '#16a34a'};border-radius:3px"></div></div>` : ''}`}
+      ${valor}
       ${pessoas}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:6px;font-size:.72rem;color:var(--text-secondary);line-height:1.5">
-        <div>${c.saidaRot || 'Saída'}: <b style="color:var(--text-primary)">${dtf(c.saida)}</b>${c.tag ? ' <span style="font-size:.62rem;font-weight:700;color:'+(c.tagCor || 'var(--text-muted)')+'">· '+_pnh.esc(c.tag)+'</span>' : ''}${compacto ? '' : '</div>'}
-        ${c.ped != null ? (compacto ? ' · ' : '<div>')+_pnh.n(c.ped)+(c.ped === 1 ? ' pedido' : ' pedidos')+'</div>' : (compacto ? '</div>' : '')}</div></div>`;
+        ${lin((c.saidaRot || 'Saída')+': <b style="color:var(--text-primary)">'+dtf(c.saida)+'</b>')}
+        ${c.tag ? lin(_pnh.esc(c.tag), 'font-size:.66rem;font-weight:700;color:'+(c.tagCor || 'var(--text-muted)')) : ''}
+        ${c.ped != null ? lin(_pnh.n(c.ped)+(c.ped === 1 ? ' pedido' : ' pedidos')) : ''}</div></div>`;
 }
 const _pnGradeCartoes = (lista, cols, compacto) => `<div style="display:grid;grid-template-columns:repeat(${cols || 5},minmax(0,1fr));gap:10px">${lista.map(c=>_pnCartaoCarga(c, compacto)).join('')}</div>`;
 
@@ -36519,7 +36550,7 @@ async function _pnHtmlComercialFechadas(mes, und, ctx){
     corpo = `${bloco('MÊS · '+P.nome+' '+P.ano, resumo(todas))}${_pnh.rot('CARGAS DO MÊS ('+doPer.length+') · POR DATA DE SAÍDA')}<div style="margin-top:10px">${cartoes}</div>`;
     eyebrow = 'COMERCIAL · CARGAS FECHADAS · '+P.nome+' '+P.ano;
   }
-  const hoje = hojeDataBRT();
+  const hoje = _pnHojeReal();
   const nota = _pnh.nota('Fonte: cargas da Expedição (todas as que já saíram da formação e não foram canceladas), pela data de saída da carga; a situação é a de hoje, '+hoje.slice(8,10)+'/'+hoje.slice(5,7)+'. "No armazém" = agendado, separação, carregamento, aguardando NF e aguardando manifesto. Valor em vermelho = abaixo do mínimo da carga/rota. Semanas de domingo a sábado.'+(und ? ' Unidade: '+_pnh.esc(und)+'.' : ''));
   return _pnh.casca(eyebrow, 'Cargas fechadas e situação', corpo + nota, 'COMERCIAL');
 }
@@ -36534,7 +36565,7 @@ async function _pnHtmlComercialPendentes(mes, und, ctx){
   const semIni = semIdx !== null && sems[semIdx] ? sems[semIdx] : null;
   const dd = n => String(n).padStart(2,'0');
   const fimSem = semIni ? mes+'-'+dd(semIni.fim.getDate()) : mes+'-'+dd(new Date(P.ano, P.mes, 0).getDate());
-  const hoje = hojeDataBRT();
+  const hoje = _pnHojeReal();
   const chaveR = r => (normalizarRota((r||'').trim()) || (r||'')).trim().toUpperCase();
   const [formRows, pend, cal] = await Promise.all([
     supaFetch('demandas_rota?status=eq.formacao&select=id,carga,rota,data_saida,valor_total,valor_meta,quantidade_pedidos,unidade,motorista,veiculo,criado_em&order=criado_em.desc&limit=500').catch(()=>[]),
@@ -36573,7 +36604,8 @@ async function _pnHtmlComercialPendentes(mes, und, ctx){
 
 // ── Prazo de entrega por rota (pedido do usuário, 09/11) ──
 // Por rota: o pedido que MAIS DEMOROU e a MÉDIA de dias entre a data do pedido e a ENTREGA CONFIRMADA ao cliente (entrega_datas.data_entrega).
-// Só entra pedido com data de entrega confirmada (nada de saída/lançamento como aproximação). Dias corridos. Pedidos do mês (data do pedido).
+// Data de entrega = entrega_datas.data_entrega (confirmada). Quando o pedido não tem, usa o FIM DA VIAGEM da carga — a mesma data que o OTIF usa pra julgar o pedido — e o slide MARCA isso
+// ("fim da viagem"), nunca como se fosse confirmada (pedido do usuário, 09/11: "cadê Juazeiro / cadê as outras rotas"). Mostra também o cliente do pedido mais demorado. Dias corridos. Pedidos do mês (data do pedido).
 // Semanal: entregas da semana (domingo a sábado) + acumulado do mês até o fim dela. Mensal: todas as entregas dos pedidos do mês.
 async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const P = _pnPeriodoMes(mes);
@@ -36585,15 +36617,19 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const entMap = new Map();
   (dados.entRows||[]).forEach(e=>{ const de = e.data_entrega ? String(e.data_entrega).slice(0,10) : null; if(!de) return; const k = String(e.pedido); if(!entMap.has(k) || de < entMap.get(k)) entMap.set(k, de); });
   const itens = [], vistos = new Set(); let negativos = 0;
+  const cliMap = new Map(); (base.bd||[]).forEach(p=>{ if(p.pedido != null && !cliMap.has(String(p.pedido))) cliMap.set(String(p.pedido), String(p.cliente||'').trim()); });
+  const pedPorRota = new Map();   // todos os pedidos da rota no mês (com ou sem entrega confirmada) — para listar TODAS as rotas
   _computeOtifStats(base.bd, dados.entRows, dados.lancRows, dados.saidaRows, dados.rotasRows, dados.ocorrRows, hoje, mes, dados.agendPedMap, dados.feriadosSet,
-    (ped, carga, rota, rr, dataPedido)=>{
-      const k = String(ped), de = entMap.get(k);
+    (ped, carga, rota, rr, dataPedido, onTime, inFull, dataFim)=>{
+      const rk = rota || '—'; pedPorRota.set(rk, (pedPorRota.get(rk)||0) + 1);
+      const k = String(ped); let de = entMap.get(k), fonte = 'conf';
+      if(!de && dataFim){ de = String(dataFim).slice(0,10); fonte = 'fim'; }
       if(!de || !dataPedido || vistos.has(k)) return;
       vistos.add(k);
       const dp = String(dataPedido).slice(0,10);
       const dias = Math.round((Date.parse(de+'T00:00:00Z') - Date.parse(dp+'T00:00:00Z')) / 86400000);
       if(!(dias >= 0)){ negativos++; return; }
-      itens.push({ ped:k, rota:rota || '—', pedido:dp, entrega:de, dias });
+      itens.push({ ped:k, rota:rota || '—', pedido:dp, entrega:de, dias, fonte, cliente:cliMap.get(k) || '' });
     }, dados.cortesRows, dados.pendenteTsMap);
   const semIdx = (ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
   const sems = _calcSemanas(mes);
@@ -36604,37 +36640,139 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const dec = v => v.toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1});
   const agrup = lista => {
     const m = new Map();
-    lista.forEach(x=>{ let g = m.get(x.rota); if(!g){ g = { rota:x.rota, n:0, soma:0, max:null }; m.set(x.rota, g); }
-      g.n++; g.soma += x.dias; if(!g.max || x.dias > g.max.dias || (x.dias === g.max.dias && Number(x.ped) < Number(g.max.ped))) g.max = x; });
+    lista.forEach(x=>{ let g = m.get(x.rota); if(!g){ g = { rota:x.rota, n:0, soma:0, max:null, nFim:0 }; m.set(x.rota, g); }
+      g.n++; g.soma += x.dias; if(x.fonte === 'fim') g.nFim++; if(!g.max || x.dias > g.max.dias || (x.dias === g.max.dias && Number(x.ped) < Number(g.max.ped))) g.max = x; });
     return m;
   };
   const noSem = x => x.entrega >= mes+'-'+dd(wDe) && x.entrega <= mes+'-'+dd(wAte);
   const noAcum = x => x.entrega <= mes+'-'+dd(wAte);
   const listaPrincipal = semIni ? itens.filter(noAcum) : itens;
-  if(!listaPrincipal.length) throw _pnSemDado('nenhum pedido com data de entrega confirmada '+(semIni ? 'até esta semana' : 'neste mês'));
+  if(!listaPrincipal.length) throw _pnSemDado('nenhum pedido com data de entrega ou fim de viagem '+(semIni ? 'até esta semana' : 'neste mês'));
   const gA = agrup(listaPrincipal), gS = semIni ? agrup(itens.filter(noSem)) : null;
+  const semEnt = [...pedPorRota.keys()].filter(r=>r !== '—' && !gA.has(r)).sort((a,b)=>(pedPorRota.get(b)-pedPorRota.get(a)) || a.localeCompare(b));
   const rotas = [...gA.keys()].sort((a,b)=>{
     if(gS){ const sa = gS.get(a), sb = gS.get(b); if(!!sa !== !!sb) return sa ? -1 : 1; if(sa && sb && (sb.soma/sb.n) !== (sa.soma/sa.n)) return (sb.soma/sb.n) - (sa.soma/sa.n); }
     return (gA.get(b).soma/gA.get(b).n) - (gA.get(a).soma/gA.get(a).n) || a.localeCompare(b);
-  });
-  const bt = 'border-top:1px solid var(--border);padding-top:5px;';
-  const cel = g => !g ? `<div style="${bt}grid-column:span 3;color:var(--text-muted);font-size:.8rem">sem entregas</div>`
-    : `<div style="${bt}text-align:right;font-weight:700">${_pnh.n(g.n)}</div><div style="${bt}text-align:right;font-weight:800;font-size:1rem">${dec(g.soma/g.n)}</div>
-       <div style="${bt}line-height:1.3"><b style="color:${g.max.dias >= 7 ? '#ef4444' : 'var(--text-primary)'}">${g.max.dias} ${g.max.dias === 1 ? 'dia' : 'dias'}</b> · ped. ${_pnh.esc(g.max.ped)}<div style="font-size:.66rem;color:var(--text-muted)">pedido ${dtf(g.max.pedido)} → entrega ${dtf(g.max.entrega)}</div></div>`;
-  const cols = semIni ? '150px 52px 52px minmax(0,1fr) 52px 52px minmax(0,1fr)' : '190px 90px 90px minmax(0,1fr)';
-  const th = t => `<div style="font-size:.6rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);${/PEDIDOS|MÉDIA/.test(t) ? 'text-align:right' : ''}">${t}</div>`;
+  }).concat(semEnt);
+  const bt = 'border-top:1px solid var(--border);padding-top:7px;padding-bottom:3px;';
+  const cel = (g, r) => !g ? `<div style="${bt}grid-column:span 3;color:var(--text-muted);font-size:.98rem">${gA.has(r) || !pedPorRota.has(r) ? 'sem entregas' : 'sem entrega confirmada · '+pedPorRota.get(r)+(pedPorRota.get(r) === 1 ? ' pedido' : ' pedidos')+' no mês'}</div>`
+    : `<div style="${bt}text-align:right;font-weight:700;font-size:1.1rem">${_pnh.n(g.n)}</div><div style="${bt}text-align:right;font-weight:800;font-size:1.3rem">${dec(g.soma/g.n)}</div>
+       <div style="${bt}line-height:1.3"><b style="color:${g.max.dias >= 7 ? '#ef4444' : 'var(--text-primary)'}">${g.max.dias} ${g.max.dias === 1 ? 'dia' : 'dias'}</b> · ped. ${_pnh.esc(g.max.ped)}<div style="font-size:.82rem;color:var(--text-muted);white-space:nowrap">pedido ${dtf(g.max.pedido)} → ${g.max.fonte === 'fim' ? 'fim da viagem' : 'entrega'} ${dtf(g.max.entrega)}</div>${g.max.cliente ? `<div style="font-size:.82rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">cliente: ${_pnh.esc(g.max.cliente)}</div>` : ''}${g.nFim > 0 ? `<div style="font-size:.76rem;color:var(--text-muted);white-space:nowrap">${g.nFim === g.n ? 'todos' : g.nFim+' de '+g.n} pelo fim da viagem</div>` : ''}</div>`;
+  const cols = semIni ? '190px 64px 70px minmax(0,1fr) 64px 70px minmax(0,1fr)' : '230px 130px 130px minmax(0,1fr)';
+  const th = t => `<div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);${/PEDIDOS|MÉDIA/.test(t) ? 'text-align:right' : ''}">${t}</div>`;
   const grupo = semIni
     ? `<div></div><div style="grid-column:span 3;font-size:.72rem;font-weight:700;letter-spacing:1px;color:var(--text-secondary);border-bottom:1px solid var(--border-med);padding-bottom:3px">SEMANA ${semIdx+1} · ENTREGAS DE ${dd(wDe)}/${mm2} A ${dd(wAte)}/${mm2}</div><div style="grid-column:span 3;font-size:.72rem;font-weight:700;letter-spacing:1px;color:var(--text-secondary);border-bottom:1px solid var(--border-med);padding-bottom:3px">ACUMULADO · ATÉ ${dd(wAte)}/${mm2}</div>` : '';
   const cab = th('ROTA') + (semIni ? th('PEDIDOS')+th('MÉDIA DIAS')+th('MAIS DEMORADO')+th('PEDIDOS')+th('MÉDIA DIAS')+th('MAIS DEMORADO') : th('PEDIDOS ENTREGUES')+th('MÉDIA DE DIAS')+th('PEDIDO QUE MAIS DEMOROU'));
-  const linhas = rotas.map(r=>`<div style="${bt}font-weight:800;font-size:.86rem;overflow-wrap:anywhere">${_pnh.esc(r)}</div>` + (semIni ? cel(gS.get(r)) + cel(gA.get(r)) : cel(gA.get(r)))).join('');
-  const grade = `<div style="display:grid;grid-template-columns:${cols};gap:7px 10px;align-items:start;font-size:.82rem">${grupo}${cab}${linhas}</div>`;
+  const linhas = rotas.map(r=>`<div style="${bt}font-weight:800;font-size:1.05rem;overflow-wrap:anywhere">${_pnh.esc(r)}</div>` + (semIni ? cel(gS.get(r), r) + cel(gA.get(r), r) : cel(gA.get(r), r))).join('');
+  const grade = `<div style="display:grid;grid-template-columns:${cols};gap:8px 12px;align-items:start;font-size:1rem">${grupo}${cab}${linhas}</div>`;
   const totPed = listaPrincipal.length, mediaGeral = listaPrincipal.reduce((s,x)=>s+x.dias, 0)/totPed;
   const maior = listaPrincipal.reduce((a,x)=>(!a || x.dias > a.dias) ? x : a, null);
+  const nFimTot = listaPrincipal.filter(x=>x.fonte === 'fim').length;
   const kpi = (r, v, sub)=>`<div style="flex:1;min-width:0"><div style="font-size:1.6rem;font-weight:700;line-height:1">${v}</div><div style="font-size:.66rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);margin-top:5px">${r}</div>${sub ? '<div style="font-size:.74rem;color:var(--text-secondary);margin-top:2px">'+sub+'</div>' : ''}</div>`;
-  const resumo = _pnh.caixa(`<div style="display:flex;gap:16px">${kpi(semIni ? 'ENTREGUES NO ACUMULADO DO MÊS' : 'PEDIDOS ENTREGUES', _pnh.n(totPed), 'com data de entrega confirmada')}${kpi('MÉDIA GERAL', dec(mediaGeral)+' dias', 'do pedido até a entrega')}${kpi('MAIOR PRAZO', maior.dias+' dias', _pnh.esc(maior.rota)+' · ped. '+_pnh.esc(maior.ped))}</div>`, 'var(--border-med)', 'margin-bottom:14px;padding:14px 22px');
+  const resumo = _pnh.caixa(`<div style="display:flex;gap:16px">${kpi(semIni ? 'ENTREGUES NO ACUMULADO DO MÊS' : 'PEDIDOS ENTREGUES', _pnh.n(totPed), (totPed - nFimTot)+' com entrega confirmada · '+nFimTot+' pelo fim da viagem')}${kpi('MÉDIA GERAL', dec(mediaGeral)+' dias', 'do pedido até a entrega')}${kpi('MAIOR PRAZO', maior.dias+' dias', _pnh.esc(maior.rota)+' · ped. '+_pnh.esc(maior.ped)+(maior.cliente ? ' · '+_pnh.esc(maior.cliente) : ''))}</div>`, 'var(--border-med)', 'margin-bottom:14px;padding:14px 22px');
   const rr = rire === 'RI' ? 'R.I. (INTERNA)' : 'R.E. (EXTERNA)';
-  const nota = _pnh.nota('Dias corridos entre a data do pedido e a data de entrega confirmada ao cliente (entrega_datas). Pedido sem data de entrega confirmada não entra; só pedidos do mês (pela data do pedido). Rotas sem prazo de OTIF cadastrado ficam de fora, como no OTIF.'+(negativos ? ' '+negativos+' pedido'+(negativos === 1 ? '' : 's')+' com entrega anterior à data do pedido ficou'+(negativos === 1 ? '' : 'ram')+' de fora (dado inconsistente).' : '')+' Em vermelho: 7 dias ou mais. Semanas de domingo a sábado.'+(und ? ' Unidade: '+_pnh.esc(und)+'.' : ''));
+  const nota = _pnh.nota('Dias corridos entre a data do pedido e a data de entrega ao cliente (entrega_datas). Quando o pedido não tem entrega confirmada, vale o fim da viagem da carga — a mesma data que o OTIF usa — e a linha avisa "pelo fim da viagem". Pedido sem nenhuma das duas datas não entra na média (rota listada no fim como "sem entrega confirmada"); só pedidos do mês (pela data do pedido). Rotas sem prazo de OTIF cadastrado ficam de fora, como no OTIF.'+(negativos ? ' '+negativos+' pedido'+(negativos === 1 ? '' : 's')+' com entrega anterior à data do pedido ficou'+(negativos === 1 ? '' : 'ram')+' de fora (dado inconsistente).' : '')+' Em vermelho: 7 dias ou mais. Semanas de domingo a sábado.'+(und ? ' Unidade: '+_pnh.esc(und)+'.' : ''));
   return _pnh.casca('PEDIDOS & ROTAS · PRAZO DE ENTREGA · '+P.nome+' '+P.ano+' · '+rr+(semIni ? ' · SEMANA '+(semIdx+1) : ''), 'Prazo de entrega por rota', resumo + grade + nota, 'OPERAÇÕES / DISTRIBUIÇÃO');
+}
+
+// ── Utilização de Frotas Fixas — DIAS de uso de cada veículo no mês (pedido do usuário, 09/11) ──
+// Grade veículo × dia do mês: mostra em quais dias cada veículo foi utilizado. Os dados vêm do MESMO mapa de disponibilidade do card
+// Utilização de Frotas Fixas (carregarPainelDisponibilidade guarda em window._pnUtilDias): dia utilizado = em rota, pronto p/ viagem,
+// carregando ou lançamento manual; domingo e feriado não são dia útil; oficina tira o dia da conta. Um slide por tipo de frota.
+async function _pnHtmlUtilizacaoDias(mes, und, ctx, uso){
+  const tipoOrig = window._painelIndFrotaTipoSel;
+  window._painelIndFrotaTipoSel = '';
+  window._pnUtilDias = null;
+  try{ await carregarPainelDisponibilidade(); } finally { window._painelIndFrotaTipoSel = tipoOrig; }
+  const D = window._pnUtilDias;
+  if(!D || D.mes !== mes) throw _pnSemDado('sem dados de utilização de frota');
+  const _limU = _pnDataLimiteSemana(mes);
+  if(_limU && _limU.slice(0,7) === mes) D.ate = Math.min(D.ate, Number(_limU.slice(8,10)));
+  const P = _pnPeriodoMes(mes);
+  const lista = D.veic.filter(v=>(v.uso||'') === uso);
+  if(!lista.length) throw _pnSemDado('nenhum veículo de frota '+(uso === 'interno' ? 'interna' : 'externa')+' na unidade');
+  const [ano, numM] = mes.split('-').map(Number);
+  const feriados = new Set(D.feriados || []);
+  const dd = n => String(n).padStart(2,'0');
+  const dow = d => new Date(ano, numM-1, d).getDay();
+  const util = d => dow(d) >= 1 && dow(d) <= 6 && !feriados.has(mes+'-'+dd(d));
+  // só os dias que já passaram (mês em andamento) — sem coluna vazia de dia futuro; mês fechado mostra todos
+  const dias = Array.from({length:Math.min(D.ate, D.diasNoMes)}, (_, i)=>i+1);
+  const uteisAte = dias.filter(d=>d <= D.ate && util(d));
+  const linhas = lista.map(v=>{
+    const oficina = new Set((v.manut||[]).filter(s=>s.slice(0,7) === mes).map(s=>Number(s.slice(8,10))));
+    const usados = uteisAte.filter(d=>!!v.dias[dd(d)]).length;
+    const noOficina = uteisAte.filter(d=>oficina.has(d)).length;
+    const base = Math.max(uteisAte.length - noOficina, 0);
+    return { ...v, oficina, usados, base, pct: base > 0 ? Math.min(usados/base*100, 100) : null };
+  }).sort((a,b)=>(a.visitante !== b.visitante ? (a.visitante ? 1 : -1) : (b.pct ?? -1) - (a.pct ?? -1)) || a.placa.localeCompare(b.placa));
+  const vinc = linhas.filter(l=>!l.visitante && l.pct !== null);
+  const media = vinc.length ? vinc.reduce((s,l)=>s+l.pct, 0)/vinc.length : null;
+  const LETRA = ['D','S','T','Q','Q','S','S'];
+  const cols = `130px repeat(${dias.length},minmax(0,92px)) minmax(0,1fr) 120px 84px`;
+  const cabDia = d => `<div style="text-align:center;line-height:1.15;${d > D.ate ? 'opacity:.45;' : ''}"><div style="font-size:.95rem;font-weight:700;color:${util(d) ? 'var(--text-primary)' : 'var(--text-muted)'}">${d}</div><div style="font-size:.7rem;color:var(--text-muted)">${LETRA[dow(d)]}</div></div>`;
+  const cel = (l, d)=>{
+    let est;
+    if(d > D.ate) est = 'background:transparent;border:1px dashed var(--border)';
+    else if(l.dias[dd(d)]) est = 'background:#f0f0f8';
+    else if(l.oficina.has(d)) est = 'background:rgba(245,158,11,.55)';
+    else if(!util(d)) est = 'background:var(--border);opacity:.55';
+    else est = 'background:rgba(232,0,13,.22);border:1px solid rgba(232,0,13,.35)';
+    return `<div style="height:24px;border-radius:4px;box-sizing:border-box;${est}"></div>`;
+  };
+  const linhaHtml = l=>`<div style="display:grid;grid-template-columns:${cols};gap:0 5px;align-items:center;padding:4px 0;border-top:1px solid var(--border);${l.visitante ? 'opacity:.7;' : ''}">
+      <div style="font-size:1rem;font-weight:700;white-space:nowrap">${_pnh.esc(l.placa)}${l.visitante ? ' <span style="font-size:.52rem;font-weight:700;color:var(--text-muted);border:1px solid var(--border-med);border-radius:3px;padding:0 3px">VISIT.</span>' : ''}</div>
+      ${dias.map(d=>cel(l, d)).join('')}<div></div>
+      <div style="text-align:right;font-size:.95rem;font-weight:600;color:var(--text-secondary)">${l.usados}/${l.base} dias</div>
+      <div style="text-align:right;font-size:1.05rem;font-weight:700;${l.pct !== null && l.pct < 40 ? 'color:#ef4444' : ''}">${l.visitante || l.pct === null ? '—' : _pnh.p1(l.pct)+'%'}</div></div>`;
+  const cab = `<div style="display:grid;grid-template-columns:${cols};gap:0 5px;align-items:end;padding-bottom:8px"><div style="font-size:.78rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">VEÍCULO</div>${dias.map(cabDia).join('')}<div></div><div style="text-align:right;font-size:.74rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">DIAS ÚTEIS</div><div style="text-align:right;font-size:.74rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">USO</div></div>`;
+  const leg = (est, t)=>`<span style="display:inline-flex;align-items:center;gap:6px;margin-right:22px"><span style="display:inline-block;width:16px;height:16px;border-radius:3px;box-sizing:border-box;${est}"></span>${t}</span>`;
+  const legenda = leg('background:#f0f0f8', 'Dia utilizado') + leg('background:rgba(232,0,13,.22);border:1px solid rgba(232,0,13,.35)', 'Dia útil sem uso') + leg('background:rgba(245,158,11,.55)', 'Oficina') + leg('background:var(--border);opacity:.55', 'Domingo / feriado');
+  const nome = uso === 'interno' ? 'Frota interna' : 'Frota externa';
+  const topo = `<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"><div style="font-size:.9rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">${lista.length} VEÍCULO${lista.length === 1 ? '' : 'S'} · ${uteisAte.length} DIAS ÚTEIS ATÉ ${dd(Math.min(D.ate, D.diasNoMes))}/${dd(numM)}</div>${media !== null ? '<div style="font-size:1.25rem;font-weight:700">MÉDIA '+_pnh.p1(media)+'%</div>' : ''}</div>`;
+  const corpo = `${_pnh.caixa(topo + cab + linhas.map(linhaHtml).join(''), 'var(--red)', 'padding:16px 20px')}
+      <div style="font-size:.92rem;color:var(--text-secondary);margin-top:14px">${legenda}</div>
+      ${_pnh.nota('Mesma base do card Utilização de Frotas Fixas: dia utilizado = em rota, pronto p/ viagem, carregando ou lançamento manual; só dia útil (segunda a sábado, sem feriado) entra no cálculo; dias em oficina saem do total. Veículo visitante (cadastro sem a unidade) aparece na lista mas fica fora da média.'+(D.und ? ' Unidade: '+_pnh.esc(D.und)+'.' : ''))}`;
+  return _pnh.casca('INDICADOR 02 · FROTAS FIXAS · DIAS DE USO · '+P.nome+' '+P.ano, 'Utilização — '+nome+', dia a dia', corpo, 'OPERAÇÕES / FROTA');
+}
+
+// ── Liberação no Prazo — slide-resumo do deck (pedido do usuário, 09/11: "letras maiores e mais organização" + "junte as porcentagens de
+// rotas extras com a de saíram no prazo"). Esquerda: % grande (no prazo + extras ÷ todas as saídas julgadas), barra em 3 partes e os 4
+// números; direita: Análise por Motivo dos atrasos. Mesma fonte do card da tela (_liberacaoCalendarioMes, rotas externas no deck).
+async function _pnHtmlLiberacaoResumo(mes, und, ctx){
+  const P = _pnPeriodoMes(mes);
+  const _limL = _pnDataLimiteSemana(mes);
+  const D = await _liberacaoCalendarioMes(mes, und, 'RE', _limL);
+  const noPrazo = D.noPrazo, fora = D.fora, extra = (D.extras || []).length;
+  const total = noPrazo + fora + extra;
+  if(!total) throw _pnSemDado('sem saídas no Calendário de Saídas em '+P.nome.toLowerCase());
+  const META = 90;
+  const pct = (noPrazo + extra) / total * 100;
+  const p = n => n/total*100;
+  const pt = v => _pnh.p1(v);
+  const seg = (n, cor, txtCor)=> n > 0 ? `<div style="height:100%;width:${p(n)}%;background:${cor};display:flex;align-items:center;justify-content:center;color:${txtCor};font-size:1.05rem;font-weight:700;white-space:nowrap;overflow:hidden">${n}</div>` : '';
+  const barra = `<div style="position:relative;margin-top:34px"><div style="height:46px;border-radius:6px;display:flex;overflow:hidden;background:var(--border-med)">${seg(noPrazo, 'var(--red)', '#fff')}${seg(extra, '#3b82f6', '#fff')}${seg(fora, 'var(--border-med)', 'var(--text-secondary)')}</div>
+      <div style="position:absolute;left:${META}%;top:-8px;bottom:-8px;width:2px;background:#fff;opacity:.7"></div><div style="position:absolute;left:${META}%;top:-30px;transform:translateX(-50%);font-size:.8rem;font-weight:700;color:var(--text-muted);white-space:nowrap">META ${META}%</div></div>`;
+  const tile = (n, rot, sub, cor)=>`<div style="flex:1;min-width:0;border-top:3px solid ${cor};padding-top:10px"><div style="font-size:2.7rem;font-weight:700;line-height:1;color:${cor === 'var(--border-med)' ? '#ef4444' : cor}">${n}</div><div style="font-size:.95rem;font-weight:700;letter-spacing:.5px;margin-top:8px">${rot}</div><div style="font-size:.82rem;color:var(--text-secondary);margin-top:3px;line-height:1.35">${sub}</div></div>`;
+  const esq = `<div style="background:var(--bg-card2);border-radius:10px;padding:30px 32px;border-top:3px solid var(--red)">
+      <div style="font-size:.9rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">NO PRAZO + ROTAS EXTRAS ÷ TODAS AS SAÍDAS</div>
+      <div style="display:flex;align-items:baseline;gap:30px;margin-top:12px"><div style="display:flex;align-items:baseline"><span style="font-size:5.2rem;font-weight:700;line-height:1">${pt(pct).replace('.', ',')}</span><span style="font-size:2.2rem;font-weight:700;margin-left:3px">%</span></div>
+        <div><div style="font-size:.9rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">META</div><div style="font-size:1.6rem;font-weight:700">${META},00%</div><div style="font-size:.95rem;font-weight:700;color:${pct >= META ? '#16a34a' : '#ef4444'};margin-top:2px">${pct >= META ? 'Meta cumprida' : 'Meta não cumprida'}</div></div></div>
+      ${barra}
+      <div style="display:flex;gap:22px;margin-top:14px;font-size:.95rem;color:var(--text-secondary);flex-wrap:wrap"><span><b style="color:var(--red)">■</b> No prazo ${pt(p(noPrazo))}%</span><span><b style="color:#3b82f6">■</b> Rotas extras ${pt(p(extra))}%</span><span><b style="color:var(--text-muted)">■</b> Fora do prazo ${pt(p(fora))}%</span></div>
+      <div style="display:flex;gap:20px;margin-top:26px">${tile(noPrazo, 'NO PRAZO', 'Saiu na data agendada', 'var(--red)')}${tile(extra, 'ROTAS EXTRAS', 'Saíram sem agendamento — contam como no prazo', '#3b82f6')}${tile(fora, 'FORA DO PRAZO', 'Saiu depois da data ou passou sem saída', 'var(--border-med)')}${tile(total, 'TOTAL', 'No prazo + extras + fora', 'var(--text-muted)')}</div></div>`;
+  const motMap = {};
+  D.itens.filter(x=>x.foraPrazo).forEach(x=>{ const m = _libRotuloMotivo(x); motMap[m] = (motMap[m]||0) + 1; });
+  const mot = Object.entries(motMap).sort((a,b)=>b[1]-a[1]);
+  const maxM = Math.max(...mot.map(x=>x[1]), 1), totMot = mot.reduce((s,x)=>s+x[1], 0) || 1;
+  const barrasMot = mot.length ? mot.map(([l, n])=>`<div style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;align-items:baseline;font-size:1.1rem;font-weight:600"><span>${_pnh.esc(l)}</span><span style="font-weight:700">${n} <span style="font-size:.9rem;font-weight:600;color:var(--text-secondary)">· ${Math.round(n/totMot*100)}%</span></span></div><div style="height:14px;background:var(--border);border-radius:7px;margin-top:6px"><div style="height:14px;width:${n/maxM*100}%;background:var(--red);border-radius:7px"></div></div></div>`).join('')
+    : '<div style="font-size:1rem;color:var(--text-muted);padding:20px 0">Nenhuma saída fora do prazo no mês.</div>';
+  const dir = `<div style="background:var(--bg-card2);border-radius:10px;padding:30px 32px;border-top:3px solid var(--border-med)">
+      <div style="font-size:1.4rem;font-weight:700">Análise por Motivo</div>
+      <div style="font-size:.9rem;color:var(--text-muted);margin:4px 0 22px">${fora} saída${fora === 1 ? '' : 's'} fora do prazo · motivos registrados no Calendário de Saídas</div>${barrasMot}</div>`;
+  const corpo = `<div style="display:grid;grid-template-columns:1.25fr 1fr;gap:20px;align-items:stretch">${esq}${dir}</div>
+      ${_pnh.nota('Fonte: Calendário de Saídas cruzado com as saídas da Expedição, rotas externas, '+P.nome+' '+P.ano+' até hoje. A porcentagem junta as rotas extras (sem agendamento, sem prazo) com as que saíram no prazo, sobre todas as saídas: no prazo + extras + fora do prazo.'+(und ? ' Unidade: '+_pnh.esc(und)+'.' : ''))}`;
+  return _pnh.casca('INDICADOR 03 · SAÍDA DO VEÍCULO · R.E. · META '+META+'% · '+P.nome+' '+P.ano+(_limL && ctx && ctx.semanaIdx != null ? ' · ATÉ A SEMANA '+(ctx.semanaIdx+1) : ''), 'Liberação no prazo', corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
 // ── Devolução (indicador próprio, Monitoramento) — pedido do usuário, 09/11 ──
@@ -36721,8 +36859,8 @@ async function _pnCarregarCardDados(idCont, chave){
   }
 }
 async function _pnHtmlDados(chave, mes, und, ctx){
-  if(chave === 'erroConferencia') return _pnHtmlErroConferencia(mes);
-  if(chave === 'erroMotorista') return _pnHtmlErroMotorista(mes);
+  if(chave === 'erroConferencia') return _pnHtmlErroConferencia(mes, _pnPeriodoCorte(mes));
+  if(chave === 'erroMotorista') return _pnHtmlErroMotorista(mes, _pnPeriodoCorte(mes));
   if(chave === 'diasPorRota') return _pnHtmlDiasPorRota(mes, und);
   if(chave === 'calendarioRotas') return _pnHtmlCalendarioRotas(mes, !!(ctx && ctx.naTela));
   if(chave === 'carregCalendario') return _pnHtmlCarregamentoCalendario(mes, und, ctx);
@@ -36732,6 +36870,9 @@ async function _pnHtmlDados(chave, mes, und, ctx){
   if(chave === 'entregaRotaRE') return _pnHtmlEntregaPorRota(mes, und, ctx, 'RE');
   if(chave === 'comercialPendentes') return _pnHtmlComercialPendentes(mes, und, ctx);
   if(chave === 'devolucao') return _pnHtmlDevolucao(mes, und, ctx);
+  if(chave === 'liberacaoResumo') return _pnHtmlLiberacaoResumo(mes, und, ctx);
+  if(chave === 'utilDiasInterna') return _pnHtmlUtilizacaoDias(mes, und, ctx, 'interno');
+  if(chave === 'utilDiasExterna') return _pnHtmlUtilizacaoDias(mes, und, ctx, 'externo');
   if(chave === 'liberacaoCalendario') return _pnHtmlLiberacaoCalendario(mes, und, ctx);
   if(chave === 'vendaPorRota') return _pnHtmlVendaPorRota(mes, und);
   if(chave === 'rankingTriplo') return _pnHtmlRankingTriplo(mes, und, ctx);
@@ -36829,6 +36970,9 @@ async function gerarApresentacaoPainelIndicadores(){
     const mesTxt = _pnMesTexto(mes);
     const sufixo = periodo==='semanal' ? '  ·  SEMANA '+(semanaIdx+1) : '';
     const ctx = { carregado:{}, semanaIdx };
+    // Deck semanal: Pedidos & Rotas só mostra a semana escolhida e as anteriores (nada de semana seguinte) — pedido do usuário, 09/11
+    window._pnCorteSemana = (periodo === 'semanal') ? { idx:semanaIdx } : null;
+    window._pnHojeSemana = (periodo === 'semanal') ? _pnDataLimiteSemana(mes) : null;
     const roteiro = PN_ROTEIRO.filter(it=>!(periodo==='semanal' && (it.anual || it.soMensal)) && !(periodo!=='semanal' && it.soSemanal));
     const inicioGeral = Date.now();
     let secaoAtual = null;
@@ -36924,6 +37068,7 @@ async function gerarApresentacaoPainelIndicadores(){
     console.error('Erro ao gerar apresentação:', e);
     showToast('Erro ao gerar apresentação: '+e.message, 'error');
   }finally{
+    window._pnCorteSemana = null; window._pnHojeSemana = null;
     if(animChartOriginal !== undefined && typeof Chart !== 'undefined') Chart.defaults.animation = animChartOriginal;
     if(eraClaro) document.body.classList.add('light-theme');
     if(pgCont) pgCont.style.cssText = cssContOriginal;
@@ -38337,6 +38482,9 @@ async function carregarPainelDisponibilidade(){
     // pra baixo por não ter rodado os dias inteiros de uma unidade que não
     // é a dele.
     const frotaFixaVinculada = frotaFixa.filter(ehVinculadoUnidade);
+    // Guarda o mapa de dias de uso por veículo para o slide "Utilização — dia a dia" da apresentação (_pnHtmlUtilizacaoDias)
+    window._pnUtilDias = { mes:mesRef, und:undSel, diasNoMes:diasNoMesRef, ate:diasDecorridosRef, feriados:[...feriadosMesSet],
+      veic: frotaFixa.map(v=>{ const pl = (v.placa||'').trim().toUpperCase(); return { placa:pl, uso:v.uso||'', visitante:!ehVinculadoUnidade(v), dias:Object.assign({}, dispMapRef[v.placa]||{}), manut:[...(diasManutPorVeic[pl]||[])] }; }) };
     const pctDiasPorVeiculo = frotaFixaVinculada.map(v=>{
       const placa = (v.placa||'').trim().toUpperCase();
       const nDias = diasUteisSPorVeic[placa] || 0;
@@ -38830,8 +38978,11 @@ function diasEntre(dataIni, dataFim){
 function renderRelatorioNoPrazoSimples({indicadorNum, titulo, eyebrow, area, mesRef, metaPct, noPrazoCount, foraCount, foraDesc, noPrazoDesc, extraCount, extraDesc}){
   const [anoRef, numMesRef] = mesRef.split('-').map(Number);
   const periodoTxt = `01/${String(numMesRef).padStart(2,'0')} A ${String(new Date(anoRef,numMesRef,0).getDate()).padStart(2,'0')}/${String(numMesRef).padStart(2,'0')}`;
-  const total = noPrazoCount + foraCount;
-  const pctNum = total>0 ? (noPrazoCount/total*100) : 0;
+  // Rotas extras contam junto com as que saíram no prazo (pedido do usuário, 09/11): % = (no prazo + extras) ÷ (no prazo + extras + fora)
+  const exN = extraCount != null ? extraCount : 0;
+  const total = noPrazoCount + foraCount + exN;
+  const pctNum = total>0 ? ((noPrazoCount + exN)/total*100) : 0;
+  const wNo = total>0 ? noPrazoCount/total*100 : 0, wEx = total>0 ? exN/total*100 : 0, wFora = total>0 ? foraCount/total*100 : 0;
   const percentualTxt = pctNum.toFixed(1);
   const dentroDaMeta = pctNum >= metaPct;
 
@@ -38858,12 +39009,14 @@ function renderRelatorioNoPrazoSimples({indicadorNum, titulo, eyebrow, area, mes
           <div style="border-top:1px solid var(--border);padding-top:20px">
             <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:14px">NO PRAZO × FORA DO PRAZO</div>
             <div style="position:relative;height:34px;background:var(--bg-hover);border-radius:4px;display:flex;overflow:hidden">
-              <div style="height:100%;width:${pctNum}%;background:var(--red);display:flex;align-items:center;padding-left:10px;color:#fff;font-size:.83rem;font-weight:700;white-space:nowrap">${noPrazoCount} · ${percentualTxt}%</div>
-              <div style="height:100%;flex:1;background:var(--border-med);display:flex;align-items:center;justify-content:flex-end;padding-right:10px;color:var(--text-secondary);font-size:.83rem;font-weight:700;white-space:nowrap">${foraCount} · ${(100-pctNum).toFixed(1).replace('.',',')}%</div>
+              <div style="height:100%;width:${wNo}%;background:var(--red);display:flex;align-items:center;padding-left:10px;color:#fff;font-size:.83rem;font-weight:700;white-space:nowrap">${noPrazoCount} · ${wNo.toFixed(1).replace('.',',')}%</div>
+              ${exN>0 ? `<div style="height:100%;width:${wEx}%;background:#3b82f6;display:flex;align-items:center;padding-left:10px;color:#fff;font-size:.83rem;font-weight:700;white-space:nowrap">${exN} · ${wEx.toFixed(1).replace('.',',')}%</div>` : ''}
+              <div style="height:100%;flex:1;background:var(--border-med);display:flex;align-items:center;justify-content:flex-end;padding-right:10px;color:var(--text-secondary);font-size:.83rem;font-weight:700;white-space:nowrap">${foraCount} · ${wFora.toFixed(1).replace('.',',')}%</div>
               ${metaPct>0&&metaPct<100?`<div style="position:absolute;left:${metaPct}%;top:-4px;bottom:-4px;width:1px;background:var(--red);opacity:.5"></div><div style="position:absolute;left:${metaPct}%;top:-18px;transform:translateX(-50%);font-size:.69rem;font-weight:700;color:var(--text-muted);white-space:nowrap">META ${metaPct}%</div>`:''}
             </div>
             <div style="display:flex;gap:20px;margin-top:14px;flex-wrap:wrap">
               <div style="display:flex;align-items:center;gap:6px;font-size:.83rem;color:var(--text-secondary)"><span style="width:10px;height:10px;background:var(--red);border-radius:2px;display:inline-block"></span>No Prazo — ${noPrazoCount} registro${noPrazoCount===1?'':'s'}</div>
+              ${exN>0 ? `<div style="display:flex;align-items:center;gap:6px;font-size:.83rem;color:var(--text-secondary)"><span style="width:10px;height:10px;background:#3b82f6;border-radius:2px;display:inline-block"></span>Rotas extras — ${exN} (contam como no prazo)</div>` : ''}
               <div style="display:flex;align-items:center;gap:6px;font-size:.83rem;color:var(--text-secondary)"><span style="width:10px;height:10px;background:var(--border-med);border-radius:2px;display:inline-block"></span>Fora — ${foraCount} registro${foraCount===1?'':'s'}</div>
             </div>
           </div>
@@ -38890,7 +39043,7 @@ function renderRelatorioNoPrazoSimples({indicadorNum, titulo, eyebrow, area, mes
             <div style="padding:14px 0${extraCount != null ? ';border-bottom:1px solid var(--border)' : ''}">
               <div style="font-size:2.24rem;font-weight:700;color:var(--text-primary);line-height:1">${total}</div>
               <div style="font-size:.87rem;font-weight:700;letter-spacing:.5px;color:var(--text-primary);margin-top:4px">TOTAL DE REGISTROS</div>
-              <div style="font-size:.84rem;color:var(--text-secondary);margin-top:2px">Soma de no prazo + fora do prazo</div>
+              <div style="font-size:.84rem;color:var(--text-secondary);margin-top:2px">${extraCount != null ? 'Soma de no prazo + extras + fora do prazo' : 'Soma de no prazo + fora do prazo'}</div>
             </div>
             ${extraCount != null ? `<div style="padding:14px 0">
               <div style="font-size:2.24rem;font-weight:700;color:#3b82f6;line-height:1">${extraCount}</div>
@@ -39107,7 +39260,7 @@ function _libRotuloMotivo(x){
   return (a.motivo_atraso === 'outro' && _l(a.motivo_label)) ? _l(a.motivo_label)
        : (x.mot ? (_LIB_MOTIVOS[x.mot] || _l(a.motivo_label) || x.mot) : 'Não informado');
 }
-async function _liberacaoCalendarioMes(mes, undSel, rireSel){
+async function _liberacaoCalendarioMes(mes, undSel, rireSel, limite){
   const [ano, mm] = mes.split('-').map(Number);
   const ini = mes+'-01', fim = mes+'-'+String(new Date(ano, mm, 0).getDate()).padStart(2,'0');
   const SAIU = 'in.(saiu,fim_viagem,concluido)';
@@ -39116,6 +39269,7 @@ async function _liberacaoCalendarioMes(mes, undSel, rireSel){
   const rowsRaw = await supaFetch('agendamentos_rotas?data=gte.'+ini+'&data=lte.'+fim+'&select=id,rota,data,status,lancado,carga,motivo_atraso,motivo_label,acao&order=data.asc&limit=2000') || [];
   const rows = rowsRaw.filter(a=>{
     if(!(a.rota||'').trim()) return false;
+    if(limite && a.data > limite) return false;
     if(cargasUnidade && a.carga && !cargasUnidade.has(String(a.carga))) return false;
     return _passaFiltroRire(a.rota, rireSel);
   });
@@ -39151,7 +39305,8 @@ async function _liberacaoCalendarioMes(mes, undSel, rireSel){
   const extras = [...porCarga.values()].filter(d=>(d.rota||'').trim() && d.data_saida
       && !agKeys.has(chave(d.rota)+'|'+d.data_saida) && !agCargas.has(String(d.carga))
       && (!cargasUnidade || cargasUnidade.has(String(d.carga))) && _passaFiltroRire(d.rota, rireSel))
-    .map(d=>({ carga:String(d.carga), rota:String(d.rota).trim().toUpperCase(), data:d.data_saida }));
+    .map(d=>({ carga:String(d.carga), rota:String(d.rota).trim().toUpperCase(), data:d.data_saida }))
+    .filter(x=>!limite || x.data <= limite);
   return { itens, noPrazo, fora, hoje, motivoDe, extras };
 }
 
@@ -39174,7 +39329,7 @@ async function carregarPainelConferenciaPrazo(mesSelecionado){
       noPrazoDesc: 'Saiu na data agendada (Calendário de Saídas)',
       foraDesc: 'Saiu depois da data, ou passou da data sem saída registrada',
       extraCount: (pre.extras || []).length,
-      extraDesc: 'Saíram sem agendamento no calendário (sem prazo, fora do %)'
+      extraDesc: 'Saíram sem agendamento no calendário (sem prazo; contam como no prazo)'
     }) + '<div style="margin-top:24px">' + await _pnHtmlLiberacaoCalendario(mes, window._painelIndUndSel||'', { naTela:true }, pre).catch(e=>{
       if(e && e.semDado) return '<p style="text-align:center;padding:30px;color:var(--text-muted)">Sem rotas agendadas no Calendário de Saídas neste período.</p>';
       throw e;
@@ -40296,40 +40451,51 @@ let _cPainelRotasPizza = null;
 const _cPainelRotasPizzaExtra = {}; // gráficos dos cards extras (sufixo -> Chart)
 // Lista "Valor por Rota": TODAS as rotas, da maior pro menor VALOR, com entregas,
 // pedidos e valor por extenso, e linha de total (que agora fecha com o card).
-function _linhaValorPorRota(nome, d, cor, g, fmtVal){
+// Seta de pedidos da rota contra o MESMO PERÍODO do mês anterior (pedido do usuário, 09/11): ▲ mais pedidos, ▼ menos, – igual.
+function _setaPedidos(atual, ant, tit){
+  const cor = atual > ant ? '#22c55e' : atual < ant ? '#ef4444' : 'var(--text-muted)';
+  const g = atual > ant ? '▲' : atual < ant ? '▼' : '–';
+  return `<span title="${tit}" style="width:16px;flex-shrink:0;text-align:center;font-size:.95rem;font-weight:700;line-height:1;color:${cor};white-space:nowrap">${g}</span>`;
+}
+function _linhaValorPorRota(nome, d, cor, g, fmtVal, seta){
   const pctVal = g.val>0 ? (d.val/g.val*100) : 0;
   return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-    <span style="width:10px;height:10px;border-radius:2px;background:${cor};flex-shrink:0"></span>
+    ${seta || `<span style="width:10px;height:10px;border-radius:2px;background:${cor};flex-shrink:0"></span>`}
     <span style="flex:1;font-size:.92rem;font-weight:600;color:var(--text-primary)">${nome}</span>
     <span style="font-size:.85rem;color:var(--text-secondary);white-space:nowrap">${d.ped.toLocaleString('pt-BR')} ped · ${pctVal.toFixed(1).replace('.',',')}%</span>
     <span style="font-size:.92rem;font-weight:700;color:var(--text-primary);min-width:120px;text-align:right">${fmtVal(d.val)}</span>
   </div>`;
 }
-function _linhaTotalValorPorRota(qtdRotas, g, fmtVal){
+function _linhaTotalValorPorRota(qtdRotas, g, fmtVal, comSeta){
   return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0 2px;margin-top:2px;border-top:2px solid var(--red)">
-      <span style="width:10px;flex-shrink:0"></span>
+      <span style="width:${comSeta ? 16 : 10}px;flex-shrink:0"></span>
       <span style="flex:1;font-size:.92rem;font-weight:800;color:var(--text-primary)">TOTAL (${qtdRotas} rotas)</span>
       <span style="font-size:.85rem;font-weight:700;color:var(--text-primary);white-space:nowrap">${g.ped.toLocaleString('pt-BR')} ped</span>
       <span style="font-size:.94rem;font-weight:800;color:var(--text-primary);min-width:120px;text-align:right">${fmtVal(g.val)}</span>
     </div>`;
 }
-function _htmlListaValorPorRota(rotaCalc, cores, fmtVal){
+function _setaDaRota(setas, nome){
+  if(!setas) return null;
+  const a = (setas.atual||{})[nome]||0, b = (setas.ant||{})[nome]||0;
+  return _setaPedidos(a, b, (setas.rotulo||'Mesmo período do mês anterior')+': '+b+' pedido'+(b===1?'':'s')+' (agora '+a+')');
+}
+function _htmlListaValorPorRota(rotaCalc, cores, fmtVal, setas){
   const lista = [...rotaCalc.todas].sort((a,b)=>b[1].val-a[1].val);
   const g = rotaCalc.geral;
-  const linhas = lista.map(([nome,d],i)=>_linhaValorPorRota(nome, d, cores[i%cores.length], g, fmtVal)).join('');
+  const linhas = lista.map(([nome,d],i)=>_linhaValorPorRota(nome, d, cores[i%cores.length], g, fmtVal, _setaDaRota(setas, nome))).join('');
   if(!linhas) return '';
-  return linhas + _linhaTotalValorPorRota(lista.length, g, fmtVal);
+  return linhas + _linhaTotalValorPorRota(lista.length, g, fmtVal, !!setas);
 }
 // Sem gráfico de rosca (rota externa — pedido do usuário, 04/11): mesma lista
 // de Valor por Rota, dividida em 2 colunas pra ocupar o espaço que era do
 // gráfico, em vez de um card vazio ao lado.
-function _htmlListaValorPorRotaDuasColunas(rotaCalc, cores, fmtVal){
+function _htmlListaValorPorRotaDuasColunas(rotaCalc, cores, fmtVal, setas){
   const lista = [...rotaCalc.todas].sort((a,b)=>b[1].val-a[1].val);
   const g = rotaCalc.geral;
   if(!lista.length) return null;
   const meio = Math.ceil(lista.length/2);
-  const esq = lista.slice(0, meio).map(([nome,d],i)=>_linhaValorPorRota(nome, d, cores[i%cores.length], g, fmtVal)).join('');
-  const dir  = lista.slice(meio).map(([nome,d],i)=>_linhaValorPorRota(nome, d, cores[(i+meio)%cores.length], g, fmtVal)).join('') + _linhaTotalValorPorRota(lista.length, g, fmtVal);
+  const esq = lista.slice(0, meio).map(([nome,d],i)=>_linhaValorPorRota(nome, d, cores[i%cores.length], g, fmtVal, _setaDaRota(setas, nome))).join('');
+  const dir  = lista.slice(meio).map(([nome,d],i)=>_linhaValorPorRota(nome, d, cores[(i+meio)%cores.length], g, fmtVal, _setaDaRota(setas, nome))).join('') + _linhaTotalValorPorRota(lista.length, g, fmtVal, !!setas);
   return { esq, dir };
 }
 
@@ -40360,29 +40526,37 @@ function _opcoesRoscaRotas(itens, fmtVal){
 //  R.I.  → lançamentos (rotas internas nascem em Lançamento)
 //  R.E.  → Expedição (demandas_rota)
 //  Todos → interna (lançamentos) + externa (Expedição)
-async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast){
+// `ateDia` (opcional): devolve também rotaPeriodo = { rota: pedidos feitos de 01 até esse dia do mês } — base da seta "mesmo período do mês anterior".
+async function _volumePedidosRotasMes(mes, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast, ateDia, dataLimite){
+  const noDia = ds => !ateDia || Number(String(ds||'').slice(8,10)) <= ateDia;
+  const somaPed = porRotaSemana => Object.fromEntries(Object.entries(porRotaSemana||{}).map(([r,sm])=>[r, sm.reduce((a,x)=>a+(x.ped||0),0)]));
+  const somaMapa = (a, b) => { const o = {...a}; Object.entries(b||{}).forEach(([r,n])=>{ o[r] = (o[r]||0) + n; }); return o; };
   // Abastecimento de Loja não é rota: sai do volume de Pedidos & Rotas (tem card próprio na seção Expedição)
   const semAbast = (lista, set) => (set && set.size) ? lista.filter(p=>!set.has(Math.round(Number(p.carga)))) : lista;
   if(rireSel === 'RI'){
     const bdVol = semAbast(bd, cargaAbast);
-    return { semData:_calcPedidosPorSemana(bdVol, mes), rotaCalc:_calcEntregasPorRota(bdVol, cargaRota, cargaIsRI, 'RI'),
-      rotaSemana:_calcPedidosPorRotaSemana(bdVol, mes, cargaRota, cargaIsRI, 'RI') };
+    return { semData:_calcPedidosPorSemana(bdVol, mes), rotaCalc:_calcEntregasPorRota(bdVol.filter(p=>(p.mes_ano || p.data_pedido || '').slice(0,7) === mes), cargaRota, cargaIsRI, 'RI'),
+      rotaSemana:_calcPedidosPorRotaSemana(bdVol, mes, cargaRota, cargaIsRI, 'RI'),
+      rotaPeriodo:somaPed(_calcPedidosPorRotaSemana(bdVol.filter(p=>noDia(p.data_pedido)), mes, cargaRota, cargaIsRI, 'RI')) };
   }
-  const exp = _agregarPedidosRE(await _carregarPedidosRE(undSel, mes+'-01'), {mesStr:mes});
+  const linhasRE = (await _carregarPedidosRE(undSel, mes+'-01')).filter(p=>!dataLimite || p.data <= dataLimite);
+  const exp = _agregarPedidosRE(linhasRE, {mesStr:mes});
+  const rotaPeriodoRE = Object.fromEntries(Object.entries(_agregarPedidosRE(linhasRE.filter(p=>noDia(p.data)), {mesStr:mes}).rotaMap).map(([r,d])=>[r, d.ped]));
   // Cada pedido cai numa única semana (a do pedido), então a soma das semanas já é o total do mês
   exp.semData.entMes = exp.semData.reduce((a,s)=>a+s.ent,0);
   if(rireSel === 'RE'){
-    return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap), rotaSemana:exp.porRotaSemana };
+    return { semData:exp.semData, rotaCalc:_montarRotaCalc(exp.rotaMap), rotaSemana:exp.porRotaSemana, rotaPeriodo:rotaPeriodoRE };
   }
   const ri = await _calcularBaseFiltrada(mes, 'RI', undSel);
   const riBdVol = semAbast(ri.bd, ri.cargaAbast);
   const semRI = _calcPedidosPorSemana(riBdVol, mes);
-  const calcRI = _calcEntregasPorRota(riBdVol, ri.cargaRota, ri.cargaIsRI, 'RI');
+  const calcRI = _calcEntregasPorRota(riBdVol.filter(p=>(p.mes_ano || p.data_pedido || '').slice(0,7) === mes), ri.cargaRota, ri.cargaIsRI, 'RI');
   const rotaSemanaRI = _calcPedidosPorRotaSemana(riBdVol, mes, ri.cargaRota, ri.cargaIsRI, 'RI');
   const semData = semRI.map((s,i)=>({ ped:s.ped+exp.semData[i].ped, val:s.val+exp.semData[i].val, ent:(s.ent||0)+exp.semData[i].ent }));
   semData.entMes = (semRI.entMes||0) + exp.semData.entMes;
   const rotaMapRI = Object.fromEntries(calcRI.todas);
-  return { semData, rotaCalc:_montarRotaCalc(_somarRotaMaps(rotaMapRI, exp.rotaMap)), rotaSemana:_somarRotaSemanaMaps(rotaSemanaRI, exp.porRotaSemana) };
+  return { semData, rotaCalc:_montarRotaCalc(_somarRotaMaps(rotaMapRI, exp.rotaMap)), rotaSemana:_somarRotaSemanaMaps(rotaSemanaRI, exp.porRotaSemana),
+    rotaPeriodo:somaMapa(somaPed(_calcPedidosPorRotaSemana(riBdVol.filter(p=>noDia(p.data_pedido)), mes, ri.cargaRota, ri.cargaIsRI, 'RI')), rotaPeriodoRE) };
 }
 
 // opts (opcional): { containerId, rire, sufixo } — usado pelo card "R.E. (externa)" que fica logo abaixo do da interna.
@@ -40409,8 +40583,19 @@ async function carregarPainelPedidosRotas(opts){
 
     // `bd` (lançamentos) continua sendo a base do OTIF; o VOLUME (pedidos, entregas e
     // valor por semana/rota) da rota externa vem do que foi lançado em Expedição.
-    const { bd, cargaRota, cargaIsRI, cargaAbast } = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
-    const { semData, rotaCalc, rotaSemana } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast);
+    const corte = (window._pnCorteSemana && window._pnCorteSemana.idx != null) ? Number(window._pnCorteSemana.idx) : null;
+    let dataLimite = null;
+    if(corte !== null){
+      const _sems = _calcSemanas(mesAtual), _sf = corte >= 4 ? _sems[_sems.length-1] : _sems[corte];
+      if(_sf){ const d = _sf.fim; dataLimite = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+    }
+    const baseF = await _calcularBaseFiltrada(mesAtual, rireSel, undSel);
+    const { cargaRota, cargaIsRI, cargaAbast } = baseF;
+    const bd = dataLimite ? baseF.bd.filter(p=>!p.data_pedido || String(p.data_pedido).slice(0,10) <= dataLimite) : baseF.bd;
+    // Mês corrente: compara 01 até hoje com 01 até o mesmo dia do mês anterior; mês fechado: mês inteiro contra mês inteiro.
+    let ateDia = mesAtual === hoje.slice(0,7) ? Number(hoje.slice(8,10)) : 31;
+    if(dataLimite) ateDia = Math.min(ateDia, Number(dataLimite.slice(8,10)));
+    const { semData, rotaCalc, rotaSemana, rotaPeriodo } = await _volumePedidosRotasMes(mesAtual, rireSel, undSel, bd, cargaRota, cargaIsRI, cargaAbast, ateDia, dataLimite);
     // Força recálculo do cache de OTIF quando o mês filtrado é o corrente —
     // mesmo padrão do Dashboard Interno/Logístico/OTIF Diário/TV (todos já
     // faziam isso). Sem essa linha, esta aba era a única do sistema que podia
@@ -40421,22 +40606,29 @@ async function carregarPainelPedidosRotas(opts){
     const dadosOtif = await _carregarOtifMes(mesAtual, undSel||undefined);
     const semOtif   = _calcOtifPorSemana(bd, mesAtual, dadosOtif, hoje);
     const otifRotaSemana = _calcOtifPorRotaSemana(bd, mesAtual, dadosOtif, hoje);
+    // Corte: semanas depois da escolhida saem do OTIF (a entrega de uma semana seguinte ainda "não aconteceu" no fechamento da semana)
+    if(corte !== null){
+      const _zera = (s, i)=>{ if(i > corte){ s.t = 0; s.ot = 0; s.ifull = 0; s.ok = 0; } };
+      semOtif.forEach(_zera);
+      Object.values(otifRotaSemana).forEach(a=>a.forEach(_zera));
+    }
 
     // Mês anterior — só pra comparar a evolução semana a semana por rota (pedido
     // do usuário, 2026-11-09: "pedidos por semana" com gráfico mostrando a
     // crescente em referência ao mês passado, por rota). Falha aqui não quebra
     // o card inteiro — o gráfico de comparação só fica sem a linha do mês passado.
     const mesAnterior = _mesAnteriorStr(mesAtual);
-    let rotaSemanaAnt = {}, otifRotaSemanaAnt = {};
+    let rotaSemanaAnt = {}, otifRotaSemanaAnt = {}, rotaPeriodoAnt = {};
     try{
       const antBase = await _calcularBaseFiltrada(mesAnterior, rireSel, undSel);
-      const antVol  = await _volumePedidosRotasMes(mesAnterior, rireSel, undSel, antBase.bd, antBase.cargaRota, antBase.cargaIsRI, antBase.cargaAbast);
+      const antVol  = await _volumePedidosRotasMes(mesAnterior, rireSel, undSel, antBase.bd, antBase.cargaRota, antBase.cargaIsRI, antBase.cargaAbast, ateDia);
       rotaSemanaAnt = antVol.rotaSemana || {};
+      rotaPeriodoAnt = antVol.rotaPeriodo || {};
       const dadosOtifAnt = await _carregarOtifMes(mesAnterior, undSel||undefined);
       otifRotaSemanaAnt = _calcOtifPorRotaSemana(antBase.bd, mesAnterior, dadosOtifAnt, hoje);
     }catch(e){ console.warn('Pedidos & Rotas: sem dados do mês anterior pra comparação', e.message); }
 
-    container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, mesAnterior, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats: dadosOtif.stats, sufixo });
+    container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, mesAnterior, ateDia, corteIdx:corte, dataLimite, rotaPeriodo, rotaPeriodoAnt, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats: dadosOtif.stats, sufixo });
     _featherReplace();
     _renderGraficoPainelRotas(rotaCalc, sufixo);
     _renderGraficosPorRotaSemana(rotaCalc, rotaSemana, rotaSemanaAnt, otifRotaSemana, otifRotaSemanaAnt, sufixo);
@@ -40452,16 +40644,17 @@ function _rotasCriticasOtif(otifRotaSemana, n){
   return Object.keys(otifRotaSemana || {}).map(r=>{
     const sem = otifRotaSemana[r] || [];
     const t = sem.reduce((s,w)=>s+(w.t||0), 0), ok = sem.reduce((s,w)=>s+(w.ok||0), 0);
-    return { rota:r, t, pct: t > 0 ? Math.round(ok/t*100) : null };
+    const ot = sem.reduce((s,w)=>s+(w.ot||0), 0), ifull = sem.reduce((s,w)=>s+(w.ifull||0), 0);
+    return { rota:r, t, ot, ifull, pct: t > 0 ? Math.round(ok/t*100) : null };
   }).filter(x=>x.rota && x.rota !== '—' && x.pct != null && x.pct < 100)
     .sort((a,b)=>a.pct - b.pct || b.t - a.t || a.rota.localeCompare(b.rota))
     .slice(0, n);
 }
-function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats, sufixo}){
+function renderRelatorioPedidosRotas({mesAtual, mesAnterior, ateDia, corteIdx, dataLimite, rotaPeriodo, rotaPeriodoAnt, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats, sufixo}){
   const [ano, mes] = mesAtual.split('-').map(Number);
   const ultimoDia = new Date(ano, mes, 0).getDate();
   const fmtBR = d => String(d).padStart(2,'0');
-  const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(ultimoDia)}/${fmtBR(mes)}`;
+  const periodoTxt = `${fmtBR(1)}/${fmtBR(mes)} A ${fmtBR(dataLimite ? Number(dataLimite.slice(8,10)) : ultimoDia)}/${fmtBR(mes)}`;
   const rireLabel = rireSel==='RI' ? ' · R.I. (INTERNA)' : rireSel==='RE' ? ' · R.E. (EXTERNA)' : ' · R.I. + R.E.';
   // Valor por extenso (nada de "k") — pedido do usuário, igual ao card anual.
   const fmtVal = v => 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -40490,6 +40683,7 @@ function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, 
 
   const maxPed = Math.max(...semData.map(s=>s.ped),1);
   const cardsPedidos = semData.map((s,i)=>{
+    if(corteIdx != null && i > corteIdx) return `<div style="flex:1;min-width:0;background:var(--border);border:1px solid var(--border);border-radius:10px;padding:16px 10px;text-align:center;opacity:.5"><div style="font-size:.74rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">S${i+1}</div><div style="font-size:1.79rem;font-weight:700;color:var(--text-muted);line-height:1">—</div><div style="font-size:.76rem;color:var(--text-muted);margin-top:4px">sem dados</div></div>`;
     const destaque = s.ped===maxPed && s.ped>0;
     return `<div style="flex:1;min-width:0;background:${destaque?'#E8000D':'var(--bg-card2)'};border:1px solid ${destaque?'#E8000D':'var(--border)'};border-radius:10px;padding:16px 10px;text-align:center">
       <div style="font-size:.74rem;font-weight:700;letter-spacing:.5px;color:${destaque?'rgba(255,255,255,.75)':'var(--text-muted)'};text-transform:uppercase;margin-bottom:8px">S${i+1}</div>
@@ -40500,13 +40694,37 @@ function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, 
   }).join('');
   const totalPedSem = semData.reduce((a,s)=>a+s.ped,0);
   const totalValSem = semData.reduce((a,s)=>a+s.val,0);
+  // Rotas com menor OTIF do mês — lista em vez de gráficos de pontinhos (pedido do usuário, 09/11: "está confuso"):
+  // por rota o nº de pedidos (rota com 1 pedido não engana), o OTIF em barra e o motivo (no prazo × completo) lado a lado.
+  const _bt = 'border-top:1px solid var(--border);padding-top:9px;';
+  const _corPct = p => p < 70 ? '#ef4444' : p < 90 ? '#f59e0b' : 'var(--text-primary)';
+  const _pc = (n, t) => t > 0 ? Math.round(n/t*100) : null;
+  const _thc = (t, al) => `<div style="font-size:.7rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);text-align:${al||'left'}">${t}</div>`;
+  const _celP = v => `<div style="${_bt}text-align:right;font-weight:700;font-size:1.05rem;white-space:nowrap;color:${v === null ? 'var(--text-muted)' : v < 100 ? '#ef4444' : 'var(--text-primary)'}">${v === null ? '—' : v+'%'}</div>`;
+  const htmlCriticas = !rotasCriticas.length ? '<p style="color:var(--text-muted);font-size:.92rem;text-align:center;padding:20px">Nenhuma rota abaixo de 100% de OTIF no mês</p>' :
+    '<div style="display:grid;grid-template-columns:minmax(0,1.5fr) 84px minmax(0,2fr) 96px 96px;gap:10px 18px;align-items:center">' +
+    _thc('ROTA') + _thc('PEDIDOS','right') + _thc('OTIF') + _thc('NO PRAZO','right') + _thc('COMPLETO','right') +
+    rotasCriticas.map(x=>{
+      const sem = (otifRotaSemana[x.rota]||[]).map((w,i)=>(w && w.t>0 && (corteIdx == null || i <= corteIdx)) ? 'S'+(i+1)+' '+Math.round(w.ok/w.t*100)+'%' : null).filter(Boolean).join(' · ');
+      return `<div style="${_bt}"><div style="font-weight:800;font-size:1.02rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(x.rota)}</div><div style="font-size:.76rem;color:var(--text-muted);white-space:nowrap">${sem}</div></div>`
+        + `<div style="${_bt}text-align:right;font-weight:700;font-size:1.05rem">${x.t}</div>`
+        + `<div style="${_bt}display:flex;align-items:center;gap:10px"><div style="flex:1;height:12px;background:var(--border);border-radius:6px"><div style="height:12px;width:${x.pct}%;background:${_corPct(x.pct)};border-radius:6px"></div></div><div style="width:52px;text-align:right;font-weight:800;font-size:1.1rem;color:${_corPct(x.pct)}">${x.pct}%</div></div>`
+        + _celP(_pc(x.ot, x.t)) + _celP(_pc(x.ifull, x.t));
+    }).join('') + '</div>';
 
   const coresRota = ['#f0f0f8','#4a9eff','#fb923c','#34d399','#E8000D','#a855f7','#C8973A','#60a5fa','#f472b6','#94a3b8'];
   // Rota externa não usa o gráfico de rosca (pedido do usuário, 04/11): mostra
   // a lista de rotas nos dois lados em vez do gráfico, que ficava vazio/pequeno.
   const semGrafico = rireSel === 'RE';
-  const listaRotas = semGrafico ? null : _htmlListaValorPorRota(rotaCalc, coresRota, fmtVal);
-  const listaRotasDuasColunas = semGrafico ? _htmlListaValorPorRotaDuasColunas(rotaCalc, coresRota, fmtVal) : null;
+  // Seta ao lado da rota: pedidos de 01 até o dia de corte contra o MESMO período do mês anterior (pedido do usuário, 09/11).
+  const _dd2 = n => String(n).padStart(2,'0');
+  const _diaFim = Math.min(ateDia || 31, ultimoDia);
+  const _diaFimAnt = Math.min(ateDia || 31, new Date(anoAnt || ano, mesAntN || mes-1, 0).getDate());
+  const _perAtual = _dd2(1)+'–'+_dd2(_diaFim)+'/'+_dd2(mes), _perAnt = _dd2(1)+'–'+_dd2(_diaFimAnt)+'/'+_dd2(mesAntN || 0);
+  const setasPed = (rotaPeriodo && rotaPeriodoAnt && mesAntN) ? { atual:rotaPeriodo, ant:rotaPeriodoAnt, rotulo:'Pedidos de '+_perAnt+' no mês anterior' } : null;
+  const legendaSetas = setasPed ? `<span style="font-weight:600;letter-spacing:.2px;font-size:.72rem;color:var(--text-muted)"><b style="color:#22c55e">▲</b> mais · <b style="color:#ef4444">▼</b> menos pedidos que em ${_perAnt} (${_perAtual} agora)</span>` : '';
+  const listaRotas = semGrafico ? null : _htmlListaValorPorRota(rotaCalc, coresRota, fmtVal, setasPed);
+  const listaRotasDuasColunas = semGrafico ? _htmlListaValorPorRotaDuasColunas(rotaCalc, coresRota, fmtVal, setasPed) : null;
 
   // OTIF, No Prazo e Completo agora vêm do mesmo motor canônico do Dashboard
   // Interno/TV/Dashboard Logístico (total no-prazo-e-completo ÷ total geral
@@ -40518,9 +40736,11 @@ function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, 
                   : rireSel==='RE' ? {t:otifStats?.reTotal, ot:otifStats?.onTimeRE, ifull:otifStats?.inFullRE, ok:otifStats?.otifRE}
                   : {t:otifStats?.total, ot:otifStats?.onTimeG, ifull:otifStats?.inFullG, ok:otifStats?.otifG};
   const _pct = (n,t) => (t>0 ? Math.round(n/t*100) : null);
-  const mediaSemanalPct = _pct(_otifSel.ok, _otifSel.t);
-  const onTimeGeralPct  = _pct(_otifSel.ot, _otifSel.t);
-  const inFullGeralPct  = _pct(_otifSel.ifull, _otifSel.t);
+  const _soma = c => semOtif.reduce((a,x)=>a+(x[c]||0), 0);
+  const _osel = corteIdx != null ? { t:_soma('t'), ot:_soma('ot'), ifull:_soma('ifull'), ok:_soma('ok') } : _otifSel;
+  const mediaSemanalPct = _pct(_osel.ok, _osel.t);
+  const onTimeGeralPct  = _pct(_osel.ot, _osel.t);
+  const inFullGeralPct  = _pct(_osel.ifull, _osel.t);
   // Comparação só entre No Prazo x Completo, pra saber onde focar (o OTIF
   // em si é sempre <= aos dois, não serve pra apontar qual dos dois é pior).
   const piorEntreOtVsIf = (onTimeGeralPct!==null && inFullGeralPct!==null)
@@ -40581,7 +40801,7 @@ function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, 
           <div>${listaRotasDuasColunas ? listaRotasDuasColunas.esq : '<p style="color:var(--text-muted);font-size:.92rem;text-align:center;padding:20px">Sem dados</p>'}</div>
         </div>
         <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
-          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">&nbsp;</div>
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px;text-align:right;white-space:nowrap">${legendaSetas || '&nbsp;'}</div>
           <div>${listaRotasDuasColunas ? listaRotasDuasColunas.dir : ''}</div>
         </div>
       </div>` : `
@@ -40591,7 +40811,7 @@ function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, 
           <div style="position:relative;height:220px">${rotaCalc.top.length?'<canvas id="chart-painel-rotas-pizza'+(sufixo||'')+'"></canvas>':'<p style="color:var(--text-muted);font-size:.92rem;text-align:center;padding:80px 0">Sem dados</p>'}</div>
         </div>
         <div style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med)">
-          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px">VALOR POR ROTA</div>
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline;gap:10px"><span>VALOR POR ROTA</span>${legendaSetas}</div>
           <div>${listaRotas || '<p style="color:var(--text-muted);font-size:.92rem;text-align:center;padding:20px">Sem dados</p>'}</div>
         </div>
       </div>`}
@@ -40624,10 +40844,10 @@ function renderRelatorioPedidosRotas({mesAtual, mesAnterior, semData, rotaCalc, 
 
       <div id="card-otif-rota-semana${sufixo||''}" data-pn-parte="otif" style="background:var(--bg-card2);border-radius:10px;padding:26px 28px;border-top:3px solid var(--border-med);margin-top:20px">
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">OTIF POR SEMANA — ROTAS MAIS CRÍTICAS <span style="font-weight:600;letter-spacing:.3px">(menor OTIF do mês)</span></div>
-          ${_legendaRotaSemana}
+          <div style="font-size:.78rem;font-weight:700;letter-spacing:1.5px;color:var(--text-muted)">OTIF POR ROTA — AS MENORES DO MÊS <span style="font-weight:600;letter-spacing:.3px">(só rotas abaixo de 100%)</span></div>
+          <div></div>
         </div>
-        ${_htmlGradeRotaSemana('rs-otif', rotasCriticas, true)}
+        ${htmlCriticas}
       </div>
 
       <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
@@ -40681,7 +40901,8 @@ function _renderGraficosPorRotaSemana(rotaCalc, rotaSemana, rotaSemanaAnt, otifR
     const idPed = 'rs-ped'+suf+'-'+i;
     const ctxPed = document.getElementById(idPed);
     if(ctxPed){
-      const atual = (rotaSemana?.[r]||[]).map(s=>s.ped);
+      const _ci = window._pnCorteSemana ? window._pnCorteSemana.idx : null;
+      const atual = (rotaSemana?.[r]||[]).map((s,i)=>(_ci != null && i > _ci) ? null : s.ped);
       const ant   = (rotaSemanaAnt?.[r]||[]).map(s=>s.ped);
       window._cRotaSemanaCharts[idPed] = new Chart(ctxPed,{ type:'line',
         data:{ labels:['S1','S2','S3','S4','S5'], datasets:[
