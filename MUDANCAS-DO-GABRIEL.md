@@ -21,6 +21,18 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-10, Gabriel: Erro Conferente: gráfico "Erros por conferente" ganha a barra cinza "Sem conferência vinculada" — v4.89.275
+Onde: `index.html`, página Armazém › Erro Conferente, `_errconfRender` (gráfico por conferente) e subtítulo do cartão. O gráfico agora ignora também o filtro de cobertura
+(`['conf','cob']`): mostra SEMPRE as pessoas (com OK dele no pedido) e, por último, uma barra cinza "Sem conferência vinculada" (ocorrências de Armazém sem registro de conferência
+no pedido), então a soma das barras fecha com o total de erros de conferência (hoje 8 + 29 = 37). Clicar na barra cinza filtra os outros gráficos por "sem conferência" (clicar de novo limpa);
+clicar numa pessoa filtra por ela, como antes. Com "sem conferência" ativo as pessoas ficam apagadas e a cinza destacada (antes o gráfico virava uma barra cinza só).
+Subtítulo: "Ocorrências de Armazém por conferente (pedidos que ele deu como OK) · cinza = sem conferência vinculada · clique numa barra para filtrar".
+NÃO mudam: os cartões do topo (Erros Atribuídos, Conferente com Mais Erros, Sem Conferência Vinculada), a regra de atribuição (OK em `conferencia_pedidos` na mesma carga/pedido) e os
+outros gráficos (produtos, tipo do erro, por dia), que seguem só com as atribuídas até se escolher "sem conferência" na rosca ou na barra cinza. `APP_VERSION`/`version.json` 4.89.274 → 4.89.275.
+Motivo: pedido do Gabriel ("o que for devolução por motivo do Armazém é o indicador Erro de conferência"; "por que o gráfico não mostra os sem conferente vinculado").
+Só leitura/apresentação; sem mudança de dado nem de estrutura de banco. Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: o gráfico por conferente (37) e os de produto/tipo (8, por padrão) passam a ter totais diferentes até alguém escolher "sem conferência"; avaliar alinhar.
+
 ## 2026-11-10, Gabriel: Armazém › Aderência à conferência: pedido com ocorrência de motivo Armazém fica laranja — v4.89.274
 Onde: `index.html`, `_aderDetalhe` (lista de pedidos de cada carga, ao clicar num dia do gráfico). Para os pedidos do dia busca em `ocorrencias_distribuicao`
 (pedido, motivo_id, motivo_nome) e em `motivos_devolucao` (setor); se o motivo é do setor Armazém (por id, ou pelo nome quando a ocorrência não tem id; sem
