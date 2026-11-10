@@ -10222,7 +10222,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.268';
+const APP_VERSION = '4.89.269';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -31804,7 +31804,7 @@ async function _carregarExpedicaoRE(undSel){
     if(!dataRef) return;
     // Pedidos e valor vêm da PRÓPRIA carga lançada em Expedição (quantidade_pedidos / valor_total,
     // o mesmo que o card da Expedição mostra) — não se soma do base_data (pedido do usuário).
-    cargas.push({ carga:c, rota, dataRef, mes:dataRef.slice(0,7), ped:Number(d.quantidade_pedidos)||0, val:Number(d.valor_total)||0, ent:0 });
+    cargas.push({ carga:c, rota, dataRef, mes:dataRef.slice(0,7), ped:Number(d.quantidade_pedidos)||0, val:Number(d.valor_total)||0, ent:0, status:d.status });
   });
   // Entrega = pedido (pedido do usuário, 2026-11-03): usa o mesmo número de pedidos da carga lançada em Expedição.
   cargas.forEach(cg=>{ cg.ent = cg.ped; });
@@ -31857,7 +31857,9 @@ let _pedRECache = { ts:0, chave:null, dados:null };
 async function _carregarPedidosRE(undSel, desde){
   const chave = (undSel||'')+'|'+desde;
   if(_pedRECache.dados && _pedRECache.chave===chave && Date.now()-_pedRECache.ts < 60000) return _pedRECache.dados;
-  const cargas = (await _carregarExpedicaoRE(undSel)).filter(c=>c.dataRef >= desde);
+  // Só carga EXPEDIDA (já saiu: em viagem, fim de viagem ou concluída) — pedido do usuário, 09/11: "tem que ser do expedido, os carros que já estão em rota".
+  // Carga ainda no armazém (separação, carregamento, aguardando NF/manifesto, pronto p/ viagem) com data de saída marcada não entra no volume.
+  const cargas = (await _carregarExpedicaoRE(undSel)).filter(c=>c.dataRef >= desde && ['saiu','fim_viagem','concluido'].includes(c.status));
   const rotaDaCarga = new Map();
   cargas.forEach(c=>{ if(!rotaDaCarga.has(c.carga)) rotaDaCarga.set(c.carga, c.rota); });
   const ids = [...rotaDaCarga.keys()], lotes = [];
@@ -35907,7 +35909,11 @@ async function _pnHtmlErroMotorista(mes, periodo){
   if(!ocs.length) throw _pnSemDado('sem devoluções registradas no período');
   const motById = new Map((mot||[]).map(m=>[m.id, m]));
   const setorDe = r => (motById.get(r.motivo_id)?.setor || '').toLowerCase();
-  const dist = ocs.filter(r=>setorDe(r) === 'distribuicao');
+  // "Demora na Entrega" NÃO é erro do motorista (decisão do usuário, 09/11): fica fora da contagem, dos motivos e do percentual.
+  const _ehDemora = r => String(r.motivo_nome || motById.get(r.motivo_id)?.nome || '').normalize('NFD').replace(/[̀-ͯ]/g,'').trim().toLowerCase().startsWith('demora na entrega');
+  const distTodas = ocs.filter(r=>setorDe(r) === 'distribuicao');
+  const dist = distTodas.filter(r=>!_ehDemora(r));
+  const demoraFora = distTodas.length - dist.length;
   const nomeMot = r => { const n = String(r.motorista||'').trim(); return /^(a definir|—|-)/i.test(n) ? '' : n; };   // "A DEFINIR MOTORISTA" não é motorista
   const comMot = dist.filter(r=>nomeMot(r)), semMot = dist.length - comMot.length;
   const porMot = new Map();
@@ -35932,7 +35938,7 @@ async function _pnHtmlErroMotorista(mes, periodo){
       ${listaMotivos.map(([nome,n])=>_pnh.barra(_pnh.esc(nome), n+' · '+pctTxt(n, A), n/A*100, '#f0f0f8')).join('') || '<p style="color:var(--text-muted)">Sem erros da distribuição no período.</p>'}
     `, 'var(--border-med)');
   const corpo = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">${esq}${dir}</div>
-      ${_pnh.nota('Fonte: ocorrências de devolução (Distribuição) de '+P.rot+'. Erro de motorista = ocorrência com motivo cadastrado no setor Distribuição (inversão ou demora na entrega); o motorista é o que foi registrado na ocorrência. Todas as unidades.'+(ocs.length >= 5000 ? ' <b>Atenção: o período tem mais de 5.000 ocorrências e só as 5.000 primeiras entraram na conta; reduza o período.</b>' : ''))}`;
+      ${_pnh.nota('Fonte: ocorrências de devolução (Distribuição) de '+P.rot+'. Erro de motorista = ocorrência com motivo cadastrado no setor Distribuição (como inversão na entrega); demora na entrega não é erro do motorista e fica de fora'+(demoraFora ? ' ('+demoraFora+' ocorrência'+(demoraFora === 1 ? '' : 's')+' neste período)' : '')+'; o motorista é o que foi registrado na ocorrência. Todas as unidades.'+(ocs.length >= 5000 ? ' <b>Atenção: o período tem mais de 5.000 ocorrências e só as 5.000 primeiras entraram na conta; reduza o período.</b>' : ''))}`;
   return _pnh.casca('DISTRIBUIÇÃO · DEVOLUÇÕES · '+P.rot+'/'+P.ano, 'Erro de motorista', corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
@@ -36619,18 +36625,30 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const itens = [], vistos = new Set(); let negativos = 0;
   const cliMap = new Map(); (base.bd||[]).forEach(p=>{ if(p.pedido != null && !cliMap.has(String(p.pedido))) cliMap.set(String(p.pedido), String(p.cliente||'').trim()); });
   const pedPorRota = new Map();   // todos os pedidos da rota no mês (com ou sem entrega confirmada) — para listar TODAS as rotas
+  const cand = [];
   _computeOtifStats(base.bd, dados.entRows, dados.lancRows, dados.saidaRows, dados.rotasRows, dados.ocorrRows, hoje, mes, dados.agendPedMap, dados.feriadosSet,
     (ped, carga, rota, rr, dataPedido, onTime, inFull, dataFim)=>{
       const rk = rota || '—'; pedPorRota.set(rk, (pedPorRota.get(rk)||0) + 1);
-      const k = String(ped); let de = entMap.get(k), fonte = 'conf';
-      if(!de && dataFim){ de = String(dataFim).slice(0,10); fonte = 'fim'; }
-      if(!de || !dataPedido || vistos.has(k)) return;
-      vistos.add(k);
-      const dp = String(dataPedido).slice(0,10);
-      const dias = Math.round((Date.parse(de+'T00:00:00Z') - Date.parse(dp+'T00:00:00Z')) / 86400000);
-      if(!(dias >= 0)){ negativos++; return; }
-      itens.push({ ped:k, rota:rota || '—', pedido:dp, entrega:de, dias, fonte, cliente:cliMap.get(k) || '' });
+      cand.push({ k:String(ped), carga:String(carga||''), rota:rota || '—', dataPedido });
     }, dados.cortesRows, dados.pendenteTsMap);
+  // Fallback REAL (09/11, validação do usuário): sem entrega confirmada, vale o fim da rota registrado na Expedição (demandas_rota.ts_fim_viagem).
+  // A data de saída/lançamento NÃO é usada (era só uma aproximação do OTIF e não mede entrega).
+  const fimCarga = new Map();
+  const cargasSem = [...new Set(cand.filter(c=>!entMap.has(c.k) && /^\d+$/.test(c.carga)).map(c=>c.carga))];
+  for(let i = 0; i < cargasSem.length; i += 100){
+    const rs = await supaFetch('demandas_rota?carga=in.('+cargasSem.slice(i,i+100).join(',')+')&ts_fim_viagem=not.is.null&select=carga,ts_fim_viagem&limit=1000').catch(()=>[]) || [];
+    rs.forEach(x=>{ const d = dataLocalBRT(x.ts_fim_viagem); const kc = String(x.carga); if(d && (!fimCarga.has(kc) || d < fimCarga.get(kc))) fimCarga.set(kc, d); });
+  }
+  cand.forEach(c=>{
+    const k = c.k; let de = entMap.get(k), fonte = 'conf';
+    if(!de && fimCarga.has(c.carga)){ de = fimCarga.get(c.carga); fonte = 'fim'; }
+    if(!de || !c.dataPedido || vistos.has(k)) return;
+    vistos.add(k);
+    const dp = String(c.dataPedido).slice(0,10);
+    const dias = Math.round((Date.parse(de+'T00:00:00Z') - Date.parse(dp+'T00:00:00Z')) / 86400000);
+    if(!(dias >= 0)){ negativos++; return; }
+    itens.push({ ped:k, rota:c.rota, pedido:dp, entrega:de, dias, fonte, cliente:cliMap.get(k) || '' });
+  });
   const semIdx = (ctx && ctx.semanaIdx != null) ? Number(ctx.semanaIdx) : null;
   const sems = _calcSemanas(mes);
   const semIni = semIdx !== null && sems[semIdx] ? sems[semIdx] : null;
@@ -36647,7 +36665,7 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const noSem = x => x.entrega >= mes+'-'+dd(wDe) && x.entrega <= mes+'-'+dd(wAte);
   const noAcum = x => x.entrega <= mes+'-'+dd(wAte);
   const listaPrincipal = semIni ? itens.filter(noAcum) : itens;
-  if(!listaPrincipal.length) throw _pnSemDado('nenhum pedido com data de entrega ou fim de viagem '+(semIni ? 'até esta semana' : 'neste mês'));
+  if(!listaPrincipal.length) throw _pnSemDado('nenhum pedido com entrega confirmada ou fim de rota '+(semIni ? 'até esta semana' : 'neste mês'));
   const gA = agrup(listaPrincipal), gS = semIni ? agrup(itens.filter(noSem)) : null;
   const semEnt = [...pedPorRota.keys()].filter(r=>r !== '—' && !gA.has(r)).sort((a,b)=>(pedPorRota.get(b)-pedPorRota.get(a)) || a.localeCompare(b));
   const rotas = [...gA.keys()].sort((a,b)=>{
@@ -36657,7 +36675,7 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const bt = 'border-top:1px solid var(--border);padding-top:7px;padding-bottom:3px;';
   const cel = (g, r) => !g ? `<div style="${bt}grid-column:span 3;color:var(--text-muted);font-size:.98rem">${gA.has(r) || !pedPorRota.has(r) ? 'sem entregas' : 'sem entrega confirmada · '+pedPorRota.get(r)+(pedPorRota.get(r) === 1 ? ' pedido' : ' pedidos')+' no mês'}</div>`
     : `<div style="${bt}text-align:right;font-weight:700;font-size:1.1rem">${_pnh.n(g.n)}</div><div style="${bt}text-align:right;font-weight:800;font-size:1.3rem">${dec(g.soma/g.n)}</div>
-       <div style="${bt}line-height:1.3"><b style="color:${g.max.dias >= 7 ? '#ef4444' : 'var(--text-primary)'}">${g.max.dias} ${g.max.dias === 1 ? 'dia' : 'dias'}</b> · ped. ${_pnh.esc(g.max.ped)}<div style="font-size:.82rem;color:var(--text-muted);white-space:nowrap">pedido ${dtf(g.max.pedido)} → ${g.max.fonte === 'fim' ? 'fim da viagem' : 'entrega'} ${dtf(g.max.entrega)}</div>${g.max.cliente ? `<div style="font-size:.82rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">cliente: ${_pnh.esc(g.max.cliente)}</div>` : ''}${g.nFim > 0 ? `<div style="font-size:.76rem;color:var(--text-muted);white-space:nowrap">${g.nFim === g.n ? 'todos' : g.nFim+' de '+g.n} pelo fim da viagem</div>` : ''}</div>`;
+       <div style="${bt}line-height:1.3"><b style="color:${g.max.dias >= 7 ? '#ef4444' : 'var(--text-primary)'}">${g.max.dias} ${g.max.dias === 1 ? 'dia' : 'dias'}</b> · ped. ${_pnh.esc(g.max.ped)}<div style="font-size:.82rem;color:var(--text-muted);white-space:nowrap">pedido ${dtf(g.max.pedido)} → ${g.max.fonte === 'fim' ? 'fim da rota' : 'entrega'} ${dtf(g.max.entrega)}</div>${g.max.cliente ? `<div style="font-size:.82rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">cliente: ${_pnh.esc(g.max.cliente)}</div>` : ''}${g.nFim > 0 ? `<div style="font-size:.76rem;color:var(--text-muted);white-space:nowrap">${g.nFim === g.n ? 'todos' : g.nFim+' de '+g.n} pelo fim da rota</div>` : ''}</div>`;
   const cols = semIni ? '190px 64px 70px minmax(0,1fr) 64px 70px minmax(0,1fr)' : '230px 130px 130px minmax(0,1fr)';
   const th = t => `<div style="font-size:.74rem;font-weight:700;letter-spacing:1px;color:var(--text-muted);${/PEDIDOS|MÉDIA/.test(t) ? 'text-align:right' : ''}">${t}</div>`;
   const grupo = semIni
@@ -36669,9 +36687,9 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const maior = listaPrincipal.reduce((a,x)=>(!a || x.dias > a.dias) ? x : a, null);
   const nFimTot = listaPrincipal.filter(x=>x.fonte === 'fim').length;
   const kpi = (r, v, sub)=>`<div style="flex:1;min-width:0"><div style="font-size:1.6rem;font-weight:700;line-height:1">${v}</div><div style="font-size:.66rem;font-weight:700;letter-spacing:1.2px;color:var(--text-muted);margin-top:5px">${r}</div>${sub ? '<div style="font-size:.74rem;color:var(--text-secondary);margin-top:2px">'+sub+'</div>' : ''}</div>`;
-  const resumo = _pnh.caixa(`<div style="display:flex;gap:16px">${kpi(semIni ? 'ENTREGUES NO ACUMULADO DO MÊS' : 'PEDIDOS ENTREGUES', _pnh.n(totPed), (totPed - nFimTot)+' com entrega confirmada · '+nFimTot+' pelo fim da viagem')}${kpi('MÉDIA GERAL', dec(mediaGeral)+' dias', 'do pedido até a entrega')}${kpi('MAIOR PRAZO', maior.dias+' dias', _pnh.esc(maior.rota)+' · ped. '+_pnh.esc(maior.ped)+(maior.cliente ? ' · '+_pnh.esc(maior.cliente) : ''))}</div>`, 'var(--border-med)', 'margin-bottom:14px;padding:14px 22px');
+  const resumo = _pnh.caixa(`<div style="display:flex;gap:16px">${kpi(semIni ? 'ENTREGUES NO ACUMULADO DO MÊS' : 'PEDIDOS ENTREGUES', _pnh.n(totPed), (totPed - nFimTot)+' com entrega confirmada · '+nFimTot+' pelo fim da rota')}${kpi('MÉDIA GERAL', dec(mediaGeral)+' dias', 'do pedido até a entrega')}${kpi('MAIOR PRAZO', maior.dias+' dias', _pnh.esc(maior.rota)+' · ped. '+_pnh.esc(maior.ped)+(maior.cliente ? ' · '+_pnh.esc(maior.cliente) : ''))}</div>`, 'var(--border-med)', 'margin-bottom:14px;padding:14px 22px');
   const rr = rire === 'RI' ? 'R.I. (INTERNA)' : 'R.E. (EXTERNA)';
-  const nota = _pnh.nota('Dias corridos entre a data do pedido e a data de entrega ao cliente (entrega_datas). Quando o pedido não tem entrega confirmada, vale o fim da viagem da carga — a mesma data que o OTIF usa — e a linha avisa "pelo fim da viagem". Pedido sem nenhuma das duas datas não entra na média (rota listada no fim como "sem entrega confirmada"); só pedidos do mês (pela data do pedido). Rotas sem prazo de OTIF cadastrado ficam de fora, como no OTIF.'+(negativos ? ' '+negativos+' pedido'+(negativos === 1 ? '' : 's')+' com entrega anterior à data do pedido ficou'+(negativos === 1 ? '' : 'ram')+' de fora (dado inconsistente).' : '')+' Em vermelho: 7 dias ou mais. Semanas de domingo a sábado.'+(und ? ' Unidade: '+_pnh.esc(und)+'.' : ''));
+  const nota = _pnh.nota('Dias corridos entre a data do pedido e a data de entrega ao cliente (entrega_datas). Quando o pedido não tem entrega confirmada, vale o fim da rota da carga (finalizada na Expedição, que pode ser depois da entrega real) e a linha avisa "pelo fim da rota"; a data de saída não é usada. Pedido sem nenhuma das duas datas (inclui a maioria da rota interna) não entra na média (rota listada no fim como "sem entrega confirmada"); só pedidos do mês (pela data do pedido). Rotas sem prazo de OTIF cadastrado ficam de fora, como no OTIF.'+(negativos ? ' '+negativos+' pedido'+(negativos === 1 ? '' : 's')+' com entrega anterior à data do pedido ficou'+(negativos === 1 ? '' : 'ram')+' de fora (dado inconsistente).' : '')+' Em vermelho: 7 dias ou mais. Semanas de domingo a sábado.'+(und ? ' Unidade: '+_pnh.esc(und)+'.' : ''));
   return _pnh.casca('PEDIDOS & ROTAS · PRAZO DE ENTREGA · '+P.nome+' '+P.ano+' · '+rr+(semIni ? ' · SEMANA '+(semIdx+1) : ''), 'Prazo de entrega por rota', resumo + grade + nota, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
