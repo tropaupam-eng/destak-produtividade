@@ -21,6 +21,15 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-11, Gabriel: Erro Conferente: produtos, tipo do erro e por dia contam TODAS as ocorrências de Armazém — v4.89.277
+Onde: `index.html`, `_errconfPassa(r, f, ign, todos)` (4º parâmetro novo) e `_errconfRender`. Os gráficos "Produtos com mais erros", "Tipo do erro" e "Erros por dia" (e a rosca de motivos) passam a incluir, por padrão,
+também as ocorrências SEM conferência vinculada (antes só as atribuídas a conferente, com OK dele). Motivo: pedido do Gabriel ("a Frutas Cristalizada tem duas ocorrências e quando o gráfico fica normal não aparece";
+"a ordem do maior para o menor é pela frequência de ocorrências"): uma das 2 era sem conferência e sumia no estado normal. A ordem dos produtos segue frequência de ocorrências (maior para menor), com quantidade devolvida
+e nome só como desempate. Com os dados reais (01/10 a hoje, 36 ocorrências de Armazém): Filme Lusafilm 2, Frutas Cristalizada 2, Sacola Sopack 2, depois os de 1.
+Filtros: escolher "sem conferência" (rosca ou barra cinza) mostra só as sem vínculo; escolher uma pessoa mostra só as dela; sem escolher nada mostra todas. NÃO mudam: os cartões do topo (Erros Atribuídos, Conferente com Mais Erros, Sem Conferência
+Vinculada) e a lista de cartões por conferente (seguem só atribuídas por padrão). `APP_VERSION`/`version.json` 4.89.276 → 4.89.277. Só leitura/apresentação; sem mudança de dado nem de estrutura de banco.
+Como desfazer: `git revert` do commit desta entrada.
+
 ## 2026-11-11, Gabriel: Erro Conferente: Data inicial e Data final — v4.89.276
 Onde: `index.html`, página Armazém › Erro Conferente. Cabeçalho ganha "Data inicial" / "Data final" (`#errconf-ini`/`#errconf-fim`, classes `devol-data cm-data`: ícone claro + linha) e o botão
 "Mês atual" (só aparece com período diferente do mês). Funções novas `_errconfPeriodo`, `errconfPeriodoMudou`, `errconfLimparPeriodo` (reaproveita `_devolMesAtual`); `carregarErroConferente` agora
