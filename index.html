@@ -10229,7 +10229,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.279';
+const APP_VERSION = '4.89.280';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20828,8 +20828,9 @@ async function _buscarPrimeiraViagemPorVeiculo(){
 // pelo Painel de Indicadores → Utilização de Frotas, pra as duas telas mostrarem sempre o mesmo número.
 // Estados (pedido do usuário, 2026-11-05) — TODOS contam como dia UTILIZADO:
 //   'S' em rota (da saída real até o fim da rota na Expedição = ts_fim_viagem)
-//   'P' carregado, pronto para viagem, aguardando sair (ts_pronto_viagem → ts_saiu)
-//   'C' carregando (ts_carregamento → ts_pronto_viagem; inclui aguardando NF e aguardando manifesto)
+//   'P' carregado, pronto para viagem, aguardando sair (carga totalmente carregada → ts_saiu; a documentação pendente fica dentro do pronto)
+//   'C' carregando (ts_carregamento → carga totalmente carregada)
+//   'carga totalmente carregada' = quando o conferente fecha 100% (ts_aguardando_nf; se faltar, a etapa seguinte) — pedido do usuário, 11/11
 //   'M' lançamento MANUAL de dia utilizado (tabela frota_uso_manual; também existe o ajuste 'sem_uso', que tira o dia)
 // Prioridade no mesmo dia: S > P > C. Lançamento (Distribuição) e Abastecimento de Loja (Armazém) marcam SÓ o dia
 // (internos marcam somente o dia do lançamento — o R.I. não "espalha" mais até o fim do mês).
@@ -20900,32 +20901,33 @@ function _calcDispMapFrota({placas, demandas, etapas, lancamentosDisp, demandasC
   (etapas||[]).forEach(d => {
     const placa = (d.veiculo||'').trim().toUpperCase();
     if(!placa || !dispMap[placa]) return;
-    const dc = _dispDataBRT(d.ts_carregamento), dp = _dispDataBRT(d.ts_pronto_viagem), ds = _dispDataBRT(d.ts_saiu);
+    const tsPronto = d.ts_aguardando_nf || d.ts_aguardando_manifesto || d.ts_pronto_viagem || null;
+    const dc = _dispDataBRT(d.ts_carregamento), dp = _dispDataBRT(tsPronto), ds = _dispDataBRT(d.ts_saiu);
     const st = d.status;
     if(dc){
       let fimC;
       if(dp) fimC = parseDia(dp);
       else if(ds) fimC = parseDia(ds);
-      else if(st === 'carregamento' || st === 'aguardando_nf' || st === 'aguardando_manifesto') fimC = limiteAberto;
+      else if(st === 'carregamento') fimC = limiteAberto;
       else fimC = parseDia(dc);
       if(fimC < parseDia(dc)) fimC = parseDia(dc);
-      faixa(placa, parseDia(dc), fimC, 'C', idCarga(d) + ' · carregando desde ' + _dispHoraBRT(d.ts_carregamento) + (d.ts_pronto_viagem ? ' até ' + _dispHoraBRT(d.ts_pronto_viagem) : ''));
+      faixa(placa, parseDia(dc), fimC, 'C', idCarga(d) + ' · carregando desde ' + _dispHoraBRT(d.ts_carregamento) + (tsPronto ? ' até ' + _dispHoraBRT(tsPronto) : ''));
     }
     if(dp){
       let fimP;
       if(ds) fimP = parseDia(ds);
-      else if(st === 'pronto_viagem') fimP = limiteAberto;
+      else if(st === 'aguardando_nf' || st === 'aguardando_manifesto' || st === 'pronto_viagem') fimP = limiteAberto;
       else fimP = parseDia(dp);
       if(fimP < parseDia(dp)) fimP = parseDia(dp);
-      faixa(placa, parseDia(dp), fimP, 'P', idCarga(d) + ' · pronto para viagem desde ' + _dispHoraBRT(d.ts_pronto_viagem) + (d.ts_saiu ? ', saiu ' + _dispHoraBRT(d.ts_saiu) : ' (ainda não saiu)'));
+      faixa(placa, parseDia(dp), fimP, 'P', idCarga(d) + ' · pronto para viagem desde ' + _dispHoraBRT(tsPronto) + (d.ts_saiu ? ', saiu ' + _dispHoraBRT(d.ts_saiu) : ' (ainda não saiu)'));
     }
     if(stats){
       // horas de cada etapa, só de cargas cuja saída caiu dentro do mês exibido
       const dtS = ds ? parseDia(ds) : null;
       if(dtS && dtS >= mesInicio && dtS <= mesFim){
         const h = (a, b) => (new Date(b) - new Date(a)) / 3600000;
-        if(d.ts_carregamento && d.ts_pronto_viagem){ const x = h(d.ts_carregamento, d.ts_pronto_viagem); if(x >= 0) (stats.carregH || (stats.carregH = [])).push(x); }
-        if(d.ts_pronto_viagem && d.ts_saiu){ const x = h(d.ts_pronto_viagem, d.ts_saiu); if(x >= 0) (stats.esperaH || (stats.esperaH = [])).push(x); }
+        if(d.ts_carregamento && tsPronto){ const x = h(d.ts_carregamento, tsPronto); if(x >= 0) (stats.carregH || (stats.carregH = [])).push(x); }
+        if(tsPronto && d.ts_saiu){ const x = h(tsPronto, d.ts_saiu); if(x >= 0) (stats.esperaH || (stats.esperaH = [])).push(x); }
       }
     }
   });
@@ -21065,7 +21067,7 @@ async function renderFrotaDisp(){
       supaFetch(`lancamentos?select=veiculo,ts,rota,carga&veiculo=not.is.null&mes_ano=eq.${mes}&limit=5000`).catch(()=>[]),
       supaFetch(`abastecimento_loja?data_saida=gte.${mes}-01&data_saida=lt.${proxMes}-01&veiculo=not.is.null&select=veiculo,data_saida,carga&limit=5000`).catch(()=>[]),
       // Etapas do pátio (C carregando / P pronto): horários de cada etapa, inclusive de cargas que já saíram
-      supaFetch(`demandas_rota?select=carga,rota,veiculo,status,ts_carregamento,ts_pronto_viagem,ts_saiu&veiculo=not.is.null&status=neq.cancelado&ts_carregamento=gte.${prevMes}-01&ts_carregamento=lt.${proxMes}-01&limit=5000`).catch(()=>[]),
+      supaFetch(`demandas_rota?select=carga,rota,veiculo,status,ts_carregamento,ts_aguardando_nf,ts_aguardando_manifesto,ts_pronto_viagem,ts_saiu&veiculo=not.is.null&status=neq.cancelado&ts_carregamento=gte.${prevMes}-01&ts_carregamento=lt.${proxMes}-01&limit=5000`).catch(()=>[]),
       // Feriados cadastrados (Cadastro → Feriados): como domingo, NÃO contam na utilização
       supaFetch(`feriados?data=gte.${mes}-01&data=lt.${proxMes}-01&select=data,nome`).catch(()=>[])
     ];
@@ -21341,7 +21343,7 @@ async function renderFrotaDisp(){
       <div class="fu-legend">
         ${lg('S','Em rota (da saída até a rota finalizada na Expedição; lançamento e abastecimento de loja só no dia)')}
         ${lg('P','Carregado, pronto para viagem')}
-        ${lg('C','Carregando (inclui aguardando NF e manifesto)')}
+        ${lg('C','Carregando')}
         ${lg('M','Lançamento manual (dia utilizado, lançado à mão)')}
         <span class="fu-lg"><span class="fu-cell N man">·</span>Ponto vermelho = dia com ajuste manual</span>
         <span class="fu-lg"><span class="fu-cell lgN">·</span>Não utilizado</span>
@@ -33627,7 +33629,8 @@ function _dlogRenderFrota(c){
   Object.entries(c.veiculosAbastPorPlaca||{}).forEach(([placa,n])=>{ if(veiculoUsoCount.hasOwnProperty(placa)) veiculoUsoCount[placa]+=n; });
 
   const emOperacaoSet = new Set(c.demandasMes.filter(d=>['saiu','fim_viagem'].includes(d.status)).map(d=>(d.veiculo||'').toUpperCase().trim()));
-  const carregandoSet = new Set(c.demandasMes.filter(d=>['carregamento','separacao','aguardando_nf'].includes(d.status)).map(d=>(d.veiculo||'').toUpperCase().trim()));
+  const carregandoSet = new Set(c.demandasMes.filter(d=>['carregamento','separacao'].includes(d.status)).map(d=>(d.veiculo||'').toUpperCase().trim()));
+  const prontoSet = new Set(c.demandasMes.filter(d=>['aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(d.status)).map(d=>(d.veiculo||'').toUpperCase().trim()));
   const naoUtilizados = Object.entries(veiculoUsoCount).filter(([,n])=>n===0).map(([v])=>v);
   const disponiveis = c.totalFrotaPropria - c.veiculosEmManutencao.size;
   const pctDisponibilidade = Math.round(disponiveis/c.totalFrotaPropria*100);
@@ -33635,6 +33638,7 @@ function _dlogRenderFrota(c){
   const cardsFrota = [
     {label:'Em Operação', val:emOperacaoSet.size, cor:'#2563eb'},
     {label:'Em Carregamento', val:carregandoSet.size, cor:'#7c3aed'},
+    {label:'Pronto p/ viagem', val:prontoSet.size, cor:'#059669'},
     {label:'Em Manutenção', val:c.veiculosEmManutencao.size, cor:'#dc2626'},
     {label:'Não Utilizados no Período', val:naoUtilizados.length, cor:'#f59e0b'},
   ];
@@ -38380,7 +38384,7 @@ async function carregarPainelDisponibilidade(){
     ).catch(()=>[]) || [];
     // Etapas do pátio (C carregando / P pronto p/ viagem) — também contam como dia utilizado (pedido do usuário, 2026-11-05)
     const etapasRef = await supaFetch(
-      `demandas_rota?select=carga,rota,veiculo,status,ts_carregamento,ts_pronto_viagem,ts_saiu&veiculo=not.is.null&status=neq.cancelado&ts_carregamento=gte.${prevMesRef}-01&ts_carregamento=lt.${proxMesRef}-01&limit=5000`
+      `demandas_rota?select=carga,rota,veiculo,status,ts_carregamento,ts_aguardando_nf,ts_aguardando_manifesto,ts_pronto_viagem,ts_saiu&veiculo=not.is.null&status=neq.cancelado&ts_carregamento=gte.${prevMesRef}-01&ts_carregamento=lt.${proxMesRef}-01&limit=5000`
     ).catch(()=>[]) || [];
     const primeiraViagemMapRef = await _buscarPrimeiraViagemPorVeiculo();
 
