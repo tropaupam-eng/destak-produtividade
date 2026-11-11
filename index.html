@@ -4260,7 +4260,14 @@ body.light-theme{
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:8px"><span data-feather="alert-triangle" style="width:19px;height:19px"></span> Erro Conferente</h2>
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Ocorrências lançadas em pedidos que o conferente já tinha dado como OK — erro atribuído a quem conferiu · só motivos do setor Armazém</p>
     </div>
-    <button onclick="carregarErroConferente()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <label for="errconf-ini" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data inicial</label>
+      <input type="date" class="devol-data cm-data" id="errconf-ini" onchange="errconfPeriodoMudou()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <label for="errconf-fim" style="font-size:.78rem;font-weight:700;color:var(--text-muted)">Data final</label>
+      <input type="date" class="devol-data cm-data" id="errconf-fim" onchange="errconfPeriodoMudou()" style="border:1px solid var(--border-med);border-radius:8px;padding:6px 10px;font-size:.85rem;background:var(--bg-input);color:var(--text-primary)">
+      <button type="button" id="errconf-limpar-periodo" onclick="errconfLimparPeriodo()" title="Volta o período para o mês atual" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:5px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap">Mês atual</button>
+      <button onclick="carregarErroConferente()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
     <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Erros Atribuídos</div><div class="kpi-value" id="errconf-kpi-total">—</div></div>
@@ -10222,7 +10229,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.275';
+const APP_VERSION = '4.89.276';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -57731,9 +57738,40 @@ function _errconfRender(){
 // tinha marcado NOK, o erro foi pego a tempo e não é dele; se não há
 // conferência registrada pra aquele pedido/carga, não dá pra atribuir a
 // ninguém (mostrado à parte no KPI "sem conferência vinculada").
+// Período da página: Data inicial / Data final (mesmo modelo do Dashboard Devolução). Padrão = mês atual; campo vazio é preenchido
+// (nunca busca "tudo"); só uma data completa a outra pelo mês dela. Pedido do Gabriel, 2026-11-11. Vale pela DATA DA OCORRÊNCIA.
+function _errconfPeriodo(){
+  const iniEl = document.getElementById('errconf-ini'), fimEl = document.getElementById('errconf-fim'), btn = document.getElementById('errconf-limpar-periodo');
+  const mes = _devolMesAtual();
+  let ini = iniEl?.value || '', fim = fimEl?.value || '';
+  if(!ini && !fim){ ini = mes.ini; fim = mes.fim; }
+  else if(!ini){ ini = fim.slice(0, 8) + '01'; }
+  else if(!fim){ const [y, m] = ini.split('-').map(Number); fim = ini.slice(0, 8) + String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0'); }
+  if(iniEl) iniEl.value = ini;
+  if(fimEl) fimEl.value = fim;
+  if(btn) btn.style.display = (ini !== mes.ini || fim !== mes.fim) ? '' : 'none';
+  return { ini, fim };
+}
+let _errconfPeriodoTimer = null;
+function errconfPeriodoMudou(){ clearTimeout(_errconfPeriodoTimer); _errconfPeriodoTimer = setTimeout(carregarErroConferente, 300); }
+function errconfLimparPeriodo(){
+  const a = document.getElementById('errconf-ini'), b = document.getElementById('errconf-fim'), mes = _devolMesAtual();
+  if(a) a.value = mes.ini; if(b) b.value = mes.fim;
+  carregarErroConferente();
+}
+
 async function carregarErroConferente(){
   const container = document.getElementById('errconf-container');
   if(!container) return;
+  const { ini: periodoIni, fim: periodoFim } = _errconfPeriodo();
+  if(periodoIni > periodoFim){   // intervalo invertido: avisa e não busca nada
+    _errconfDados = null; _errconfDestruirGraficos();
+    const dash0 = document.getElementById('errconf-dash'); if(dash0) dash0.style.display = 'none';
+    const chips0 = document.getElementById('errconf-filtros'); if(chips0){ chips0.style.display = 'none'; chips0.innerHTML = ''; }
+    ['errconf-kpi-total', 'errconf-kpi-top', 'errconf-kpi-sem-vinculo'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '—'; });
+    container.innerHTML = '<p style="text-align:center;padding:40px;color:#dc2626">A data inicial é maior que a data final. Ajuste o período.</p>';
+    return;
+  }
   container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>';
 
   try{
@@ -57750,7 +57788,9 @@ async function carregarErroConferente(){
     motivos.forEach(m => { setorPorId[m.id] = m.setor; setorPorNome[String(m.nome||'').trim().toLowerCase()] = m.setor; });
     const ehArmazem = o => (setorPorId[o.motivo_id] || setorPorNome[String(o.motivo_nome||'').trim().toLowerCase()]) === 'armazem';
     const ocorrencias = (await supaFetch(
-      'ocorrencias_distribuicao?select=id,pedido,carga,rota,tipo,descricao,status,criado_em,motivo_id,motivo_nome&tipo=not.in.(erro_pedido,corte)&order=criado_em.desc&limit=1000'
+      'ocorrencias_distribuicao?select=id,pedido,carga,rota,tipo,descricao,status,criado_em,motivo_id,motivo_nome&tipo=not.in.(erro_pedido,corte)'
+      + '&criado_em=gte.' + encodeURIComponent(periodoIni + 'T00:00:00-03:00') + '&criado_em=lte.' + encodeURIComponent(periodoFim + 'T23:59:59.999-03:00')
+      + '&order=criado_em.desc&limit=5000'
     ) || []).filter(ehArmazem);
 
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
@@ -57764,7 +57804,7 @@ async function carregarErroConferente(){
       set('errconf-kpi-total', 0);
       set('errconf-kpi-top', '—');
       set('errconf-kpi-sem-vinculo', 0);
-      container.innerHTML = `<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">${_ic('check-circle',40)}</span>Nenhuma ocorrência de motivo do setor Armazém registrada.</p>`;
+      container.innerHTML = `<p style="text-align:center;padding:48px;color:var(--text-muted)"><span style="font-size:2.5rem;display:block;margin-bottom:10px">${_ic('check-circle',40)}</span>Nenhuma ocorrência de motivo do setor Armazém registrada neste período.</p>`;
       _featherReplace();
       return;
     }

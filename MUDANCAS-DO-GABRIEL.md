@@ -21,6 +21,18 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-11, Gabriel: Erro Conferente: Data inicial e Data final — v4.89.276
+Onde: `index.html`, página Armazém › Erro Conferente. Cabeçalho ganha "Data inicial" / "Data final" (`#errconf-ini`/`#errconf-fim`, classes `devol-data cm-data`: ícone claro + linha) e o botão
+"Mês atual" (só aparece com período diferente do mês). Funções novas `_errconfPeriodo`, `errconfPeriodoMudou`, `errconfLimparPeriodo` (reaproveita `_devolMesAtual`); `carregarErroConferente` agora
+busca só o período (`criado_em` do dia 1 00:00 ao último dia 23:59:59.999, fuso -03:00; antes buscava as 1.000 últimas de todo o histórico, sem datas; limite agora 5.000).
+Regras (modelo do Dashboard Devolução): PADRÃO = MÊS ATUAL (antes mostrava todo o histórico: 8 atribuídas + 29 sem conferência = 37); campo vazio é preenchido, nunca busca "tudo"; só uma data
+completa a outra pelo mês dela; inicial maior que final avisa e não consulta. O período vale pela DATA DA OCORRÊNCIA (`criado_em`), não pelo dia da conferência; a atribuição (OK em `conferencia_pedidos`,
+mesma carga/pedido) não mudou. Mensagem sem dados: "...registrada neste período". `APP_VERSION`/`version.json` 4.89.275 → 4.89.276.
+Valores com os dados reais de 11/11 (erros de Armazém / atribuídos / sem conferência): mês atual 13 / Jaqueline 2, Jacson 1 / 10; outubro 23 / Jaqueline 3, Pedro 1 / 19; 01/10 a 30/11 e ano 2026: 36 / Jaqueline 5,
+Jacson 1, Pedro 1 / 29. ATENÇÃO: a ocorrência do pedido 67809 tem `criado_em` com ano 0026 (digitado errado na "Data da ocorrência") e por isso NÃO entra em nenhum período de 2026 (antes entrava na soma sem filtro: Jaqueline 6, total 37).
+Só leitura; sem mudança de dado nem de estrutura de banco. Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: corrigir o `criado_em` do pedido 67809 (dado de produção, não alterado por mim).
+
 ## 2026-11-10, Gabriel: Erro Conferente: gráfico "Erros por conferente" ganha a barra cinza "Sem conferência vinculada" — v4.89.275
 Onde: `index.html`, página Armazém › Erro Conferente, `_errconfRender` (gráfico por conferente) e subtítulo do cartão. O gráfico agora ignora também o filtro de cobertura
 (`['conf','cob']`): mostra SEMPRE as pessoas (com OK dele no pedido) e, por último, uma barra cinza "Sem conferência vinculada" (ocorrências de Armazém sem registro de conferência
