@@ -21,6 +21,15 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-12, Gabriel: Motivo "Pedido Duplicado - Comercial" passa a se chamar "Pedido Duplicado" (código aceita os dois nomes) — v4.89.286
+Onde: `index.html`, `DEVOL_MOTIVOS_VENDEDOR` ganha `'pedido duplicado'` (mantém `'pedido duplicado - comercial'`, para as ocorrências antigas e para o período até o cadastro ser renomeado) e os textos do
+subtítulo do gráfico Erros por vendedor passam a dizer "Pedido Duplicado". `APP_VERSION`/`version.json` 4.89.285 → 4.89.286. Pedido do Gabriel ("esse motivo é só Pedido Duplicado e não Pedido Duplicado - Comercial").
+DADO DE PRODUÇÃO A ALTERAR (quem roda é o Gabriel/Daniel no SQL Editor; eu NÃO alterei): tabela `motivos_devolucao`, id `f8ff0214-e894-48e8-9226-e2a4c0d470ad` (setor comercial, tipo_otif erro_pedido, criado em 03/10/2026):
+VALOR ANTERIOR de `nome` = "Pedido Duplicado - Comercial" (novo: "Pedido Duplicado"); e `ocorrencias_distribuicao.motivo_nome` das 12 ocorrências com esse `motivo_id` (valor anterior igual: "Pedido Duplicado - Comercial", conferido por leitura em 12/11).
+A tela Cadastros › Motivos de Devolução não tem como renomear (só ativar/inativar); por isso o SQL. Sem o UPDATE nas ocorrências, as antigas e as novas apareceriam com nomes diferentes nos gráficos por motivo.
+SQL para voltar atrás: UPDATE ... SET nome = 'Pedido Duplicado - Comercial' (e motivo_nome igual) com o mesmo id/motivo_id.
+Só leitura/apresentação no código; sem mudança de estrutura. Como desfazer o código: `git revert` do commit desta entrada.
+
 ## 2026-11-12, Gabriel: Dashboard Devolução › Erros por vendedor passa a contar "Produto solicitado incorreto pelo vendedor" — v4.89.285
 Onde: `index.html`, `DEVOL_MOTIVOS_VENDEDOR` (lista de motivos do Comercial que são erro do vendedor, comparada pelo NOME, sem diferenciar maiúscula/espaços) ganha `'produto solicitado incorreto pelo vendedor'`, ao lado de
 Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial; textos do subtítulo do gráfico (HTML `#devol-sub-vend` e `subVend.textContent`) atualizados. `APP_VERSION`/`version.json` 4.89.284 → 4.89.285.
