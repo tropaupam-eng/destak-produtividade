@@ -21,6 +21,15 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-12, Gabriel: Ocorrências: "Produto incorreto" em primeiro lugar na lista de motivos — v4.89.288
+Onde: `index.html`, `OCORR_MOTIVOS_PRIMEIROS` (lista nova, hoje `['produto incorreto']`) e `_ocorrOrdenarMotivos`, usadas em `_ocorrCarregarMotivosSelect`: depois de buscar os motivos, dentro de CADA setor os nomes da lista vão primeiro
+(sem diferenciar acento/maiúscula) e o resto segue em ordem alfabética; o cache `_ocorrMotivosCache` já sai ordenado, então o formulário e o modal Editar mostram a mesma ordem. Os setores seguem na mesma ordem e nenhum motivo some.
+No Comercial a lista fica: Produto incorreto, Cadastro do Cliente Incorreto, Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta, Pedido Duplicado - Comercial, Preço Incorreto. Para priorizar outro motivo, acrescentar o nome em
+`OCORR_MOTIVOS_PRIMEIROS`. `APP_VERSION`/`version.json` 4.89.287 → 4.89.288. Interpretei "em primeiro lugar" como primeiro DENTRO do grupo Comercial (onde o motivo está), não no topo de toda a lista.
+Observações de dado (não alterei nada): o Gabriel cadastrou "Produto incorreto" (setor Comercial, OTIF "falta", criado em 12/11); isso difere do que eu sugeri ("Erro do Vendedor"). Como o OTIF é "falta", ele NÃO é Erro do Vendedor e o gráfico
+Erros por vendedor (que conta pelo nome "produto solicitado incorreto pelo vendedor") NÃO o conta.
+Só leitura/apresentação; sem mudança de dado nem de estrutura. Como desfazer: `git revert` do commit desta entrada.
+
 ## 2026-11-12, Gabriel: Novo setor "Qualidade" nos motivos de devolução — v4.89.287
 Onde: `index.html`. O setor era uma lista fixa em vários lugares; agora "qualidade" entra em: Cadastros › Motivos de Devolução (opção "🧪 Qualidade" no select de setor, `#mdv-setor-input`);
 `MOTIVO_DEVOLUCAO_SETOR_LABEL` / `MOTIVO_DEVOLUCAO_SETOR_ICON` (grupo "Qualidade" no select de motivos de Ocorrências, só aparece se houver motivo no setor; ícone `award`); cor do selo do card
