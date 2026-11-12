@@ -21,6 +21,16 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-12, Gabriel: Novo setor "Qualidade" nos motivos de devolução — v4.89.287
+Onde: `index.html`. O setor era uma lista fixa em vários lugares; agora "qualidade" entra em: Cadastros › Motivos de Devolução (opção "🧪 Qualidade" no select de setor, `#mdv-setor-input`);
+`MOTIVO_DEVOLUCAO_SETOR_LABEL` / `MOTIVO_DEVOLUCAO_SETOR_ICON` (grupo "Qualidade" no select de motivos de Ocorrências, só aparece se houver motivo no setor; ícone `award`); cor do selo do card
+(`setorCor`, rosa #fce7f3/#9d174d); Dashboard Devolução (`DEVOL_SETORES`, slot de cor 6 = roxo, sem repetir os setores antigos); slide/Painel de devoluções por setor (`SETOR`, antes setor fora da lista virava "sem setor");
+Nível de Serviço (`SETORES`, rótulo QUALIDADE #db2777 em vez de cair em OUTROS). `APP_VERSION`/`version.json` 4.89.286 → 4.89.287. Setores antigos e motivos existentes não mudam.
+MOTIVO a cadastrar (pelo Gabriel, na tela Cadastros › Motivos de Devolução, não por mim): "Devolução por Qualidade Insuficiente", setor Qualidade, OTIF sugerido "Outro" (como os motivos de Mercado).
+Risco: se a coluna `motivos_devolucao.setor` tiver uma restrição (CHECK) que só aceita os 5 setores antigos, o cadastro falha com erro na tela; aí é preciso um SQL do Daniel para liberar "qualidade" (não há SQL dessa tabela no repositório
+para conferir; não dá para testar sem gravar). Não incluído: filtros/gráficos específicos de Qualidade e o Erro Conferente (continua só Armazém).
+Só leitura/apresentação no código; sem mudança de dado nem de estrutura de banco. Como desfazer: `git revert` do commit desta entrada (e inativar o motivo no cadastro, se já criado).
+
 ## 2026-11-12, Gabriel: Motivo "Pedido Duplicado - Comercial" passa a se chamar "Pedido Duplicado" (código aceita os dois nomes) — v4.89.286
 Onde: `index.html`, `DEVOL_MOTIVOS_VENDEDOR` ganha `'pedido duplicado'` (mantém `'pedido duplicado - comercial'`, para as ocorrências antigas e para o período até o cadastro ser renomeado) e os textos do
 subtítulo do gráfico Erros por vendedor passam a dizer "Pedido Duplicado". `APP_VERSION`/`version.json` 4.89.285 → 4.89.286. Pedido do Gabriel ("esse motivo é só Pedido Duplicado e não Pedido Duplicado - Comercial").
