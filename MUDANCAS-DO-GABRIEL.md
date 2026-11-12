@@ -21,14 +21,14 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
-## 2026-11-12, Gabriel: Ocorrências › Inversão no Carregamento: campos "Produto que foi (código)" e "Quantidade que foi" — v4.89.283
-Onde: `index.html`, Distribuição › Ocorrências › Registrar Ocorrência. Quando o motivo é "Inversão no Carregamento" (por nome, sem acento) aparece um bloco com "Produto que foi (código) *" e "Quantidade que foi *"
+## 2026-11-12, Gabriel: Ocorrências › Inversão no Carregamento: campos "Código do produto" e "Quantidade que foi" — v4.89.284
+Onde: `index.html`, Distribuição › Ocorrências › Registrar Ocorrência. Quando o motivo é "Inversão no Carregamento" (por nome, sem acento) aparece um bloco com "Código do produto *" (rótulo trocado a pedido do Gabriel; antes "Produto que foi (código)") e "Quantidade que foi *"
 onde o operador digita o código e a quantidade do produto carregado no lugar; o produto que DEVIA ter ido continua sendo escolhido na lista da devolução. A descrição é buscada em
 `pedidos_itens_erp.mercadoria` (código do ERP, ex.: "794.0" = SACOLA PTP REC VD 40X50 M; digitar "794" também acha) e mostrada em verde; código não achado grava só o código (aviso âmbar); caracteres fora de
 letras/números/ponto/hífen são recusados. Código E quantidade (> 0, vírgula aceita) são obrigatórios SÓ nesse motivo. SUBITENS: existem 516 códigos com subitem e "913.0" e "913.1" são produtos DIFERENTES
 (HAMBURGUEIRA ULTRA H03 100UN × BR 200UN); digitar "913" usa o ".0", mas AVISA em âmbar que também existe o ".1"; se só existir um "913.x" usa esse; se houver vários e nenhum ".0", NÃO escolhe e pede o código completo.
 Funções novas: `_ocorrEhInversaoCarregamento`, `_ocorrMotivoMudou`, `_ocorrProdEnviadoDigitou`, `_ocorrBuscarProdEnviado`, `_ocorrLimparProdEnviado`, `_ocorrQtdProdEnviado`; alterados `salvarOcorrenciaLanc` e o card da
-lista (`_renderOcorrenciasGeneric`: linha "Foi: <código> · <descrição> × <qtd>"). `APP_VERSION`/`version.json` 4.89.281 → 4.89.283.
+lista (`_renderOcorrenciasGeneric`: linha "Foi: <código> · <descrição> × <qtd>"). `APP_VERSION`/`version.json` 4.89.281 → 4.89.284.
 BASE DE PRODUTOS: não existe cadastro de produtos no banco; a fonte é `pedidos_itens_erp` (itens dos pedidos do ERP desde 17/08/2026: 236.065 linhas, 5.525 códigos distintos, todos com descrição). Produto que nunca
 apareceu em pedido desde agosto não é achado (grava só o código).
 ESTRUTURA DE BANCO (quem cria é o Daniel ou quem tem acesso ao SQL Editor): arquivo `supabase/migrations/20261112_ocorrencias_produto_enviado.sql` adiciona 3 colunas opcionais em
