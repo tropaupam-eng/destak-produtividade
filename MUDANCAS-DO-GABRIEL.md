@@ -21,6 +21,14 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-12, Gabriel: Dashboard Devolução › Erros por vendedor passa a contar "Produto solicitado incorreto pelo vendedor" — v4.89.285
+Onde: `index.html`, `DEVOL_MOTIVOS_VENDEDOR` (lista de motivos do Comercial que são erro do vendedor, comparada pelo NOME, sem diferenciar maiúscula/espaços) ganha `'produto solicitado incorreto pelo vendedor'`, ao lado de
+Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta e Pedido Duplicado - Comercial; textos do subtítulo do gráfico (HTML `#devol-sub-vend` e `subVend.textContent`) atualizados. `APP_VERSION`/`version.json` 4.89.284 → 4.89.285.
+Contexto: o Gabriel vai cadastrar (pela tela Cadastros › Motivos de Devolução, não por mim) os motivos Mercado "Cliente não gostou da qualidade do produto" e "Cliente sem dinheiro no momento da entrega" (OTIF Outro) e
+Comercial "Produto solicitado incorreto pelo vendedor" (OTIF Erro do Vendedor); "Pedido duplicado" já existe como "Pedido Duplicado - Comercial", não duplicar. ATENÇÃO: o motivo cadastrado precisa ter EXATAMENTE o nome
+"Produto solicitado incorreto pelo vendedor" (maiúsculas não importam) para entrar no gráfico; nome diferente não conta. NÃO mexido: lista fixa de motivos de In Full do Nível de Serviço (`NS_MOTIVOS_INFULL`).
+Só leitura/apresentação; sem mudança de dado nem de estrutura de banco. Como desfazer: `git revert` do commit desta entrada.
+
 ## 2026-11-12, Gabriel: Ocorrências › Inversão no Carregamento: campos "Código do produto" e "Quantidade que foi" — v4.89.284
 Onde: `index.html`, Distribuição › Ocorrências › Registrar Ocorrência. Quando o motivo é "Inversão no Carregamento" (por nome, sem acento) aparece um bloco com "Código do produto *" (rótulo trocado a pedido do Gabriel; antes "Produto que foi (código)") e "Quantidade que foi *"
 onde o operador digita o código e a quantidade do produto carregado no lugar; o produto que DEVIA ter ido continua sendo escolhido na lista da devolução. A descrição é buscada em
