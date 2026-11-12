@@ -2485,7 +2485,7 @@ body.light-theme{
       </div>
       <div>
         <label style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Motivo de Devolução *</label>
-        <select id="l-ocorr-motivo"
+        <select id="l-ocorr-motivo" onchange="_ocorrMotivoMudou()"
           style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);cursor:pointer">
           <option value="">Selecione...</option>
         </select>
@@ -2516,6 +2516,15 @@ body.light-theme{
       <div><div style="font-size:.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Conferente</div><div id="l-ocorr-info-conferente" style="font-size:.83rem;font-weight:600;color:var(--text-primary)">—</div></div>
       <div><div style="font-size:.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Motorista</div><div id="l-ocorr-info-motorista" style="font-size:.83rem;font-weight:600;color:var(--text-primary)">—</div></div>
       <div><div style="font-size:.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase">Veículo</div><div id="l-ocorr-info-veiculo" style="font-size:.83rem;font-weight:600;color:var(--text-primary)">—</div></div>
+    </div>
+
+    <!-- Inversão no Carregamento: o produto que FOI (o que devia ter ido é escolhido na lista da devolução, abaixo) -->
+    <div id="l-ocorr-inversao-box" style="display:none;margin-top:14px;padding:12px 14px;border:1.5px solid #f59e0b;border-radius:8px;background:rgba(245,158,11,.08)">
+      <label for="l-ocorr-prod-enviado" style="font-size:.75rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px">Produto que foi (código) *</label>
+      <input id="l-ocorr-prod-enviado" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 794" oninput="_ocorrProdEnviadoDigitou()" onblur="_ocorrBuscarProdEnviado()"
+        style="width:100%;max-width:260px;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:.85rem;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
+      <div id="l-ocorr-prod-enviado-nome" style="font-size:.78rem;margin-top:5px;min-height:16px;color:var(--text-muted)"></div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-top:4px">Digite só o código do produto que foi carregado no lugar. O produto que <b>devia</b> ter ido você escolhe na lista de devolução, abaixo.</div>
     </div>
 
     <!-- Devolução: total ou parcial -->
@@ -10235,7 +10244,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.281';
+const APP_VERSION = '4.89.282';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19360,6 +19369,7 @@ function _renderOcorrenciasGeneric(elId, filtroVar, totalLabelId, callback){
     const fdTitulo = fd ? ` title="Dados do FDSAS${fd.gerado ? ', atualizados em '+escapeHtml(new Date(fd.gerado).toLocaleString('pt-BR')) : ''}"` : '';
     const detalhes = [
       o.produto ? `${_ic('package',12)}${o.quantidade!=null?o.quantidade+'x ':''}${escapeHtml(o.produto)}` : '',
+      o.produto_enviado_codigo ? `${_ic('repeat',12)}<b>Foi:</b> ${escapeHtml(String(o.produto_enviado_codigo).replace(/\.0$/,''))}${o.produto_enviado_descricao ? ' · '+escapeHtml(o.produto_enviado_descricao) : ''}` : '',
       valorDevolvido!=null ? `${_ic('dollar-sign',12)}${valorDevolvido.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} ${valorDaNota ? '(valor da nota)' : 'devolvido'}`
         : (valorPedido!=null ? `${_ic('dollar-sign',12)}${valorPedido.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} (valor do pedido)` : ''),
       o.cliente ? `${_ic('user',12)}${escapeHtml(o.cliente)}` : '',
@@ -19748,6 +19758,58 @@ async function _ocorrCarregarMotivosSelect(){
   }catch(e){}
 }
 
+// ── Inversão no Carregamento: "produto que foi" ──
+// Além do produto que devia ter ido (escolhido na lista da devolução), o operador digita só o CÓDIGO do produto que foi no lugar. A descrição
+// é buscada em pedidos_itens_erp.mercadoria (código do ERP, ex.: "794.0"); digitar "794" também acha. Pedido do Gabriel, 2026-11-12.
+// Só vale para o motivo "Inversão no Carregamento" (por nome, sem acento).
+let _ocorrProdEnviado = { codigo:'', descricao:'' };
+let _ocorrProdEnviadoTimer = null, _ocorrProdEnviadoReq = 0;
+function _ocorrEhInversaoCarregamento(){
+  const id = document.getElementById('l-ocorr-motivo')?.value || '';
+  const nome = (_ocorrMotivosCache.find(m => m.id === id)?.nome || '');
+  return nome.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase() === 'inversao no carregamento';
+}
+function _ocorrLimparProdEnviado(){
+  _ocorrProdEnviado = { codigo:'', descricao:'' }; _ocorrProdEnviadoReq++; clearTimeout(_ocorrProdEnviadoTimer);
+  const inp = document.getElementById('l-ocorr-prod-enviado'); if(inp) inp.value = '';
+  const nome = document.getElementById('l-ocorr-prod-enviado-nome'); if(nome){ nome.textContent = ''; nome.style.color = 'var(--text-muted)'; }
+}
+function _ocorrMotivoMudou(){
+  const box = document.getElementById('l-ocorr-inversao-box'); if(!box) return;
+  const ver = _ocorrEhInversaoCarregamento();
+  box.style.display = ver ? '' : 'none';
+  if(!ver) _ocorrLimparProdEnviado();
+}
+function _ocorrProdEnviadoDigitou(){
+  _ocorrProdEnviado = { codigo:'', descricao:'' };
+  clearTimeout(_ocorrProdEnviadoTimer);
+  _ocorrProdEnviadoTimer = setTimeout(_ocorrBuscarProdEnviado, 350);
+}
+async function _ocorrBuscarProdEnviado(){
+  clearTimeout(_ocorrProdEnviadoTimer);
+  const inp = document.getElementById('l-ocorr-prod-enviado'), nome = document.getElementById('l-ocorr-prod-enviado-nome');
+  if(!inp || !nome) return;
+  const digitado = String(inp.value || '').trim().replace(',', '.');
+  const rid = ++_ocorrProdEnviadoReq;
+  if(!digitado){ _ocorrProdEnviado = { codigo:'', descricao:'' }; nome.textContent = ''; return; }
+  if(!/^[0-9A-Za-z.\-]{1,30}$/.test(digitado)){ _ocorrProdEnviado = { codigo:'', descricao:'' }; nome.style.color = '#dc2626'; nome.textContent = 'Código inválido: use só letras, números, ponto ou hífen.'; return; }
+  nome.style.color = 'var(--text-muted)'; nome.textContent = 'Buscando...';
+  let achado = null;
+  try{
+    const cands = digitado.includes('.') ? [digitado] : [digitado, digitado + '.0'];
+    const rows = await supaFetch('pedidos_itens_erp?mercadoria=in.(' + cands.map(encodeURIComponent).join(',') + ')&select=mercadoria,descricao&order=atualizado_em.desc&limit=1') || [];
+    achado = rows[0] || null;
+  }catch(e){ achado = null; }
+  if(rid !== _ocorrProdEnviadoReq) return;            // digitou outro código durante a busca
+  if(achado && achado.mercadoria != null){
+    _ocorrProdEnviado = { codigo:String(achado.mercadoria), descricao:String(achado.descricao || '').trim() };
+    nome.style.color = '#059669'; nome.textContent = '✔ ' + (_ocorrProdEnviado.descricao || 'produto sem descrição no ERP');
+  } else {
+    _ocorrProdEnviado = { codigo:digitado, descricao:'' };
+    nome.style.color = '#d97706'; nome.textContent = 'Código não encontrado nos pedidos: será gravado só o código "' + digitado + '".';
+  }
+}
+
 // ── Itens do pedido (devolução total/parcial) ──
 let _ocorrItensPedidoCache = [];
 
@@ -19972,6 +20034,12 @@ async function salvarOcorrenciaLanc(){
   const tipoDev  = document.getElementById('l-ocorr-tipodev-valor')?.value || 'total';
   if(!pedido)  { showToast('Informe o número do pedido','warning'); return; }
   if(!motivoId){ showToast('Selecione o motivo da devolução','warning'); return; }
+  // Inversão no Carregamento: o código do produto que foi é obrigatório (espera a busca da descrição terminar, se ainda estiver rodando)
+  const ehInversao = _ocorrEhInversaoCarregamento();
+  if(ehInversao){
+    if(!_ocorrProdEnviado.codigo && (document.getElementById('l-ocorr-prod-enviado')?.value || '').trim()) await _ocorrBuscarProdEnviado();
+    if(!_ocorrProdEnviado.codigo){ showToast('Informe o código do produto que foi (inversão no carregamento)','warning'); document.getElementById('l-ocorr-prod-enviado')?.focus(); return; }
+  }
   // "Tipo" não é mais escolhido manualmente — vem da classificação de
   // impacto no OTIF do motivo escolhido (cadastro de Motivos de
   // Devolução), pra não quebrar o cálculo de causas do OTIF/In Full que
@@ -20042,17 +20110,29 @@ async function salvarOcorrenciaLanc(){
   const criadoEm = dataEl ? `${dataEl}T12:00:00-03:00` : new Date().toISOString();
 
   try{
-    const inserido = await supaFetch('ocorrencias_distribuicao',{
-      method:'POST',
-      body:JSON.stringify({
-        pedido, carga, rota:rotaFinal, tipo, status:'pendente',
-        criado_em:criadoEm, criado_por:usuario,
-        motivo_id:motivoId, motivo_nome:motivoNome,
-        cliente, conferente, motorista, veiculo, tipo_devolucao:tipoDev,
-        produto: produtoResumo || null, quantidade: quantidadeTotal, descricao: desc||null,
-        valor_devolvido: valorDevolvido,
-      })
-    });
+    const corpoOcorr = {
+      pedido, carga, rota:rotaFinal, tipo, status:'pendente',
+      criado_em:criadoEm, criado_por:usuario,
+      motivo_id:motivoId, motivo_nome:motivoNome,
+      cliente, conferente, motorista, veiculo, tipo_devolucao:tipoDev,
+      produto: produtoResumo || null, quantidade: quantidadeTotal, descricao: desc||null,
+      valor_devolvido: valorDevolvido,
+    };
+    let inserido;
+    if(ehInversao){
+      // colunas produto_enviado_codigo / produto_enviado_descricao (ver supabase/migrations/20261112_ocorrencias_produto_enviado.sql)
+      try{
+        inserido = await supaFetch('ocorrencias_distribuicao',{ method:'POST', body:JSON.stringify({ ...corpoOcorr, produto_enviado_codigo:_ocorrProdEnviado.codigo, produto_enviado_descricao:_ocorrProdEnviado.descricao || null }) });
+      }catch(e1){
+        // coluna ainda não criada no banco: não trava o operador nem perde a informação, que vai para a observação
+        if(!/produto_enviado|PGRST204|schema cache/i.test(String(e1.message))) throw e1;
+        const txt = 'Produto que foi: ' + _ocorrProdEnviado.codigo + (_ocorrProdEnviado.descricao ? ' - ' + _ocorrProdEnviado.descricao : '');
+        inserido = await supaFetch('ocorrencias_distribuicao',{ method:'POST', body:JSON.stringify({ ...corpoOcorr, descricao:[desc, txt].filter(Boolean).join(' | ') }) });
+        showToast('⚠️ O banco ainda não tem o campo "produto que foi"; a informação foi gravada na observação.','warning');
+      }
+    } else {
+      inserido = await supaFetch('ocorrencias_distribuicao',{ method:'POST', body:JSON.stringify(corpoOcorr) });
+    }
     const novaOcorrenciaId = inserido?.[0]?.id;
     if(novaOcorrenciaId && itensParaGravar.length){
       await supaFetch('ocorrencias_distribuicao_itens',{
@@ -20067,6 +20147,7 @@ async function salvarOcorrenciaLanc(){
     showToast('✅ Ocorrência registrada — Pedido '+pedido,'success');
     ['l-ocorr-pedido','l-ocorr-rota','l-ocorr-descricao','l-ocorr-data'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
     const motivoEl=document.getElementById('l-ocorr-motivo'); if(motivoEl) motivoEl.value='';
+    _ocorrMotivoMudou();   // esconde e limpa o "produto que foi"
     const hint=document.getElementById('l-ocorr-rota-hint'); if(hint) hint.textContent='';
     const infoBox=document.getElementById('l-ocorr-autofill'); if(infoBox) infoBox.style.display='none';
     _ocorrItensPedidoCache = [];

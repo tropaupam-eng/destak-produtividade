@@ -21,6 +21,20 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-12, Gabriel: Ocorrências › Inversão no Carregamento: campo "Produto que foi (código)" — v4.89.282
+Onde: `index.html`, Distribuição › Ocorrências › Registrar Ocorrência. Quando o motivo é "Inversão no Carregamento" (por nome, sem acento) aparece um bloco "Produto que foi (código) *" onde o operador digita SÓ o
+código do produto que foi carregado no lugar; o produto que DEVIA ter ido continua sendo escolhido na lista da devolução. A descrição é buscada em `pedidos_itens_erp.mercadoria` (código do ERP, ex.: "794.0" =
+SACOLA PTP REC VD 40X50 M; digitar "794" também acha) e mostrada em verde; código não achado grava só o código (aviso âmbar); caracteres fora de letras/números/ponto/hífen são recusados. Obrigatório SÓ
+nesse motivo (sem o código não registra). Funções novas: `_ocorrEhInversaoCarregamento`, `_ocorrMotivoMudou`, `_ocorrProdEnviadoDigitou`, `_ocorrBuscarProdEnviado`, `_ocorrLimparProdEnviado`; alterados
+`salvarOcorrenciaLanc` e o card da lista (`_renderOcorrenciasGeneric`: linha "Foi: <código> · <descrição>"). `APP_VERSION`/`version.json` 4.89.281 → 4.89.282.
+ESTRUTURA DE BANCO (quem cria é o Daniel ou quem tem acesso ao SQL Editor): arquivo `supabase/migrations/20261112_ocorrencias_produto_enviado.sql` adiciona 2 colunas opcionais em
+`ocorrencias_distribuicao`: `produto_enviado_codigo` e `produto_enviado_descricao` (IF NOT EXISTS, sem RLS, não altera dado existente). Conferido por leitura em 12/11: as colunas AINDA NÃO existem.
+Salvaguarda: outros motivos NÃO enviam as colunas novas (cadastro igual ao de sempre, independe da coluna); se a coluna não existir quando o motivo for Inversão, o formulário NÃO trava: registra e grava a
+informação na observação ("Produto que foi: 794.0 - ..."), avisando o operador. Não foi gravado nenhum dado de teste no banco.
+Não feito (não pedido): mostrar o "produto que foi" no modal Editar da ocorrência e nos gráficos do Erro Conferente/Devolução.
+Como desfazer: `git revert` do commit desta entrada; se as colunas forem criadas e precisarem sair: ALTER TABLE ... DROP COLUMN (só se vazias).
+Pendente/risco: Daniel/o Gabriel rodar o SQL antes de publicar; avisar o Daniel (estrutura de banco).
+
 ## 2026-11-11, Gabriel: Erro Conferente: produtos, tipo do erro e por dia contam TODAS as ocorrências de Armazém — v4.89.277
 Onde: `index.html`, `_errconfPassa(r, f, ign, todos)` (4º parâmetro novo) e `_errconfRender`. Os gráficos "Produtos com mais erros", "Tipo do erro" e "Erros por dia" (e a rosca de motivos) passam a incluir, por padrão,
 também as ocorrências SEM conferência vinculada (antes só as atribuídas a conferente, com OK dele). Motivo: pedido do Gabriel ("a Frutas Cristalizada tem duas ocorrências e quando o gráfico fica normal não aparece";
