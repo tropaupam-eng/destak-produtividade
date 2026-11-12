@@ -21,6 +21,15 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-12, Gabriel: Banco recusa o setor "qualidade" (check `motivos_devolucao_setor_check`): SQL para liberar
+Erro visto pelo Gabriel em Cadastros › Motivos de Devolução ao cadastrar "Qualidade Insuficiente" (setor Qualidade, impacto Avaria): `code 23514 ... violates check constraint "motivos_devolucao_setor_check"`.
+Era o risco já registrado na entrada v4.89.287: a coluna `motivos_devolucao.setor` tem uma regra do banco que só aceita os 5 setores antigos; o código do app (v4.89.287, publicado) já conhece o setor, mas o banco não deixava gravar.
+ESTRUTURA DE BANCO (quem roda é o Daniel/Gabriel no SQL Editor; eu NÃO alterei): arquivo `supabase/migrations/20261112_motivos_devolucao_setor_qualidade.sql` troca a regra por
+`CHECK (setor IN ('armazem','distribuicao','comercial','mercado','logistica','qualidade'))`. Conferido por leitura em 12/11: os 15 motivos existentes são todos desses 5 setores (comercial 7, mercado 2, distribuicao 2, armazem 3, logistica 1),
+então a regra nova passa nas linhas atuais. A definição ANTIGA exata da regra não é legível pela chave pública (o SQL traz o passo opcional para consultá-la). Nenhum dado é apagado ou alterado; sem RLS.
+Nenhuma mudança no app (sem nova versão). Como desfazer: repetir os dois comandos sem 'qualidade' (só se nenhum motivo estiver nesse setor).
+Pendente: rodar o SQL e cadastrar de novo o motivo; avisar o Daniel (estrutura de banco).
+
 ## 2026-11-12, Gabriel: Ocorrências: "Produto incorreto" em primeiro lugar na lista de motivos — v4.89.288
 Onde: `index.html`, `OCORR_MOTIVOS_PRIMEIROS` (lista nova, hoje `['produto incorreto']`) e `_ocorrOrdenarMotivos`, usadas em `_ocorrCarregarMotivosSelect`: depois de buscar os motivos, dentro de CADA setor os nomes da lista vão primeiro
 (sem diferenciar acento/maiúscula) e o resto segue em ordem alfabética; o cache `_ocorrMotivosCache` já sai ordenado, então o formulário e o modal Editar mostram a mesma ordem. Os setores seguem na mesma ordem e nenhum motivo some.
