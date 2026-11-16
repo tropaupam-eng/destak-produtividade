@@ -3632,7 +3632,7 @@ body.light-theme{
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div id="devol-titulo-motivo" style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Motivos de devolução</div>
-        <button type="button" id="devol-limpar-setor" onclick="devolLimparSetor()" title="Remove a seleção do setor e mostra todos os motivos" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:3px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap"><span data-feather="x" style="width:11px;height:11px;vertical-align:-2px"></span> Limpar filtros</button>
+        <button type="button" id="devol-limpar-setor" onclick="devolLimparSetor()" title="Remove os filtros de setor e de motivo" style="display:none;background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:3px 10px;font-size:.74rem;font-weight:700;letter-spacing:.3px;color:var(--text-primary);cursor:pointer;white-space:nowrap"><span data-feather="x" style="width:11px;height:11px;vertical-align:-2px"></span> Limpar filtros</button>
       </div>
       <div id="devol-sub-motivo" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 14px">Os 5 motivos mais frequentes; os demais ficam em “Outros”</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -10258,7 +10258,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.291';
+const APP_VERSION = '4.89.292';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -27811,6 +27811,8 @@ function _devolVendNome(o){
 }
 function devolSelecionarVend(nome){ _devolVendSel = (nome == null || _devolVendSel === nome) ? null : nome; renderDashDevolucao(); }
 let _devolSetorSel = null;   // setor clicado em "Motivos por setor" (filtra "Motivos de devolução")
+let _devolMotivoSel = null;  // motivo clicado em "Motivos de devolução" (filtra os outros gráficos; pedido do Gabriel, 2026-11-16)
+let _devolMotivoChaves = []; // nomes das fatias de motivo, na ordem da legenda (o clique da legenda usa o índice)
 
 // Período padrão = mês atual (fuso de Brasília), do dia 1 ao último dia (pedido do Gabriel, 2026-11-06: sem isso a tela puxava
 // TODAS as ocorrências e itens do banco, e isso só cresce). Só o período escolhido é buscado; campo vazio é preenchido (nunca
@@ -27835,7 +27837,7 @@ let _devolPeriodoTimer = null;
 function devolPeriodoMudou(){ clearTimeout(_devolPeriodoTimer); _devolPeriodoTimer = setTimeout(carregarDashDevolucao, 300); }
 
 async function carregarDashDevolucao(){
-  _devolSetorSel = null; _devolVendSel = null;
+  _devolSetorSel = null; _devolVendSel = null; _devolMotivoSel = null;
   const { ini: periodoIni, fim: periodoFim } = _devolPeriodoNormalizado();
   if(periodoIni > periodoFim){ renderDashDevolucao(); return; }      // intervalo invertido: a tela avisa, nada é buscado
   const msg = document.getElementById('devol-msg');
@@ -27922,8 +27924,10 @@ function _devolSetorDe(o){
 
 // Clicar numa fatia (ou linha) de "Motivos por setor" filtra "Motivos de devolução" pra esse setor;
 // clicar de novo, ou em "Limpar filtros", volta ao total. Pedido do usuário, 2026-10-24.
-function devolSelecionarSetor(chave){ _devolSetorSel = (_devolSetorSel === chave) ? null : chave; renderDashDevolucao(); }
-function devolLimparSetor(){ _devolSetorSel = null; renderDashDevolucao(); }
+function devolSelecionarSetor(chave){ _devolSetorSel = (_devolSetorSel === chave) ? null : chave; _devolMotivoSel = null; renderDashDevolucao(); }
+function devolSelecionarMotivo(nome){ _devolMotivoSel = (nome == null || _devolMotivoSel === nome) ? null : nome; renderDashDevolucao(); }
+function devolSelecionarMotivoIdx(i){ const n = _devolMotivoChaves[i]; if(n != null) devolSelecionarMotivo(n); }
+function devolLimparSetor(){ _devolSetorSel = null; _devolMotivoSel = null; renderDashDevolucao(); }
 
 function renderDashDevolucao(){
   const msg = document.getElementById('devol-msg');
@@ -27974,9 +27978,15 @@ function renderDashDevolucao(){
   const tintaSec = css.getPropertyValue('--text-secondary').trim() || '#94a3b8';
   const fmtPct = (n, t) => (n/t*100).toFixed(2).replace('.',',')+'%';   // % sobre o total DAQUELE gráfico
 
-  // 1) Motivos por setor — a cor segue o setor.
+  // Filtro por motivo (clique numa fatia de "Motivos de devolução"): some se o motivo não existe mais nas ocorrências atuais.
+  const nomeMotivo = o => String(o.motivo_nome||'').trim() || 'Sem motivo';
+  if(_devolMotivoSel && !dados.some(o => nomeMotivo(o) === _devolMotivoSel)) _devolMotivoSel = null;
+  const msel = _devolMotivoSel;
+
+  // 1) Motivos por setor — a cor segue o setor. Com um motivo escolhido, mostra só os setores desse motivo.
+  const dadosSetor = msel ? dados.filter(o => nomeMotivo(o) === msel) : dados;
   const porSetor = {};
-  dados.forEach(o=>{ const k = _devolSetorDe(o) || 'sem'; porSetor[k] = (porSetor[k]||0)+1; });
+  dadosSetor.forEach(o=>{ const k = _devolSetorDe(o) || 'sem'; porSetor[k] = (porSetor[k]||0)+1; });
   const nomeSetor = k => k==='sem' ? 'Sem motivo' : (DEVOL_SETORES[k]?.nome || k);
   const fatiasSetor = Object.entries(porSetor).sort((a,b)=>b[1]-a[1]).map(([k,n])=>({
     chave:k, nome:nomeSetor(k), n,
@@ -27991,7 +28001,6 @@ function renderDashDevolucao(){
   // quem estiver fora do top 8 geral pega um slot livre.
   const dadosMotivo = sel ? dados.filter(o => (_devolSetorDe(o) || 'sem') === sel) : dados;
   const totalMotivo = dadosMotivo.length;
-  const nomeMotivo = o => String(o.motivo_nome||'').trim() || 'Sem motivo';
   const geral = {};
   _devolOcorr.forEach(o=>{ const k = nomeMotivo(o); if(k!=='Sem motivo') geral[k]=(geral[k]||0)+1; });
   const rankGeral = Object.entries(geral).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
@@ -28009,9 +28018,10 @@ function renderDashDevolucao(){
     const livre = cores.findIndex((_,i)=>!slotsUsados.has(i));
     corMotivo[k] = livre>=0 ? cores[livre] : cinza; if(livre>=0) slotsUsados.add(livre);
   });
-  const fatiasMotivo = mostrar.map(([k,n])=>({ nome:k, n, cor:corMotivo[k] }));
+  const fatiasMotivo = mostrar.map(([k,n])=>({ chave:k, nome:k, n, cor:corMotivo[k] }));
   const somaResto = resto.reduce((s,[,n])=>s+n,0);
-  if(somaResto) fatiasMotivo.push({ nome:'Outros', n:somaResto, cor:cinza });
+  if(somaResto) fatiasMotivo.push({ chave:null, nome:'Outros', n:somaResto, cor:cinza });
+  _devolMotivoChaves = fatiasMotivo.map(f => f.chave);
 
   // Título/subtítulo do gráfico de motivos e botão "Limpar filtros" acompanham a seleção.
   const tituloMotivo = document.getElementById('devol-titulo-motivo');
@@ -28020,8 +28030,9 @@ function renderDashDevolucao(){
   if(subMotivo) subMotivo.textContent = sel
     ? totalMotivo + ' ocorrência' + (totalMotivo===1?'':'s') + ' do setor ' + nomeSetor(sel) + '; as porcentagens são sobre esse total'
     : 'Os 5 motivos mais frequentes; os demais ficam em “Outros”';
+  if(msel && subMotivo) subMotivo.textContent += ' · filtrando os outros gráficos por: ' + msel + ' (clique de novo para soltar)';
   const btnSetor = document.getElementById('devol-limpar-setor');
-  if(btnSetor) btnSetor.style.display = sel ? '' : 'none';
+  if(btnSetor) btnSetor.style.display = (sel || msel) ? '' : 'none';
 
   // Formato "Power BI": rosca grossa, só a PORCENTAGEM de cada fatia escrita fora do
   // anel, ligada por uma linha, e a legenda (bolinha + nome) à direita. Pedido do
@@ -28056,41 +28067,43 @@ function renderDashDevolucao(){
     }
   });
   // clicavel = a rosca de setor: clique na fatia seleciona/solta o setor; as outras fatias esmaecem.
-  const desenhar = (chave, canvasId, fatias, t, clicavel) => {
+  const desenhar = (chave, canvasId, fatias, t, selChave, aoEscolher) => {
+    const clicavel = typeof aoEscolher === 'function';
     const canvas = document.getElementById(canvasId); if(!canvas) return;
     if(_devolCharts[chave]){ _devolCharts[chave].destroy(); _devolCharts[chave]=null; }
-    canvas.setAttribute('aria-label', 'Gráfico de rosca' + (clicavel ? ' (clique numa fatia para filtrar os motivos)' : '') + ': ' + fatias.map(f=>f.nome+' '+f.n+' ('+fmtPct(f.n,t)+')').join('; '));
-    const esmaecer = f => (clicavel && sel && f.chave!==sel) ? f.cor+'4D' : f.cor;   // 4D = ~30% de opacidade
+    canvas.setAttribute('aria-label', 'Gráfico de rosca' + (clicavel ? ' (clique numa fatia para filtrar)' : '') + ': ' + fatias.map(f=>f.nome+' '+f.n+' ('+fmtPct(f.n,t)+')').join('; '));
+    const esmaecer = f => (clicavel && selChave && f.chave!==selChave) ? f.cor+'4D' : f.cor;   // 4D = ~30% de opacidade
     _devolCharts[chave] = new Chart(canvas, {
       type:'doughnut',
       data:{ labels:fatias.map(f=>f.nome), datasets:[{ data:fatias.map(f=>f.n), backgroundColor:fatias.map(esmaecer), borderColor:superficie, borderWidth:2, hoverOffset:4,
-        offset: fatias.map(f=> (clicavel && sel && f.chave===sel) ? 12 : 0) }] },
+        offset: fatias.map(f=> (clicavel && selChave && f.chave===selChave) ? 12 : 0) }] },
       options:{ responsive:true, maintainAspectRatio:false, cutout:'55%',
         layout:{ padding:{ left:70, right:70, top:22, bottom:22 } },
         // O redesenho destrói e recria esta mesma rosca, então roda DEPOIS do clique terminar
         // (setTimeout): feito dentro do onClick, o Chart.js seguia tratando o evento num gráfico já
         // destruído e dava "Cannot read properties of undefined (reading 'handleEvent')" (aparecia
         // no Log de Erros como "Script error."). Achado no teste local do Gabriel, 2026-10-23.
-        onClick: clicavel ? (ev, els) => { if(els.length){ const chaveSetor = fatias[els[0].index].chave; setTimeout(() => devolSelecionarSetor(chaveSetor), 0); } } : undefined,
-        onHover: clicavel ? (ev, els) => { if(ev.native && ev.native.target) ev.native.target.style.cursor = els.length ? 'pointer' : 'default'; } : undefined,
+        onClick: clicavel ? (ev, els) => { if(els.length){ const chaveFatia = fatias[els[0].index].chave; if(chaveFatia != null) setTimeout(() => aoEscolher(chaveFatia), 0); } } : undefined,
+        onHover: clicavel ? (ev, els) => { if(ev.native && ev.native.target) ev.native.target.style.cursor = (els.length && fatias[els[0].index].chave != null) ? 'pointer' : 'default'; } : undefined,
         plugins:{ legend:{display:false},
           tooltip:{ callbacks:{ label: c => ' '+c.label+': '+c.raw+' ocorrência'+(c.raw===1?'':'s')+' ('+fmtPct(c.raw,t)+')' } } } },
       plugins:[criarRotulos(t)]
     });
   };
-  desenhar('setor',  'devol-chart-setor',  fatiasSetor,  total,       true);
-  desenhar('motivo', 'devol-chart-motivo', fatiasMotivo, totalMotivo, false);
+  desenhar('setor',  'devol-chart-setor',  fatiasSetor,  dadosSetor.length, sel,  devolSelecionarSetor);
+  desenhar('motivo', 'devol-chart-motivo', fatiasMotivo, totalMotivo,       msel, devolSelecionarMotivo);
 
   // Legenda à direita da rosca: título + bolinha colorida e nome (a quantidade fica na tabela abaixo).
   // Na de setor, cada item também seleciona o setor (mesmo efeito de clicar na fatia).
-  const legenda = (titulo, fatias, clicavel) => `<div style="font-size:.85rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">${titulo}</div>` +
-    fatias.map(f=>{
-      const ativo = clicavel && sel===f.chave;
-      return `<div ${clicavel?`onclick="devolSelecionarSetor('${f.chave}')" role="button" title="Clique para filtrar os motivos deste setor"`:''} style="display:flex;align-items:flex-start;gap:8px;padding:3px 6px;margin:0 -6px;border-radius:6px;font-size:.8rem;color:${ativo?'var(--text-primary)':'var(--text-secondary)'};${ativo?'font-weight:700;background:var(--bg-hover);':''}line-height:1.3;${clicavel?'cursor:pointer;':''}">
+  const legenda = (titulo, fatias, selChave, comoClicar, dica) => `<div style="font-size:.85rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">${titulo}</div>` +
+    fatias.map((f, i)=>{
+      const clicavel = f.chave != null;
+      const ativo = clicavel && selChave===f.chave;
+      return `<div ${clicavel?`onclick="${comoClicar(f, i)}" role="button" title="${dica}"`:''} style="display:flex;align-items:flex-start;gap:8px;padding:3px 6px;margin:0 -6px;border-radius:6px;font-size:.8rem;color:${ativo?'var(--text-primary)':'var(--text-secondary)'};${ativo?'font-weight:700;background:var(--bg-hover);':''}line-height:1.3;${clicavel?'cursor:pointer;':''}">
       <span style="width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:3px;background:${f.cor}"></span><span style="min-width:0">${escapeHtml(f.nome)}</span></div>`;
     }).join('');
-  const legSetor = document.getElementById('devol-leg-setor');   if(legSetor)  legSetor.innerHTML  = legenda('Setor', fatiasSetor, true);
-  const legMotivo = document.getElementById('devol-leg-motivo'); if(legMotivo) legMotivo.innerHTML = legenda('Motivo', fatiasMotivo, false);
+  const legSetor = document.getElementById('devol-leg-setor');   if(legSetor)  legSetor.innerHTML  = legenda('Setor', fatiasSetor, sel, f => "devolSelecionarSetor('" + f.chave + "')", 'Clique para filtrar os motivos deste setor');
+  const legMotivo = document.getElementById('devol-leg-motivo'); if(legMotivo) legMotivo.innerHTML = legenda('Motivo', fatiasMotivo, msel, (f, i) => 'devolSelecionarMotivoIdx(' + i + ')', 'Clique para filtrar os outros gráficos por este motivo');
   // As tabelas com quantidade e % que ficavam embaixo das roscas saíram (pedido do usuário, 2026-10-24):
   // a % já está escrita em cada fatia e a quantidade aparece no balão ao passar o mouse.
 
@@ -28145,7 +28158,9 @@ function renderDashDevolucao(){
   };
 
   // 3) Erros por conferente — só ocorrências cujo motivo é do setor Armazém.
-  const dadosArm = dados.filter(o => (_devolSetorDe(o) || 'sem') === 'armazem');
+  // Setor/motivo escolhidos nas roscas também filtram as barras por pessoa (conferente e vendedor).
+  const _passaSetorMotivo = o => (!sel || (_devolSetorDe(o) || 'sem') === sel) && (!msel || nomeMotivo(o) === msel);
+  const dadosArm = dados.filter(o => _passaSetorMotivo(o) && (_devolSetorDe(o) || 'sem') === 'armazem');
   const porConf = {};
   dadosArm.forEach(o => { const k = String(o.conferente||'').trim() || 'Sem conferente registrado'; porConf[k] = (porConf[k]||0)+1; });
   const itensConf = Object.entries(porConf).sort((a,b) => (a[0]==='Sem conferente registrado') - (b[0]==='Sem conferente registrado') || b[1]-a[1] || a[0].localeCompare(b[0]))
@@ -28155,14 +28170,14 @@ function renderDashDevolucao(){
     const semNome = porConf['Sem conferente registrado'] || 0;
     subConf.textContent = 'Ocorrências cujo motivo é do setor Armazém: ' + dadosArm.length + (semNome ? ' (' + semNome + ' sem conferente registrado)' : '');
   }
-  mostrarBarras('devol-wrap-conf', 'devol-msg-conf', itensConf.length > 0, 'Nenhuma ocorrência do Armazém no período.');
+  mostrarBarras('devol-wrap-conf', 'devol-msg-conf', itensConf.length > 0, (sel || msel) ? 'Nenhuma ocorrência do Armazém com o setor/motivo escolhido nas roscas.' : 'Nenhuma ocorrência do Armazém no período.');
   if(itensConf.length){
     const wc = document.getElementById('devol-wrap-conf'); if(wc) wc.style.height = Math.max(200, itensConf.length*46 + 50) + 'px';
     barras('conf', 'devol-chart-conf', itensConf, true, cores[0]);
   }
 
   // 4) Erros por vendedor — só os 3 motivos de pedido digitado/pagamento/duplicado; vendedor = vendedor do pedido.
-  const dadosVend = dadosPeriodo.filter(_devolEhMotivoVendedor);
+  const dadosVend = dadosPeriodo.filter(o => _devolEhMotivoVendedor(o) && _passaSetorMotivo(o));
   const porVend = {};
   dadosVend.forEach(o => {
     const nome = _devolVendNome(o);
@@ -28179,7 +28194,7 @@ function renderDashDevolucao(){
   }
   const subVend = document.getElementById('devol-sub-vend');
   if(subVend) subVend.textContent = 'Forma de Pagamento Incorreto, Pedido Digitado com a Quantidade Incorreta, Pedido Duplicado e Produto Solicitado Incorreto pelo Vendedor: ' + dadosVend.length + ' ocorrência' + (dadosVend.length===1?'':'s') + ' · clique numa barra para ver só os números do vendedor';
-  mostrarBarras('devol-wrap-vend', 'devol-msg-vend', itensVend.length > 0, 'Nenhuma ocorrência desses motivos no período.');
+  mostrarBarras('devol-wrap-vend', 'devol-msg-vend', itensVend.length > 0, (sel || msel) ? 'Nenhum erro de vendedor com o setor/motivo escolhido nas roscas.' : 'Nenhuma ocorrência desses motivos no período.');
   if(itensVend.length) barras('vend', 'devol-chart-vend', itensVend, false, cores[2], true);
   const tVend = document.getElementById('devol-titulo-vend'); if(tVend) tVend.textContent = _devolVendSel ? 'Erros por vendedor — ' + _devolVendSel : 'Erros por vendedor';
   const bVend = document.getElementById('devol-limpar-vend'); if(bVend) bVend.style.display = _devolVendSel ? '' : 'none';

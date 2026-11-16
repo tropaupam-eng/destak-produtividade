@@ -21,6 +21,14 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-16, Gabriel: Dashboard Devolução: setor e motivo escolhidos nas roscas passam a filtrar também os gráficos por vendedor e por conferente; Motivos de devolução ficou clicável — v4.89.292
+Onde: `index.html`, `renderDashDevolucao` (novos `_devolMotivoSel`, `devolSelecionarMotivo`, `devolSelecionarMotivoIdx`; `desenhar` e `legenda` generalizadas). Pedido do Gabriel: "porque o grafico de vendedores nao muda quando filtro em motivos por setor" e "em motivos de devolucao tambem quero filtrar".
+Antes: clicar num setor só filtrava a rosca de motivos; Erros por vendedor sempre usava o período inteiro. Agora: (1) clicar num setor filtra Motivos, Erros por vendedor e Erros por conferente; (2) clicar numa fatia de Motivos de devolução (ou na legenda) filtra Motivos por setor, vendedor e conferente; clicar de novo solta; "Outros" não é clicável; trocar de setor solta o motivo; o botão Limpar solta os dois. Setor que não é Comercial deixa Erros por vendedor vazio (mensagem na tela) e só Armazém mostra conferente: é a consequência esperada, esses gráficos são de motivos de um setor só. O gráfico de devoluções por unidade segue só as datas do topo (como já era).
+Só leitura, nenhum dado ou tabela mudou.
+Como desfazer: reverter o commit desta mudança.
+Pendente/risco: nenhum no banco.
+
+
 ## 2026-11-12, Gabriel: Ocorrências: "Produto incorreto" em primeiro lugar na lista de motivos — v4.89.288
 Onde: `index.html`, `OCORR_MOTIVOS_PRIMEIROS` (lista nova, hoje `['produto incorreto']`) e `_ocorrOrdenarMotivos`, usadas em `_ocorrCarregarMotivosSelect`: depois de buscar os motivos, dentro de CADA setor os nomes da lista vão primeiro
 (sem diferenciar acento/maiúscula) e o resto segue em ordem alfabética; o cache `_ocorrMotivosCache` já sai ordenado, então o formulário e o modal Editar mostram a mesma ordem. Os setores seguem na mesma ordem e nenhum motivo some.
