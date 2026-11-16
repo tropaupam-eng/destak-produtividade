@@ -7920,6 +7920,10 @@ body.light-theme #page-frota-disponibilidade{
 #frota-disp-wrap .fu-cell.man::after{content:'';position:absolute;top:-3px;right:-3px;width:7px;height:7px;border-radius:50%;background:var(--red);border:1px solid var(--bg-card)}
 #frota-disp-wrap .fu-cell.clk{cursor:pointer}
 #frota-disp-wrap .fu-cell.clk:hover{outline:2px solid var(--text-secondary);outline-offset:1px;opacity:1}
+#frota-disp-wrap .fu-cell.sel{outline:2px solid var(--red);outline-offset:1px;background:rgba(220,38,38,.2)!important;color:var(--text-primary);opacity:1;border-style:solid}
+#frota-disp-wrap .fu-multi{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--border);font-size:.78rem;color:var(--text-secondary)}
+#frota-disp-wrap .fu-mb{background:transparent;color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:6px 12px;font-size:.78rem;font-weight:700;cursor:pointer}
+#frota-disp-wrap .fu-mb.on,#frota-disp-wrap .fu-mb.go{background:var(--red);color:#fff;border-color:var(--red)}
 #frota-disp-wrap .fu-t td.dom .fu-cell{width:18px;height:18px;font-size:.6rem}
 #frota-disp-wrap .fu-grp td{padding:0;border-bottom:1px solid var(--border-med);background:var(--bg-card2)}
 #frota-disp-wrap .fu-grp-in{position:sticky;left:0;display:flex;align-items:center;gap:12px;padding:10px 16px;width:max-content;max-width:100vw}
@@ -10254,7 +10258,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.290';
+const APP_VERSION = '4.89.291';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -21478,9 +21482,10 @@ async function renderFrotaDisp(){
         ${lg('M','Lançamento manual (dia utilizado, lançado à mão)')}
         <span class="fu-lg"><span class="fu-cell N man">·</span>Ponto vermelho = dia com ajuste manual</span>
         <span class="fu-lg"><span class="fu-cell lgN">·</span>Não utilizado</span>
-        <span class="fu-hint">S, P, C e M contam como dia utilizado · domingo e feriado não entram no cálculo (se rodou, aparece, mas não conta) · passe o mouse numa célula para ver a carga${podeAjustar ? ' · clique numa célula para lançar ou ajustar o dia manualmente' : ''}</span>
+        <span class="fu-hint">S, P, C e M contam como dia utilizado · domingo e feriado não entram no cálculo (se rodou, aparece, mas não conta) · passe o mouse numa célula para ver a carga${podeAjustar ? ' · clique numa célula para lançar ou ajustar o dia manualmente · use Selecionar vários dias para lançar vários dias de um veículo (Shift marca do primeiro ao último clique)' : ''}</span>
       </div>
 
+      ${podeAjustar ? '<div class="fu-multi"><button type="button" class="fu-mb" data-fu-act="toggle">Selecionar vários dias</button><span id="fu-multi-info">Lance a utilização de um veículo em vários dias de uma vez.</span><button type="button" class="fu-mb go" data-fu-act="lancar" id="fu-multi-go" style="display:none">Lançar utilização</button><button type="button" class="fu-mb" data-fu-act="limpar" id="fu-multi-clr" style="display:none">Limpar seleção</button></div>' : ''}
       <div class="fu-scroll">
         <table class="fu-t">
           <thead>
@@ -21496,7 +21501,15 @@ async function renderFrotaDisp(){
       ${painelProd}`;
     _featherReplace();
     window._fuCtx = { auto: autoMap, manual: manualMap, info: dispInfo, mes };
-    wrap.onclick = e => { const c = e.target.closest && e.target.closest('[data-fu-placa]'); if(c) frotaDispAjuste(c.getAttribute('data-fu-placa'), c.getAttribute('data-fu-data')); };
+    window._fuSel = { on:false, placa:null, dias:[], ultimo:null };
+    wrap.onclick = e => {
+      const ac = e.target.closest && e.target.closest('[data-fu-act]');
+      if(ac){ frotaDispMultiAcao(ac.getAttribute('data-fu-act')); return; }
+      const c = e.target.closest && e.target.closest('[data-fu-placa]');
+      if(!c) return;
+      if(window._fuSel && window._fuSel.on){ frotaDispMultiClique(c, e.shiftKey); return; }
+      frotaDispAjuste(c.getAttribute('data-fu-placa'), c.getAttribute('data-fu-data'));
+    };
 
   }catch(e){
     wrap.innerHTML = `<div class="fu-empty" style="color:var(--fu-bad)">Erro ao carregar: ${escapeHtml(e.message)}</div>`;
@@ -21572,6 +21585,105 @@ async function frotaDispRemoverAjuste(placa, data){
     showToast('Ajuste manual removido — o dia volta ao que o sistema registrou','success');
     await renderFrotaDisp();
   }catch(err){ showToast('Erro ao remover o ajuste: '+err.message,'error'); }
+}
+
+// ── Utilização de Frotas Fixas: lançar VÁRIOS dias de um mesmo veículo de uma vez ──
+// Modo "Selecionar vários dias": cada clique marca/desmarca um dia (Shift marca do último clique até este).
+// A seleção é de UM veículo por vez (clicar em outra placa recomeça). Dia que o sistema já registrou (S/P/C)
+// não entra: já conta como utilizado. Grava tipo 'uso' em frota_uso_manual (1 linha por placa e dia), com o
+// mesmo motivo obrigatório, autor e hora do lançamento de um dia só.
+function frotaDispMultiAtualiza(){
+  const s = window._fuSel, wrap = document.getElementById('frota-disp-wrap');
+  if(!s || !wrap) return;
+  wrap.querySelectorAll('.fu-cell.sel').forEach(x => x.classList.remove('sel'));
+  if(s.placa) s.dias.forEach(d => {
+    const c = wrap.querySelector('[data-fu-placa="'+s.placa+'"][data-fu-data="'+d+'"]');
+    if(c) c.classList.add('sel');
+  });
+  const tg = wrap.querySelector('[data-fu-act="toggle"]');
+  if(tg){ tg.textContent = s.on ? 'Sair da seleção' : 'Selecionar vários dias'; tg.classList.toggle('on', !!s.on); }
+  const info = document.getElementById('fu-multi-info');
+  const go = document.getElementById('fu-multi-go'), clr = document.getElementById('fu-multi-clr');
+  if(info){
+    info.textContent = !s.on ? 'Lance a utilização de um veículo em vários dias de uma vez.'
+      : (s.dias.length ? s.placa+': '+s.dias.length+(s.dias.length===1?' dia selecionado':' dias selecionados')
+                       : 'Clique nos dias do veículo (Shift marca do último clique até este). Dias já registrados pelo sistema não entram.');
+  }
+  if(go){ go.style.display = (s.on && s.dias.length) ? '' : 'none'; go.textContent = 'Lançar utilização'+(s.dias.length ? ' ('+s.dias.length+')' : ''); }
+  if(clr) clr.style.display = (s.on && s.dias.length) ? '' : 'none';
+}
+function frotaDispMultiAcao(acao){
+  const s = window._fuSel; if(!s) return;
+  if(acao === 'toggle'){ s.on = !s.on; if(!s.on){ s.placa = null; s.dias = []; s.ultimo = null; } }
+  else if(acao === 'limpar'){ s.placa = null; s.dias = []; s.ultimo = null; }
+  else if(acao === 'lancar'){ if(!s.dias.length){ showToast('Selecione ao menos um dia','warning'); return; } frotaDispMultiModal(); return; }
+  frotaDispMultiAtualiza();
+}
+function frotaDispMultiClique(c, shift){
+  const s = window._fuSel, ctx = window._fuCtx || {}, wrap = document.getElementById('frota-disp-wrap');
+  const placa = c.getAttribute('data-fu-placa'), data = c.getAttribute('data-fu-data');
+  const temSist = d => !!(ctx.auto && ctx.auto[placa] && ctx.auto[placa][d.slice(8,10)]);
+  if(!shift && temSist(data)){ showToast('Esse dia já tem registro do sistema — já conta como utilizado','warning'); return; }
+  if(s.placa !== placa){ s.placa = placa; s.dias = []; s.ultimo = null; }
+  if(shift && s.ultimo){
+    const todas = [...wrap.querySelectorAll('[data-fu-placa="'+placa+'"]')].map(x => x.getAttribute('data-fu-data'));
+    const i = todas.indexOf(s.ultimo), j = todas.indexOf(data);
+    if(i >= 0 && j >= 0){
+      todas.slice(Math.min(i,j), Math.max(i,j)+1).forEach(d => { if(!temSist(d) && s.dias.indexOf(d) < 0) s.dias.push(d); });
+    }
+  } else {
+    const p = s.dias.indexOf(data);
+    if(p >= 0) s.dias.splice(p,1); else s.dias.push(data);
+  }
+  s.ultimo = data;
+  s.dias.sort();
+  if(!s.dias.length) s.placa = null;
+  frotaDispMultiAtualiza();
+}
+function frotaDispMultiModal(){
+  const s = window._fuSel, ctx = window._fuCtx || {}; if(!s || !s.dias.length) return;
+  const e = escapeHtml;
+  const DS = ['dom','seg','ter','qua','qui','sex','sáb'];
+  const jaManual = s.dias.filter(d => ctx.manual && ctx.manual[s.placa] && ctx.manual[s.placa][d.slice(8,10)]).length;
+  const lista = s.dias.map(d => '<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border:1px solid var(--border-med);border-radius:6px;font-size:.76rem">'
+    + e(d.slice(8,10)+'/'+d.slice(5,7)+' '+DS[new Date(d+'T12:00:00').getDay()]) + '</span>').join('');
+  frotaDispFecharAjuste();
+  const ov = document.createElement('div');
+  ov.id = 'fu-aj-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.onclick = ev => { if(ev.target === ov) frotaDispFecharAjuste(); };
+  ov.innerHTML = '<div style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-med);border-radius:14px;width:100%;max-width:480px;padding:20px 22px;box-shadow:0 20px 50px rgba(0,0,0,.5);font-size:.84rem;line-height:1.5">'
+    + '<div style="font-size:1.05rem;font-weight:800;font-family:ui-monospace,Consolas,monospace">'+e(s.placa)+'</div>'
+    + '<div style="color:var(--text-secondary);margin-bottom:12px">Lançar como dia utilizado em '+s.dias.length+(s.dias.length===1?' dia':' dias')+'</div>'
+    + '<div style="margin-bottom:10px">'+lista+'</div>'
+    + '<div style="color:var(--text-secondary);margin-bottom:12px">O veículo rodou, mas o sistema não registrou. Cada dia passa a contar como utilizado e aparece como <b>M</b>.'
+    + (jaManual ? ' <b>'+jaManual+(jaManual===1?' dia já tem':' dias já têm')+' lançamento manual — o motivo será substituído por este.</b>' : '') + '</div>'
+    + '<label style="display:block;font-size:.64rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px">Motivo (obrigatório, vale para todos os dias)</label>'
+    + '<textarea id="fu-aj-motivo" rows="3" maxlength="300" placeholder="Ex.: veículo rodou sem carga lançada no sistema" style="width:100%;box-sizing:border-box;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:.84rem;resize:vertical"></textarea>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px">'
+    + '<button onclick="frotaDispFecharAjuste()" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:600;cursor:pointer">Cancelar</button>'
+    + '<button id="fu-multi-salvar" onclick="frotaDispMultiSalvar()" style="background:var(--red);color:#fff;border:0;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:700;cursor:pointer">Lançar '+s.dias.length+(s.dias.length===1?' dia':' dias')+'</button>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  const ta = document.getElementById('fu-aj-motivo'); if(ta) ta.focus();
+}
+async function frotaDispMultiSalvar(){
+  const s = window._fuSel; if(!s || !s.dias.length) return;
+  const motivo = (document.getElementById('fu-aj-motivo')?.value || '').trim();
+  if(motivo.length < 5){ showToast('Informe o motivo do lançamento (mínimo 5 caracteres)','warning'); return; }
+  const btn = document.getElementById('fu-multi-salvar'); if(btn) btn.disabled = true;
+  const agora = new Date().toISOString();
+  const n = s.dias.length, placa = s.placa;
+  try{
+    await supaFetch('frota_uso_manual?on_conflict=placa,data', {
+      method:'POST',
+      prefer:'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify(s.dias.map(data => ({ placa, data, tipo:'uso', motivo, usuario: USUARIO_LOGADO?.nome || null, atualizado_em: agora })))
+    });
+    frotaDispFecharAjuste();
+    showToast(n+(n===1?' dia lançado':' dias lançados')+' para '+placa,'success');
+    await renderFrotaDisp();
+  }catch(err){ if(btn) btn.disabled = false; showToast('Erro ao lançar os dias: '+err.message,'error'); }
 }
 
 // ── Frota > Status Atual: quadro por situação (Em rota | Disponíveis | Manutenção) ──
@@ -55629,8 +55741,10 @@ async function renderAgendamentos(){
           else tipF+='\nVendido até o fechamento: '+_fmtBRL(fp.ate)+' de '+_fmtBRL(fp.meta)+' ('+fp.pct+'% da meta)\nValor total da carga hoje: '+_fmtBRL(fp.total)+' (carga #'+fp.cargas.join(', #')+')';
           if(comAtr) tipF+='\nFORA DO PRAZO por motivo comercial: o valor não bateu a meta até o fim do dia do fechamento.';
           else if(fp && fp.pct!==null && fp.pct<100 && fp.fech<hoje && _est[a.id]==='ok') tipF+='\nDentro do prazo: a carga saiu no período correto, mesmo com o valor abaixo da meta.';
-          var pctF=(fp && fp.pct!==null)?'<span style="font-size:.62rem;font-weight:800;color:'+(comAtr?'#dc2626':'var(--text-primary)')+';flex-shrink:0">'+fp.pct+'%</span>':'<span style="font-size:.6rem;opacity:.5;flex-shrink:0">—</span>';
-          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+(comAtr?_CHIP.fora:'background:rgba(148,163,184,.14);color:var(--text-secondary)')+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:4px" title="'+escapeHtml(tipF)+'">'
+          var jaSaiu=(_est[a.id]==='ok');   // saiu na data: o chip mostra OK no lugar do %
+          if(jaSaiu) tipF+='\nJá saiu: saída dentro do prazo (OK).';
+          var pctF=jaSaiu?'<span style="font-size:.62rem;font-weight:800;color:#16a34a;flex-shrink:0">OK</span>':(fp && fp.pct!==null)?'<span style="font-size:.62rem;font-weight:800;color:'+(comAtr?'#dc2626':'var(--text-primary)')+';flex-shrink:0">'+fp.pct+'%</span>':'<span style="font-size:.6rem;opacity:.5;flex-shrink:0">—</span>';
+          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+(comAtr?_CHIP.fora:(jaSaiu?_CHIP.ok:'background:rgba(148,163,184,.14);color:var(--text-secondary)'))+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:4px" title="'+escapeHtml(tipF)+'">'
             +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rc+'</span>'
             +pctF
             +'<span style="font-size:.6rem;opacity:.8;flex-shrink:0">↗'+diaSaida+'</span>'
