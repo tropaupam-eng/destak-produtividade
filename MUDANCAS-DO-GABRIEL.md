@@ -21,6 +21,11 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-16, Gabriel: Painel de Indicadores: slide de Erro de conferência e Erro de motorista respeita as datas escolhidas — v4.89.292
+Onde: `index.html`, `_pnHtmlDados` (chaves `erroConferencia` e `erroMotorista`). O card na tela já usava o intervalo de datas escolhido, mas ao gerar a apresentação (e a imagem do slide) o intervalo era ignorado e saía o mês acumulado. Agora o slide usa o mesmo período do card. No deck semanal o corte da semana continua tendo prioridade.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: os demais cards do Painel não têm seletor de data (usam o mês do filtro); só estes dois têm intervalo próprio.
+
 ## 2026-11-12, Gabriel: Ocorrências: "Produto incorreto" em primeiro lugar na lista de motivos — v4.89.288
 Onde: `index.html`, `OCORR_MOTIVOS_PRIMEIROS` (lista nova, hoje `['produto incorreto']`) e `_ocorrOrdenarMotivos`, usadas em `_ocorrCarregarMotivosSelect`: depois de buscar os motivos, dentro de CADA setor os nomes da lista vão primeiro
 (sem diferenciar acento/maiúscula) e o resto segue em ordem alfabética; o cache `_ocorrMotivosCache` já sai ordenado, então o formulário e o modal Editar mostram a mesma ordem. Os setores seguem na mesma ordem e nenhum motivo some.
