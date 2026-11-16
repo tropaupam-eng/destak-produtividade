@@ -10254,7 +10254,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.289';
+const APP_VERSION = '4.89.290';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -55344,6 +55344,32 @@ async function renderAgendamentos(){
   var _est={}; arr.forEach(function(a){ _est[a.id]=_estadoAg(a); });
   // FORA DO PRAZO (pedido do usuário, 2026-11-16): saída cuja data já passou e que ainda não saiu (cinza ou azul) fica vermelha. Só muda a COR/rótulo: os contadores do topo e os cards de ação seguem a situação de antes.
   var _fora={}; arr.forEach(function(a){ var e=_est[a.id]; if((e==='agendada'||e==='formacao') && a.data && a.data<hoje) _fora[a.id]=true; });
+  // % DO VALOR ATÉ O FECHAMENTO (pedido do usuário, 2026-11-16): no Calendário de Fechamento, cada rota mostra quanto da meta da rota
+  // já estava vendido (pedidos da carga com data de pedido até o fim do dia do fechamento, sem cancelados). Só mostra o que o sistema prova:
+  // sem carga ligada, sem pedidos da carga no ERP ou rota sem meta cadastrada = "—".
+  var _fechPct={};
+  try{
+    var _sa=function(t){ return (t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toUpperCase(); };
+    var _metaRota={};
+    ((await supaFetch('rotas?select=nome,valor_padrao&ativo=eq.true',{_quiet:true}))||[]).forEach(function(r){ if(r.nome && Number(r.valor_padrao)>0) _metaRota[_sa(r.nome)]=Number(r.valor_padrao); });
+    var _cargasAg={}, _todasC=[];
+    arr.forEach(function(a){
+      var cs=[]; if(a.carga) cs.push(String(a.carga));
+      (_demLista[_rotaChave(a.rota)+'|'+a.data]||[]).forEach(function(d){ if(d.carga && d.status!=='cancelado') cs.push(String(d.carga)); });
+      cs=[...new Set(cs)]; _cargasAg[a.id]=cs; cs.forEach(function(c){ _todasC.push(c); });
+    });
+    _todasC=[...new Set(_todasC)];
+    var _pedF=await _emLotes(_todasC,100,function(ids){ return supaFetch('pedidos_info_erp?carga_erp=in.('+ids.map(function(i){ return '"'+i+'"'; }).join(',')+')&select=carga_erp,data_pedido,valor,situacao&limit=5000',{_quiet:true}); });
+    var _pedPorC={}; _pedF.forEach(function(p){ if(p.situacao==='CA') return; (_pedPorC[String(p.carga_erp)]=_pedPorC[String(p.carga_erp)]||[]).push(p); });
+    arr.forEach(function(a){
+      var cs=_cargasAg[a.id]||[]; if(!cs.length) return;
+      var fech=_diasUteisAntes(a.data,2), ate=0, total=0, linhas=0;
+      cs.forEach(function(c){ (_pedPorC[c]||[]).forEach(function(p){ var v=Number(p.valor)||0; linhas++; total+=v; if(p.data_pedido && p.data_pedido<=fech) ate+=v; }); });
+      if(!linhas) return;
+      var meta=_metaRota[_sa(a.rota)]||0;
+      _fechPct[a.id]={fech:fech, ate:ate, total:total, meta:meta, pct:meta?Math.round(ate/meta*100):null, cargas:cs};
+    });
+  }catch(e){ console.warn('[Agend] % do fechamento:', e&&e.message); }
   const _saiuFn = a => _est[a.id]==='ok' || _est[a.id]==='atraso';
 
   var _nOk=0,_nAtr=0,_nForm=0,_nSem=0,_nASair=0,_contMot={};
@@ -55594,9 +55620,20 @@ async function renderAgendamentos(){
         itens.forEach(function(item){
           var a=item.a, diaSaida=parseInt(item.saida.slice(8,10));
           var rc=(a.rota||'').length>11?(a.rota||'').slice(0,11)+'…':(a.rota||'');
-          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+'background:rgba(148,163,184,.14);color:var(--text-secondary);border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:3px" title="'+a.rota+' — saída dia '+diaSaida+'">'
-            +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rc+'</span>'
-            +'<span style="font-size:.6rem;opacity:.8">↗'+diaSaida+'</span>'
+          var fp=_fechPct[a.id];
+          var _fd3=function(d){ return d.slice(8,10)+'/'+d.slice(5,7); };
+          var comAtr=!!(fp && fp.pct!==null && fp.pct<100 && fp.fech<hoje && _est[a.id]!=='ok');   // atraso comercial: o fechamento já passou (fim do dia) sem bater a meta, e a carga não saiu no prazo
+          var tipF=a.rota+' — saída dia '+diaSaida+'\nFechamento: '+_fd3(fp?fp.fech:_diasUteisAntes(a.data,2));
+          if(!fp) tipF+='\nSem % apurado: nenhuma carga com pedidos ligada a esta saída.';
+          else if(fp.pct===null) tipF+='\nSem % apurado: a rota não tem meta de valor cadastrada.\nVendido até o fechamento: '+_fmtBRL(fp.ate)+' (carga #'+fp.cargas.join(', #')+')';
+          else tipF+='\nVendido até o fechamento: '+_fmtBRL(fp.ate)+' de '+_fmtBRL(fp.meta)+' ('+fp.pct+'% da meta)\nValor total da carga hoje: '+_fmtBRL(fp.total)+' (carga #'+fp.cargas.join(', #')+')';
+          if(comAtr) tipF+='\nFORA DO PRAZO por motivo comercial: o valor não bateu a meta até o fim do dia do fechamento.';
+          else if(fp && fp.pct!==null && fp.pct<100 && fp.fech<hoje && _est[a.id]==='ok') tipF+='\nDentro do prazo: a carga saiu no período correto, mesmo com o valor abaixo da meta.';
+          var pctF=(fp && fp.pct!==null)?'<span style="font-size:.62rem;font-weight:800;color:'+(comAtr?'#dc2626':'var(--text-primary)')+';flex-shrink:0">'+fp.pct+'%</span>':'<span style="font-size:.6rem;opacity:.5;flex-shrink:0">—</span>';
+          s+='<div style="margin-bottom:3px;'+(_dimRota(a.rota)?'opacity:.22;':'')+(comAtr?_CHIP.fora:'background:rgba(148,163,184,.14);color:var(--text-secondary)')+';border-radius:5px;padding:3px 6px;font-size:.65rem;font-weight:600;display:flex;align-items:center;gap:4px" title="'+escapeHtml(tipF)+'">'
+            +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+rc+'</span>'
+            +pctF
+            +'<span style="font-size:.6rem;opacity:.8;flex-shrink:0">↗'+diaSaida+'</span>'
           +'</div>';
         });
       }
@@ -55649,7 +55686,7 @@ async function renderAgendamentos(){
     +'<span style="margin-left:auto;font-size:.75rem;color:var(--text-muted);background:var(--bg-card2);border:1px solid var(--border);padding:3px 12px;border-radius:20px">2 dias úteis antes da saída</span>'
   +'</div>';
   html+=_mkCal(_fechMap,'fechamento');
-  html+='<div style="font-size:.72rem;color:var(--text-muted);margin-top:10px">Cada chip mostra a rota e o número <strong>↗DD</strong> indica o dia da saída. O fechamento de vendas deve ocorrer nesta data.</div>';
+  html+='<div style="font-size:.72rem;color:var(--text-muted);margin-top:10px">Cada chip mostra a rota e o número <strong>↗DD</strong> indica o dia da saída. O fechamento de vendas deve ocorrer nesta data. A <strong>porcentagem</strong> é o valor vendido até o fim do dia do fechamento sobre a meta da rota. Fica em <strong style="color:#dc2626">vermelho</strong> (fora do prazo por motivo comercial) quando o fechamento passou sem bater a meta, exceto se a carga saiu no período correto. “—” = sem carga com pedidos ligada, ou rota sem meta.</div>';
   html+='</div>';
 
   container.innerHTML=html;
