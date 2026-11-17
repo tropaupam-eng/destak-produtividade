@@ -10258,7 +10258,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.293';
+const APP_VERSION = '4.89.294';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18679,7 +18679,7 @@ function abrirModalNovaDemanda(presetRota, presetData){
   // Setar data de hoje (ou a data pré-selecionada na agenda)
   document.getElementById('exp-data').value = presetData || hojeDataBRT();
   // Limpar campos
-  ['exp-motorista','exp-veiculo','exp-rota'].forEach(id=>{
+  ['exp-motorista','exp-veiculo','exp-rota','exp-carga'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value='';
   });
   document.getElementById('exp-valor-meta').value='';
@@ -18714,7 +18714,8 @@ async function criarDemanda(){
   const rota      = normalizarRota((document.getElementById('exp-rota').value||'').trim());
   const data      = document.getElementById('exp-data').value;
   const valorMeta = parseFloat(document.getElementById('exp-valor-meta')?.value)||0;
-  const carga     = null; // Carga será adicionada depois
+  const cargaTxt  = (document.getElementById('exp-carga')?.value||'').trim();   // opcional: nº da carga do ERP já na criação
+  const carga     = cargaTxt ? (parseInt(cargaTxt,10)||null) : null;
   const clientes  = 0;
   const pedidos   = 0;
   const valor     = 0;
@@ -18738,6 +18739,24 @@ async function criarDemanda(){
     return;
   }
 
+  // Nº da carga informado: mesma checagem do Vincular Carga (não repetir número na unidade; carga cancelada não conta)
+  if(cargaTxt){
+    if(!carga || carga<1){ showMsgExp('Nº da carga inválido'); return; }
+    const unidadeCheck = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
+    if(unidadeCheck){
+      let conflito = [];
+      try{
+        conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${carga}&unidade=eq.${encodeURIComponent(unidadeCheck)}&status=neq.cancelado`) || [];
+      }catch(e){ showMsgExp('Não deu para conferir se a carga '+carga+' já existe. Tente de novo.','warning'); return; }
+      if(conflito.length){
+        showMsgExp('⚠️ Carga '+carga+' já existe na unidade '+unidadeCheck+' (motorista: '+(conflito[0].motorista||'—')+')','warning');
+        return;
+      }
+      // libera o número de qualquer demanda cancelada que ainda o segure (nunca duas linhas com a mesma carga)
+      await supaFetch(`demandas_rota?carga=eq.${carga}&status=eq.cancelado`,{ method:'PATCH', body:JSON.stringify({carga:null}), prefer:'return=minimal' }).catch(()=>{});
+    }
+  }
+
   // Motorista e veículo opcionais — se não informados, marcam como "A DEFINIR"
   const motoristaSalvar = motorista || (ehVeiculoFrete(veiculo) ? '' : 'A DEFINIR MOTORISTA');
   const veiculoSalvar   = veiculo || 'A DEFINIR VEÍCULO';
@@ -18752,26 +18771,38 @@ async function criarDemanda(){
   }catch(e){}
 
   try{
-    await supaFetch('demandas_rota',{
+    const criada = await supaFetch('demandas_rota',{
       method:'POST',
       body: JSON.stringify({
         motorista: motoristaSalvar, veiculo: veiculoSalvar, rota,
         data_saida: data,
         valor_meta: valorMeta,
+        ...(carga ? {carga} : {}),
         status: 'formacao',
         usuario_id: USUARIO_LOGADO?.id||null,
         unidade: USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||null
       })
     });
 
-    showMsgExp('✅ Pré-carga criada!','ok');
+    // Carga já informada: traz quantidade de pedidos e valor do que o ERP já mandou (mesma conta do Vincular Carga)
+    if(carga && criada && criada[0] && criada[0].id){
+      try{
+        const agregado = await supaFetch(`base_data?select=valor&carga=eq.${carga}`);
+        if(agregado && agregado.length){
+          const valorTotal = agregado.reduce((soma, r) => soma + (Number(r.valor) || 0), 0);
+          await supaFetch(`demandas_rota?id=eq.${criada[0].id}`,{ method:'PATCH', body:JSON.stringify({ quantidade_pedidos: agregado.length, valor_total: valorTotal }) });
+          _checarAutoAvancoFormacao(criada[0].id, valorMeta, valorTotal).catch(()=>{});
+        }
+      }catch(_){}
+    }
+    showMsgExp(carga ? '✅ Pré-carga criada com a carga '+carga+'!' : '✅ Pré-carga criada!','ok');
     // Se a rota/data corresponde a um agendamento, marca como já lançado
     // (mesmo efeito do botão "Adicionar à Pré-Carga" do popup de agenda)
     supaFetch('agendamentos_rotas?rota=eq.'+encodeURIComponent(rota)+'&data=eq.'+data, {
       method:'PATCH', body: JSON.stringify({lancado:true}), prefer:'return=minimal'
     }).catch(()=>{});
     // Limpar formulário
-    ['exp-motorista','exp-veiculo','exp-rota','exp-valor-meta'].forEach(id=>{
+    ['exp-motorista','exp-veiculo','exp-rota','exp-valor-meta','exp-carga'].forEach(id=>{
       const el = document.getElementById(id); if(el) el.value='';
     });
     // Processar planilha se foi anexada
@@ -63813,6 +63844,14 @@ function _cftvRenderTable(data){
           <input type="number" id="exp-valor-meta" placeholder="0,00" step="0.01"
             style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:11px 14px;font-size:.92rem;outline:none;box-sizing:border-box;color:#111"/>
           <span style="font-size:.71rem;color:#9ca3af;display:block;margin-top:3px">Preenchido automaticamente pela rota</span>
+        </div>
+
+        <!-- Nº da carga (opcional): já vincula a carga do ERP na criação -->
+        <div style="grid-column:1/-1">
+          <label style="font-size:.73rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="hash" style="width:12px;height:12px;vertical-align:-2px"></span> Nº da Carga <span style="font-weight:400;color:#9ca3af;text-transform:none;font-size:.7rem">(opcional — pode vincular depois)</span></label>
+          <input type="number" id="exp-carga" min="1" step="1" placeholder="Ex.: 16553"
+            style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:11px 14px;font-size:.92rem;outline:none;box-sizing:border-box;color:#111"/>
+          <span style="font-size:.71rem;color:#9ca3af;display:block;margin-top:3px">Se já tiver o número da carga do ERP, informe aqui: ela já entra vinculada, com os pedidos e o valor.</span>
         </div>
 
       </div>
