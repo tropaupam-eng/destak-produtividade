@@ -10258,7 +10258,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.294';
+const APP_VERSION = '4.89.295';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18743,13 +18743,12 @@ async function criarDemanda(){
   if(cargaTxt){
     if(!carga || carga<1){ showMsgExp('Nº da carga inválido'); return; }
     const unidadeCheck = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
-    if(unidadeCheck){
-      let conflito = [];
-      try{
-        conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${carga}&unidade=eq.${encodeURIComponent(unidadeCheck)}&status=neq.cancelado`) || [];
-      }catch(e){ showMsgExp('Não deu para conferir se a carga '+carga+' já existe. Tente de novo.','warning'); return; }
-      if(conflito.length){
-        showMsgExp('⚠️ Carga '+carga+' já existe na unidade '+unidadeCheck+' (motorista: '+(conflito[0].motorista||'—')+')','warning');
+    {
+      let conflito = null;
+      try{ conflito = await _cargaConflito(carga, unidadeCheck, null); }
+      catch(e){ showMsgExp('Não deu para conferir se a carga '+carga+' já existe. Tente de novo.','warning'); return; }
+      if(conflito){
+        showMsgExp('⚠️ Carga '+carga+' já existe'+((conflito.unidade||unidadeCheck)?' na unidade '+(conflito.unidade||unidadeCheck):'')+' (motorista: '+(conflito.motorista||'—')+')','warning');
         return;
       }
       // libera o número de qualquer demanda cancelada que ainda o segure (nunca duas linhas com a mesma carga)
@@ -25594,6 +25593,15 @@ function abrirVincularCarga(demandaId){
   if(btn){ btn.textContent='🚛 Lançar Planilha'; btn.disabled=false; btn.style.background='linear-gradient(135deg,#059669,#10b981)'; }
 }
 
+// Procura OUTRA carga ativa (não cancelada) com o mesmo número. Unidade vazia em qualquer dos lados também conta como conflito:
+// antes a checagem era pulada quando a unidade de quem lançava estava vazia, e o mesmo número entrava em duas cargas.
+// Erro de consulta NÃO libera: quem chama deve barrar o vínculo.
+async function _cargaConflito(carga, unidade, excluirId){
+  const rows = await supaFetch(`demandas_rota?select=id,motorista,status,unidade&carga=eq.${carga}&status=neq.cancelado`) || [];
+  const u = (unidade||'').trim();
+  return rows.find(r => r.id!==excluirId && (!u || !(r.unidade||'').trim() || (r.unidade||'').trim()===u)) || null;
+}
+
 async function vincularSoCarga(){
   const demandaId = document.getElementById('modal-vincular-carga').dataset.demandaId;
   const carga = parseInt(document.getElementById('vc-carga').value)||null;
@@ -25618,11 +25626,17 @@ async function vincularSoCarga(){
     // com ele cancelado, pra nunca sobrar duas linhas com a mesma carga.
     const demAtual = _demandasCache.find(d=>d.id===demandaId);
     const unidadeCheck = (demAtual?.unidade||USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
-    if(unidadeCheck){
-      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${carga}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}&status=neq.cancelado`).catch(()=>[]);
-      if(conflito && conflito.length){
+    {
+      let conflito = null;
+      try{ conflito = await _cargaConflito(carga, unidadeCheck, demandaId); }
+      catch(e){
         if(btn){ btn.textContent='🔗 Vincular Carga'; btn.disabled=false; }
-        showToast(`⚠️ Carga ${carga} já existe na unidade ${unidadeCheck} (motorista: ${conflito[0].motorista||'—'})`,'warning');
+        showToast('Não deu para conferir se a carga '+carga+' já existe. Tente de novo.','warning');
+        return;
+      }
+      if(conflito){
+        if(btn){ btn.textContent='🔗 Vincular Carga'; btn.disabled=false; }
+        showToast(`⚠️ Carga ${carga} já existe${(conflito.unidade||unidadeCheck)?' na unidade '+(conflito.unidade||unidadeCheck):''} (motorista: ${conflito.motorista||'—'})`,'warning');
         return;
       }
       await supaFetch(`demandas_rota?carga=eq.${carga}&status=eq.cancelado&id=neq.${demandaId}`,{
@@ -25705,6 +25719,15 @@ async function salvarVincularCarga(){
     const demanda = await supaFetch(`demandas_rota?id=eq.${demandaId}&select=*`);
     if(!demanda||!demanda[0]){ showToast('Demanda não encontrada','warning'); return; }
     const d = demanda[0];
+
+    // Mesmo número de carga não pode ir para duas cargas ativas (esta tela não checava nada)
+    {
+      const _reset = ()=>{ if(btn){ btn.textContent='🔗 Vincular e Salvar'; btn.disabled=false; } if(feedback){ feedback.textContent=''; feedback.style.display='none'; } };
+      let _cf = null;
+      try{ _cf = await _cargaConflito(carga, d.unidade||USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'', demandaId); }
+      catch(e){ _reset(); showToast('Não deu para conferir se a carga '+carga+' já existe. Tente de novo.','warning'); return; }
+      if(_cf){ _reset(); showToast(`⚠️ Carga ${carga} já existe${_cf.unidade?' na unidade '+_cf.unidade:''} (motorista: ${_cf.motorista||'—'})`,'warning'); return; }
+    }
 
     // Processar planilha PRIMEIRO para ter os dados reais antes de criar o lançamento
     let rotaFinal    = d.rota || '';
@@ -42438,14 +42461,16 @@ async function editarNumeroCarga(demandaId, cargaAtual){
     const unidadeExistente = (demAtualRow?.[0]?.unidade||'').trim();
     const valorMetaDemanda  = demAtualRow?.[0]?.valor_meta;
     const unidadeCheck = unidadeExistente || (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
-    if(unidadeCheck){
+    {
       // Cargas canceladas não contam como conflito — o número está livre pra
       // ser reaproveitado por uma pré-carga nova. Sem esse filtro, uma carga
       // cancelada ficava "travando" o número pra sempre, mesmo já removida
       // de toda a Expedição (o board só lista status=not.in(concluido,cancelado)).
-      const conflito = await supaFetch(`demandas_rota?select=id,motorista,status&carga=eq.${numNovo}&unidade=eq.${encodeURIComponent(unidadeCheck)}&id=neq.${demandaId}&status=neq.cancelado`).catch(()=>[]);
-      if(conflito && conflito.length){
-        showToast(`⚠️ Carga ${numNovo} já existe na unidade ${unidadeCheck} (motorista: ${conflito[0].motorista||'—'})`,'warning');
+      let conflito = null;
+      try{ conflito = await _cargaConflito(numNovo, unidadeCheck, demandaId); }
+      catch(e){ showToast('Não deu para conferir se a carga '+numNovo+' já existe. Tente de novo.','warning'); return; }
+      if(conflito){
+        showToast(`⚠️ Carga ${numNovo} já existe${(conflito.unidade||unidadeCheck)?' na unidade '+(conflito.unidade||unidadeCheck):''} (motorista: ${conflito.motorista||'—'})`,'warning');
         return;
       }
       // Libera o número de qualquer demanda cancelada que ainda o segure —
