@@ -21,6 +21,11 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-18, Gabriel: Dashboard Devolução: clicar num dia do gráfico de valor mostra os pedidos dele embaixo — v4.89.299
+Onde: `index.html`. Clique num ponto do gráfico "Valor devolvido (R$) por dia" (ou semana) abre, dentro do mesmo card, a lista dos pedidos daquele ponto (pedido, rota, cliente, motivo, total/parcial, valor), respeitando período, setor, motivo e vendedor; o valor total da lista é o mesmo do ponto. Novos: `_devolPintarPedidosDia`, `devolSelecionarDia`, `_devolValorOcorr`, `_devolChaveGran` (o helper `_devolValorPorPeriodo` passou a usá-los); `carregarDashDevolucao` busca também `cliente`. Corrigido o plural da nota ("devoluções totais usam"). Só leitura.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: o clique redesenha o dashboard inteiro (padrão já usado nos outros gráficos). Trocar Dia/Semana ou o período fecha a lista.
+
 ## 2026-11-18, Gabriel: Dashboard Devolução: gráfico de linhas passa a mostrar o valor devolvido (R$) por dia/semana — v4.89.298
 Onde: `index.html`, gráfico "Devoluções por tipo de unidade" virou "Valor devolvido (R$) por dia" (bloco no fim de `renderDashDevolucao` + helper `_devolValorPorPeriodo`). Soma o `valor_devolvido` de cada ocorrência; devolução TOTAL sem valor gravado usa o valor do pedido (`base_data.valor`, buscado só desses pedidos), contada à parte na nota; ocorrência sem valor nenhum fica de fora e a nota diz quantas. `carregarDashDevolucao` busca também `tipo_devolucao` e `valor_devolvido`, e deixou de buscar `pedidos_itens_erp` (as referências de unidade só serviam ao gráfico antigo). Só leitura. Mantidos Dia/Semana e o filtro por vendedor. O gráfico por tipo de unidade (quantidade) deixou de existir; para voltar, `git revert` deste commit.
 Como desfazer: `git revert` do commit desta entrada.

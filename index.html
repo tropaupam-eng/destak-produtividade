@@ -3678,6 +3678,7 @@ body.light-theme{
       <div id="devol-msg-linha" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
       <div id="devol-wrap-linha" style="position:relative;height:320px"><canvas id="devol-chart-linha" role="img" aria-label="Gráfico de linhas: valor devolvido em reais por dia"></canvas></div>
       <div id="devol-nota-linha" style="font-size:.74rem;color:var(--text-muted);margin-top:10px"></div>
+      <div id="devol-lin-det" style="display:none;margin-top:16px;border-top:1px solid var(--border);padding-top:14px"></div>
     </div>
     <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red);margin-top:20px">
       <div id="devol-det-titulo" style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Detalhe das ocorrências</div>
@@ -10268,7 +10269,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.298';
+const APP_VERSION = '4.89.299';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -27846,6 +27847,7 @@ let _devolRefPorPedido = {}; // pedido -> [{d: descrição em maiúsculas, r: re
 let _devolPedidosRef = new Set();   // pedidos cujas referências já foram buscadas (cache da sessão: não busca de novo)
 let _devolGranul = 'dia';    // gráfico de valor (R$): 'dia' = um ponto por dia; 'sem' = um ponto por semana
 let _devolValPedido = {};    // pedido -> valor do pedido (R$), só das devoluções totais sem valor_devolvido gravado
+let _devolDiaSel = null;     // dia (ou início da semana) clicado no gráfico de valor: mostra os pedidos dele embaixo
 // Tipo de unidade de venda a partir da referência do item no ERP: ela começa com o tipo da embalagem
 // ("CX C/16PCT" = caixa, "SC C/20KG" = saco, "FD C/2PCT" = fardo...). Mesmas regras da aba Regras do Excel
 // "Devolucoes_por_tipo_de_unidade". Trecho que não está aqui = "Não classificado" (cai em "Outros" no gráfico).
@@ -27863,7 +27865,8 @@ function _devolTipoUnidade(ref){
 }
 // Os 4 tipos que somam ~99% da quantidade devolvida têm linha própria (cor fixa); os demais entram em "Outros".
 const DEVOL_SERIES_UNID = ['Saco', 'Caixa', 'Pacote', 'Fardo'];
-function devolGranul(g){ _devolGranul = (g==='sem') ? 'sem' : 'dia'; renderDashDevolucao(); }
+function devolGranul(g){ _devolGranul = (g==='sem') ? 'sem' : 'dia'; _devolDiaSel = null; renderDashDevolucao(); }
+function devolSelecionarDia(d){ _devolDiaSel = (d == null || _devolDiaSel === d) ? null : d; renderDashDevolucao(); }
 let _devolPedVend = {};      // pedido -> código do vendedor (só dos pedidos com os 3 motivos de "Erros por vendedor")
 let _devolNomeVend = {};     // código do vendedor -> nome
 // Motivos que entram em "Erros por vendedor" (comparados por nome, sem diferenciar maiúsculas/espaços).
@@ -27903,7 +27906,7 @@ let _devolPeriodoTimer = null;
 function devolPeriodoMudou(){ clearTimeout(_devolPeriodoTimer); _devolPeriodoTimer = setTimeout(carregarDashDevolucao, 300); }
 
 async function carregarDashDevolucao(){
-  _devolSetorSel = null; _devolVendSel = null; _devolMotivoSel = null;
+  _devolSetorSel = null; _devolVendSel = null; _devolMotivoSel = null; _devolDiaSel = null;
   const { ini: periodoIni, fim: periodoFim } = _devolPeriodoNormalizado();
   if(periodoIni > periodoFim){ renderDashDevolucao(); return; }      // intervalo invertido: a tela avisa, nada é buscado
   const msg = document.getElementById('devol-msg');
@@ -27915,7 +27918,7 @@ async function carregarDashDevolucao(){
   try{
     // só o período escolhido (dia inteiro, fuso de Brasília, nas duas pontas)
     const filtroData = '&criado_em=gte.' + encodeURIComponent(periodoIni + 'T00:00:00-03:00') + '&criado_em=lte.' + encodeURIComponent(periodoFim + 'T23:59:59.999-03:00');
-    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,rota,conferente,quantidade,produto,produto_enviado_codigo,produto_enviado_descricao,produto_enviado_quantidade,tipo_devolucao,valor_devolvido,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000' + filtroData) || [];
+    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,rota,cliente,conferente,quantidade,produto,produto_enviado_codigo,produto_enviado_descricao,produto_enviado_quantidade,tipo_devolucao,valor_devolvido,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000' + filtroData) || [];
     const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
     _devolMotivos = { id:{}, nome:{} };
     motivos.forEach(m=>{
@@ -27997,26 +28000,58 @@ function devolSelecionarMotivo(nome){ _devolMotivoSel = (nome == null || _devolM
 function devolSelecionarMotivoIdx(i){ const n = _devolMotivoChaves[i]; if(n != null) devolSelecionarMotivo(n); }
 function devolLimparSetor(){ _devolSetorSel = null; _devolMotivoSel = null; renderDashDevolucao(); }
 
-// Soma o valor devolvido por dia (ou semana, domingo a sábado). Valor = valor_devolvido gravado na ocorrência; devolução TOTAL sem
-// valor gravado usa o valor do pedido (valPedido: pedido -> R$); sem nenhum dos dois, a ocorrência fica de fora (semValor).
+// Valor devolvido de UMA ocorrência: o valor_devolvido gravado; devolução TOTAL sem valor gravado usa o valor do pedido
+// (valPedido: pedido -> R$; est:true); sem nenhum dos dois devolve null.
+function _devolValorOcorr(o, valPedido){
+  if(o.valor_devolvido != null && Number.isFinite(Number(o.valor_devolvido))) return { v:Number(o.valor_devolvido), est:false };
+  if(o.tipo_devolucao === 'total'){ const vp = (valPedido || {})[String(o.pedido || '').trim()]; if(vp != null && Number.isFinite(Number(vp))) return { v:Number(vp), est:true }; }
+  return null;
+}
+// Dia da ocorrência -> chave do ponto do gráfico: o próprio dia, ou o domingo da semana (domingo a sábado).
+function _devolChaveGran(dia, gran){
+  if(gran === 'dia') return dia;
+  const t = Date.parse(dia + 'T00:00:00Z'), dow = new Date(t).getUTCDay();
+  return new Date(t - dow*86400000).toISOString().slice(0,10);
+}
+// Soma o valor devolvido por dia (ou semana). Ocorrência sem valor fica de fora (semValor); data impossível também (dataInvalida).
 function _devolValorPorPeriodo(dados, gran, valPedido){
-  const chaveGran = dia => {
-    if(gran === 'dia') return dia;
-    const t = Date.parse(dia + 'T00:00:00Z'), dow = new Date(t).getUTCDay();
-    return new Date(t - dow*86400000).toISOString().slice(0,10);
-  };
   const porPeriodo = {}; let semValor = 0, dataInvalida = 0, estimadas = 0, estimadasValor = 0;
   dados.forEach(o => {
     if(!(o.dia >= '2000-01-01')){ dataInvalida++; return; }
-    let v = null, est = false;
-    if(o.valor_devolvido != null && Number.isFinite(Number(o.valor_devolvido))) v = Number(o.valor_devolvido);
-    else if(o.tipo_devolucao === 'total'){ const vp = (valPedido || {})[String(o.pedido || '').trim()]; if(vp != null && Number.isFinite(Number(vp))){ v = Number(vp); est = true; } }
-    if(v == null){ semValor++; return; }
-    const p = porPeriodo[chaveGran(o.dia)] || (porPeriodo[chaveGran(o.dia)] = { v:0, est:0, n:0 });
-    p.v += v; p.n++;
-    if(est){ p.est += v; estimadas++; estimadasValor += v; }
+    const r = _devolValorOcorr(o, valPedido);
+    if(!r){ semValor++; return; }
+    const k = _devolChaveGran(o.dia, gran);
+    const p = porPeriodo[k] || (porPeriodo[k] = { v:0, est:0, n:0 });
+    p.v += r.v; p.n++;
+    if(r.est){ p.est += r.v; estimadas++; estimadasValor += r.v; }
   });
   return { porPeriodo, semValor, dataInvalida, estimadas, estimadasValor: Math.round(estimadasValor * 100) / 100 };
+}
+// Pedidos do dia (ou semana) clicado no gráfico de valor, embaixo do gráfico. Usa os MESMOS dados do gráfico (período, setor, motivo
+// e vendedor já aplicados). Inclui as ocorrências do dia sem valor gravado (valor "—"), pra a lista de pedidos ficar completa.
+function _devolPintarPedidosDia(dados, tituloDe){
+  const box = document.getElementById('devol-lin-det'); if(!box) return;
+  if(!_devolDiaSel){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  const fmtBRL = n => Number(n).toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
+  const rows = dados.filter(o => o.dia >= '2000-01-01' && _devolChaveGran(o.dia, _devolGranul) === _devolDiaSel).map(o => ({ o, r:_devolValorOcorr(o, _devolValPedido) }));
+  rows.sort((x, y) => (y.r ? y.r.v : -1) - (x.r ? x.r.v : -1) || String(x.o.pedido).localeCompare(String(y.o.pedido)));
+  const total = Math.round(rows.reduce((s, x) => s + (x.r ? x.r.v : 0), 0) * 100) / 100;
+  const semVal = rows.filter(x => !x.r).length, estim = rows.filter(x => x.r && x.r.est).length;
+  const th = t => '<th style="text-align:left;padding:8px 10px;font-size:.72rem;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);background:var(--bg-card);position:sticky;top:0;white-space:nowrap">' + t + '</th>';
+  const td = (t, ex) => '<td style="padding:7px 10px;border-top:1px solid var(--border);font-size:.82rem;vertical-align:top;' + (ex || '') + '">' + t + '</td>';
+  const vazio = '<span style="color:var(--text-muted)">—</span>';
+  const mostraDia = _devolGranul !== 'dia';
+  const linhas = rows.map(({ o, r }) => '<tr>' + (mostraDia ? td(_devolDiaBR(o.dia), 'white-space:nowrap') : '') + td(escapeHtml(o.pedido || ''), 'white-space:nowrap;font-weight:700') + td(escapeHtml(o.rota || '') || vazio) + td(escapeHtml(o.cliente || '') || vazio)
+    + td(escapeHtml(String(o.motivo_nome || '').trim() || 'Sem motivo')) + td(o.tipo_devolucao === 'total' ? 'Total' : (o.tipo_devolucao === 'parcial' ? 'Parcial' : (escapeHtml(o.tipo_devolucao || '') || vazio)))
+    + td(r ? '<b>' + escapeHtml(fmtBRL(r.v)) + '</b>' + (r.est ? ' <span style="color:var(--text-muted);font-size:.72rem">(valor do pedido)</span>' : '') : vazio, 'text-align:right;white-space:nowrap') + '</tr>').join('');
+  box.style.display = '';
+  box.innerHTML = '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
+    + '<div><div style="font-size:.95rem;font-weight:700;color:var(--text-primary)">Pedidos de ' + escapeHtml(tituloDe(_devolDiaSel)) + '</div>'
+    + '<div style="font-size:.78rem;color:var(--text-muted);margin-top:2px">' + rows.length + ' ocorrência' + (rows.length === 1 ? '' : 's') + ' · ' + escapeHtml(fmtBRL(total)) + ' (o mesmo valor do ponto no gráfico) · segue os filtros de período, setor, motivo e vendedor.'
+    + (estim ? ' ' + estim + (estim === 1 ? ' usa' : ' usam') + ' o valor do pedido (devolução total sem valor gravado).' : '') + (semVal ? ' ' + semVal + ' sem valor gravado.' : '') + '</div></div>'
+    + '<button type="button" onclick="devolSelecionarDia(null)" title="Fecha a lista de pedidos" style="background:var(--bg-hover);border:1px solid var(--border-med);border-radius:6px;padding:3px 10px;font-size:.74rem;font-weight:700;color:var(--text-primary);cursor:pointer;white-space:nowrap">Fechar</button></div>'
+    + '<div style="max-height:380px;overflow:auto;border:1px solid var(--border);border-radius:8px"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+    + (mostraDia ? th('Data') : '') + th('Pedido') + th('Rota') + th('Cliente') + th('Motivo') + th('Devolução') + th('Valor (R$)') + '</tr></thead><tbody>' + linhas + '</tbody></table></div>';
 }
 
 // ── Detalhe das ocorrências, por tipo de motivo (pedido do Gabriel, 2026-11-18) ──
@@ -28346,7 +28381,7 @@ function renderDashDevolucao(){
   [['devol-gran-dia','dia'],['devol-gran-sem','sem']].forEach(([id,g]) => { const b = document.getElementById(id); if(b){ b.style.background = _devolGranul===g ? 'var(--bg-card2)' : 'transparent'; b.style.color = _devolGranul===g ? 'var(--text-primary)' : 'var(--text-secondary)'; } });
   const notas = [];
   if(agr.semValor) notas.push(agr.semValor + ' ocorrência' + (agr.semValor===1?'':'s') + ' sem valor gravado não entra' + (agr.semValor===1?'':'m') + ' (devolução parcial antiga, sem o valor dos produtos)');
-  if(agr.estimadas) notas.push(agr.estimadas + ' devolução' + (agr.estimadas===1?' total usa':'ões totais usam') + ' o valor do pedido (R$ ' + agr.estimadasValor.toLocaleString('pt-BR', { minimumFractionDigits:2, maximumFractionDigits:2 }) + ')');
+  if(agr.estimadas) notas.push(agr.estimadas + (agr.estimadas===1?' devolução total usa':' devoluções totais usam') + ' o valor do pedido (R$ ' + agr.estimadasValor.toLocaleString('pt-BR', { minimumFractionDigits:2, maximumFractionDigits:2 }) + ')');
   if(agr.dataInvalida) notas.push(agr.dataInvalida + ' ocorrência' + (agr.dataInvalida===1?'':'s') + ' com data inválida fora do gráfico');
   if(!chaves.length){
     if(wrapLinha) wrapLinha.style.display = 'none';
@@ -28355,6 +28390,7 @@ function renderDashDevolucao(){
     if(subLinha) subLinha.textContent = '';
     if(notaLinha) notaLinha.textContent = notas.join(' · ');
     if(_devolCharts.linha){ _devolCharts.linha.destroy(); _devolCharts.linha = null; }
+    _devolDiaSel = null; _devolPintarPedidosDia(dados, () => '');
   } else {
     if(wrapLinha) wrapLinha.style.display = '';
     if(msgLinha) msgLinha.style.display = 'none';
@@ -28368,12 +28404,13 @@ function renderDashDevolucao(){
     const fmtDiaCompleto = d => d.slice(8,10) + '/' + d.slice(5,7) + '/' + d.slice(0,4);
     const fimSemana = d => new Date(Date.parse(d + 'T00:00:00Z') + 6*86400000).toISOString().slice(0,10);
     const tituloDe = d => _devolGranul === 'dia' ? fmtDiaCompleto(d) : 'Semana de ' + fmtDia(d) + ' a ' + fmtDiaCompleto(fimSemana(d));
+    if(_devolDiaSel && !lista.includes(_devolDiaSel)) _devolDiaSel = null;      // o dia clicado saiu do período/filtros atuais
     const valores = lista.map(d => porPeriodo[d] ? Math.round(porPeriodo[d].v * 100) / 100 : 0);
     const total = Math.round(valores.reduce((s, v) => s + v, 0) * 100) / 100;
     const nOcorr = lista.map(d => porPeriodo[d] ? porPeriodo[d].n : 0);
     const nTot = nOcorr.reduce((s, n) => s + n, 0);
     const unidadeTempo = _devolGranul === 'dia' ? 'dia' : 'semana';
-    if(subLinha) subLinha.textContent = fmtBRL(total) + ' devolvidos em ' + chaves.length + ' ' + unidadeTempo + (chaves.length===1?'':'s') + ' com devolução (' + nTot + ' ocorrência' + (nTot===1?'':'s') + ').';
+    if(subLinha) subLinha.textContent = fmtBRL(total) + ' devolvidos em ' + chaves.length + ' ' + unidadeTempo + (chaves.length===1?'':'s') + ' com devolução (' + nTot + ' ocorrência' + (nTot===1?'':'s') + '). Clique num ponto para ver os pedidos.';
     if(legLinha) legLinha.innerHTML = '<span style="display:inline-flex;align-items:center;gap:7px;font-size:.8rem;color:var(--text-secondary)"><span style="width:18px;height:3px;border-radius:2px;background:' + cores[0] + '"></span><span style="color:var(--text-primary);font-weight:700">Valor devolvido</span><span>' + escapeHtml(fmtBRL(total)) + '</span></span>';
     if(notaLinha) notaLinha.textContent = notas.join(' · ');
 
@@ -28396,8 +28433,10 @@ function renderDashDevolucao(){
       const poucosPontos = lista.length <= 120;
       _devolCharts.linha = new Chart(canvasL, {
         type:'line',
-        data:{ labels:lista.map(fmtDia), datasets:[{ label:'Valor devolvido', data:valores, borderColor:cores[0], backgroundColor:cores[0], borderWidth:2, tension:0, pointRadius:poucosPontos?3:0, pointHoverRadius:6, pointBackgroundColor:cores[0], pointBorderColor:superficie, pointBorderWidth:1 }] },
+        data:{ labels:lista.map(fmtDia), datasets:[{ label:'Valor devolvido', data:valores, borderColor:cores[0], backgroundColor:cores[0], borderWidth:2, tension:0, pointRadius:lista.map(d => d === _devolDiaSel ? 7 : (poucosPontos ? 3 : 0)), pointHoverRadius:6, pointBackgroundColor:lista.map(d => d === _devolDiaSel ? tinta : cores[0]), pointBorderColor:superficie, pointBorderWidth:1 }] },
         options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false },
+          onClick:(ev, els) => { if(els && els.length){ const d = lista[els[0].index]; setTimeout(() => devolSelecionarDia(d), 0); } },   // redesenha fora do clique do gráfico
+          onHover:(ev, els) => { const c = ev && ev.native && ev.native.target; if(c) c.style.cursor = (els && els.length) ? 'pointer' : 'default'; },
           layout:{ padding:{ top:24, right:12 } },
           scales:{
             x:{ ticks:{ color:tintaSec, font:{size:11}, maxRotation:0, autoSkip:true, maxTicksLimit:14 }, grid:{ display:false }, border:{ color:grade } },
@@ -28413,6 +28452,7 @@ function renderDashDevolucao(){
         plugins:[rotuloPico]
       });
     }
+    _devolPintarPedidosDia(dados, tituloDe);
   }
 }
 
