@@ -2578,6 +2578,10 @@ body.light-theme{
       Todas
     </button>
     <span id="l-ocorr-total-label" style="font-size:.8rem;color:var(--text-muted);margin-left:auto"></span>
+    <button type="button" id="l-ocorr-exportar" onclick="exportarOcorrenciasXLSX()" title="Baixa todas as ocorrências (e os produtos de cada uma) em Excel"
+      style="background:var(--bg-card2);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:6px 14px;font-size:.82rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px">
+      <span data-feather="download" style="width:13px;height:13px"></span>Exportar Excel
+    </button>
   </div>
   <div id="l-ocorrencias-lista">
     <div style="text-align:center;padding:40px;color:var(--text-muted);font-size:.9rem">Carregando...</div>
@@ -3674,6 +3678,12 @@ body.light-theme{
       <div id="devol-msg-linha" style="display:none;text-align:center;padding:30px 10px;color:var(--text-muted);font-size:.85rem"></div>
       <div id="devol-wrap-linha" style="position:relative;height:320px"><canvas id="devol-chart-linha" role="img" aria-label="Gráfico de linhas: devoluções por tipo de unidade"></canvas></div>
       <div id="devol-nota-linha" style="font-size:.74rem;color:var(--text-muted);margin-top:10px"></div>
+    </div>
+    <div style="background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red);margin-top:20px">
+      <div id="devol-det-titulo" style="font-size:1.05rem;font-weight:700;color:var(--text-primary)">Detalhe das ocorrências</div>
+      <div id="devol-det-sub" style="font-size:.78rem;color:var(--text-muted);margin:2px 0 12px"></div>
+      <div id="devol-det-corpo" style="max-height:440px;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
+      <div id="devol-det-nota" style="font-size:.74rem;color:var(--text-muted);margin-top:8px"></div>
     </div>
   </div>
 </div></div>
@@ -10258,7 +10268,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.296';
+const APP_VERSION = '4.89.297';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -27903,7 +27913,7 @@ async function carregarDashDevolucao(){
   try{
     // só o período escolhido (dia inteiro, fuso de Brasília, nas duas pontas)
     const filtroData = '&criado_em=gte.' + encodeURIComponent(periodoIni + 'T00:00:00-03:00') + '&criado_em=lte.' + encodeURIComponent(periodoFim + 'T23:59:59.999-03:00');
-    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,conferente,quantidade,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000' + filtroData) || [];
+    const ocorr   = await supaFetch('ocorrencias_distribuicao?select=id,pedido,carga,rota,conferente,quantidade,produto,produto_enviado_codigo,produto_enviado_descricao,produto_enviado_quantidade,motivo_id,motivo_nome,criado_em&order=criado_em.desc&limit=5000' + filtroData) || [];
     const motivos = await supaFetch('motivos_devolucao?select=id,nome,setor&limit=500') || [];
     _devolMotivos = { id:{}, nome:{} };
     motivos.forEach(m=>{
@@ -27925,7 +27935,7 @@ async function carregarDashDevolucao(){
     // com base_data.vendedor_cod de reserva; o nome vem do cadastro de usuários (perfil vendedor).
     _devolPedVend = {}; _devolNomeVend = {};
     try{
-      const pedidosVend = [...new Set(_devolOcorr.filter(_devolEhMotivoVendedor).map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p)))];
+      const pedidosVend = [...new Set(_devolOcorr.map(o=>String(o.pedido||'').trim()).filter(p=>/^\d+$/.test(p)))];   // todos os pedidos: a tabela "Detalhe das ocorrências" mostra o vendedor de qualquer motivo (o gráfico de vendedor continua filtrando pelos motivos de vendedor)
       for(let i=0;i<pedidosVend.length;i+=150){
         const rows = await supaFetch('pedidos_info_erp?pedido=in.('+pedidosVend.slice(i,i+150).join(',')+')&select=pedido,vendedor&limit=1000',{_quiet:true}) || [];
         rows.forEach(r=>{ if(r.vendedor!=null && String(r.vendedor).trim()!=='') _devolPedVend[String(r.pedido).trim()] = String(r.vendedor).trim(); });
@@ -27982,6 +27992,48 @@ function devolSelecionarSetor(chave){ _devolSetorSel = (_devolSetorSel === chave
 function devolSelecionarMotivo(nome){ _devolMotivoSel = (nome == null || _devolMotivoSel === nome) ? null : nome; renderDashDevolucao(); }
 function devolSelecionarMotivoIdx(i){ const n = _devolMotivoChaves[i]; if(n != null) devolSelecionarMotivo(n); }
 function devolLimparSetor(){ _devolSetorSel = null; _devolMotivoSel = null; renderDashDevolucao(); }
+
+// ── Detalhe das ocorrências, por tipo de motivo (pedido do Gabriel, 2026-11-18) ──
+// Visão GERAL (qualquer motivo, ou nenhum): data, pedido, rota e vendedor (número e nome) de cada ocorrência.
+// Visão INVERSÃO (motivo com "inversão" no nome, escolhido no gráfico de motivos): o produto que ERA PARA TER IDO
+// (itens da ocorrência) ao lado do produto que FOI (campos produto_enviado_*, preenchidos desde 12/11/2026).
+function _devolFmtQtd(n){ return Number(n).toLocaleString('pt-BR', { maximumFractionDigits:3 }); }
+function _devolDiaBR(d){ return d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : ''; }
+function _devolRenderDetalhe(lista, msel){
+  const corpo = document.getElementById('devol-det-corpo'); if(!corpo) return;
+  const tit = document.getElementById('devol-det-titulo'), sub = document.getElementById('devol-det-sub'), nota = document.getElementById('devol-det-nota');
+  const inv = !!(msel && /invers/i.test(msel));
+  const ord = [...lista].sort((a, b) => String(b.criado_em).localeCompare(String(a.criado_em)) || String(a.pedido).localeCompare(String(b.pedido)));
+  const LIM = 500, mostra = ord.slice(0, LIM);
+  const th = t => '<th style="text-align:left;padding:8px 10px;font-size:.72rem;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);background:var(--bg-card);position:sticky;top:0;white-space:nowrap">' + t + '</th>';
+  const td = (t, ex) => '<td style="padding:7px 10px;border-top:1px solid var(--border);font-size:.82rem;vertical-align:top;' + (ex || '') + '">' + t + '</td>';
+  const vazio = '<span style="color:var(--text-muted)">—</span>';
+  let cab, linhas;
+  if(inv){
+    cab = th('Data') + th('Pedido') + th('Rota') + th('Era para ter ido') + th('Foi');
+    linhas = mostra.map(o => {
+      const itens = _devolItens[o.id] && _devolItens[o.id].length ? _devolItens[o.id] : (o.produto ? [{ produto:o.produto, quantidade:o.quantidade }] : []);
+      const era = itens.length ? itens.map(i => (i.quantidade != null && i.quantidade !== '' ? '<b>' + _devolFmtQtd(i.quantidade) + '×</b> ' : '') + escapeHtml(i.produto || '')).join('<br>') : vazio;
+      const cod = o.produto_enviado_codigo != null && String(o.produto_enviado_codigo).trim() !== '' ? String(o.produto_enviado_codigo).replace(/\.0$/, '') : '';
+      const foi = cod ? (o.produto_enviado_quantidade != null ? '<b>' + _devolFmtQtd(o.produto_enviado_quantidade) + '×</b> ' : '') + escapeHtml(cod) + (o.produto_enviado_descricao ? ' · ' + escapeHtml(o.produto_enviado_descricao) : '') : '<span style="color:var(--text-muted)">não registrado</span>';
+      return '<tr>' + td(_devolDiaBR(o.dia), 'white-space:nowrap') + td(escapeHtml(o.pedido || ''), 'white-space:nowrap;font-weight:700') + td(escapeHtml(o.rota || '') || vazio) + td(era) + td(foi) + '</tr>';
+    }).join('');
+  } else {
+    cab = th('Data') + th('Pedido') + th('Rota') + th('Nº vendedor') + th('Vendedor') + th('Motivo');
+    linhas = mostra.map(o => {
+      const cod = _devolPedVend[String(o.pedido || '').trim()] || '';
+      const nome = cod ? (_devolNomeVend[cod] || '') : '';
+      return '<tr>' + td(_devolDiaBR(o.dia), 'white-space:nowrap') + td(escapeHtml(o.pedido || ''), 'white-space:nowrap;font-weight:700') + td(escapeHtml(o.rota || '') || vazio) + td(cod ? escapeHtml(cod) : vazio, 'white-space:nowrap') + td(nome ? escapeHtml(nome) : vazio) + td(escapeHtml(String(o.motivo_nome || '').trim() || 'Sem motivo')) + '</tr>';
+    }).join('');
+  }
+  if(tit) tit.textContent = inv ? 'Inversão: o que foi × o que era para ter ido' : 'Detalhe das ocorrências' + (msel ? ' — ' + msel : '');
+  if(sub) sub.textContent = ord.length + ' ocorrência' + (ord.length === 1 ? '' : 's') + (inv ? ' · ' + ord.filter(o => o.produto_enviado_codigo != null && String(o.produto_enviado_codigo).trim() !== '').length + ' com o produto que foi registrado' : '')
+    + ' · segue os filtros acima (período, setor, motivo e vendedor). ' + (inv ? '' : 'Clique num motivo no gráfico "Motivos de devolução" para ver a visão dele; em Inversão aparece o produto que foi × o que era para ter ido.');
+  corpo.innerHTML = ord.length ? '<table style="width:100%;border-collapse:collapse"><thead><tr>' + cab + '</tr></thead><tbody>' + linhas + '</tbody></table>'
+    : '<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhuma ocorrência com esses filtros.</div>';
+  if(nota) nota.textContent = (ord.length > LIM ? 'Mostrando as ' + LIM + ' mais recentes de ' + ord.length + '. ' : '')
+    + (inv ? '"Foi" só existe nas inversões lançadas a partir de 12/11/2026; as anteriores aparecem como "não registrado". "Era para ter ido" são os produtos escolhidos na lista de devolução.' : 'Número do vendedor = código do vendedor no pedido (ERP).');
+}
 
 function renderDashDevolucao(){
   const msg = document.getElementById('devol-msg');
@@ -28087,6 +28139,8 @@ function renderDashDevolucao(){
   if(msel && subMotivo) subMotivo.textContent += ' · filtrando os outros gráficos por: ' + msel + ' (clique de novo para soltar)';
   const btnSetor = document.getElementById('devol-limpar-setor');
   if(btnSetor) btnSetor.style.display = (sel || msel) ? '' : 'none';
+  // Detalhe das ocorrências: segue setor e motivo escolhidos (e o vendedor/período); a visão muda conforme o motivo.
+  _devolRenderDetalhe(dados.filter(o => (!sel || (_devolSetorDe(o) || 'sem') === sel) && (!msel || nomeMotivo(o) === msel)), msel);
 
   // Formato "Power BI": rosca grossa, só a PORCENTAGEM de cada fatia escrita fora do
   // anel, ligada por uma linha, e a legenda (bolinha + nome) à direita. Pedido do
@@ -58859,6 +58913,61 @@ async function confirmarAbastecimento(id){
       await _carregarListaAbastecimento();
     }
   }catch(e){ showToast('Erro ao confirmar: '+e.message,'warning'); }
+}
+
+// Exporta TODAS as ocorrências (não só as 500 da tela) em duas abas: "Ocorrências" (uma linha por ocorrência) e
+// "Produtos" (uma linha por produto devolvido). Só leitura. Pedido do Gabriel, 2026-11-18.
+async function exportarOcorrenciasXLSX(){
+  const btn = document.getElementById('l-ocorr-exportar');
+  if(typeof XLSX === 'undefined'){ showToast('A biblioteca de Excel ainda não carregou. Atualize a página.','warning'); return; }
+  if(btn){ btn.disabled = true; btn.style.opacity = '.6'; }
+  showToast('Preparando a planilha...','info');
+  try{
+    const pagina = async (tabela, ordem) => {
+      const out = [];
+      for(let off = 0; ; off += 1000){
+        const rows = await supaFetch(tabela + '?order=' + ordem + '&limit=1000&offset=' + off, { _quiet:true }) || [];
+        out.push(...rows); if(rows.length < 1000) break;
+      }
+      return out;
+    };
+    const [ocs, itens, motivos] = await Promise.all([
+      pagina('ocorrencias_distribuicao', 'criado_em.desc,id.asc'),
+      pagina('ocorrencias_distribuicao_itens', 'criado_em.desc,id.asc'),
+      supaFetch('motivos_devolucao?select=id,nome,setor&limit=500', { _quiet:true }).then(r => r || []).catch(() => []),
+    ]);
+    if(!ocs.length){ showToast('Nenhuma ocorrência para exportar','warning'); return; }
+    const setorPorId = {}, setorPorNome = {};
+    motivos.forEach(m => { if(m.setor){ setorPorId[m.id] = m.setor; setorPorNome[String(m.nome || '').trim().toLowerCase()] = m.setor; } });
+    const NOME_SETOR = { armazem:'Armazém', comercial:'Comercial', mercado:'Mercado', distribuicao:'Distribuição', logistica:'Logística', qualidade:'Qualidade' };
+    const setorDe = o => { const s = setorPorId[o.motivo_id] || setorPorNome[String(o.motivo_nome || '').trim().toLowerCase()] || ''; return NOME_SETOR[s] || s; };
+    const fmt = dt => dt ? new Date(dt).toLocaleString('pt-BR', { timeZone:'America/Bahia' }) : '';
+    const num = v => (v == null || v === '') ? '' : Number(v);
+    const porOc = {}; itens.forEach(i => { (porOc[i.ocorrencia_id] = porOc[i.ocorrencia_id] || []).push(i); });
+    const A = [['Data/Hora','Pedido','Carga','Rota','Cliente','Motivo','Setor do motivo','Tipo','Tipo de devolução','Status','Produtos (que devia ter ido / devolvidos)','Quantidade total','Produto que foi (código)','Produto que foi (descrição)','Produto que foi (qtd)','Valor devolvido (R$)','Conferente','Motorista','Veículo','Detalhe','Registrado por','Resolvido em','Resolvido por']];
+    ocs.forEach(o => {
+      const its = porOc[o.id] || [];
+      const prod = its.length ? its.map(i => (i.quantidade != null ? i.quantidade + 'x ' : '') + (i.produto || '')).join(' | ') : (o.produto || '');
+      A.push([fmt(o.criado_em), o.pedido || '', o.carga == null ? '' : o.carga, o.rota || '', o.cliente || '', o.motivo_nome || '', setorDe(o), o.tipo || '', o.tipo_devolucao || '', o.status || '',
+        prod, num(o.quantidade), o.produto_enviado_codigo == null ? '' : String(o.produto_enviado_codigo).replace(/\.0$/, ''), o.produto_enviado_descricao || '', num(o.produto_enviado_quantidade),
+        num(o.valor_devolvido), o.conferente || '', o.motorista || '', o.veiculo || '', o.descricao || '', o.criado_por || '', fmt(o.resolvido_em), o.resolvido_por || '']);
+    });
+    const ocPorId = {}; ocs.forEach(o => { ocPorId[o.id] = o; });
+    const B = [['Data/Hora','Pedido','Carga','Rota','Motivo','Produto','Quantidade','Valor unitário (R$)','Valor total (R$)']];
+    itens.forEach(i => { const o = ocPorId[i.ocorrencia_id]; if(!o) return; B.push([fmt(o.criado_em), o.pedido || '', o.carga == null ? '' : o.carga, o.rota || '', o.motivo_nome || '', i.produto || '', num(i.quantidade), num(i.valor_unitario), num(i.valor_total)]); });
+    const wsA = XLSX.utils.aoa_to_sheet(A), wsB = XLSX.utils.aoa_to_sheet(B);
+    wsA['!cols'] = [{wch:18},{wch:10},{wch:8},{wch:18},{wch:30},{wch:28},{wch:14},{wch:12},{wch:14},{wch:11},{wch:60},{wch:10},{wch:14},{wch:30},{wch:10},{wch:12},{wch:22},{wch:22},{wch:10},{wch:30},{wch:20},{wch:18},{wch:20}];
+    wsB['!cols'] = [{wch:18},{wch:10},{wch:8},{wch:18},{wch:28},{wch:50},{wch:10},{wch:12},{wch:12}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsA, 'Ocorrências');
+    XLSX.utils.book_append_sheet(wb, wsB, 'Produtos');
+    XLSX.writeFile(wb, 'ocorrencias_distribuicao_' + hojeDataBRT() + '.xlsx');
+    showToast('✅ Planilha exportada: ' + ocs.length + ' ocorrências','success');
+  }catch(e){
+    showToast('Erro ao exportar: ' + e.message,'warning');
+  }finally{
+    if(btn){ btn.disabled = false; btn.style.opacity = ''; }
+  }
 }
 
 function exportarAbastecimentoXLSX(){
