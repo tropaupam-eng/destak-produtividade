@@ -21,6 +21,11 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-23, Gabriel: Dashboard Devolução: gráfico "Erros por vendedor" vira "Vendedor" e mostra todos os vendedores, de qualquer motivo — v4.89.303
+Onde: `index.html`, bloco "4) Vendedor" de `renderDashDevolucao` e o título/subtítulo do card. Antes só entravam 5 motivos fixos do Comercial (`DEVOL_MOTIVOS_VENDEDOR`), então filtrar "Produto incorreto", "Preço Incorreto" etc. deixava o gráfico vazio (33 de 94 ocorrências do Comercial ficavam de fora). Agora conta todas as ocorrências por vendedor do pedido, respeitando período, setor e motivo das roscas; clicar numa barra filtra o dashboard por qualquer ocorrência do vendedor. Só leitura.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: os números do gráfico mudam (agora somam todos os motivos). `DEVOL_MOTIVOS_VENDEDOR` e `_devolEhMotivoVendedor` ficaram sem uso. Vendedor sem cadastro no Cronos aparece como "Vendedor cód. N"; pedido inexistente no ERP aparece como "Sem vendedor".
+
 ## 2026-11-18, Gabriel: Dashboard Devolução: clicar num dia do gráfico de valor mostra os pedidos dele embaixo — v4.89.299
 Onde: `index.html`. Clique num ponto do gráfico "Valor devolvido (R$) por dia" (ou semana) abre, dentro do mesmo card, a lista dos pedidos daquele ponto (pedido, rota, cliente, motivo, total/parcial, valor), respeitando período, setor, motivo e vendedor; o valor total da lista é o mesmo do ponto. Novos: `_devolPintarPedidosDia`, `devolSelecionarDia`, `_devolValorOcorr`, `_devolChaveGran` (o helper `_devolValorPorPeriodo` passou a usá-los); `carregarDashDevolucao` busca também `cliente`. Corrigido o plural da nota ("devoluções totais usam"). Só leitura.
 Como desfazer: `git revert` do commit desta entrada.
