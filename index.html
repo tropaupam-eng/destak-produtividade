@@ -10337,7 +10337,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.306';
+const APP_VERSION = '4.89.307';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -13105,16 +13105,29 @@ async function filtrarSidebarPorPerfil(){
 let BASE_DATA   = [];
 window._cargaMapCache = null;
 
-// Filtra resultados de base_data mantendo apenas o mês mais recente por número de carga.
-// Necessário porque o mesmo número de carga pode se repetir em meses diferentes.
-function _filtrarBaseDataMesRecente(rows) {
+// Filtra resultados de base_data por número de carga, mantendo o mês mais recente E os meses
+// emendados nele (mês anterior, anterior ao anterior... sem buraco). Uma carga montada aos poucos
+// atravessa a virada do mês (pedidos de 28/10 a 10/11 são da MESMA carga) — manter só o último mês
+// escondia os pedidos do mês anterior (carga 16379 de Irecê: 5 pedidos de outubro sumiam).
+// Um mês separado por buraco (número de carga reaproveitado bem depois) continua sendo descartado.
+// mesTeto (opcional, 'AAAA-MM'): ignora meses depois dele (ex.: mês da data de saída da carga).
+function _filtrarBaseDataMesRecente(rows, mesTeto) {
   if(!rows || !rows.length) return rows;
-  const mesPorCarga = {};
+  const ym = m => { const p = String(m).split('-'); return (+p[0])*12 + (+p[1]); };
+  const mesesPorCarga = {};
   rows.forEach(r => {
     const m = r.mes_ano || '';
-    if(m && (!mesPorCarga[r.carga] || m > mesPorCarga[r.carga])) mesPorCarga[r.carga] = m;
+    if(!m || (mesTeto && m > mesTeto)) return;
+    (mesesPorCarga[r.carga] = mesesPorCarga[r.carga] || new Set()).add(m);
   });
-  return rows.filter(r => !r.mes_ano || !mesPorCarga[r.carga] || r.mes_ano === mesPorCarga[r.carga]);
+  const validos = {};
+  Object.keys(mesesPorCarga).forEach(c => {
+    const ms = [...mesesPorCarga[c]].sort().reverse();
+    const ok = new Set([ms[0]]);
+    for(let i=1; i<ms.length; i++){ if(ym(ms[i-1]) - ym(ms[i]) === 1) ok.add(ms[i]); else break; }
+    validos[c] = ok;
+  });
+  return rows.filter(r => !r.mes_ano || (validos[r.carga] ? validos[r.carga].has(r.mes_ano) : false));
 }
 
 // Dado um array de demandas (com data_saida), constrói mapa carga→mes_ano
@@ -52291,14 +52304,14 @@ async function verPedidosConferencia(carga, atribId, confId, confNome){
     // Determinar mês esperado desta carga usando o cache de demandas ativas
     const _vpcDem = (_demandasCache||[]).find(d=>String(d.carga)===String(carga));
     const _vpcMes = _vpcDem?.data_saida ? String(_vpcDem.data_saida).substring(0,7) : '';
-    const _vpcUrl = _vpcMes
-      ? `base_data?carga=eq.${carga}&mes_ano=eq.${_vpcMes}&select=pedido,valor,rota&order=pedido.asc`
-      : `base_data?carga=eq.${carga}&select=pedido,valor,rota,mes_ano&order=pedido.asc`;
+    // Sem filtro de mês na consulta: carga que atravessa a virada do mês tem pedidos no mês anterior
+    // (_filtrarBaseDataMesRecente mantém os meses emendados, com teto no mês da saída).
+    const _vpcUrl = `base_data?carga=eq.${carga}&select=pedido,valor,rota,mes_ano&order=pedido.asc`;
     const [_pedidosBaseRaw, confStatus] = await Promise.all([
       supaFetch(_vpcUrl) || [],
       supaFetch(`conferencia_pedidos?carga=eq.${carga}&select=*`) || []
     ]);
-    const _pedidosBase = _vpcMes ? (_pedidosBaseRaw||[]) : _filtrarBaseDataMesRecente(_pedidosBaseRaw||[]);
+    const _pedidosBase = _filtrarBaseDataMesRecente(_pedidosBaseRaw||[], _vpcMes||'');
     const unicos = [...new Map(_pedidosBase.map(p=>[p.pedido,p])).entries()].map(([,v])=>v);
     const confMap = {};
     (confStatus||[]).forEach(c=>{ confMap[c.pedido]=c; });
