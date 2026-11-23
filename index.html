@@ -10337,7 +10337,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.303';
+const APP_VERSION = '4.89.304';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -28327,6 +28327,8 @@ let _devolPedidosRef = new Set();   // pedidos cujas referências já foram busc
 let _devolGranul = 'dia';    // gráfico de valor (R$): 'dia' = um ponto por dia; 'sem' = um ponto por semana
 let _devolValPedido = {};    // pedido -> valor do pedido (R$), só das devoluções totais sem valor_devolvido gravado
 let _devolDiaSel = null;     // dia (ou início da semana) clicado no gráfico de valor: mostra os pedidos dele embaixo
+let _devolSku = {};          // pedido -> { DESCRIÇÃO EM MAIÚSCULAS -> código (SKU) do produto no ERP }, só dos pedidos das ocorrências com itens
+let _devolSkuPedidos = new Set();   // pedidos cujo SKU já foi buscado (cache da sessão: não busca de novo)
 // Tipo de unidade de venda a partir da referência do item no ERP: ela começa com o tipo da embalagem
 // ("CX C/16PCT" = caixa, "SC C/20KG" = saco, "FD C/2PCT" = fardo...). Mesmas regras da aba Regras do Excel
 // "Devolucoes_por_tipo_de_unidade". Trecho que não está aqui = "Não classificado" (cai em "Outros" no gráfico).
@@ -28444,6 +28446,14 @@ async function carregarDashDevolucao(){
         const itens = await supaFetch('ocorrencias_distribuicao_itens?ocorrencia_id=in.(' + idsOcorr.slice(i, i + 80).join(',') + ')&select=ocorrencia_id,produto,quantidade&limit=5000',{_quiet:true}) || [];
         itens.forEach(it=>{ (_devolItens[it.ocorrencia_id] = _devolItens[it.ocorrencia_id] || []).push({ produto:it.produto, quantidade:Number(it.quantidade)||0 }); });
       }
+      // SKU (código do produto no ERP) de cada item devolvido: pedidos_itens_erp.mercadoria, ligado pela descrição do item
+      const pedSku = [...new Set(_devolOcorr.filter(o => _devolItens[o.id]).map(o => String(o.pedido||'').trim()).filter(p => /^\d+$/.test(p) && !_devolSkuPedidos.has(p)))];
+      for(let i = 0; i < pedSku.length; i += 60){
+        const lote = pedSku.slice(i, i + 60);
+        const rows = await supaFetch('pedidos_itens_erp?pedido=in.(' + lote.join(',') + ')&select=pedido,mercadoria,descricao&limit=5000',{_quiet:true}) || [];
+        lote.forEach(p => { _devolSkuPedidos.add(p); _devolSku[p] = {}; });
+        rows.forEach(r => { if(r.mercadoria != null && String(r.mercadoria).trim() !== '') (_devolSku[String(r.pedido).trim()] = _devolSku[String(r.pedido).trim()] || {})[String(r.descricao||'').trim().toUpperCase()] = String(r.mercadoria).trim().replace(/\.0$/, ''); });
+      }
     }catch(e){ console.warn('Dashboard Devolução: não consegui os itens devolvidos:', e.message); }
     // Valor do pedido das devoluções TOTAIS sem valor gravado (a devolução total é o pedido inteiro); só desses pedidos.
     _devolValPedido = {};
@@ -28537,6 +28547,27 @@ function _devolPintarPedidosDia(dados, tituloDe){
 // Visão GERAL (qualquer motivo, ou nenhum): data, pedido, rota e vendedor (número e nome) de cada ocorrência.
 // Visão INVERSÃO (motivo com "inversão" no nome, escolhido no gráfico de motivos): o produto que ERA PARA TER IDO
 // (itens da ocorrência) ao lado do produto que FOI (campos produto_enviado_*, preenchidos desde 12/11/2026).
+// Produtos devolvidos de uma ocorrência: itens detalhados, ou o resumo gravado na própria ocorrência quando não há itens.
+function _devolItensDe(o){
+  const its = _devolItens[o.id];
+  return its && its.length ? its : (o.produto ? [{ produto:o.produto, quantidade:o.quantidade }] : []);
+}
+function _devolSkuDe(o, produto){
+  const m = _devolSku[String(o.pedido || '').trim()];
+  return (m && m[String(produto || '').trim().toUpperCase()]) || '';
+}
+// "SKU · 5× DESCRIÇÃO" uma linha por produto (SKU em cinza; sem SKU quando o item não foi achado no pedido do ERP).
+function _devolProdLinhas(o){
+  const its = _devolItensDe(o);
+  if(!its.length) return '<span style="color:var(--text-muted)">—</span>';
+  return its.map(i => { const sku = _devolSkuDe(o, i.produto);
+    return (sku ? '<span style="color:var(--text-muted)">' + escapeHtml(sku) + '</span> · ' : '') + (i.quantidade != null && i.quantidade !== '' ? '<b>' + _devolFmtQtd(i.quantidade) + '×</b> ' : '') + escapeHtml(i.produto || ''); }).join('<br>');
+}
+function _devolQtdTotal(o){
+  const its = _devolItens[o.id];
+  const q = its && its.length ? its.reduce((s, i) => s + (Number(i.quantidade) || 0), 0) : Number(o.quantidade);
+  return Number.isFinite(q) && q > 0 ? _devolFmtQtd(q) : '';
+}
 function _devolFmtQtd(n){ return Number(n).toLocaleString('pt-BR', { maximumFractionDigits:3 }); }
 function _devolDiaBR(d){ return d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : ''; }
 function _devolRenderDetalhe(lista, msel){
@@ -28553,17 +28584,17 @@ function _devolRenderDetalhe(lista, msel){
     cab = th('Data') + th('Pedido') + th('Rota') + th('Era para ter ido') + th('Foi');
     linhas = mostra.map(o => {
       const itens = _devolItens[o.id] && _devolItens[o.id].length ? _devolItens[o.id] : (o.produto ? [{ produto:o.produto, quantidade:o.quantidade }] : []);
-      const era = itens.length ? itens.map(i => (i.quantidade != null && i.quantidade !== '' ? '<b>' + _devolFmtQtd(i.quantidade) + '×</b> ' : '') + escapeHtml(i.produto || '')).join('<br>') : vazio;
+      const era = itens.length ? _devolProdLinhas(o) : vazio;
       const cod = o.produto_enviado_codigo != null && String(o.produto_enviado_codigo).trim() !== '' ? String(o.produto_enviado_codigo).replace(/\.0$/, '') : '';
       const foi = cod ? (o.produto_enviado_quantidade != null ? '<b>' + _devolFmtQtd(o.produto_enviado_quantidade) + '×</b> ' : '') + escapeHtml(cod) + (o.produto_enviado_descricao ? ' · ' + escapeHtml(o.produto_enviado_descricao) : '') : '<span style="color:var(--text-muted)">não registrado</span>';
       return '<tr>' + td(_devolDiaBR(o.dia), 'white-space:nowrap') + td(escapeHtml(o.pedido || ''), 'white-space:nowrap;font-weight:700') + td(escapeHtml(o.rota || '') || vazio) + td(era) + td(foi) + '</tr>';
     }).join('');
   } else {
-    cab = th('Data') + th('Pedido') + th('Rota') + th('Nº vendedor') + th('Vendedor') + th('Motivo');
+    cab = th('Data') + th('Pedido') + th('Rota') + th('Nº vendedor') + th('Vendedor') + th('Motivo') + th('Quantidade') + th('SKU · produtos devolvidos');
     linhas = mostra.map(o => {
       const cod = _devolPedVend[String(o.pedido || '').trim()] || '';
       const nome = cod ? (_devolNomeVend[cod] || '') : '';
-      return '<tr>' + td(_devolDiaBR(o.dia), 'white-space:nowrap') + td(escapeHtml(o.pedido || ''), 'white-space:nowrap;font-weight:700') + td(escapeHtml(o.rota || '') || vazio) + td(cod ? escapeHtml(cod) : vazio, 'white-space:nowrap') + td(nome ? escapeHtml(nome) : vazio) + td(escapeHtml(String(o.motivo_nome || '').trim() || 'Sem motivo')) + '</tr>';
+      return '<tr>' + td(_devolDiaBR(o.dia), 'white-space:nowrap') + td(escapeHtml(o.pedido || ''), 'white-space:nowrap;font-weight:700') + td(escapeHtml(o.rota || '') || vazio) + td(cod ? escapeHtml(cod) : vazio, 'white-space:nowrap') + td(nome ? escapeHtml(nome) : vazio) + td(escapeHtml(String(o.motivo_nome || '').trim() || 'Sem motivo')) + td(escapeHtml(_devolQtdTotal(o)) || vazio, 'text-align:right;white-space:nowrap') + td(_devolProdLinhas(o)) + '</tr>';
     }).join('');
   }
   if(tit) tit.textContent = inv ? 'Inversão: o que foi × o que era para ter ido' : 'Detalhe das ocorrências' + (msel ? ' — ' + msel : '');
@@ -28572,7 +28603,7 @@ function _devolRenderDetalhe(lista, msel){
   corpo.innerHTML = ord.length ? '<table style="width:100%;border-collapse:collapse"><thead><tr>' + cab + '</tr></thead><tbody>' + linhas + '</tbody></table>'
     : '<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:.85rem">Nenhuma ocorrência com esses filtros.</div>';
   if(nota) nota.textContent = (ord.length > LIM ? 'Mostrando as ' + LIM + ' mais recentes de ' + ord.length + '. ' : '')
-    + (inv ? '"Foi" só existe nas inversões lançadas a partir de 12/11/2026; as anteriores aparecem como "não registrado". "Era para ter ido" são os produtos escolhidos na lista de devolução.' : 'Número do vendedor = código do vendedor no pedido (ERP).');
+    + (inv ? '"Foi" só existe nas inversões lançadas a partir de 12/11/2026; as anteriores aparecem como "não registrado". "Era para ter ido" são os produtos escolhidos na lista de devolução.' : 'Número do vendedor = código do vendedor no pedido (ERP). SKU = código do produto no ERP (aparece quando o item é achado no pedido); Quantidade = total devolvido na ocorrência.');
 }
 
 function renderDashDevolucao(){

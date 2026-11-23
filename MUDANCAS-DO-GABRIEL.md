@@ -21,6 +21,11 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-23, Gabriel: Dashboard Devolução: tabela "Detalhe das ocorrências" ganha Quantidade e SKU · produtos devolvidos — v4.89.304
+Onde: `index.html`, `_devolRenderDetalhe` (colunas novas na visão Geral; SKU também em "Era para ter ido" da visão Inversão) e helpers `_devolItensDe`, `_devolSkuDe`, `_devolProdLinhas`, `_devolQtdTotal`. `carregarDashDevolucao` busca `pedidos_itens_erp` (pedido, mercadoria, descricao) só dos pedidos das ocorrências com itens, em lotes de 60, com cache na sessão (voltou uma busca parecida com a que foi tirada na v4.89.298). SKU = `mercadoria` (código do ERP, sem o ".0"), ligado ao item pela descrição. Só leitura.
+Como desfazer: `git revert` do commit desta entrada.
+Pendente/risco: item que não é achado no pedido do ERP (descrição diferente) aparece sem SKU; ocorrência sem itens detalhados usa o resumo gravado (sem SKU). O Excel de ocorrências ainda não tem SKU.
+
 ## 2026-11-23, Gabriel: Dashboard Devolução: gráfico "Erros por vendedor" vira "Vendedor" e mostra todos os vendedores, de qualquer motivo — v4.89.303
 Onde: `index.html`, bloco "4) Vendedor" de `renderDashDevolucao` e o título/subtítulo do card. Antes só entravam 5 motivos fixos do Comercial (`DEVOL_MOTIVOS_VENDEDOR`), então filtrar "Produto incorreto", "Preço Incorreto" etc. deixava o gráfico vazio (33 de 94 ocorrências do Comercial ficavam de fora). Agora conta todas as ocorrências por vendedor do pedido, respeitando período, setor e motivo das roscas; clicar numa barra filtra o dashboard por qualquer ocorrência do vendedor. Só leitura.
 Como desfazer: `git revert` do commit desta entrada.
