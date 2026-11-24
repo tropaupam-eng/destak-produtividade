@@ -10975,6 +10975,15 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
     // Pré-carga que sai de "formação" para "pendente": se o conferente já conferiu antes do lançamento, aproveita
     if(novoStatus==='pendente' && statusAtual==='formacao'){ try{ _casarConferenciaAntecipada(id).catch(()=>{}); }catch(_){} }
 
+    // Carregamento concluído: envia a carga ao Unniflex (rastreador) automaticamente,
+    // toda carga (interna e externa) — pedido do usuário, 2026-11-24. Antes só dava
+    // pra enviar manualmente pelo menu do card. Silencioso (não trava o avanço de
+    // status se o Unniflex falhar) e idempotente o bastante (reenviar não duplica
+    // pedido — a Edge Function já resolve isso do lado do Unniflex).
+    if(novoStatus==='aguardando_nf' && statusAtual==='carregamento' && rows[0].carga){
+      _enviarUnniflexSilencioso(rows[0].carga).catch(()=>{});
+    }
+
     return {ok:true};
   }catch(e){
     return {ok:false, msg:e.message};
@@ -19230,6 +19239,9 @@ async function admConcluirCarregamento(demandaId, carga){
     if(!confirm(`ATENÇÃO (ADM): Confirmar carregamento concluído da carga ${carga}? (${conferidos}/${totalPedidos} conferidos)`)) return;
     await supaFetch(`demandas_rota?id=eq.${demandaId}`,{method:'PATCH',body:JSON.stringify({arm_status:'carregado_ok',status:'aguardando_nf',ts_aguardando_nf:new Date().toISOString()})});
     registrarHistoricoStatus(demandaId, statusReal||'carregamento', 'aguardando_nf', 'adm_concluir_carregamento');
+    // Esse caminho (ADM) faz o PATCH direto, sem passar por _patchStatusDemanda — precisa
+    // do mesmo gatilho de envio automático ao Unniflex (pedido do usuário, 2026-11-24).
+    if(carga) _enviarUnniflexSilencioso(carga).catch(()=>{});
     showToast('✅ Carga '+carga+' carregada! Aguardando NF.','success');
     await carregarDemandas();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
@@ -23636,6 +23648,53 @@ async function verHistoricoCarga(carga){
   }
 }
 
+// Núcleo do envio à Unniflex (chamada à Edge Function + registro em
+// envios_unniflex), sem nenhuma UI — usado tanto pelo envio manual
+// (enviarCargaUnniflex, com modal) quanto pelo automático ao concluir o
+// carregamento (_enviarUnniflexSilencioso, pedido do usuário 2026-11-24).
+async function _enviarUnniflexCore(carga, usuarioNome){
+  const res = await fetch(SUPA_URL+'/functions/v1/enviar-unniflex', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','apikey':SUPA_KEY},
+    body: JSON.stringify({carga})
+  });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok || data.error) return {ok:false, error: data.error||('HTTP '+res.status)};
+  const pulados = data.pulados_sem_coordenada||[];
+  const okEnvio = (data.enviados||0) > 0 && data.status_unniflex >= 200 && data.status_unniflex < 300;
+  try{
+    await supaFetch('envios_unniflex',{
+      method:'POST', prefer:'return=minimal',
+      body: JSON.stringify({
+        carga: Number(carga), total_pedidos: data.total_pedidos ?? null, enviados: data.enviados ?? 0,
+        pulados_sem_coordenada: pulados.length, status_unniflex: data.status_unniflex ?? null,
+        ok: okEnvio, usuario_nome: usuarioNome ?? (USUARIO_LOGADO?.nome || null)
+      })
+    });
+    if(okEnvio){
+      _enviosUnniflexCache[carga] = { carga: Number(carga), enviado_em: new Date().toISOString(), enviados: data.enviados, pulados_sem_coordenada: pulados.length };
+      if(typeof renderDemandasCards === 'function') renderDemandasCards();
+    }
+  }catch(eReg){ console.warn('Não registrou o envio Unniflex:', eReg.message); }
+  return {ok:true, data, okEnvio};
+}
+
+// Envia automaticamente ao concluir o carregamento (pedido do usuário,
+// 2026-11-24) — toda carga, interna e externa. Silencioso: uma falha aqui
+// (Unniflex fora do ar, carga sem coordenada etc.) nunca trava o avanço de
+// status da Expedição, só não manda pro rastreador; mostra um toast quando
+// dá certo, pra quem estiver olhando a tela perceber o envio.
+async function _enviarUnniflexSilencioso(carga){
+  try{
+    const r = await _enviarUnniflexCore(carga, 'automático (fim do carregamento)');
+    if(r.ok && r.okEnvio){
+      showToast(`📡 Carga ${carga} enviada automaticamente ao Unniflex (${r.data.enviados} pedido(s))`,'success');
+    } else if(!r.ok){
+      console.warn('Envio automático Unniflex falhou (carga '+carga+'):', r.error);
+    }
+  }catch(e){ console.warn('Envio automático Unniflex falhou (carga '+carga+'):', e.message); }
+}
+
 // Envia os pedidos de uma carga para a Unniflex (rastreamento de entregas),
 // via Edge Function (secret do token fica só no servidor — nunca no HTML
 // público). Pedidos de clientes sem latitude/longitude cadastrada em
@@ -23649,33 +23708,13 @@ async function enviarCargaUnniflex(carga){
   corpo.innerHTML = '<p style="text-align:center;padding:24px;color:var(--text-muted)">⏳ Enviando...</p>';
   modal.style.display = 'flex';
   try{
-    const res = await fetch(SUPA_URL+'/functions/v1/enviar-unniflex', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','apikey':SUPA_KEY},
-      body: JSON.stringify({carga})
-    });
-    const data = await res.json().catch(()=>({}));
-    if(!res.ok || data.error){
-      corpo.innerHTML = `<p style="color:#ef4444;text-align:center;padding:24px">Erro: ${data.error||('HTTP '+res.status)}</p>`;
+    const r = await _enviarUnniflexCore(carga);
+    if(!r.ok){
+      corpo.innerHTML = `<p style="color:#ef4444;text-align:center;padding:24px">Erro: ${r.error}</p>`;
       return;
     }
+    const data = r.data;
     const pulados = data.pulados_sem_coordenada||[];
-    // Registra o envio (só conta como "integrado" se enviou ao menos 1 pedido e a Unniflex respondeu 2xx)
-    try{
-      const okEnvio = (data.enviados||0) > 0 && data.status_unniflex >= 200 && data.status_unniflex < 300;
-      await supaFetch('envios_unniflex',{
-        method:'POST', prefer:'return=minimal',
-        body: JSON.stringify({
-          carga: Number(carga), total_pedidos: data.total_pedidos ?? null, enviados: data.enviados ?? 0,
-          pulados_sem_coordenada: pulados.length, status_unniflex: data.status_unniflex ?? null,
-          ok: okEnvio, usuario_nome: USUARIO_LOGADO?.nome || null
-        })
-      });
-      if(okEnvio){
-        _enviosUnniflexCache[carga] = { carga: Number(carga), enviado_em: new Date().toISOString(), enviados: data.enviados, pulados_sem_coordenada: pulados.length };
-        if(typeof renderDemandasCards === 'function') renderDemandasCards();
-      }
-    }catch(eReg){ console.warn('Não registrou o envio Unniflex:', eReg.message); }
     corpo.innerHTML = `
       <div style="display:flex;gap:10px;margin-bottom:14px">
         <div style="flex:1;background:rgba(5,150,105,.1);border-left:3px solid #059669;border-radius:8px;padding:10px 12px">
