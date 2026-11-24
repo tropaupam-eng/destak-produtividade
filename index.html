@@ -10400,7 +10400,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.323';
+const APP_VERSION = '4.89.324';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -36547,7 +36547,39 @@ async function carregarPainelProdutividadeAno(){
       await syncLancamentos();
     }catch(e){ console.warn('Produtividade (painel): não consegui carregar a base antes de calcular:', e.message); }
     if(!(BASE_DATA && BASE_DATA.length)) throw new Error('base de pedidos não carregada — recarregue a página e tente de novo');
-    const linhas = await gerarPagamentos(null, {silencioso:true, mesSel:''});
+    // syncLancamentos() traz só os 2.000 lançamentos mais recentes (~4 meses): os meses mais antigos do ano saíam vazios
+    // ("–") ou parciais (jun/2026 sem nada, jul/2026 mudando a cada geração). Aqui busca o ANO INTEIRO, em páginas, e usa
+    // essa lista só durante o cálculo (a global volta ao que era — as outras telas não são afetadas). Mesma conversão
+    // de syncLancamentos(); lançamento local ainda não sincronizado (sem linha no servidor) é mantido.
+    const _lancOriginal = lancamentos;
+    try{
+      const ini = `${ano}-01-01T00:00:00-03:00`, fim = `${Number(ano)+1}-01-01T00:00:00-03:00`;
+      const doServidor = [];
+      for(let off=0, pg=0; pg<30; pg++, off+=1000){
+        const rows = await supaFetch(`lancamentos?ts=gte.${ini}&ts=lt.${fim}&select=id,carga,motorista,ajudante,veiculo,rota,und,rire,vinculado,pendente,ts,mes_ano,fonte&order=ts.desc,id.asc&limit=1000&offset=${off}`);
+        if(!rows || !rows.length) break;
+        doServidor.push(...rows);
+        if(rows.length < 1000) break;
+      }
+      if(doServidor.length){
+        const cargasSrv = new Set(doServidor.map(r=>Number(r.carga)));
+        const convertidos = doServidor.map(r=>({
+          carga: r.carga, motorista: r.motorista, ajudante: r.ajudante||'', veiculo: r.veiculo||'',
+          rota: normalizarRota(r.rota), und: r.und||'', rire: r.rire||'', vinculado: r.vinculado, pendente: r.pendente,
+          ts: r.ts, mes_ano: r.mes_ano||'', _id: r.id, fonte: r.fonte||''
+        }));
+        // só entram da lista atual os lançamentos de OUTROS anos (que não se refazem aqui) e os locais sem linha no servidor
+        const resto = (_lancOriginal||[]).filter(l=>{
+          const a = String(l.ts||'').slice(0,4);
+          return a !== String(ano) && !cargasSrv.has(Number(l.carga));
+        });
+        lancamentos = [...convertidos, ...resto];
+        lancamentos.forEach(l=>{ if(l.rota) l.rota = normalizarRota(l.rota); });
+      }
+    }catch(e){ console.warn('Produtividade (painel): não consegui buscar o ano inteiro de lançamentos, uso os mais recentes:', e.message); lancamentos = _lancOriginal; }
+    let linhas;
+    try{ linhas = await gerarPagamentos(null, {silencioso:true, mesSel:''}); }
+    finally{ lancamentos = _lancOriginal; }
     if(seq !== _prodPainelSeq) return; // veio uma chamada mais nova (troca de ano/unidade)
     const MESES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
     const doAno = (linhas||[]).filter(p => (p.mes_ano||'').slice(0,4)===ano && (!undSel || (p.und||'').trim()===undSel));
