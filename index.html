@@ -3010,10 +3010,11 @@ body.light-theme{
     </div>
     <button onclick="carregarPaginaFiscal()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px">
     <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Pedidos para NF</div><div class="kpi-value" id="fiscal-kpi-total2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">NFs Emitidas</div><div class="kpi-value" id="fiscal-kpi-nf2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Pendentes</div><div class="kpi-value" id="fiscal-kpi-pend2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">Pedidos com NF</div><div class="kpi-value" id="fiscal-kpi-nf2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Sem NF</div><div class="kpi-value" id="fiscal-kpi-pend2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#0ea5e9" title="Conferidos pelo armazém (OK) e ainda sem NF — já podem ser emitidos"><div class="kpi-label">Prontos para emitir</div><div class="kpi-value" id="fiscal-kpi-pronto2">—</div></div>
     <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Cargas</div><div class="kpi-value" id="fiscal-kpi-cargas2">—</div></div>
   </div>
   <!-- Busca de NF/Boleto por Pedido ou Carga -->
@@ -10386,7 +10387,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.321';
+const APP_VERSION = '4.89.322';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -51827,6 +51828,24 @@ if(!document.getElementById('_css_fadeInUp')){
   document.head.appendChild(_s);
 }
 
+// Situação fiscal de cada pedido de uma carga (24/11): 'pronto' = conferido OK pelo armazém e ainda sem NF (já pode emitir);
+// 'espera' = sem NF e ainda sem conferência OK (aguardando conferência ou NOK); 'feito' = já tem NF.
+// Só documento tipo 'nf' vale como NF — boleto não (o banco só tem 'nf' e 'boleto').
+function _fiscalSitPedido(dados, ped){
+  const temNF = dados.nfs.some(n=>n.pedido===ped && n.tipo==='nf');
+  if(temNF) return 'feito';
+  return dados.confMap[ped]?.status==='ok' ? 'pronto' : 'espera';
+}
+function _fiscalResumoCarga(dados){
+  const peds=[...dados.pedidos];
+  const r={total:peds.length, comNF:0, semNF:0, prontos:0, espera:0};
+  peds.forEach(p=>{
+    const s=_fiscalSitPedido(dados,p);
+    if(s==='feito') r.comNF++; else { r.semNF++; if(s==='pronto') r.prontos++; else r.espera++; }
+  });
+  return r;
+}
+
 async function carregarPaginaFiscal(){
   const container = document.getElementById('fiscal-cargas-inline');
   if(!container) return;
@@ -51906,17 +51925,23 @@ async function carregarPaginaFiscal(){
       .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
       .sort((a,b)=>a-b);
 
-    // KPIs
-    let totalPed=0, totalNF=0, totalPend=0;
+    // KPIs — contados por PEDIDO e só com documento tipo NF (boleto não conta como NF; um pedido com NF+XML conta uma vez).
+    // Pedidos = Com NF + Sem NF. "Prontos" = conferido OK pelo armazém e ainda sem NF.
+    let totalPed=0, totalNF=0, totalPend=0, totalPronto=0;
     cargas.forEach(c=>{
       const d = cargasMap[c];
-      totalPed += d.pedidos.size;
-      totalNF  += d.nfs.length;
-      totalPend+= [...d.pedidos].filter(ped=>!d.nfs.find(n=>n.pedido===ped)).length;
+      const r = _fiscalResumoCarga(d);
+      totalPed += r.total; totalNF += r.comNF; totalPend += r.semNF; totalPronto += r.prontos;
+    });
+    // cargas com pedido pronto para emitir primeiro; depois as que ainda faltam NF; por último as completas (a ordem por carga se mantém dentro de cada grupo)
+    cargas.sort((a,b)=>{
+      const ra=_fiscalResumoCarga(cargasMap[a]), rb=_fiscalResumoCarga(cargasMap[b]);
+      const ga = ra.prontos>0?0:(ra.semNF>0?1:2), gb = rb.prontos>0?0:(rb.semNF>0?1:2);
+      return ga-gb || a-b;
     });
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
     set('fiscal-kpi-total2',totalPed); set('fiscal-kpi-nf2',totalNF);
-    set('fiscal-kpi-pend2',totalPend); set('fiscal-kpi-cargas2',cargas.length);
+    set('fiscal-kpi-pend2',totalPend); set('fiscal-kpi-pronto2',totalPronto); set('fiscal-kpi-cargas2',cargas.length);
 
     const perfilUsuario = USUARIO_LOGADO?.perfil||'';
     const podeUpload = ['fiscal_admin','fiscal_op','admin','adm_fiscal','opedor_fiscal'].includes(perfilUsuario);
@@ -51955,11 +51980,12 @@ async function carregarPaginaFiscal(){
         return `<div onclick="abrirModalFiscalDrawer(${carga})" style="background:${bgCol};border:2px solid ${borderCol};border-radius:12px;padding:14px 12px;cursor:pointer;transition:transform .15s,box-shadow .15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 14px rgba(0,0,0,.18)'" onmouseleave="this.style.transform='';this.style.boxShadow=''">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
             <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">${_ic('package',12)} ${carga}</span>
-            <span style="font-size:.68rem;color:var(--text-muted)">${dados.nfs.length} NF(s)</span>
+            <span style="font-size:.68rem;color:var(--text-muted)" title="Pedidos desta carga que já têm NF">${_fiscalResumoCarga(dados).comNF}/${pedidos.length} c/ NF</span>
           </div>
           <div style="font-size:.8rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${(dem.rota||'').replace(/"/g,'&quot;')}">${dem.rota||'—'}</div>
           <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_ic('user',11)} ${dem.motorista||'—'}</div>
           <div style="display:flex;gap:4px;flex-wrap:wrap">
+            ${(()=>{ const rs=_fiscalResumoCarga(dados); return rs.prontos?`<span style="font-size:.65rem;background:#e0f2fe;color:#075985;padding:1px 6px;border-radius:4px;font-weight:800" title="Conferidos e sem NF — já podem ser emitidos">${_ic('file-text',11)} ${rs.prontos} p/ emitir</span>`:(rs.semNF===0?`<span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:800">${_ic('check-circle',11)} NFs completas</span>`:''); })()}
             <span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('check-circle',11)} ${pedOK}</span>
             ${pedNOK?`<span style="font-size:.65rem;background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('x-circle',11)} ${pedNOK}</span>`:''}
             ${pedPend?`<span style="font-size:.65rem;background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('clock',11)} ${pedPend}</span>`:''}
@@ -52016,7 +52042,11 @@ function abrirModalFiscalDrawer(carga){
   if(!dados){ showToast('Carga não encontrada','warning'); return; }
   const dem = dados.demanda;
   const nfsCarga = dados.nfs;
-  const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
+  // pedidos agrupados pelo que o Fiscal precisa fazer: primeiro os prontos para emitir (conferidos, sem NF), depois os que ainda
+  // esperam conferência / estão NOK, por último os que já têm NF (esmaecidos). Dentro de cada grupo, por número.
+  const _ordSit = {pronto:0, espera:1, feito:2};
+  const pedidos = [...dados.pedidos].sort((a,b)=> _ordSit[_fiscalSitPedido(dados,a)]-_ordSit[_fiscalSitPedido(dados,b)] || a-b);
+  const _resumoDrawer = _fiscalResumoCarga(dados);
   const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
   const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
   const cardBorder = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
@@ -52026,7 +52056,15 @@ function abrirModalFiscalDrawer(carga){
   const _rotaEsc  = _jsAttrStr((dem?.rota||''));
   const _motorEsc = _jsAttrStr((dem?.motorista||''));
 
-  const pedidosHTML = pedidos.map(ped=>{
+  const _tituloGrupo = {
+    pronto:`Prontos para emitir NF (${_resumoDrawer.prontos})`,
+    espera:`Aguardando conferência / NOK (${_resumoDrawer.espera})`,
+    feito:`Com NF emitida (${_resumoDrawer.comNF})`
+  };
+  const pedidosHTML = pedidos.map((ped,_i)=>{
+    const _sit      = _fiscalSitPedido(dados, ped);
+    const _cabGrupo = (_i===0 || _fiscalSitPedido(dados,pedidos[_i-1])!==_sit)
+      ? `<div style="font-size:.72rem;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:${_sit==='pronto'?'#0369a1':_sit==='feito'?'#047857':'#92400e'};margin:${_i===0?'0':'14px'} 0 6px">${_tituloGrupo[_sit]}</div>` : '';
     const conf      = dados.confMap[ped];
     const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
     const stConf    = conf?.status;
@@ -52085,7 +52123,7 @@ function abrirModalFiscalDrawer(carga){
     const _alertaKey = `${carga}_${ped}`;
     const _ativo = (window._meusAlertas||new Set()).has(_alertaKey);
 
-    return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
+    return `${_cabGrupo}<div style="background:${confBg};border:1px solid ${_sit==='pronto'&&!euPeguei&&!outroPegou?'#7dd3fc':confBorder};${_sit==='pronto'?'border-left:4px solid #0ea5e9;':''}border-radius:9px;padding:10px 14px;margin-bottom:8px;${_sit==='feito'?'opacity:.78;':''}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
@@ -52144,7 +52182,7 @@ function abrirModalFiscalDrawer(carga){
         <span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">${_ic('check-circle',11)} ${pedOK} OK</span>
         ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">${_ic('x-circle',11)} ${pedNOK} NOK</span>`:''}
         ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">${_ic('clock',11)} ${pedPend} s/ conf.</span>`:''}
-        <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
+        <span style="font-size:.72rem;color:var(--text-muted)" title="Pedidos desta carga que já têm NF">${_resumoDrawer.comNF}/${pedidos.length} c/ NF</span>
         ${timeInfo}
         <button onclick="fecharModalFiscalDrawer()" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer">✕ Fechar</button>
       </div>
