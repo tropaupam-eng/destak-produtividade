@@ -1948,6 +1948,9 @@ body.light-theme{
   <div class="sidebar-item" data-page="expedicao" onclick="showPage('expedicao',this)">
     <span class="si-icon" data-feather="package"></span><span class="si-label">Expedição</span>
   </div>
+  <div class="sidebar-item" data-page="expedicao-interna" onclick="showPage('expedicao-interna',this)">
+    <span class="si-icon" data-feather="home"></span><span class="si-label">Expedição Interna</span>
+  </div>
   <div class="sidebar-item" data-page="pedidos-sem-carga" onclick="showPage('pedidos-sem-carga',this)">
     <span class="si-icon" data-feather="inbox"></span><span class="si-label">Pedidos sem carga</span>
   </div>
@@ -3009,6 +3012,11 @@ body.light-theme{
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Emissão de Notas Fiscais por pedido</p>
     </div>
     <button onclick="carregarPaginaFiscal()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:16px">
+    <button class="exp-unid-btn exp-unid-all active" onclick="filtrarFiscalTipo('',this)">Todas</button>
+    <button class="exp-unid-btn exp-unid-ri" onclick="filtrarFiscalTipo('RI',this)">RI · Interna</button>
+    <button class="exp-unid-btn exp-unid-re" onclick="filtrarFiscalTipo('RE',this)">RE · Externa</button>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px">
     <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Pedidos para NF</div><div class="kpi-value" id="fiscal-kpi-total2">—</div></div>
@@ -5691,6 +5699,11 @@ body.light-theme{
       <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Validação de pagamentos por pedido</p>
     </div>
     <button onclick="carregarPaginaCaixa()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:16px">
+    <button class="exp-unid-btn exp-unid-all active" onclick="filtrarCaixaTipo('',this)">Todas</button>
+    <button class="exp-unid-btn exp-unid-ri" onclick="filtrarCaixaTipo('RI',this)">RI · Interna</button>
+    <button class="exp-unid-btn exp-unid-re" onclick="filtrarCaixaTipo('RE',this)">RE · Externa</button>
   </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
     <div class="kpi-card" style="border-top-color:#065f46"><div class="kpi-label">Cargas para Validar</div><div class="kpi-value" id="caixa-kpi-cargas2">—</div></div>
@@ -10387,7 +10400,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.322';
+const APP_VERSION = '4.89.323';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18523,16 +18536,18 @@ async function carregarRotasExp(){
   try{
     const data = await supaFetch('rotas?select=*&order=nome.asc&ativo=eq.true&limit=1000');
     ROTAS_CACHE = data||[];
-    // Popular select da expedição
+    // Popular select da expedição — na Expedição Interna (_expModoInterno) só
+    // mostra rota R.I., pra não dar pra criar carga externa por engano nessa tela.
+    const rotasSel = _expModoInterno ? ROTAS_CACHE.filter(r=>r.tipo==='RI') : ROTAS_CACHE;
     const sel = document.getElementById('exp-rota');
     if(sel){
       const cur = sel.value;
       sel.innerHTML = '<option value="">Selecione a rota...</option>' +
-        ROTAS_CACHE.map(r=>`<option value="${r.nome}">${r.nome} ${r.tipo==='RI'?'(R.I.)':'(R.E.)'}</option>`).join('');
+        rotasSel.map(r=>`<option value="${r.nome}">${r.nome} ${r.tipo==='RI'?'(R.I.)':'(R.E.)'}</option>`).join('');
       if(cur) sel.value = cur;
     }
     const dl = document.getElementById('list-rotas');
-    if(dl) dl.innerHTML = ROTAS_CACHE.map(r=>`<option value="${r.nome}">`).join('');
+    if(dl) dl.innerHTML = rotasSel.map(r=>`<option value="${r.nome}">`).join('');
   }catch(e){ ROTAS_CACHE=[]; }
 }
 
@@ -18776,8 +18791,10 @@ async function _renderAgendaNovaRota(){
   const _iniSem = _priDia.getDay();
   const _DS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 
+  // Na Expedição Interna só mostra agenda de rota R.I. (mesma trava do select de rota do modal)
+  const agendsFiltrados = _expModoInterno ? agends.filter(a=>getTipoRota(normalizarRota(a.rota||'')||a.rota)==='RI') : agends;
   const porDia = {};
-  agends.forEach(a=>{ (porDia[a.data]=porDia[a.data]||[]).push(a); });
+  agendsFiltrados.forEach(a=>{ (porDia[a.data]=porDia[a.data]||[]).push(a); });
 
   let s = '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">';
   s += '<div style="display:grid;grid-template-columns:repeat(7,1fr);background:#f3f4f6;border-bottom:1px solid #e2e8f0">';
@@ -18881,6 +18898,13 @@ async function criarDemanda(){
     return;
   }
 
+  // Expedição Interna só cria carga de rota R.I. (trava equivalente à do select de rota do modal —
+  // dupla checagem porque dá pra editar o <select> manualmente ou reabrir com cache antigo)
+  if(_expModoInterno && getTipoRota(rota)!=='RI'){
+    showMsgExp('Esta é a Expedição Interna — selecione uma rota R.I. (interna).');
+    return;
+  }
+
   if(!_connOk){
     showMsgExp('🔴 Sem conexão com o banco de dados. Verifique sua internet e tente novamente.');
     return;
@@ -18925,6 +18949,7 @@ async function criarDemanda(){
         valor_meta: valorMeta,
         ...(carga ? {carga} : {}),
         status: 'formacao',
+        origem: getTipoRota(rota)==='RI' ? 'interna' : 'externa',
         usuario_id: USUARIO_LOGADO?.id||null,
         unidade: USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||null
       })
@@ -19009,6 +19034,9 @@ function filtrarDemandasStatus(status){
 function renderPipelineBar(){
   const el = document.getElementById('exp-pipeline-bar');
   if(!el) return;
+  // Mesma razão do renderDemandasKPIs: na Expedição Interna a barra de pipeline
+  // e o contador "Ativas (N)" têm que contar só rota R.I.
+  const _dadosPipe = _expModoInterno ? (_demandasCache||[]).filter(d=>getTipoRota(d.rota)==='RI') : (_demandasCache||[]);
   const stages = [
     {key:'formacao',              label:'Em Formação',   color:'#6366f1'},
     {key:'pendente',              label:'Pendente',      color:'#f59e0b'},
@@ -19021,7 +19049,7 @@ function renderPipelineBar(){
     {key:'fim_viagem',            label:'Fim Viagem',    color:'#a78bfa'},
   ];
   const stagesHtml = stages.map((s,i)=>{
-    const cnt = (_demandasCache||[]).filter(d=>d.status===s.key).length;
+    const cnt = _dadosPipe.filter(d=>d.status===s.key).length;
     const isOn = _filtroStatus === s.key;
     const arr  = i < stages.length-1 ? `<div class="exp-pip-arr">›</div>` : '';
     return `<div class="exp-pip-stage${isOn?' active':''}" onclick="pipClick('${s.key}')" style="--pip-color:${s.color}">
@@ -19035,8 +19063,8 @@ function renderPipelineBar(){
   // Atualiza toolbar
   const cur = stages.find(s=>s.key===_filtroStatus);
   const tot = _filtroStatus
-    ? (_demandasCache||[]).filter(d=>d.status===_filtroStatus).length
-    : (_demandasCache||[]).filter(d=>!['concluido','cancelado'].includes(d.status)).length;
+    ? _dadosPipe.filter(d=>d.status===_filtroStatus).length
+    : _dadosPipe.filter(d=>!['concluido','cancelado'].includes(d.status)).length;
   const lblEl = document.getElementById('exp-pip-count');
   const clrEl = document.getElementById('exp-pip-clear');
   if(lblEl) lblEl.textContent = `${cur ? cur.label : 'Ativas'} (${tot})`;
@@ -23227,6 +23255,9 @@ async function renderFrotaEscala(){
 }
 
 function renderDemandasKPIs(data){
+  // Na Expedição Interna os KPIs do topo têm que bater com o que a tela mostra
+  // (só rota R.I.) — sem isso ficaria "4 Demandas" com só 2 cargas no board.
+  if(_expModoInterno) data = data.filter(d=>getTipoRota(d.rota)==='RI');
   const total     = data.length;
   const _keyStats = new Set(['saiu','fim_viagem','concluido','cancelado']);
   const pendente  = data.filter(d=>!_keyStats.has(d.status)).length;
@@ -26731,9 +26762,13 @@ async function salvarVincularCarga(){
         }
     } // fim if(file)
 
-    // Carga vinculada pela aba Expedição — classificação é pela origem do módulo,
-    // não pelo nome da rota: toda carga vinculada aqui é R.E. por definição.
-    const rireFinal = 'R.E.';
+    // Carga vinculada pela aba Expedição — até a Expedição Interna (preparação,
+    // pedido do usuário 2026-11-24) toda carga vinda daqui era mesmo R.E. por
+    // definição. Agora a Expedição também cria demanda de rota R.I., então a
+    // classificação volta a seguir a rota real da demanda (mesmo critério de
+    // sempre, getRireFromRota), senão todo lançamento vinculado a uma carga
+    // interna criada na Expedição Interna ficaria marcado como externo.
+    const rireFinal = getRireFromRota(rotaFinal);
 
     // Condutor da planilha é texto livre (coluna do CSV) — pode não bater com o
     // cadastro de motoristas por typo/nome incompleto. Não bloqueia a vinculação
@@ -28181,7 +28216,36 @@ async function _sincronizarTudoImpl(){
   }
 }
 
+// Expedição Interna (preparação, pedido do usuário 2026-11-24): reaproveita
+// 100% o motor/tela da Expedição (mesmo container, mesmo _demandasCache,
+// mesmos botões de separação/carregamento/fiscal/caixa) em vez de duplicar o
+// board — só trava o filtro "RI · Interna" que já existia na Expedição e
+// troca o título. Evita reescrever um motor com dezenas de caches/funções
+// acopladas (_demandasCache, _cargasVinculadasCache, retornos de veículo,
+// Unniflex etc.) só pra ter uma segunda tela visualmente separada.
+let _expModoInterno = false;
+function showExpedicaoInterna(tab){
+  if(!tab) tab = document.querySelector('.sidebar-item[data-page="expedicao-interna"]') || document.body;
+  showPage('expedicao', tab);
+  // showPage('expedicao',...) sempre volta _expModoInterno pra false (modo padrão
+  // externo) antes de chamar carregarDemandas()/carregarRotasExp() — por isso o
+  // flag é religado DEPOIS dessa chamada, não antes.
+  _expModoInterno = true;
+  localStorage.setItem('destak_pagina_atual', 'expedicao-interna');
+  const titulo = document.querySelector('#page-expedicao .exp-title');
+  if(titulo) titulo.innerHTML = '<span data-feather="home"></span>Expedição Interna';
+  const sub = document.querySelector('#page-expedicao .exp-sub');
+  if(sub) sub.textContent = 'Pré-cargas das rotas internas (R.I.) — gera a carga que abre o chamado pro Fiscal e o Caixa';
+  const btnRI = document.querySelector('#page-expedicao .exp-unid-ri');
+  if(btnRI) filtrarUnidade('RI', btnRI);
+  _featherReplace();
+}
+
 function showPage(name,tab){
+  // "Expedição Interna" não é uma página própria — é a Expedição de sempre
+  // com o filtro RI travado (ver showExpedicaoInterna). Redireciona aqui pra
+  // funcionar também ao restaurar a última página aberta (destak_pagina_atual).
+  if(name==='expedicao-interna'){ showExpedicaoInterna(tab); return; }
   // Parar monitoramento de integrações ao sair da aba
   if(name !== 'erp-teste') pararMonitorIntegracaoERP();
 
@@ -28279,6 +28343,14 @@ function showPage(name,tab){
   else if(name==='recursos-humanos') safe(()=>renderRH(),'recursos-humanos');
   else if(name==='asos') safe(()=>carregarASOs(),'asos');
   else if(name==='expedicao') safe(()=>{
+    // Restaura o modo "externa" padrão e o cabeçalho de sempre — showExpedicaoInterna()
+    // deixa esse flag/título em modo interno ao visitar a Expedição Interna.
+    _expModoInterno = false;
+    const titulo = document.querySelector('#page-expedicao .exp-title');
+    if(titulo) titulo.innerHTML = '<span data-feather="truck"></span>Expedição';
+    const sub = document.querySelector('#page-expedicao .exp-sub');
+    if(sub) sub.textContent = 'Gerencie pré-cargas, vincule planilhas e acompanhe o status em tempo real';
+    _featherReplace();
     carregarDemandas(); carregarMotoristas(); carregarVeiculos(); carregarRotasExp();
     // Popup de "Rotas da Semana" não abre mais sozinho ao entrar na aba — já
     // existe o botão "Rotas da Semana" pra abrir quando precisar (pedido do
@@ -29451,6 +29523,7 @@ const PAGINAS = {
   gerot:                      {label:'Gerot',                icon:_ic('trending-up')},
   financeiro:                 {label:'Financeiro',           icon:_ic('dollar-sign')},
   expedicao:                  {label:'Expedição',            icon:_ic('truck')},
+  'expedicao-interna':        {label:'Expedição Interna',    icon:_ic('home')},
   ocorrencias:                {label:'Ocorrências',          icon:_ic('alert-triangle')},
   cme:                        {label:'CME (chamados)',       icon:_ic('phone-call')},
   'pedidos-atrasados':        {label:'Nível de Serviço',    icon:_ic('alert-octagon')},
@@ -29580,13 +29653,13 @@ const PAGINAS_GRUPOS = [
 // pra perfis custom salvos antes desta mudança (ver _mergePerfilOverride).
 const PERFIS_PADRAO_SISTEMA = [
   {key:'admin',           label:'Admin',               icon:'award',    cor:'#7c3aed', desc:'Acesso total ao sistema',                                          get paginas(){ return Object.keys(PAGINAS); }},
-  {key:'adm_distribuicao',label:'ADM Distribuição',    icon:'truck',    cor:'#2563eb', desc:'Gestão completa da distribuição',                                  paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','historico','geral','financeiro','gerot','cftv','expedicao','ocorrencias','cme','pedidos-atrasados','pedidos-sem-carga','carregamento','lancamento','agendamento','motoristas','veiculos','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','absenteismo','cadastros','recursos-humanos','datas-entrega']},
-  {key:'exped_admin',     label:'Expedição Admin',     icon:'truck',    cor:'#2563eb', desc:'Gestão de expedição com frota e armazém',                          paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','motoristas','veiculos','lancamento','expedicao','ocorrencias','cme','pedidos-atrasados','pedidos-sem-carga','carregamento','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','armazem','absenteismo','abs-expedicao','datas-entrega','painel-indicadores']},
+  {key:'adm_distribuicao',label:'ADM Distribuição',    icon:'truck',    cor:'#2563eb', desc:'Gestão completa da distribuição',                                  paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','historico','geral','financeiro','gerot','cftv','expedicao','expedicao-interna','ocorrencias','cme','pedidos-atrasados','pedidos-sem-carga','carregamento','lancamento','agendamento','motoristas','veiculos','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','absenteismo','cadastros','recursos-humanos','datas-entrega']},
+  {key:'exped_admin',     label:'Expedição Admin',     icon:'truck',    cor:'#2563eb', desc:'Gestão de expedição com frota e armazém',                          paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','motoristas','veiculos','lancamento','expedicao','expedicao-interna','ocorrencias','cme','pedidos-atrasados','pedidos-sem-carga','carregamento','frota','frota-disponibilidade','gestao-frota','retorno-veiculos','armazem','absenteismo','abs-expedicao','datas-entrega','painel-indicadores']},
   {key:'adm_armazem',     label:'ADM Armazém',         icon:'archive',  cor:'#d97706', desc:'Gestão completa do armazém',                                       paginas:['dashboard','dash-logistico','dash-interna','dash-devolucao','historico','geral','gerot','cftv','motoristas','veiculos','armazem','abs-expedicao','abs-recebimento-armazenagem','abastecimento-loja','receitas-armazem','erro-conferente','cadastros','recursos-humanos','painel-indicadores']},
   {key:'adm_fiscal',      label:'ADM Fiscal',          icon:'bar-chart-2', cor:'#059669', desc:'Gestão completa da área fiscal',                                paginas:['dashboard','dash-logistico','fiscal','gestao-fiscal','seguros','caixa','motoristas','veiculos','geral','financeiro','gerot','cftv','historico','cadastros']},
   {key:'fiscal_admin',    label:'Fiscal Admin',        icon:'file-text',cor:'#0891b2', desc:'Administração fiscal',                                             paginas:['dashboard','dash-logistico','fiscal','gestao-fiscal','seguros','motoristas','veiculos','geral','financeiro','gerot','cftv','historico']},
   {key:'fiscal_op',       label:'Fiscal Operacional',  icon:'file-text',cor:'#0891b2', desc:'Operação fiscal — lançar NFs',                                     paginas:['dashboard','fiscal']},
-  {key:'operador',        label:'Expedição Operador',  icon:'truck',    cor:'#2563eb', desc:'Acesso à expedição — lançar demandas e acompanhar status',         paginas:['dashboard','dash-logistico','dash-interna','motoristas','veiculos','lancamento','expedicao','ocorrencias','cme','pedidos-atrasados','pedidos-sem-carga','carregamento','frota','frota-disponibilidade','datas-entrega']},
+  {key:'operador',        label:'Expedição Operador',  icon:'truck',    cor:'#2563eb', desc:'Acesso à expedição — lançar demandas e acompanhar status',         paginas:['dashboard','dash-logistico','dash-interna','motoristas','veiculos','lancamento','expedicao','expedicao-interna','ocorrencias','cme','pedidos-atrasados','pedidos-sem-carga','carregamento','frota','frota-disponibilidade','datas-entrega']},
   {key:'comercial',       label:'Comercial',           icon:'briefcase',cor:'#7c3aed', desc:'Acesso às rotas e análises comerciais',                            paginas:['dashboard','dash-logistico','comercial-rotas','comercial-cargas-pendentes','comercial-vendedor','comercial-mapa','comercial-evolucao','historico','geral','gerot']},
   {key:'vendedor',        label:'Vendedor',            icon:'briefcase',cor:'#0d9488', desc:'Portal de pedidos do vendedor',                                    paginas:[], extra:'Portal Vendedor'},
   {key:'seguros',         label:'Seguros',             icon:'shield',   cor:'#7c3aed', desc:'Área de seguros',                                                  paginas:['dashboard','seguros']},
@@ -46772,6 +46845,16 @@ function _histToggle(id){
 
 const FORMAS_PGTO = ['Boleto','PIX','Dinheiro','Cartão Débito','Cartão Crédito','Prazo','A Definir'];
 
+// Mesmo filtro Interna/Externa da aba Fiscal, aplicado ao Caixa (preparação
+// Expedição Interna, pedido do usuário 2026-11-24).
+let _caixaFiltroTipo = '';
+function filtrarCaixaTipo(tipo, btn){
+  _caixaFiltroTipo = tipo;
+  document.querySelectorAll('#page-caixa .exp-unid-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  carregarPaginaCaixa();
+}
+
 async function _renderCaixaCargas(containerId, kpiPrefix){
   const container = document.getElementById(containerId);
   if(!container) return;
@@ -46783,7 +46866,9 @@ async function _renderCaixaCargas(containerId, kpiPrefix){
   // fim_viagem        → retornou — caixa confere e fecha
   const _demRaw = await supaFetch('demandas_rota?status=in.("aguardando_nf","aguardando_manifesto","pronto_viagem","saiu","fim_viagem")&select=*&order=criado_em.desc') || [];
   const _ordemCaixa = {fim_viagem:0,aguardando_manifesto:1,aguardando_nf:2,pronto_viagem:3,saiu:4};
-  const demandas = _demRaw.sort((a,b)=>(_ordemCaixa[a.status]??1)-(_ordemCaixa[b.status]??1));
+  const demandas = _demRaw
+    .filter(d => !_caixaFiltroTipo || getTipoRota(d.rota)===_caixaFiltroTipo)
+    .sort((a,b)=>(_ordemCaixa[a.status]??1)-(_ordemCaixa[b.status]??1));
   const cargasIds = demandas.map(d=>d.carga).filter(Boolean);
 
   const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
@@ -51828,6 +51913,17 @@ if(!document.getElementById('_css_fadeInUp')){
   document.head.appendChild(_s);
 }
 
+// Filtro Interna/Externa da aba Fiscal (preparação Expedição Interna, pedido do
+// usuário 2026-11-24): '' | 'RI' | 'RE' — mesmo critério (getTipoRota pela rota
+// cadastrada) usado no filtro "Todas/RI/RE" da Expedição, pra ficar consistente.
+let _fiscalFiltroTipo = '';
+function filtrarFiscalTipo(tipo, btn){
+  _fiscalFiltroTipo = tipo;
+  document.querySelectorAll('#page-fiscal .exp-unid-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  carregarPaginaFiscal();
+}
+
 // Situação fiscal de cada pedido de uma carga (24/11): 'pronto' = conferido OK pelo armazém e ainda sem NF (já pode emitir);
 // 'espera' = sem NF e ainda sem conferência OK (aguardando conferência ou NOK); 'feito' = já tem NF.
 // Só documento tipo 'nf' vale como NF — boleto não (o banco só tem 'nf' e 'boleto').
@@ -51921,8 +52017,10 @@ async function carregarPaginaFiscal(){
     });
 
     // Excluir cargas já concluídas pelo fiscal — elas vão para o Histórico, não para Pendências
+    // Filtro Interna/Externa (_fiscalFiltroTipo) opcional por cima disso, mesmo critério da Expedição.
     const cargas = Object.keys(cargasMap).map(Number).filter(n=>!isNaN(n)&&n>0)
       .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
+      .filter(c => !_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)
       .sort((a,b)=>a-b);
 
     // KPIs — contados por PEDIDO e só com documento tipo NF (boleto não conta como NF; um pedido com NF+XML conta uma vez).
