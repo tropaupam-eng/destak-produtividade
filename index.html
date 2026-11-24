@@ -36466,6 +36466,13 @@ async function carregarPainelProdutividadeAno(){
   try{
     const ano = _anoSelPainelIndicadores();
     const undSel = window._painelIndUndSel || '';
+    // gerarPagamentos() lê as variáveis globais BASE_DATA e lancamentos (mesma conta da tela Produtividade). Se a página
+    // ainda não as carregou (ex.: Painel aberto direto / geração da apresentação), o valor saía R$ 0,00 sem aviso.
+    try{
+      if(!(BASE_DATA && BASE_DATA.length)) await syncBaseData();
+      await syncLancamentos();
+    }catch(e){ console.warn('Produtividade (painel): não consegui carregar a base antes de calcular:', e.message); }
+    if(!(BASE_DATA && BASE_DATA.length)) throw new Error('base de pedidos não carregada — recarregue a página e tente de novo');
     const linhas = await gerarPagamentos(null, {silencioso:true, mesSel:''});
     if(seq !== _prodPainelSeq) return; // veio uma chamada mais nova (troca de ano/unidade)
     const MESES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
@@ -42279,8 +42286,14 @@ async function carregarPainelPedidosRotas(opts){
     const _painelOtifCacheKey = undSel ? `${mesAtual}__${undSel}` : mesAtual;
     if(mesAtual === new Date().toISOString().slice(0,7)) _otifCacheMap.delete(_painelOtifCacheKey);
     const dadosOtif = await _carregarOtifMes(mesAtual, undSel||undefined);
-    const semOtif   = _calcOtifPorSemana(bd, mesAtual, dadosOtif, hoje);
-    const otifRotaSemana = _calcOtifPorRotaSemana(bd, mesAtual, dadosOtif, hoje);
+    // OTIF por semana/rota usa o MESMO universo do resumo do card (dadosOtif.bdRows = cargas com lançamento).
+    // Pedido de carga sem lançamento (frete etc.) fica no VOLUME (pedidos/valor), mas não no OTIF: sem lançamento não há
+    // referência de saída/prazo e o cálculo o contava como "no prazo e completo" por falta de dado (semanas somavam 377
+    // contra 363 do resumo, na R.E. de nov/2026).
+    const _pedsOtif = new Set((dadosOtif.bdRows||[]).map(b=>String(b.pedido)));
+    const bdOtif    = bd.filter(p=>_pedsOtif.has(String(p.pedido)));
+    const semOtif   = _calcOtifPorSemana(bdOtif, mesAtual, dadosOtif, hoje);
+    const otifRotaSemana = _calcOtifPorRotaSemana(bdOtif, mesAtual, dadosOtif, hoje);
     // Corte: semanas depois da escolhida saem do OTIF (a entrega de uma semana seguinte ainda "não aconteceu" no fechamento da semana)
     if(corte !== null){
       const _zera = (s, i)=>{ if(i > corte){ s.t = 0; s.ot = 0; s.ifull = 0; s.ok = 0; } };
@@ -42300,7 +42313,8 @@ async function carregarPainelPedidosRotas(opts){
       rotaSemanaAnt = antVol.rotaSemana || {};
       rotaPeriodoAnt = antVol.rotaPeriodo || {};
       const dadosOtifAnt = await _carregarOtifMes(mesAnterior, undSel||undefined);
-      otifRotaSemanaAnt = _calcOtifPorRotaSemana(antBase.bd, mesAnterior, dadosOtifAnt, hoje);
+      const _pedsOtifAnt = new Set((dadosOtifAnt.bdRows||[]).map(b=>String(b.pedido)));
+      otifRotaSemanaAnt = _calcOtifPorRotaSemana(antBase.bd.filter(p=>_pedsOtifAnt.has(String(p.pedido))), mesAnterior, dadosOtifAnt, hoje);
     }catch(e){ console.warn('Pedidos & Rotas: sem dados do mês anterior pra comparação', e.message); }
 
     container.innerHTML = renderRelatorioPedidosRotas({ mesAtual, mesAnterior, ateDia, corteIdx:corte, dataLimite, rotaPeriodo, rotaPeriodoAnt, semData, rotaCalc, rotaSemana, rotaSemanaAnt, semOtif, otifRotaSemana, otifRotaSemanaAnt, rireSel, otifStats: dadosOtif.stats, sufixo });
@@ -43323,7 +43337,7 @@ async function carregarPainelOtifGeralRotas(){
           ${linhaRota('Rota Externa (R.E.)', st.entRE, st.onTimeRE, st.inFullRE, st.otifRE)}
           ${linhaRota('GERAL', st.entG, st.onTimeG, st.inFullG, st.otifG).replace('border-top:1px solid var(--border)','border-top:2px solid var(--red)')}
         </div>
-        <div style="font-size:.78rem;color:var(--text-muted);margin-top:14px;line-height:1.5">OTIF = pedido entregue no prazo (On Time) E completo, sem ocorrência, corte ou troca pós-romaneio (In Full). Mesmo cálculo do OTIF do sistema; conta só pedidos com entrega confirmada. Abastecimento de loja não entra.</div>
+        <div style="font-size:.78rem;color:var(--text-muted);margin-top:14px;line-height:1.5">OTIF = pedido entregue no prazo (On Time) E completo, sem ocorrência, corte ou troca pós-romaneio (In Full). Mesmo cálculo do OTIF do sistema. Quando o pedido não tem entrega confirmada, o prazo é medido até a saída (ou o lançamento) da carga, e não até a entrega ao cliente. Abastecimento de loja não entra.</div>
         ` : '<p style="color:var(--text-muted);padding:20px 0">Sem pedidos com entrega confirmada neste mês.</p>'}
         <div style="display:flex;justify-content:space-between;margin-top:28px;padding-top:16px;border-top:1px solid var(--border);font-size:.76rem;font-weight:700;letter-spacing:1px;color:var(--text-muted)">
           <span>PAINEL DE INDICADORES · OTIF</span>
