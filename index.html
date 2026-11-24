@@ -3018,10 +3018,11 @@ body.light-theme{
     <button class="exp-unid-btn exp-unid-ri" onclick="filtrarFiscalTipo('RI',this)">RI · Interna</button>
     <button class="exp-unid-btn exp-unid-re" onclick="filtrarFiscalTipo('RE',this)">RE · Externa</button>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px">
     <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Pedidos para NF</div><div class="kpi-value" id="fiscal-kpi-total2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">NFs Emitidas</div><div class="kpi-value" id="fiscal-kpi-nf2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Pendentes</div><div class="kpi-value" id="fiscal-kpi-pend2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">Pedidos com NF</div><div class="kpi-value" id="fiscal-kpi-nf2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Sem NF</div><div class="kpi-value" id="fiscal-kpi-pend2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#0ea5e9" title="Conferidos pelo armazém (OK) e ainda sem NF — já podem ser emitidos"><div class="kpi-label">Prontos para emitir</div><div class="kpi-value" id="fiscal-kpi-pronto2">—</div></div>
     <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Cargas</div><div class="kpi-value" id="fiscal-kpi-cargas2">—</div></div>
   </div>
   <!-- Busca de NF/Boleto por Pedido ou Carga -->
@@ -10399,7 +10400,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.321';
+const APP_VERSION = '4.89.323';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -50453,16 +50454,12 @@ async function _cfCarregarTudo(opts){
       const atr = (atribsMinha||[]).find(a=>a.carga===c);
       return { carga:c, rota:normalizarRota(d.rota||'')||d.rota||'—', mot:d.motorista||'', veic:d.veiculo||'', status:d.status, semExp:!!d.semExp,
                total:peds.length, feitos, meus:meus.length, meusFeitos:meus.length-meusPend, meusPend,
+               modo: (atr && atr.modo_conferencia) || null,
                sepIniciada: !!(atr && atr.inicio_separacao), sepPorMim: !!(atr && atr.inicio_separacao) };
     });
     set('conf-kpi-pend', pendentesMeus);
 
-    // ── Disponíveis: cargas PENDENTES sem nenhum conferente atribuído (qualquer um pode pegar e começar) ──
-    const comAtrib = new Set((atribsAll||[]).map(a=>a.carga));
-    _CF.disp = (demandasAtivas||[]).filter(d=>d.status==='pendente' && d.carga && !comAtrib.has(d.carga) && !cargasMinhas.has(d.carga))
-      .map(d=>({id:d.id, carga:d.carga, rota:normalizarRota(d.rota||'')||d.rota||'—'}));
-    // Cargas do ERP ainda sem lançamento na Expedição, para pegar sem esperar (últimos 3 dias; a busca por número alcança qualquer uma)
-    _CF.dispSemExp = (erpPendAll||[]).filter(e=>e.carga && !demMap[e.carga] && !comAtrib.has(e.carga) && !cargasMinhas.has(e.carga) && (Date.now()-new Date(e.chegou_em).getTime()) < 3*864e5).slice(0,30);
+    // (24/11) Não existe mais a lista "Disponíveis para pegar": o conferente PESQUISA a carga pelo número e pega pelo detalhe.
 
     // Seleção: primeira carga da lista na tela larga (se nada escolhido); carga escolhida que saiu da lista continua aberta (ex.: veio da busca)
     if(_CF.sel==null && _CF.lista.length) _CF.sel = _CF.lista[0].carga;
@@ -50533,34 +50530,22 @@ function _cfStatusPill(c){
 function _cfRenderLista(){
   const el = document.getElementById('conf-pedidos-container');
   if(!el) return;
-  const minhas=_CF.lista, disp=_CF.disp;
+  const minhas=_CF.lista;
   let h=`<div class="cf-sec"><span>Minhas cargas</span><span class="cf-n">${minhas.length}</span></div>`;
   if(!minhas.length){
-    h+=`<div class="cf-vazio">${_ic('inbox',26)}<div>Nenhuma carga com você no momento.</div><div style="font-size:.76rem;margin-top:4px">Pegue uma carga abaixo ou busque pelo número.</div></div>`;
+    h+=`<div class="cf-vazio">${_ic('inbox',26)}<div>Nenhuma carga com você no momento.</div><div style="font-size:.76rem;margin-top:4px">Pesquise o número da carga acima para pegar.</div></div>`;
   }
   h+=minhas.map(c=>{
     const sepTxt = c.status==='carregamento' ? 'Concluída' : (c.sepIniciada ? 'Em andamento (você)' : 'Não iniciada');
+    const modoTxt = c.modo==='romaneio' ? ' · por romaneio' : (c.modo==='pedido' ? ' · por pedido' : '');
     return `<button class="cf-cg ${String(_CF.sel)===String(c.carga)?'on':''}" onclick="cfIr(${c.carga})">
       <div class="cf-t"><span class="cf-id">#${c.carga}</span><span class="cf-rt">${escapeHtml(c.rota)}</span>${_cfStatusPill(c)}</div>
       <div class="cf-sb">${escapeHtml(c.mot||'A definir motorista')}${c.veic&&c.veic!=='A DEFINIR VEÍCULO'?' · '+escapeHtml(c.veic):''}</div>
       <div class="cf-mini"><span>Separação</span><b style="grid-column:2/4;text-align:right;font-weight:600;color:var(--text-secondary)">${sepTxt}</b></div>
-      <div class="cf-mini"><span>Conferência</span><div class="cf-pb"><i style="width:${c.total?Math.round(c.feitos/c.total*100):0}%;background:#3b82f6"></i></div><b>${c.feitos}/${c.total}</b></div>
-      ${c.meus?`<div class="cf-mini"><span>Minha parte</span><div class="cf-pb"><i style="width:${Math.round(c.meusFeitos/c.meus*100)}%;background:#10b981"></i></div><b>${c.meusFeitos}/${c.meus}</b></div>`:''}
+      <div class="cf-mini"><span>Carregamento</span><div class="cf-pb"><i style="width:${c.total?Math.round(c.feitos/c.total*100):0}%;background:#3b82f6"></i></div><b>${c.feitos}/${c.total}</b></div>
+      ${c.meus?`<div class="cf-mini"><span>Minha parte${modoTxt}</span><div class="cf-pb"><i style="width:${Math.round(c.meusFeitos/c.meus*100)}%;background:#10b981"></i></div><b>${c.meusFeitos}/${c.meus}</b></div>`:''}
     </button>`;
   }).join('');
-  h+=`<div class="cf-sec"><span>Disponíveis para pegar</span><span class="cf-n">${disp.length}</span></div>`;
-  if(!disp.length) h+=`<div class="cf-vazio" style="padding:16px">Nenhuma carga disponível agora.</div>`;
-  h+=disp.map(d=>`<div class="cf-cg" style="cursor:default">
-      <div class="cf-t"><span class="cf-id">#${d.carga}</span><span class="cf-rt">${escapeHtml(d.rota)}</span><span class="cf-pill cf-p-aguard">Sem conferente</span></div>
-      <button class="cf-btn cf-b-wa" style="width:100%;margin-top:10px" onclick="cfPegarEComecar('${d.id}',${d.carga})">${_ic('play',14)} Pegar e começar</button>
-    </div>`).join('');
-  const dx=_CF.dispSemExp||[];
-  if(dx.length){
-    h+=`<details class="cf-out" style="margin-top:6px"><summary><div class="cf-grp"><h4>Ainda sem lançamento na Expedição (${dx.length})</h4><a>ver</a></div></summary>`+dx.map(e=>`<div class="cf-cg" style="cursor:default">
-      <div class="cf-t"><span class="cf-id">#${e.carga}</span><span class="cf-rt">${e.pedidos} pedido${e.pedidos>1?'s':''} · ${_cerpMoedaCurta(e.valor)}</span><span class="cf-pill cf-p-aguard">${_cerpTempo(e.chegou_em)}</span></div>
-      <button class="cf-btn cf-b-wa" style="width:100%;margin-top:10px" onclick="cfPegarEComecar(null,${e.carga})">${_ic('play',14)} Pegar e começar</button>
-    </div>`).join('')+`</details>`;
-  }
   el.innerHTML=h;
   _featherReplace();
 }
@@ -50580,11 +50565,13 @@ async function _cfCarregarDetalhe(carga){
   } else if(dem.status==='formacao'){
     dem = {...dem, status:'pendente', semExp:true, emFormacao:true};
   }
-  const [baseRaw, own, confs, atribs] = await Promise.all([
+  const [baseRaw, own, confs, atribs, resumoRows] = await Promise.all([
     supaFetch(`base_data?carga=eq.${carga}&select=carga,pedido,mes_ano&order=pedido.asc`),
     supaFetch(`carga_pedidos_conferente?carga=eq.${carga}&select=*`),
     supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=in.("ok","nok")&select=carga,pedido,status,conferente_id,conferente_nome,observacao`),
-    supaFetch(`atribuicoes_armazem?carga=eq.${carga}&select=*`)
+    supaFetch(`atribuicoes_armazem?carga=eq.${carga}&select=*`),
+    // resumo da carga para quem está decidindo se pega (pedidos, clientes, valor) — vem do ERP, não depende do lançamento
+    supaFetch(`v_cargas_erp?carga=eq.${carga}&select=pedidos,clientes,valor`,{_quiet:true}).catch(()=>[])
   ]);
   const pedNums = [...new Set(_filtrarBaseDataMesRecente(baseRaw||[]).map(r=>r.pedido).filter(Boolean))].sort((a,b)=>a-b);
   const pedidos = _cfEstadoPedidos(pedNums, own, confs, myId);
@@ -50592,7 +50579,8 @@ async function _cfCarregarDetalhe(carga){
   const minha = atrs.find(a=>String(a.conferente_id)===String(myId))||null;
   const sepOutro = atrs.find(a=>a.inicio_separacao && String(a.conferente_id)!==String(myId))||null;
   _CF.det = {
-    dem, carga:Number(carga), pedidos, atribs:atrs, minha, sepOutro,
+    dem, carga:Number(carga), pedidos, atribs:atrs, minha, sepOutro, resumo:(resumoRows&&resumoRows[0])||null,
+    modo: (minha && minha.modo_conferencia) || null,
     sepPorMim: !!(minha && minha.inicio_separacao),
     aberta: _CF_ATIVAS.includes(dem.status),
     fechada: ['aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(dem.status),
@@ -50647,7 +50635,8 @@ function _cfRenderDetalhe(){
   let h=`<button class="cf-back" onclick="cfVoltar()">${_ic('chevron-left',18)} Voltar para as cargas</button>
     <div class="cf-hd"><div class="cf-l1"><span class="cf-big">Carga ${D.carga}</span><span class="cf-rt2">${escapeHtml(normalizarRota(dem.rota||'')||dem.rota||'—')}</span><span style="flex:1"></span>${pillSt}</div>
       <div class="cf-meta">${escapeHtml(dem.motorista||'A definir motorista')}${dem.veiculo&&dem.veiculo!=='A DEFINIR VEÍCULO'?' · '+escapeHtml(dem.veiculo):''} · ${dem.semExp?'Aguardando lançamento na Expedição':(_CF_ROTULO_STATUS[st]||escapeHtml(st))}</div>
-      <div class="cf-step">${stp('Separação',0)}<div class="cf-ln ${ord>0?'done':''}"></div>${stp('Conferência',1)}<div class="cf-ln ${ord>1?'done':''}"></div>${stp('Pronta',2)}</div></div>`;
+      ${D.resumo?`<div class="cf-meta" style="margin-top:2px">${D.resumo.pedidos} pedido${D.resumo.pedidos>1?'s':''} · ${D.resumo.clientes} cliente${D.resumo.clientes>1?'s':''} · ${_cerpMoedaCurta(D.resumo.valor)}</div>`:''}
+      <div class="cf-step">${stp('Separação',0)}<div class="cf-ln ${ord>0?'done':''}"></div>${stp('Carregamento',1)}<div class="cf-ln ${ord>1?'done':''}"></div>${stp('Pronta',2)}</div></div>`;
   if(dem.semExp){
     h+=`<div class="cf-banner cf-bn-warn" style="margin-top:14px">${_ic('alert-triangle',20)}<div class="cf-grow"><b>Carga ainda não lançada na Expedição${dem.emFormacao?' (em formação)':''}.</b><br>Pode conferir normalmente: o que você fizer fica salvo e a Expedição já foi avisada. Quando a carga for lançada, tudo é aproveitado.</div></div>`;
   }
@@ -50655,7 +50644,7 @@ function _cfRenderDetalhe(){
     h+=`<div class="cf-banner cf-bn-bad" style="margin-top:14px">${_ic('alert-triangle',20)}<div class="cf-grow">Esta carga está em <b>${escapeHtml(_CF_ROTULO_STATUS[st]||st)}</b> e não pode ser conferida.</div></div>`;
     root.innerHTML=h; _featherReplace(); return;
   }
-  h+=`<div class="cf-seg"><button class="${seg==='conf'?'on':''}" onclick="cfSeg('conf')">Conferência</button><button class="${seg==='sep'?'on':''}" onclick="cfSeg('sep')">Separação</button></div>`;
+  h+=`<div class="cf-seg"><button class="${seg==='conf'?'on':''}" onclick="cfSeg('conf')">Carregamento</button><button class="${seg==='sep'?'on':''}" onclick="cfSeg('sep')">Separação</button></div>`;
   h+= seg==='conf' ? _cfConfHtml() : _cfSepHtml();
   root.innerHTML=h;
   _cfRestoreInputs(root,snap);
@@ -50694,7 +50683,40 @@ function _cfConfHtml(){
   h+=`<div class="cf-prog"><div class="cf-r"><b>Carga toda</b><span>${feitos} de ${total} conferidos</span></div><div class="cf-pb" style="height:9px">${seg.join('')}</div><div class="cf-lg">${leg.join('')}</div>
       ${meus.length?`<div class="cf-r" style="margin:14px 0 6px"><b>Minha parte</b><span>${meusF} de ${meus.length} conferidos${parteFin&&!fechada?' · finalizada':''}</span></div><div class="cf-pb"><i style="width:${meusF/meus.length*100}%;background:#3b82f6"></i></div>`:''}</div>`;
 
-  if(meus.length){
+  const romaneio = !fechada && meus.length>0 && D.modo==='romaneio';
+  const outrosTem = peds.some(p=>p.dono && !p.mine);
+  // Ainda não peguei nada: escolhe como vai carregar — a carga toda (romaneio) ou só os pedidos que marcar
+  if(!fechada && !meus.length && livres.length){
+    const valorTxt = D.resumo ? ` · ${_cerpMoedaCurta(D.resumo.valor)}` : '';
+    h+=`<div class="cf-prog"><div class="cf-r"><b>Como você vai carregar esta carga?</b></div>
+      ${outrosTem
+        ? `<div class="cf-sub" style="margin:6px 0 4px">${peds.filter(p=>p.dono&&!p.mine).length} pedido${peds.filter(p=>p.dono&&!p.mine).length>1?'s':''} já está${peds.filter(p=>p.dono&&!p.mine).length>1?'ão':''} com outro conferente — o romaneio inteiro só fica livre quando ninguém mais tem pedidos dela. Você pode pegar os livres por pedido, abaixo.</div>`
+        : `<div class="cf-sub" style="margin:6px 0 10px"><b>Por romaneio:</b> a carga toda fica com você (${livres.length} pedido${livres.length>1?'s':''}${valorTxt}) e você dá um único OK/NOK.<br><b>Por pedido:</b> marque abaixo só os pedidos que vai conferir; os outros ficam livres para outra pessoa.</div>
+           <button class="cf-btn cf-b-pri" style="width:100%" onclick="cfPegarRomaneio()">${_ic('clipboard',15)} Pegar o romaneio inteiro</button>`}
+    </div>`;
+  }
+  if(romaneio){
+    const pend=meus.filter(p=>p.st==='pend').length, oks=meus.filter(p=>p.st==='ok').length, noks=meus.filter(p=>p.st==='nok').length;
+    const obsNok=(meus.find(p=>p.st==='nok'&&p.obs)||{}).obs||'';
+    h+=`<div class="cf-grp"><h4>Romaneio da carga (${meus.length} pedido${meus.length>1?'s':''})</h4><a onclick="cfSoltarTodos()">Soltar romaneio</a></div>`;
+    if(pend===meus.length){
+      h+=`<div class="cf-pr mine minep" style="flex-direction:column;align-items:stretch"><div class="cf-gr"><div class="cf-nm">Carga ${D.carga} — romaneio inteiro</div><div class="cf-sub">Confira a carga toda e dê um único OK ou NOK. Em NOK, escreva o que está errado.</div></div>
+        <div class="cf-acts" style="margin-top:10px;flex-wrap:wrap"><input class="cf-obs" style="flex:1 1 100%;width:100%" id="obs-rom-${D.carga}" placeholder="Observação (obrigatória no NOK)"><button class="cf-act cf-ok" onclick="cfConferirRomaneio('ok')">${_ic('check',15)} OK carga toda</button><button class="cf-act cf-no" onclick="cfConferirRomaneio('nok')">${_ic('x',15)} NOK</button></div></div>`;
+    } else if(pend===0){
+      const tudoOk = noks===0;
+      h+=`<div class="cf-pr ${tudoOk?'okk':'nok'}"><div class="cf-gr"><div class="cf-nm">Romaneio conferido — ${tudoOk?'OK':'NOK'}</div><div class="cf-sub">${meus.length} pedido${meus.length>1?'s':''}${obsNok?' · <span style="color:#ef4444">'+escapeHtml(obsNok)+'</span>':''}</div></div>
+        <div class="cf-acts"><span class="cf-pill ${tudoOk?'cf-p-pro':'cf-p-bad'}">${tudoOk?'OK':'NOK'}</span><button class="cf-act cf-g" title="Desfazer a conferência do romaneio" onclick="cfDesfazerRomaneio()">${_ic('rotate-ccw',14)}</button></div></div>`;
+    } else {
+      // Entrou pedido novo na carga depois do romaneio (ou parte foi desfeita): só os pendentes voltam a ser conferidos
+      h+=`<div class="cf-pr mine minep" style="flex-direction:column;align-items:stretch"><div class="cf-gr"><div class="cf-nm">Faltam ${pend} pedido${pend>1?'s':''} do romaneio</div><div class="cf-sub">${oks} já OK${noks?', '+noks+' NOK':''}. Dê OK ou NOK só para o que falta.</div></div>
+        <div class="cf-acts" style="margin-top:10px;flex-wrap:wrap"><input class="cf-obs" style="flex:1 1 100%;width:100%" id="obs-rom-${D.carga}" placeholder="Observação (obrigatória no NOK)"><button class="cf-act cf-ok" onclick="cfConferirRomaneio('ok')">${_ic('check',15)} ${pend>1?'OK os '+pend:'OK o pedido'}</button><button class="cf-act cf-no" onclick="cfConferirRomaneio('nok')">${_ic('x',15)} NOK</button><button class="cf-act cf-g" title="Desfazer tudo e conferir de novo" onclick="cfDesfazerRomaneio()">${_ic('rotate-ccw',14)}</button></div></div>`;
+    }
+    h+=`<details class="cf-out"><summary><div class="cf-grp"><h4>Pedidos do romaneio (${meus.length})</h4><a>ver</a></div></summary>${meus.map(p=>`<div class="cf-pr ${p.st==='ok'?'okk':(p.st==='nok'?'nok':'')}"><div class="cf-gr"><div class="cf-nm">Pedido ${p.n}</div><div class="cf-sub">${p.st==='pend'?'Aguardando conferência':'Conferido'}</div></div><span class="cf-pill ${p.st==='ok'?'cf-p-pro':(p.st==='nok'?'cf-p-bad':'cf-p-aguard')}">${p.st==='ok'?'OK':(p.st==='nok'?'NOK':'Pendente')}</span></div>`).join('')}</details>`;
+    if(livres.length){
+      h+=`<div class="cf-banner cf-bn-warn" style="margin-top:14px">${_ic('alert-triangle',18)}<div class="cf-grow"><b>${livres.length} pedido${livres.length>1?'s':''} novo${livres.length>1?'s':''} na carga</b> (${livres.map(p=>p.n).join(', ')}) — ${livres.length>1?'ainda não estão':'ainda não está'} no seu romaneio.</div><button class="cf-btn cf-b-pri cf-sm" onclick="cfPegarRomaneio()">Incluir no meu romaneio</button></div>`;
+    }
+  }
+  if(meus.length && !romaneio){
     h+=`<div class="cf-grp"><h4>Meus pedidos (${meus.length})</h4>${!fechada?`<a onclick="cfSoltarTodos()">Soltar todos</a>`:''}</div>`;
     h+=meus.map(p=>{
       if(fechada) return `<div class="cf-pr ${p.st==='ok'?'okk':'nok'}"><div class="cf-gr"><div class="cf-nm">Pedido ${p.n}</div><div class="cf-sub">Meu · conferido${p.obs?' · '+escapeHtml(p.obs):''}</div></div><span class="cf-pill ${p.st==='ok'?'cf-p-pro':'cf-p-bad'}">${p.st==='ok'?'OK':'NOK'}</span></div>`;
@@ -50704,8 +50726,8 @@ function _cfConfHtml(){
         <div class="cf-acts"><span class="cf-pill ${p.st==='ok'?'cf-p-pro':'cf-p-bad'}">${p.st==='ok'?'OK':'NOK'}</span><button class="cf-act cf-g" title="Desfazer a conferência" onclick="resetarConferencia('${D.carga}','${p.n}')">${_ic('rotate-ccw',14)}</button><button class="cf-act cf-g" title="Soltar este pedido" onclick="cfSoltar(${p.n})">${_ic('unlock',15)}</button></div></div>`;
     }).join('');
   }
-  if(livres.length && !fechada){
-    h+=`<div class="cf-grp"><h4>Livres para pegar (${livres.length})</h4><a onclick="cfMarcarTodos()">Marcar todos</a></div>`;
+  if(livres.length && !fechada && !romaneio){
+    h+=`<div class="cf-grp"><h4>${meus.length?'Livres para pegar':'Por pedido — marque os que vai conferir'} (${livres.length})</h4><a onclick="cfMarcarTodos()">Marcar todos</a></div>`;
     h+=livres.map(p=>`<div class="cf-pr free"><label><input type="checkbox" ${_CF.pick.has(p.n)?'checked':''} onchange="cfTg(${p.n},this.checked)"><div class="cf-gr"><div class="cf-nm">Pedido ${p.n}</div><div class="cf-sub">Livre — marque para pegar</div></div></label><span class="cf-pill cf-p-sep">Livre</span></div>`).join('');
   }
   if(outrosOk.length){
@@ -50847,13 +50869,113 @@ async function cfPegar(){
     _CF.pick.clear();
     if(pegos>0){
       const jaTinha = (await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${myId}&select=id`))||[];
-      await _cfGarantirAtribuicao(dem, {parte_finalizada_em:null});
+      await _cfGarantirAtribuicao(dem, {parte_finalizada_em:null, modo_conferencia:'pedido'});
       // carga ainda pendente: vai para separação (igual ao antigo "Pegar Carga")
       if(!jaTinha.length && dem.status==='pendente' && !dem.semExp){ try{ await _patchStatusDemanda(dem.id,'separacao','conferente_pegar_carga'); }catch(_){} }
     }
     if(pegos===peds.length) showToast(`✅ ${pegos} pedido${pegos>1?'s':''} pego${pegos>1?'s':''} — agora ${pegos>1?'são':'é'} seu${pegos>1?'s':''}.`,'success');
     else if(pegos>0) showToast(`${pegos} pedido(s) pego(s). ${peds.length-pegos} já tinha(m) sido pego(s) por outro conferente.`,'warning');
     else showToast('Esses pedidos já foram pegos por outro conferente.','warning');
+  });
+}
+
+// Carregamento POR ROMANEIO (24/11): a carga toda fica com um conferente só, que dá um único OK/NOK.
+// Pega todos os pedidos livres de uma vez; se algum já é de outra pessoa, não pega nada (desfaz o que entrou).
+async function cfPegarRomaneio(){
+  const D=_CF.det; if(!D) return;
+  await _cfAcao(async ()=>{
+    const myId=USUARIO_LOGADO.id, carga=D.carga;
+    const dem = await _cfDemandaParaAcao(D);
+    if(!dem || !_CF_ATIVAS.includes(dem.status)){ showToast('Esta carga não está mais aberta para conferência.','warning'); return; }
+    // pedidos da carga agora, e quem já tem o quê (o que a tela mostra pode estar velho)
+    const [base, donos] = await Promise.all([
+      supaFetch(`base_data?carga=eq.${carga}&select=carga,pedido,mes_ano`),
+      supaFetch(`carga_pedidos_conferente?carga=eq.${carga}&select=pedido,conferente_id,conferente_nome`)
+    ]);
+    const todos=[...new Set(_filtrarBaseDataMesRecente(base||[]).map(r=>r.pedido).filter(Boolean))];
+    if(!todos.length){ showToast('Esta carga não tem pedidos importados.','warning'); return; }
+    const deOutro=(donos||[]).filter(o=>String(o.conferente_id)!==String(myId) && todos.includes(o.pedido));
+    if(deOutro.length){ showToast(`${deOutro.length} pedido(s) já estão com ${_cfNome(deOutro[0].conferente_nome)} — o romaneio inteiro não está livre.`,'warning',7000); return; }
+    const meusJa=new Set((donos||[]).filter(o=>String(o.conferente_id)===String(myId)).map(o=>o.pedido));
+    const faltam=todos.filter(p=>!meusJa.has(p));
+    let novos=[];
+    if(faltam.length){
+      const agora=new Date().toISOString();
+      const rows=faltam.map(p=>({carga, pedido:p, conferente_id:myId, conferente_nome:USUARIO_LOGADO.nome||null, tomado_em:agora}));
+      // ignore-duplicates: se alguém pegou um pedido no mesmo instante, a linha dele vence e a minha não entra
+      novos=(await supaFetch('carga_pedidos_conferente?on_conflict=carga,pedido',{method:'POST',prefer:'resolution=ignore-duplicates,return=representation',body:JSON.stringify(rows)}))||[];
+      if(novos.length<faltam.length){
+        // alguém foi mais rápido em algum pedido: devolve o que entrou e avisa (romaneio é tudo ou nada)
+        const meus=novos.map(r=>r.pedido);
+        if(meus.length) await supaFetch(`carga_pedidos_conferente?carga=eq.${carga}&conferente_id=eq.${myId}&pedido=in.(${meus.join(',')})`,{method:'DELETE',prefer:'return=minimal'});
+        showToast('Outro conferente pegou pedidos desta carga neste instante — o romaneio inteiro não ficou livre. Nada foi pego; veja a carga e pegue por pedido.','warning',8000);
+        return;
+      }
+    }
+    const jaTinha = (await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${myId}&select=id`))||[];
+    await _cfGarantirAtribuicao(dem, {parte_finalizada_em:null, modo_conferencia:'romaneio'});
+    if(!jaTinha.length && dem.status==='pendente' && !dem.semExp){ try{ await _patchStatusDemanda(dem.id,'separacao','conferente_pegar_carga'); }catch(_){} }
+    showToast(faltam.length ? `✅ Romaneio da carga ${carga} é seu (${todos.length} pedido${todos.length>1?'s':''}).` : `✅ Romaneio da carga ${carga} segue com você.`,'success');
+  });
+}
+
+// OK / NOK do romaneio inteiro: grava a conferência de TODOS os pedidos pendentes meus, de uma vez
+async function cfConferirRomaneio(status){
+  const D=_CF.det; if(!D) return;
+  const obs = document.getElementById(`obs-rom-${D.carga}`)?.value.trim()||'';
+  if(status==='nok' && !obs){ showToast('Escreva na observação o que está errado antes de marcar NOK.','warning'); document.getElementById(`obs-rom-${D.carga}`)?.focus(); return; }
+  await _cfAcao(async ()=>{
+    const myId=USUARIO_LOGADO.id, carga=D.carga;
+    // meus pedidos de verdade (servidor), não o que a tela mostra
+    const [meusRows, exRows] = await Promise.all([
+      supaFetch(`carga_pedidos_conferente?carga=eq.${carga}&conferente_id=eq.${myId}&select=pedido`),
+      supaFetch(`conferencia_pedidos?carga=eq.${carga}&conferente_id=eq.${myId}&select=id,pedido,status`)
+    ]);
+    const meus=(meusRows||[]).map(r=>r.pedido);
+    if(!meus.length){ showToast('Você não está com pedidos desta carga.','warning'); return; }
+    const feitos=new Map((exRows||[]).map(r=>[r.pedido,r]));
+    const alvo=meus.filter(p=>!feitos.has(p) || !['ok','nok'].includes(feitos.get(p).status));
+    if(!alvo.length){ showToast('O romaneio já está conferido.','success'); return; }
+    // carga aberta? (mesma regra da conferência por pedido, inclusive carga ainda não lançada)
+    const [demRows, erpRows] = await Promise.all([
+      supaFetch(`demandas_rota?carga=eq.${carga}&select=id,carga,status,arm_status&order=criado_em.desc&limit=1`).catch(()=>[]),
+      supaFetch(`v_cargas_erp?carga=eq.${carga}&select=situacao`).catch(()=>[])
+    ]);
+    let demanda = demRows && demRows[0];
+    if(demanda && demanda.status==='formacao') demanda = {id:demanda.id, carga, status:'pendente', arm_status:null, semExp:true};
+    else if((!demanda || demanda.status==='cancelado') && erpRows && erpRows[0] && ['pendente','ignorada'].includes(erpRows[0].situacao)) demanda = {id:null, carga, status:'pendente', arm_status:null, semExp:true};
+    if(!demanda || !_CF_ATIVAS.includes(demanda.status)){ showToast('Esta carga não está aberta para conferência (reabra a carga primeiro).','warning'); return; }
+    const agora=new Date().toISOString();
+    const existentes=alvo.filter(p=>feitos.has(p)), novos=alvo.filter(p=>!feitos.has(p));
+    if(existentes.length) await supaFetch(`conferencia_pedidos?carga=eq.${carga}&conferente_id=eq.${myId}&pedido=in.(${existentes.join(',')})`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({status,observacao:obs,conferido_em:agora})});
+    if(novos.length) await supaFetch('conferencia_pedidos',{method:'POST',prefer:'return=minimal',body:JSON.stringify(novos.map(pedido=>({carga, pedido, conferente_id:myId, conferente_nome:USUARIO_LOGADO.nome||'', status, observacao:obs, conferido_em:agora})))});
+    await _cfGarantirAtribuicao(demanda, {parte_finalizada_em:null, modo_conferencia:'romaneio'});
+    // primeira conferência: a carga entra em "Em Carregamento" (igual à conferência por pedido)
+    const stAtual = demanda.arm_status || 'pendente';
+    if(!demanda.semExp && stAtual!=='carregamento' && stAtual!=='carregado_ok'){
+      if(demanda.status==='pendente'){ await _patchStatusDemanda(demanda.id,'separacao','conferir_romaneio_auto'); }
+      const patchData = { arm_status:'carregamento' };
+      if(['pendente','separacao'].includes(demanda.status)){ patchData.status='carregamento'; patchData.ts_carregamento=agora; }
+      await supaFetch(`demandas_rota?id=eq.${demanda.id}`,{method:'PATCH',body:JSON.stringify(patchData)});
+      registrarHistoricoStatus(demanda.id, demanda.status, 'carregamento', 'conferir_romaneio_auto');
+    }
+    showToast(status==='ok' ? `✅ Romaneio conferido — ${alvo.length} pedido${alvo.length>1?'s':''} OK` : `❌ Romaneio marcado como Não OK (${alvo.length} pedido${alvo.length>1?'s':''})`, status==='ok'?'success':'warning');
+    // 100% conferido → fecha sozinha
+    const r = demanda.semExp ? {ok:false, completa:false} : await _cfFecharSeCompleta(carga);
+    if(r.ok) showToast('🏁 Carga '+carga+' 100% conferida — fechada e enviada '+(r.avancou?'para Seguros e Caixa.':'para Aguardando NF.'),'success',6000);
+    else if(r.completa) showToast('Todos os pedidos conferidos, mas a carga não fechou: '+r.motivo,'warning',7000);
+  });
+}
+
+// Desfaz a conferência do romaneio (os pedidos continuam meus, voltam a "pendente")
+async function cfDesfazerRomaneio(){
+  const D=_CF.det; if(!D) return;
+  if(!confirm(`Desfazer a conferência do romaneio da carga ${D.carga}?\n\nOs pedidos continuam com você e voltam a pendente.`)) return;
+  await _cfAcao(async ()=>{
+    const myId=USUARIO_LOGADO.id, carga=D.carga;
+    await supaFetch(`conferencia_pedidos?carga=eq.${carga}&conferente_id=eq.${myId}`,{method:'DELETE',prefer:'return=minimal'});
+    await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${myId}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({parte_finalizada_em:null})}).catch(()=>{});
+    showToast('Conferência do romaneio desfeita.','success');
   });
 }
 
@@ -50875,7 +50997,7 @@ async function cfSoltarTodos(){
     const myId=USUARIO_LOGADO.id, carga=D.carga;
     await supaFetch(`carga_pedidos_conferente?carga=eq.${carga}&conferente_id=eq.${myId}`,{method:'DELETE',prefer:'return=minimal'});
     await supaFetch(`conferencia_pedidos?carga=eq.${carga}&conferente_id=eq.${myId}`,{method:'DELETE',prefer:'return=minimal'});
-    await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${myId}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({parte_finalizada_em:null})}).catch(()=>{});
+    await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&conferente_id=eq.${myId}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({parte_finalizada_em:null, modo_conferencia:null})}).catch(()=>{});
     showToast('Todos os seus pedidos foram soltos.','success');
   });
 }
@@ -51068,33 +51190,6 @@ async function cfAssumirSeparacao(){
     showToast('▶ Separação da carga '+D.carga+' agora é sua.','success',6000);
   });
 }
-// Da lista "Disponíveis": pega a carga e já começa a separar (um clique só)
-async function cfPegarEComecar(demandaId, carga){
-  if(_CF.ocupado) return;
-  _CF.ocupado=true;
-  try{
-    const myId=USUARIO_LOGADO.id;
-    // carga sem lançamento chega aqui com demandaId nulo; se ela foi lançada nesse meio tempo, usa a carga da Expedição
-    if(!demandaId){
-      const _d=((await supaFetch(`demandas_rota?carga=eq.${carga}&status=neq.cancelado&select=id,status&order=criado_em.desc&limit=1`))||[])[0];
-      if(_d) demandaId=_d.id;
-    }
-    const ja=(await supaFetch(`atribuicoes_armazem?carga=eq.${carga}&select=conferente_nome,conferente_id`))||[];
-    if(ja.length){ showToast('A carga '+carga+' já foi pega por '+_cfNome(ja[0].conferente_nome)+'.','warning'); }
-    else{
-      await supaFetch('atribuicoes_armazem',{method:'POST',body:JSON.stringify({
-        demanda_id:demandaId, carga:Number(carga), conferente_id:myId, conferente_nome:USUARIO_LOGADO.nome||null,
-        status:'pendente', criado_em:new Date().toISOString(), inicio_separacao:new Date().toISOString(), separador_nome:USUARIO_LOGADO.nome||null
-      })});
-      showToast('▶ Carga '+carga+' é sua — separação iniciada.','success');
-      window._portalConfSharedCache = null;   // a lista de atribuições compartilhada mudou
-      _CF.sel=Number(carga); _CF.view='detail'; _CF.seg='sep'; _CF.segAuto=null; _CF.pick.clear(); _CF.det=null; _CF.sepDados=null;
-    }
-  }catch(e){ showToast('Erro: '+(e.message||e),'warning'); }
-  finally{ _CF.ocupado=false; }
-  await carregarPortalConferente();
-}
-
 // Busca pelo número da carga: abre a carga (pegar pedidos / reabrir) e mostra o Abastecimento de Loja pendente dela, se houver
 async function buscarCargaConferente(){
   const input = document.getElementById('conf-busca-carga');
@@ -51829,6 +51924,24 @@ function filtrarFiscalTipo(tipo, btn){
   carregarPaginaFiscal();
 }
 
+// Situação fiscal de cada pedido de uma carga (24/11): 'pronto' = conferido OK pelo armazém e ainda sem NF (já pode emitir);
+// 'espera' = sem NF e ainda sem conferência OK (aguardando conferência ou NOK); 'feito' = já tem NF.
+// Só documento tipo 'nf' vale como NF — boleto não (o banco só tem 'nf' e 'boleto').
+function _fiscalSitPedido(dados, ped){
+  const temNF = dados.nfs.some(n=>n.pedido===ped && n.tipo==='nf');
+  if(temNF) return 'feito';
+  return dados.confMap[ped]?.status==='ok' ? 'pronto' : 'espera';
+}
+function _fiscalResumoCarga(dados){
+  const peds=[...dados.pedidos];
+  const r={total:peds.length, comNF:0, semNF:0, prontos:0, espera:0};
+  peds.forEach(p=>{
+    const s=_fiscalSitPedido(dados,p);
+    if(s==='feito') r.comNF++; else { r.semNF++; if(s==='pronto') r.prontos++; else r.espera++; }
+  });
+  return r;
+}
+
 async function carregarPaginaFiscal(){
   const container = document.getElementById('fiscal-cargas-inline');
   if(!container) return;
@@ -51910,17 +52023,23 @@ async function carregarPaginaFiscal(){
       .filter(c => !_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)
       .sort((a,b)=>a-b);
 
-    // KPIs
-    let totalPed=0, totalNF=0, totalPend=0;
+    // KPIs — contados por PEDIDO e só com documento tipo NF (boleto não conta como NF; um pedido com NF+XML conta uma vez).
+    // Pedidos = Com NF + Sem NF. "Prontos" = conferido OK pelo armazém e ainda sem NF.
+    let totalPed=0, totalNF=0, totalPend=0, totalPronto=0;
     cargas.forEach(c=>{
       const d = cargasMap[c];
-      totalPed += d.pedidos.size;
-      totalNF  += d.nfs.length;
-      totalPend+= [...d.pedidos].filter(ped=>!d.nfs.find(n=>n.pedido===ped)).length;
+      const r = _fiscalResumoCarga(d);
+      totalPed += r.total; totalNF += r.comNF; totalPend += r.semNF; totalPronto += r.prontos;
+    });
+    // cargas com pedido pronto para emitir primeiro; depois as que ainda faltam NF; por último as completas (a ordem por carga se mantém dentro de cada grupo)
+    cargas.sort((a,b)=>{
+      const ra=_fiscalResumoCarga(cargasMap[a]), rb=_fiscalResumoCarga(cargasMap[b]);
+      const ga = ra.prontos>0?0:(ra.semNF>0?1:2), gb = rb.prontos>0?0:(rb.semNF>0?1:2);
+      return ga-gb || a-b;
     });
     const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
     set('fiscal-kpi-total2',totalPed); set('fiscal-kpi-nf2',totalNF);
-    set('fiscal-kpi-pend2',totalPend); set('fiscal-kpi-cargas2',cargas.length);
+    set('fiscal-kpi-pend2',totalPend); set('fiscal-kpi-pronto2',totalPronto); set('fiscal-kpi-cargas2',cargas.length);
 
     const perfilUsuario = USUARIO_LOGADO?.perfil||'';
     const podeUpload = ['fiscal_admin','fiscal_op','admin','adm_fiscal','opedor_fiscal'].includes(perfilUsuario);
@@ -51959,11 +52078,12 @@ async function carregarPaginaFiscal(){
         return `<div onclick="abrirModalFiscalDrawer(${carga})" style="background:${bgCol};border:2px solid ${borderCol};border-radius:12px;padding:14px 12px;cursor:pointer;transition:transform .15s,box-shadow .15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 14px rgba(0,0,0,.18)'" onmouseleave="this.style.transform='';this.style.boxShadow=''">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
             <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">${_ic('package',12)} ${carga}</span>
-            <span style="font-size:.68rem;color:var(--text-muted)">${dados.nfs.length} NF(s)</span>
+            <span style="font-size:.68rem;color:var(--text-muted)" title="Pedidos desta carga que já têm NF">${_fiscalResumoCarga(dados).comNF}/${pedidos.length} c/ NF</span>
           </div>
           <div style="font-size:.8rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${(dem.rota||'').replace(/"/g,'&quot;')}">${dem.rota||'—'}</div>
           <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_ic('user',11)} ${dem.motorista||'—'}</div>
           <div style="display:flex;gap:4px;flex-wrap:wrap">
+            ${(()=>{ const rs=_fiscalResumoCarga(dados); return rs.prontos?`<span style="font-size:.65rem;background:#e0f2fe;color:#075985;padding:1px 6px;border-radius:4px;font-weight:800" title="Conferidos e sem NF — já podem ser emitidos">${_ic('file-text',11)} ${rs.prontos} p/ emitir</span>`:(rs.semNF===0?`<span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:800">${_ic('check-circle',11)} NFs completas</span>`:''); })()}
             <span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('check-circle',11)} ${pedOK}</span>
             ${pedNOK?`<span style="font-size:.65rem;background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('x-circle',11)} ${pedNOK}</span>`:''}
             ${pedPend?`<span style="font-size:.65rem;background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('clock',11)} ${pedPend}</span>`:''}
@@ -52020,7 +52140,11 @@ function abrirModalFiscalDrawer(carga){
   if(!dados){ showToast('Carga não encontrada','warning'); return; }
   const dem = dados.demanda;
   const nfsCarga = dados.nfs;
-  const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
+  // pedidos agrupados pelo que o Fiscal precisa fazer: primeiro os prontos para emitir (conferidos, sem NF), depois os que ainda
+  // esperam conferência / estão NOK, por último os que já têm NF (esmaecidos). Dentro de cada grupo, por número.
+  const _ordSit = {pronto:0, espera:1, feito:2};
+  const pedidos = [...dados.pedidos].sort((a,b)=> _ordSit[_fiscalSitPedido(dados,a)]-_ordSit[_fiscalSitPedido(dados,b)] || a-b);
+  const _resumoDrawer = _fiscalResumoCarga(dados);
   const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
   const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
   const cardBorder = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
@@ -52030,7 +52154,15 @@ function abrirModalFiscalDrawer(carga){
   const _rotaEsc  = _jsAttrStr((dem?.rota||''));
   const _motorEsc = _jsAttrStr((dem?.motorista||''));
 
-  const pedidosHTML = pedidos.map(ped=>{
+  const _tituloGrupo = {
+    pronto:`Prontos para emitir NF (${_resumoDrawer.prontos})`,
+    espera:`Aguardando conferência / NOK (${_resumoDrawer.espera})`,
+    feito:`Com NF emitida (${_resumoDrawer.comNF})`
+  };
+  const pedidosHTML = pedidos.map((ped,_i)=>{
+    const _sit      = _fiscalSitPedido(dados, ped);
+    const _cabGrupo = (_i===0 || _fiscalSitPedido(dados,pedidos[_i-1])!==_sit)
+      ? `<div style="font-size:.72rem;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:${_sit==='pronto'?'#0369a1':_sit==='feito'?'#047857':'#92400e'};margin:${_i===0?'0':'14px'} 0 6px">${_tituloGrupo[_sit]}</div>` : '';
     const conf      = dados.confMap[ped];
     const nfsPed    = nfsCarga.filter(n=>n.pedido===ped);
     const stConf    = conf?.status;
@@ -52089,7 +52221,7 @@ function abrirModalFiscalDrawer(carga){
     const _alertaKey = `${carga}_${ped}`;
     const _ativo = (window._meusAlertas||new Set()).has(_alertaKey);
 
-    return `<div style="background:${confBg};border:1px solid ${confBorder};border-radius:9px;padding:10px 14px;margin-bottom:8px">
+    return `${_cabGrupo}<div style="background:${confBg};border:1px solid ${_sit==='pronto'&&!euPeguei&&!outroPegou?'#7dd3fc':confBorder};${_sit==='pronto'?'border-left:4px solid #0ea5e9;':''}border-radius:9px;padding:10px 14px;margin-bottom:8px;${_sit==='feito'?'opacity:.78;':''}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:${nfsPed.length?'8px':'4px'}">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span style="font-size:.85rem;font-weight:700">Pedido ${ped}</span>
@@ -52148,7 +52280,7 @@ function abrirModalFiscalDrawer(carga){
         <span style="font-size:.72rem;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:5px;font-weight:700">${_ic('check-circle',11)} ${pedOK} OK</span>
         ${pedNOK?`<span style="font-size:.72rem;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:5px;font-weight:700">${_ic('x-circle',11)} ${pedNOK} NOK</span>`:''}
         ${pedPend?`<span style="font-size:.72rem;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:5px;font-weight:700">${_ic('clock',11)} ${pedPend} s/ conf.</span>`:''}
-        <span style="font-size:.72rem;color:var(--text-muted)">${nfsCarga.length} NF(s)</span>
+        <span style="font-size:.72rem;color:var(--text-muted)" title="Pedidos desta carga que já têm NF">${_resumoDrawer.comNF}/${pedidos.length} c/ NF</span>
         ${timeInfo}
         <button onclick="fecharModalFiscalDrawer()" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:5px 12px;font-size:.8rem;font-weight:700;cursor:pointer">✕ Fechar</button>
       </div>
@@ -65583,7 +65715,7 @@ function _cftvRenderTable(data){
         <div class="cf-in"><span data-feather="search" style="width:18px;height:18px"></span><input type="number" id="conf-busca-carga" inputmode="numeric" placeholder="Buscar carga pelo número" onkeydown="if(event.key==='Enter') buscarCargaConferente()"></div>
         <button class="cf-btn cf-b-pri" onclick="buscarCargaConferente()">Buscar</button>
       </div>
-      <p class="cf-ex">Digite o número da carga para pegar pedidos, reabrir uma carga fechada ou confirmar um Abastecimento de Loja.</p>
+      <p class="cf-ex">Digite o número da carga para ver o resumo e pegar: separar (romaneio por produto) e carregar por pedido ou por romaneio. Também serve para reabrir uma carga fechada ou confirmar um Abastecimento de Loja.</p>
       <div id="conf-busca-resultado"></div>
       <div id="conf-pedidos-container"><p class="cf-vazio">Carregando suas cargas...</p></div>
       <details class="cf-rank"><summary>Ranking do mês ▾</summary>
