@@ -2491,6 +2491,11 @@ body.light-theme{
 #page-cme .cme-pill{font-size:.68rem;font-weight:800;padding:3px 9px;border-radius:99px;text-transform:uppercase;letter-spacing:.02em}
 #page-cme .cme-setor{background:#ede9fe;color:#5b21b6}
 #page-cme .cme-pend{background:#fef3c7;color:#92400e;border:1px solid #f59e0b}
+#page-cme .cme-prazo.ok{background:#d1fae5;color:#065f46}
+#page-cme .cme-prazo.warn{background:#fef3c7;color:#92400e;border:1px solid #f59e0b}
+#page-cme .cme-prazo.late{background:#dc2626;color:#fff}
+#page-cme .cme-prazo-ed{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#page-cme .cme-prazo-ed input{width:90px}
 #page-cme .cme-l2{font-size:.83rem;color:var(--text-secondary)}
 #page-cme .cme-l3{font-size:.85rem;color:var(--text-primary)}
 #page-cme .cme-l4{font-size:.75rem;color:var(--text-muted)}
@@ -10337,7 +10342,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.308';
+const APP_VERSION = '4.89.309';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20372,6 +20377,36 @@ function _cmeHa(dt){
   if(h < 48) return h + 'h' + (m%60 ? String(m%60).padStart(2,'0') : '');
   return Math.floor(h/24) + ' dias';
 }
+// Prazo para o setor dar a devolutiva ao CME (minutos, contado desde a abertura do chamado). Padrao 10.
+const _CME_PRAZO_PADRAO = 10;
+const _cmePrazoMin = c => (Number(c.prazo_min) > 0 ? Number(c.prazo_min) : _CME_PRAZO_PADRAO);
+const _cmeVenceEm = c => new Date(c.aberto_em).getTime() + _cmePrazoMin(c) * 60000;
+function _cmeDur(ms, arredondaCima){
+  const m = Math.max(0, arredondaCima ? Math.ceil(ms/60000) : Math.floor(ms/60000));
+  if(m < 1) return 'menos de 1 min';
+  if(m < 60) return m + ' min';
+  const h = Math.floor(m/60);
+  if(h < 48) return h + 'h' + (m%60 ? ' ' + m%60 + 'min' : '');
+  return Math.floor(h/24) + ' dias';
+}
+function _cmePrazoInfo(c){
+  const r = _cmeVenceEm(c) - Date.now();
+  if(r >= 0) return { cls: r <= 120000 ? 'warn' : 'ok', txt: 'Retorno em ' + _cmeDur(r, true) };
+  return { cls:'late', txt:'Retorno atrasado há ' + _cmeDur(-r, false) };
+}
+const _cmeAtrasado = c => _cmeEhAberto(c) && _cmeVenceEm(c) < Date.now();
+function cmeAtualizarPrazos(){
+  document.querySelectorAll('#page-cme .cme-prazo[data-id]').forEach(el => {
+    const c = _CME.chamados.find(x => x.id === el.dataset.id);
+    if(!c || !_cmeEhAberto(c)) return;
+    const p = _cmePrazoInfo(c);
+    el.className = 'cme-pill cme-prazo ' + p.cls;
+    el.textContent = p.txt;
+  });
+  const k = document.getElementById('cme-kpi-atraso');
+  if(k){ const n = _CME.chamados.filter(_cmeAtrasado).length; k.textContent = n; k.style.color = n ? '#dc2626' : 'inherit'; }
+}
+setInterval(() => { try{ if(document.getElementById('page-cme')?.offsetParent) cmeAtualizarPrazos(); }catch(e){} }, 15000);
 function _cmeSetorLabel(s){
   if(typeof MOTIVO_DEVOLUCAO_SETOR_LABEL !== 'undefined' && MOTIVO_DEVOLUCAO_SETOR_LABEL[s]) return MOTIVO_DEVOLUCAO_SETOR_LABEL[s];
   return _CME.setores.find(x=>x.setor===s)?.rotulo || s || '—';
@@ -20485,6 +20520,7 @@ function cmeRender(){
     '<div class="cme-kpi"><span>Em aberto</span><b>' + kpi.abertos + '</b></div>' +
     '<div class="cme-kpi"><span>Sem nenhuma tentativa</span><b style="color:#dc2626">' + kpi.semTent + '</b></div>' +
     '<div class="cme-kpi"><span>Em tratativa</span><b style="color:#b45309">' + kpi.trat + '</b></div>' +
+    '<div class="cme-kpi"><span>Retorno atrasado</span><b id="cme-kpi-atraso" style="color:' + (_CME.chamados.filter(_cmeAtrasado).length ? '#dc2626' : 'inherit') + '">' + _CME.chamados.filter(_cmeAtrasado).length + '</b></div>' +
     '<div class="cme-kpi"><span>Parados há +24h</span><b style="color:' + (kpi.parados ? '#dc2626' : 'inherit') + '">' + kpi.parados + '</b></div>' +
     '<div class="cme-kpi"><span>Encerrados hoje</span><b style="color:#059669">' + kpi.hoje + '</b></div>' +
   '</div>' +
@@ -20541,11 +20577,12 @@ function _cmeCardHtml(c){
         (c.cliente ? '<span class="cme-cli">' + escapeHtml(c.cliente) + '</span>' : '') +
         '<span class="cme-pill" style="background:' + st.bg + ';color:' + st.c + '">' + st.t + '</span>' +
         (aberto ? '<span class="cme-pill cme-pend" title="Setor que ainda precisa dar a devolutiva deste chamado">Aguardando devolutiva: ' + escapeHtml(_cmeSetorLabel(c.setor)) + '</span>' : '<span class="cme-pill cme-setor">' + escapeHtml(_cmeSetorLabel(c.setor)) + '</span>') +
+        (aberto ? (() => { const p = _cmePrazoInfo(c); return '<span class="cme-pill cme-prazo ' + p.cls + '" data-id="' + c.id + '" title="Prazo de ' + _cmePrazoMin(c) + ' min para o setor dar a devolutiva ao CME, contado desde a abertura">' + p.txt + '</span>'; })() : '') +
         (parado ? '<span class="cme-pill" style="background:#dc2626;color:#fff">Parado há ' + _cmeHa(ult ? ult.tentativa_em : c.aberto_em) + '</span>' : '') +
       '</div>' +
       '<div class="cme-l2">' + info.join(' · ') + '</div>' +
       '<div class="cme-l3">' + (aberto ? _cmeAcionarHtml(c) : 'Encerrado ' + _cmeFmt(c.encerrado_em) + (c.encerrado_por ? ' por ' + escapeHtml(c.encerrado_por) : '')) + '</div>' +
-      '<div class="cme-l4">Aberto ' + _cmeFmt(c.aberto_em) + (aberto ? ' (há ' + _cmeHa(c.aberto_em) + ')' : '') + ' · ' + t.length + (t.length === 1 ? ' tentativa' : ' tentativas') + (ult ? ' · última ' + _cmeFmt(ult.tentativa_em) : '') + '</div>' +
+      '<div class="cme-l4">Aberto ' + _cmeFmt(c.aberto_em) + (aberto ? ' (há ' + _cmeHa(c.aberto_em) + ') · prazo de retorno ' + _cmePrazoMin(c) + ' min' : '') + ' · ' + t.length + (t.length === 1 ? ' tentativa' : ' tentativas') + (ult ? ' · última ' + _cmeFmt(ult.tentativa_em) : '') + '</div>' +
     '</div>';
   if(exp) h += _cmeDetalheHtml(c, t);
   return h + '</div>';
@@ -20569,6 +20606,9 @@ function _cmeDetalheHtml(c, t){
     const s = _cmeSetor(c.setor);
     const canalOpts = Object.keys(_CME_CANAIS).map(k => '<option value="' + k + '">' + _CME_CANAIS[k] + '</option>').join('');
     const resOpts = ['sem_resposta','em_andamento','setor_vai_resolver','recusado'].map(k => '<option value="' + k + '">' + _CME_RES[k].t + '</option>').join('');
+    h += '<div class="cme-sec"><div class="cme-lab">Prazo para o retorno do setor</div><div class="cme-prazo-ed">' +
+      '<input class="cme-in" id="cme-p-min" type="number" min="1" max="10080" value="' + _cmePrazoMin(c) + '"> <span>minutos, contados desde a abertura (vence ' + _cmeFmt(_cmeVenceEm(c)) + ')</span>' +
+      '<button class="cme-btn" onclick="cmeSalvarPrazo(\'' + c.id + '\')">Salvar prazo</button></div></div>';
     h += '<div class="cme-sec"><div class="cme-lab">Registrar nova tentativa</div><div class="cme-form">' +
       '<label>Falou com<input class="cme-in" id="cme-t-contato" value="' + escapeHtml(s?.responsavel || '') + '" placeholder="Nome de quem atendeu"></label>' +
       '<label>Como<select class="cme-in" id="cme-t-canal">' + canalOpts + '</select></label>' +
@@ -20606,6 +20646,17 @@ async function cmeSalvarTentativa(id){
     await supaFetch('cme_tentativas', { method:'POST', body: JSON.stringify({ chamado_id:id, registrado_por:_cmeUsuario(), contato:contato || null, canal, resultado, observacao:obs || null }) });
     if(c.status === 'aberto') await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ status:'em_tratativa' }) });
     showToast('Tentativa registrada', 'success');
+    await cmeCarregar(); cmeRender();
+  });
+}
+async function cmeSalvarPrazo(id){
+  await _cmeAcao(async () => {
+    const c = _CME.chamados.find(x => x.id === id);
+    if(!c || !_cmeEhAberto(c)) return;
+    const v = parseInt(document.getElementById('cme-p-min')?.value, 10);
+    if(!(v >= 1 && v <= 10080)){ showToast('Informe o prazo em minutos (de 1 a 10080)', 'warning'); return; }
+    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ prazo_min: v }) });
+    showToast('Prazo de retorno: ' + v + ' min', 'success');
     await cmeCarregar(); cmeRender();
   });
 }
@@ -20650,6 +20701,7 @@ async function cmeNovoChamado(){
     '<label>Nº do pedido *<input class="cme-in" id="cme-n-ped" inputmode="numeric" onblur="cmeBuscarPedido()" placeholder="Ex.: 12345"></label>' +
     '<label>Setor a acionar *<select class="cme-in" id="cme-n-setor" onchange="cmeMostrarResp()">' + setOpts + '</select></label>' +
     '<label class="cme-full">Motivo<select class="cme-in" id="cme-n-mot" onchange="cmeMotivoMudou()">' + motOpts + '</select></label>' +
+    '<label>Prazo para o retorno (min)<input class="cme-in" id="cme-n-prazo" type="number" min="1" max="10080" value="' + _CME_PRAZO_PADRAO + '"></label>' +
     '<div class="cme-full cme-mut" id="cme-n-info"></div>' +
     '<label class="cme-full">Descrição do problema<textarea class="cme-in" id="cme-n-desc" rows="3" placeholder="O que aconteceu"></textarea></label>' +
     '<div class="cme-full cme-acoes"><button class="cme-btn" onclick="cmeFecharModal()">Cancelar</button><button class="cme-btn pri" onclick="cmeSalvarNovo()">Abrir chamado</button></div></div>');
@@ -20691,12 +20743,14 @@ async function cmeSalvarNovo(){
     const desc = (document.getElementById('cme-n-desc')?.value || '').trim();
     if(!pedido){ showToast('Informe o número do pedido', 'warning'); return; }
     if(!setor){ showToast('Escolha o setor a acionar', 'warning'); return; }
+    const prazo = parseInt(document.getElementById('cme-n-prazo')?.value, 10);
+    if(!(prazo >= 1 && prazo <= 10080)){ showToast('Informe o prazo do retorno em minutos (de 1 a 10080)', 'warning'); return; }
     if(!_CME.novo?.buscou) await cmeBuscarPedido();
     const n = _CME.novo || {};
     const mot = _ocorrMotivosCache.find(m => m.id === motivoId);
     const r = await supaFetch('cme_chamados', { method:'POST', body: JSON.stringify({
       origem:'manual', pedido, carga:n.carga ?? null, rota:n.rota || null, cliente:n.cliente || null, motorista:n.motorista || null, veiculo:n.veiculo || null,
-      motivo_id: motivoId || null, motivo_nome: mot?.nome || null, setor, descricao: desc || null, aberto_por: _cmeUsuario() }) });
+      motivo_id: motivoId || null, motivo_nome: mot?.nome || null, setor, descricao: desc || null, prazo_min: prazo, aberto_por: _cmeUsuario() }) });
     cmeFecharModal();
     showToast('Chamado CME #' + (r?.[0]?.numero ?? '') + ' aberto para ' + _cmeSetorLabel(setor), 'success');
     _CME.statusF = 'abertos'; _CME.aberto = r?.[0]?.id || null;
@@ -49784,6 +49838,20 @@ function _cfEstadoPedidos(pedidos, own, confs, myId){
              mine: !!(dono && dono.id!=null && String(dono.id)===String(myId)) };
   });
 }
+// Separação parada: só dá para assumir a separação de outra pessoa depois deste tempo sem atividade (administrador pode sempre)
+const _CF_SEP_PARADA_MIN = 120;
+function _cfDur(min){
+  if(min<1) return 'menos de 1 min';
+  if(min<60) return Math.round(min)+' min';
+  const h=Math.floor(min/60);
+  if(h<48) return h+'h'+(Math.round(min)%60 ? ' '+(Math.round(min)%60)+'min' : '');
+  return Math.floor(h/24)+' dias';
+}
+function _cfSepAtividade(sepOutro, ultimoItem){
+  const t = [sepOutro && sepOutro.inicio_separacao, ultimoItem].filter(Boolean).map(x=>new Date(x).getTime()).filter(x=>!isNaN(x));
+  const ult = t.length ? Math.max.apply(null,t) : null;
+  return { ultimo: ult, min: ult==null ? Infinity : (Date.now()-ult)/60000 };
+}
 function _cfNome(n){
   const p=String(n||'').trim().split(/\s+/)[0]||'—';
   return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();
@@ -49983,7 +50051,7 @@ function _cfConfHtml(){
 async function _cfCarregarSep(){
   const D=_CF.det, carga=D.carga, dem=D.dem;
   const peds=D.pedidos.map(p=>p.n);
-  if(!peds.length){ _CF.sepDados={itens:[],ordem:[],alts:[]}; return; }
+  if(!peds.length){ _CF.sepDados={itens:[],ordem:[],alts:[],ultimoItem:'',nItens:0}; return; }
   const [itensErp, jaSep, ordemRows, altsRaw] = await Promise.all([
     _armBuscaItens(peds),
     supaFetch(`separacao_itens?carga=eq.${carga}&select=*`).catch(()=>[]),
@@ -49996,7 +50064,8 @@ async function _cfCarregarSep(){
   const tsSep = dem.ts_separacao;
   const alts = tsSep ? (altsRaw||[]).filter(a=>new Date(a.detectado_em) > new Date(tsSep)) : [];
   const itens = _agregarItensRomaneio(carga, peds, itensPorPedido, separadosMap, alts);
-  _CF.sepDados = {itens, ordem:ordemRows||[], alts};
+  const ultimoItem = (jaSep||[]).reduce((m,r)=> (r.separado_em && r.separado_em>m) ? r.separado_em : m, '');
+  _CF.sepDados = {itens, ordem:ordemRows||[], alts, ultimoItem, nItens:(jaSep||[]).length};
 }
 
 function _cfSepHtml(){
@@ -50025,6 +50094,12 @@ function _cfSepHtml(){
         <div class="cf-dock"><div class="cf-tx">Você pode ter várias cargas em separação ao mesmo tempo.</div></div>`;
   } else if(sepOutro){
     h+=`<div class="cf-banner cf-bn-pu">${_ic('lock',18)}<div class="cf-grow">Esta separação está com <b>${escapeHtml(_cfNome(sepOutro.separador_nome||sepOutro.conferente_nome))}</b>. Você pode continuar conferindo os seus pedidos normalmente.</div></div>`;
+    const at=_cfSepAtividade(sepOutro, sd.ultimoItem);
+    const podeAssumir = USUARIO_LOGADO?.perfil==='admin' || at.min>=_CF_SEP_PARADA_MIN;
+    const resumoAt = `Começou em ${_cfFmt(sepOutro.inicio_separacao)} · ${sd.nItens} produto${sd.nItens===1?'':'s'} separado${sd.nItens===1?'':'s'}${sd.ultimoItem?' · último em '+_cfFmt(sd.ultimoItem):''} · parada há ${_cfDur(at.min)}`;
+    h+= podeAssumir
+      ? `<div class="cf-dock"><div class="cf-tx"><b>Separação parada.</b><br>${resumoAt}</div><button class="cf-btn cf-b-wa" onclick="cfAssumirSeparacao()">${_ic('play',15)} Assumir separação</button></div>`
+      : `<div class="cf-dock"><div class="cf-tx">${resumoAt}.<br>Só dá para assumir depois de ${_CF_SEP_PARADA_MIN/60} h sem atividade (ou pelo administrador).</div></div>`;
   } else {
     h+=`<div class="cf-dock"><div class="cf-tx"><b>Ninguém começou a separar esta carga.</b><br>A separação vale para o romaneio inteiro, não pedido por pedido.</div><button class="cf-btn cf-b-wa" onclick="cfComecarSeparacao()">${_ic('play',15)} Começar separação</button></div>`;
   }
@@ -50263,6 +50338,47 @@ async function cfComecarSeparacao(){
     await _cfGarantirAtribuicao({id:D.dem.id, carga:D.carga}, {inicio_separacao:new Date().toISOString(), separador_nome:USUARIO_LOGADO.nome||null});
     _CF.seg='sep'; _CF.sepDados=null;
     showToast('▶ Separação da carga '+D.carga+' é sua. Você pode separar outras cargas ao mesmo tempo.','success');
+  });
+}
+// Assumir a separação de outra pessoa (separação parada). Registra a troca em separacao_transferencias.
+async function cfAssumirSeparacao(){
+  const D=_CF.det; if(!D) return;
+  await _cfAcao(async ()=>{
+    const myId=USUARIO_LOGADO.id, meuNome=USUARIO_LOGADO.nome||null;
+    const dem=((await supaFetch('demandas_rota?id=eq.'+D.dem.id+'&select=id,carga,status'))||[])[0];
+    if(!dem || !['pendente','separacao'].includes(dem.status)){ showToast('Esta carga não está mais em separação.','warning'); return; }
+    const atrs=(await supaFetch('atribuicoes_armazem?carga=eq.'+D.carga+'&select=*'))||[];
+    if(atrs.find(a=>String(a.conferente_id)===String(myId) && a.inicio_separacao)){ showToast('A separação desta carga já é sua.','success'); return; }
+    const outro=atrs.find(a=>a.inicio_separacao && String(a.conferente_id)!==String(myId));
+    if(!outro){ showToast('Ninguém está separando esta carga agora — use "Começar separação".','warning'); return; }
+    const itens=(await supaFetch('separacao_itens?carga=eq.'+D.carga+'&select=separado_em').catch(()=>[]))||[];
+    const ultimoItem=itens.reduce((m,r)=> (r.separado_em && r.separado_em>m) ? r.separado_em : m, '');
+    const at=_cfSepAtividade(outro, ultimoItem);
+    if(USUARIO_LOGADO?.perfil!=='admin' && at.min<_CF_SEP_PARADA_MIN){
+      showToast('A separação teve atividade há '+_cfDur(at.min)+'. Só dá para assumir depois de '+(_CF_SEP_PARADA_MIN/60)+' h parada.','warning',7000); return;
+    }
+    const quem=_cfNome(outro.separador_nome||outro.conferente_nome);
+    const NL=String.fromCharCode(10);
+    const msg=[
+      'Assumir a separação da carga '+D.carga+'?','',
+      'Hoje ela está com '+quem+': começou em '+_cfFmt(outro.inicio_separacao)+', '+itens.length+' produto(s) separado(s)'+(ultimoItem?', último em '+_cfFmt(ultimoItem):'')+', parada há '+_cfDur(at.min)+'.','',
+      'A separação passa a ser sua e '+quem+' deixa de poder separar esta carga. Os pedidos dele na conferência continuam com ele. A troca fica registrada.'
+    ].join(NL);
+    if(!confirm(msg)) return;
+    // 1) registra a troca (se falhar, nada muda)
+    await supaFetch('separacao_transferencias',{method:'POST',prefer:'return=minimal',body:JSON.stringify({
+      carga:Number(D.carga), de_id:outro.conferente_id||null, de_nome:outro.separador_nome||outro.conferente_nome||null,
+      para_id:myId, para_nome:meuNome, inicio_anterior:outro.inicio_separacao||null, ultimo_item_em:ultimoItem||null,
+      itens_separados:itens.length, parada_min:Number.isFinite(at.min)?Math.round(at.min):null
+    })});
+    // 2) libera a separação de quem estava
+    const lib=await supaFetch('atribuicoes_armazem?id=eq.'+outro.id+'&inicio_separacao=not.is.null',{method:'PATCH',body:JSON.stringify({inicio_separacao:null, separador_nome:''})});
+    if(!lib || !lib.length){ showToast('A separação já mudou de dono enquanto você confirmava. Atualize a carga.','warning'); return; }
+    // 3) passa para mim
+    await _cfGarantirAtribuicao({id:D.dem.id, carga:D.carga}, {inicio_separacao:new Date().toISOString(), separador_nome:meuNome});
+    window._portalConfSharedCache=null;
+    _CF.seg='sep'; _CF.sepDados=null;
+    showToast('▶ Separação da carga '+D.carga+' agora é sua.','success',6000);
   });
 }
 // Da lista "Disponíveis": pega a carga e já começa a separar (um clique só)
