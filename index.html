@@ -10342,7 +10342,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.317';
+const APP_VERSION = '4.89.318';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -33846,6 +33846,30 @@ async function _paraleloLimitado(itens, limite, fn){
   return out;
 }
 
+// Pedidos de carga SEM lançamento (carga "órfã": frete etc.) entram em _calcularBaseFiltrada().bd mas NÃO em _carregarOtifMes().bdRows — e as datas de entrega (entrega_datas /
+// entregas_motorista) só são buscadas para os pedidos de bdRows. Resultado: o pedido órfão com entrega confirmada era tratado como "sem entrega" (caía no fim da rota).
+// Achado 24/11: 5 pedidos da carga 16688 (Piauí) mostrados como "pelo fim da rota" tendo entrega confirmada. Esta função busca as entregas dos pedidos que faltam e as soma a
+// dados.entRows (só entram na conta os pedidos que o chamador passa em bd; as estatísticas do OTIF principal, que usam bdRows, não mudam). Idempotente por pedido.
+async function _completarEntregasOrfas(bd, dados, mes){
+  if(!dados || !bd || !bd.length) return;
+  const jaTem = dados._pedComEntrega || (dados._pedComEntrega = new Set((dados.bdRows||[]).map(b=>String(b.pedido))));
+  const faltam = [...new Set(bd.map(b=>b.pedido != null ? String(b.pedido) : null).filter(p=>p && !jaTem.has(p)))];
+  if(!faltam.length) return;
+  const prox = _proximoMes(mes), novos = [];
+  for(let i = 0; i < faltam.length; i += 400){
+    const ch = faltam.slice(i, i+400).join(',');
+    const [a, b, c] = await Promise.all([
+      supaFetch(`entrega_datas?pedido=in.(${ch})&mes_ano=eq.${mes}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`entrega_datas?pedido=in.(${ch})&mes_ano=eq.${prox}&select=pedido,data_saida,data_entrega`,{_quiet:true}).catch(()=>[]),
+      supaFetch(`entregas_motorista?pedido=in.(${ch})&select=pedido,data_confirmacao&limit=5000`,{_quiet:true}).catch(()=>[]),
+    ]);
+    novos.push(...(a||[]), ...(b||[]));
+    (c||[]).forEach(e=>{ if(e.pedido && e.data_confirmacao) novos.push({pedido:e.pedido, data_entrega:e.data_confirmacao}); });
+  }
+  faltam.forEach(p=>jaTem.add(p));
+  dados.entRows = (dados.entRows||[]).concat(novos);
+}
+
 // Fonte única de OTIF — cache por mês+unidade (Map) para suportar consultas simultâneas sem corrida
 const _otifCacheMap = new Map();
 const _otifPromiseMap = new Map();
@@ -37667,6 +37691,7 @@ async function _pnHtmlEntregaPorRota(mes, und, ctx, rire){
   const chaveCache = undSel ? `${mes}__${undSel}` : mes;
   if(mes === hoje.slice(0,7)) _otifCacheMap.delete(chaveCache);
   const [base, dados] = await Promise.all([ _calcularBaseFiltrada(mes, rire, undSel), _carregarOtifMes(mes, undSel || undefined) ]);
+  await _completarEntregasOrfas(base.bd, dados, mes);   // entrega confirmada dos pedidos de carga sem lançamento (senão caíam no fim da rota)
   const entMap = new Map();
   (dados.entRows||[]).forEach(e=>{ const de = e.data_entrega ? String(e.data_entrega).slice(0,10) : null; if(!de) return; const k = String(e.pedido); if(!entMap.has(k) || de < entMap.get(k)) entMap.set(k, de); });
   const itens = [], vistos = new Set(); let negativos = 0;
