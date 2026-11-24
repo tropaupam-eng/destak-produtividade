@@ -10342,7 +10342,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.316';
+const APP_VERSION = '4.89.317';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -32492,7 +32492,7 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
     // lancamentos do mês — inclui motorista E ajudante para rankings
     supaFetch(`lancamentos?ts=gte.${iniMes}T00:00:00-03:00&ts=lte.${fimMes}T23:59:59-03:00${undFilter}&select=carga,rota,rire,motorista,ajudante,ts,fonte&limit=5000`),
     // Cargas que saíram no período (usadas mais abaixo pra achar as sem lançamento)
-    supaFetch(`demandas_rota?ts_saiu=gte.${iniMes}T00:00:00-03:00&ts_saiu=lte.${fimMes}T23:59:59-03:00&status=in.(saiu,fim_viagem,concluido)&select=carga`).catch(()=>[]),
+    supaFetch(`demandas_rota?ts_saiu=gte.${iniMes}T00:00:00-03:00&ts_saiu=lte.${fimMes}T23:59:59-03:00&status=in.(saiu,fim_viagem,concluido)&select=carga,rota`).catch(()=>[]),
   ]);
   // 1. Rotas RI diretamente do banco
   const todasRotas = _rotasRaw || [];
@@ -32580,6 +32580,20 @@ async function _calcularBaseFiltrada(mesFiltro, rireFiltro, undFiltro, iniMes, f
         `base_data?mes_ano=eq.${mesFiltro}&select=${BD_SELECT}&limit=20000`
       ).catch(()=>[]) || [];
     }
+  }
+
+  // Carga SEM lançamento (frete etc.) tem base_data.rota em branco e nenhum lançamento pra dar a rota: usa a rota da carga na Expedição (demandas_rota).
+  // Sem isso os pedidos dela viravam "—" em Prazo de entrega por rota e OTIF por rota (achado 24/11, pedido 70938 / carga 16639 = CEARÁ). Só mexe em carga órfã
+  // com rota em branco; copia a linha (não altera BASE_DATA em memória). Nenhuma carga órfã de maio a nov/2026 é de rota interna, então R.I./R.E. não muda.
+  { const _orfSet = new Set(cargasOrfas), _rotaExp = new Map();
+    drSaiu.forEach(r=>{ if(r.carga != null && r.rota && String(r.rota).trim() && !_rotaExp.has(String(r.carga))) _rotaExp.set(String(r.carga), normalizarRota(String(r.rota).trim()) || String(r.rota).toUpperCase().trim()); });
+    baseDataSupa = baseDataSupa.map(r=>{
+      if(String(r.rota||'').trim()) return r;
+      const c = String(Math.round(Number(r.carga)));
+      if(!_orfSet.has(c) || cargaRota[Number(c)]) return r;
+      const rt = _rotaExp.get(c);
+      return rt ? { ...r, rota: rt } : r;
+    });
   }
 
   // Filtrar por RI/RE/Todos conforme seleção do usuário
