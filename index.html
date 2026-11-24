@@ -3903,6 +3903,13 @@ body.light-theme{
     <button onclick="abrirModalAgendamento(null)" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:.85rem;font-weight:700;cursor:pointer"><span data-feather="plus" style="width:14px;height:14px;vertical-align:-2px"></span> Novo Agendamento</button>
   </div>
 
+  <!-- Externas/Internas: pedido do usuário 2026-11-24 — Petrolina/Juazeiro rodam
+       diário e precisavam de um calendário próprio, separado do de rotas externas. -->
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button class="exp-unid-btn exp-unid-all active" onclick="agendSetModo(false,this)">Rotas Externas</button>
+    <button class="exp-unid-btn exp-unid-ri" onclick="agendSetModo(true,this)">Rotas Internas</button>
+  </div>
+
   <!-- Tabs de mês -->
   <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:4px;overflow-x:auto">
     <button onclick="setAgendMes('2026-01')" id="agend-tab-2026-01" style="white-space:nowrap;padding:7px 16px;border-radius:20px;font-size:.82rem;font-weight:700;cursor:pointer;border:1.5px solid var(--border-med);background:var(--bg-card2);color:var(--text-secondary)">Jan</button>
@@ -10400,7 +10407,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.325';
+const APP_VERSION = '4.89.326';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -21265,23 +21272,28 @@ async function renderFrotaStatus(){
 
   const _preViagem = new Set(['pendente','separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem']);
 
+  // Na Expedição Interna o status de frota só pode vir de carga R.I. — senão um
+  // veículo aparecia "Em Rota"/"Agendado" por causa de uma carga externa, dentro
+  // de uma tela que é só pra rota interna (achado do usuário, 2026-11-24).
+  const _dadosFrota = _expModoInterno ? _demandasCache.filter(d=>getTipoRota(d.rota)==='RI') : _demandasCache;
+
   // Em rota: status saiu
   const emRota = new Map();
-  _demandasCache.forEach(d=>{
+  _dadosFrota.forEach(d=>{
     if(d.status==='saiu' && d.veiculo)
       emRota.set(d.veiculo, d);
   });
 
   // Retornou: status fim_viagem (aguardando liberação pela frota)
   const retornou = new Map();
-  _demandasCache.forEach(d=>{
+  _dadosFrota.forEach(d=>{
     if(d.status==='fim_viagem' && d.veiculo)
       retornou.set(d.veiculo, d);
   });
 
   // Agendado: veículo vinculado a demanda pendente (ainda não saiu)
   const agendado = new Map();
-  _demandasCache.forEach(d=>{
+  _dadosFrota.forEach(d=>{
     if(_preViagem.has(d.status) && d.veiculo && d.veiculo !== 'A DEFINIR VEÍCULO' && !emRota.has(d.veiculo))
       agendado.set(d.veiculo, d);
   });
@@ -26465,6 +26477,10 @@ async function _cerpCasarCarga(demandaId, carga){
 // ── EXPEDIÇÃO: faixa de aviso com as cargas do ERP que ainda não foram lançadas ──
 async function renderAvisoCargasErp(){
   const el = document.getElementById('exp-aviso-cargas-erp'); if(!el) return;
+  // Esse aviso é só de carga EXTERNA pendente de lançamento (v_cargas_erp.situacao='pendente'
+  // já exclui rota interna, que cai em 'interna' e vai por Lançamento) — não faz sentido mostrar
+  // na Expedição Interna (achado do usuário, 2026-11-24: cargas de fora apareciam lá).
+  if(_expModoInterno){ el.innerHTML=''; return; }
   let rows = [];
   try{
     rows = await supaFetch(`v_cargas_erp?situacao=eq.pendente&chegou_em=gte.${_cerpDesdeIso(CERP_JANELA_DIAS)}&select=carga,pedidos,clientes,valor,chegou_em,conferente_mexeu,conf_nomes,conf_feitos,conf_pegos&order=chegou_em.asc&limit=200`,{_quiet:true}) || [];
@@ -28371,6 +28387,8 @@ function showExpedicaoInterna(tab){
   if(titulo) titulo.innerHTML = '<span data-feather="home"></span>Expedição Interna';
   const sub = document.querySelector('#page-expedicao .exp-sub');
   if(sub) sub.textContent = 'Pré-cargas das rotas internas (R.I.) — gera a carga que abre o chamado pro Fiscal e o Caixa';
+  const btnSemana = document.getElementById('btn-rotas-semana');
+  if(btnSemana) btnSemana.innerHTML = '<span data-feather="calendar" style="width:15px;height:15px"></span>Calendário de Rotas';
   const btnRI = document.querySelector('#page-expedicao .exp-unid-ri');
   if(btnRI) filtrarUnidade('RI', btnRI);
   _featherReplace();
@@ -28485,6 +28503,8 @@ function showPage(name,tab){
     if(titulo) titulo.innerHTML = '<span data-feather="truck"></span>Expedição';
     const sub = document.querySelector('#page-expedicao .exp-sub');
     if(sub) sub.textContent = 'Gerencie pré-cargas, vincule planilhas e acompanhe o status em tempo real';
+    const btnSemana = document.getElementById('btn-rotas-semana');
+    if(btnSemana) btnSemana.innerHTML = '<span data-feather="calendar" style="width:15px;height:15px"></span>Rotas da Semana';
     _featherReplace();
     carregarDemandas(); carregarMotoristas(); carregarVeiculos(); carregarRotasExp();
     // Popup de "Rotas da Semana" não abre mais sozinho ao entrar na aba — já
@@ -56751,7 +56771,59 @@ async function marcarAgendamentosPasadosComoAtraso(){
   }
 }
 
-function setAgendMes(mes){
+// Calendário de Rotas — Internas (pedido do usuário, 2026-11-24): Petrolina (seg a
+// sáb) e Juazeiro (todo dia, incl. domingo) rodam diário e não dá pra depender de
+// alguém agendar manualmente dia a dia. _agendModoInterno filtra a lista pra só
+// rota R.I.; _garantirAgendRotasInternas gera os dias do mês automaticamente.
+let _agendModoInterno = false;
+async function agendSetModo(interno, btn){
+  _agendModoInterno = interno;
+  document.querySelectorAll('#page-agendamento .exp-unid-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  const mes = document.getElementById('agend-mes-atual')?.value || new Date().toISOString().slice(0,7);
+  if(interno) await _garantirAgendRotasInternas(mes);
+  renderAgendamentos();
+}
+
+// Gera, UMA ÚNICA VEZ por mês (controlado por uma flag em `configuracoes`, nunca
+// por "o id já existe"), o agendamento diário de Petrolina/Juazeiro daquele mês.
+// Importante NÃO usar o padrão antigo de checar id (ver carregarCalendarioMaio2026
+// acima, desativado em 09/11 por isso): aquele padrão recriava a cada visita
+// qualquer dia que o usuário tivesse apagado. Aqui, uma vez marcado o mês como
+// gerado, a função nunca mais mexe nele — apagou um dia específico, fica apagado.
+async function _garantirAgendRotasInternas(mesStr){
+  const flagChave = 'agend_ri_gerado_'+mesStr;
+  try{
+    const jaFeito = await supaFetch('configuracoes?chave=eq.'+encodeURIComponent(flagChave)+'&select=chave&limit=1',{_quiet:true}) || [];
+    if(jaFeito.length) return;
+  }catch(e){ return; } // sem rede: não arrisca gerar (e marcar o mês como pronto) com leitura incompleta
+
+  const [y,m] = mesStr.split('-').map(Number);
+  const ultimoDia = new Date(y, m, 0).getDate();
+  const agora = new Date().toISOString();
+  const novas = [];
+  for(let dia=1; dia<=ultimoDia; dia++){
+    const dataStr = mesStr+'-'+String(dia).padStart(2,'0');
+    const diaSemana = new Date(y, m-1, dia).getDay(); // 0 = domingo
+    novas.push({ id:'agend_ri_JUAZEIRO_'+dataStr, rota:'JUAZEIRO', data:dataStr, mes_ano:mesStr, status:'agendado', obs:'Rota interna — gerado automaticamente', criado_em:agora });
+    if(diaSemana !== 0){ // Petrolina: segunda a sábado (pedido do usuário, 2026-11-24)
+      novas.push({ id:'agend_ri_PETROLINA_'+dataStr, rota:'PETROLINA', data:dataStr, mes_ano:mesStr, status:'agendado', obs:'Rota interna — gerado automaticamente', criado_em:agora });
+    }
+  }
+
+  const arr = getAgendamentos();
+  const ids = new Set(arr.map(a=>a.id));
+  let added = false;
+  novas.forEach(n=>{ if(!ids.has(n.id)){ arr.push(n); added = true; } });
+  if(added) await saveAgendamentos(arr);
+
+  try{
+    await supaFetch('configuracoes?on_conflict=chave', { method:'POST', prefer:'resolution=ignore-duplicates,return=minimal',
+      body: JSON.stringify({chave:flagChave, valor: JSON.stringify({gerado_em:agora})}) });
+  }catch(e){}
+}
+
+async function setAgendMes(mes){
   document.getElementById('agend-mes-atual').value = mes;
   const mesAtual = new Date().toISOString().slice(0,7);
   document.querySelectorAll('[id^="agend-tab-"]').forEach(btn=>{
@@ -56767,6 +56839,7 @@ function setAgendMes(mes){
       btn.style.borderColor = isMesAtual ? '#059669' : 'var(--border-med)';
     }
   });
+  if(_agendModoInterno) await _garantirAgendRotasInternas(mes);
   renderAgendamentos();
 }
 
@@ -57197,8 +57270,13 @@ async function renderAgendamentos(){
   const hoje = hojeDataBRT();
   const todos = getAgendamentos();
 
-  // ── 1. Filtrar pelo mês ────────────────────────────────────────────────────
-  const arr = todos.filter(a=>(a.mes_ano||a.data?.slice(0,7))===mesFiltro).sort((a,b)=>a.data>b.data?1:-1);
+  // ── 1. Filtrar pelo mês (e por tipo de rota, na aba Rotas Internas) ─────────
+  // ROTAS_RI (não ROTAS_CACHE/getTipoRota) porque essa página não garante ter
+  // chamado carregarRotasExp() antes — ROTAS_RI já vem populado globalmente
+  // pelo syncConfig() do login.
+  const arr = todos.filter(a=>(a.mes_ano||a.data?.slice(0,7))===mesFiltro)
+    .filter(a=>!_agendModoInterno || ROTAS_RI.has((normalizarRota(a.rota||'')||a.rota||'').trim().toUpperCase()))
+    .sort((a,b)=>a.data>b.data?1:-1);
 
   // ── 2. demandas_rota do mês — usado só pra saber se uma rota JÁ AGENDADA
   // de fato saiu (KPI "Realizadas"/_dMapKpi abaixo). Detecção automática de
@@ -57926,6 +58004,17 @@ function limparMotivoAtraso(id){
 
 // ══ POPUP UNIFICADO — ROTAS DA SEMANA (EXPEDIÇÃO) ═══════════════════════
 async function abrirPopupRotasExpedicao(){
+  // Na Expedição Interna o popup de "fechamento de vendas" não se aplica (rota
+  // diária, sem fechamento comercial) — leva direto pro Calendário de Rotas,
+  // aba Rotas Internas (pedido do usuário, 2026-11-24).
+  if(_expModoInterno){
+    showPage('agendamento', document.querySelector('.sidebar-item[data-page="agendamento"]'));
+    setTimeout(()=>{
+      const btnRI = document.querySelector('#page-agendamento .exp-unid-ri');
+      if(btnRI) agendSetModo(true, btnRI);
+    }, 150);
+    return;
+  }
   if((USUARIO_LOGADO?.perfil||'') === 'operador') return;
 
   const calcFech = dataStr => {
