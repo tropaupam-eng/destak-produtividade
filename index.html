@@ -10407,7 +10407,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.325';
+const APP_VERSION = '4.89.326';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -10926,13 +10926,20 @@ async function _patchStatusDemanda(id, novoStatus, origem, opcoes){
   const bypassValidacao = opcoes?.bypassValidacao || false;
   try{
     // Busca status atual direto no Supabase (evita cache stale)
-    const rows = await supaFetch(`demandas_rota?id=eq.${id}&select=status`);
+    const rows = await supaFetch(`demandas_rota?id=eq.${id}&select=status,carga`);
     const statusAtual = rows?.[0]?.status;
     if(!statusAtual) return {ok:false, msg:'Carga não encontrada (id: '+id+')'};
 
     if(!bypassValidacao){
       const chk = validarTransicaoStatus(statusAtual, novoStatus);
       if(!chk.ok) return {ok:false, msg:chk.msg};
+    }
+
+    // "Pronto para viagem" só com operação (conferência 100%) e NF de todos os pedidos; admin pode liberar com motivo.
+    if(novoStatus==='pronto_viagem' && statusAtual!=='pronto_viagem'){
+      const gate = await _expGateProntoViagem(rows[0].carga);
+      if(!gate.ok) return {ok:false, msg:gate.msg};
+      if(gate.motivo) origem = 'liberado_admin: '+gate.motivo;
     }
 
     const tsField = {
@@ -19355,6 +19362,74 @@ async function _carregarPctConferidoExpedicao(demandas){
   const cargas = (demandas||[]).filter(d=>d.status==='separacao'||d.status==='carregamento').map(d=>d.carga);
   window._expPctConferido = await _calcPctConferidoPorCarga(cargas);
 }
+
+// ── Trilhas Operação x Escritório e liberação de "Pronto para viagem" (24/11/2026) ──
+// Conta por carga: pedidos (base_data, sem os cancelados), pedidos conferidos OK, pedidos com NF (só tipo 'nf'; boleto
+// não vale como NF) e pedidos com boleto. Não grava nada. Erro de leitura PROPAGA (quem chama decide: o cartão mostra
+// "sem dados", a liberação bloqueia — nunca assume que está tudo certo).
+window._expReq = {};
+async function _calcRequisitosViagem(cargasIn){
+  const cargas = [...new Set((cargasIn||[]).filter(c=>c!=null))];
+  if(!cargas.length) return {};
+  const lista = l => l.join(',');
+  const [peds, conf, docs, canc] = await Promise.all([
+    _emLotes(cargas, 300, l => supaFetch(`base_data?carga=in.(${lista(l)})&select=pedido,carga`)),
+    _emLotes(cargas, 300, l => supaFetch(`conferencia_pedidos?carga=in.(${lista(l)})&status=eq.ok&select=carga,pedido`)),
+    _emLotes(cargas, 300, l => supaFetch(`notas_fiscais?carga=in.(${lista(l)})&select=carga,pedido,tipo`)),
+    _emLotes(cargas, 300, l => supaFetch(`pedidos_cancelados?carga=in.(${lista(l)})&select=carga,pedido`)),
+  ]);
+  const k = (c,p) => String(c)+'|'+String(p);
+  const cancSet = new Set(canc.map(x=>k(x.carga,x.pedido)));
+  const out = {};
+  cargas.forEach(c=>{ out[c] = {total:0, conf:0, nf:0, boleto:0}; });
+  const pedSet = new Set();
+  peds.forEach(p=>{
+    if(p.carga==null || p.pedido==null) return;
+    const kk = k(p.carga,p.pedido);
+    if(pedSet.has(kk) || cancSet.has(kk) || !out[p.carga]) return;
+    pedSet.add(kk); out[p.carga].total++;
+  });
+  const visto = {ok:new Set(), nf:new Set(), boleto:new Set()};
+  const conta = (tipo, c, p) => {
+    const kk = k(c,p);
+    if(!pedSet.has(kk) || visto[tipo].has(kk)) return;
+    visto[tipo].add(kk); out[c][tipo==='ok'?'conf':tipo]++;
+  };
+  conf.forEach(x=>conta('ok', x.carga, x.pedido));
+  docs.forEach(x=>{ if(x.tipo==='nf') conta('nf', x.carga, x.pedido); else if(x.tipo==='boleto') conta('boleto', x.carga, x.pedido); });
+  return out;
+}
+async function _carregarRequisitosExpedicao(demandas){
+  const cargas = (demandas||[]).filter(d=>['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'].includes(d.status)).map(d=>d.carga);
+  try{ window._expReq = await _calcRequisitosViagem(cargas); }
+  catch(e){ window._expReq = {}; console.warn('[expedicao] requisitos de viagem indisponíveis:', e.message); }
+}
+// O que BLOQUEIA a liberação: conferência 100% (operação) e NF em todos os pedidos (escritório). Boleto só informa.
+// total 0 = não há pedido na base para conferir: não bloqueia, mas também não aparece como "completo".
+function _expReqFalta(r){
+  if(!r) return null;
+  const falta = [];
+  if(r.total){
+    if(r.conf < r.total) falta.push(`conferência ${r.conf}/${r.total}`);
+    if(r.nf   < r.total) falta.push(`NF ${r.nf}/${r.total}`);
+  }
+  return falta;
+}
+// Liberação de "Pronto para viagem": retorna {ok:true} ou {ok:true, motivo} (admin liberou assim mesmo) ou {ok:false,msg}.
+async function _expGateProntoViagem(carga){
+  if(carga==null) return {ok:true};
+  let r;
+  try{ r = (await _calcRequisitosViagem([carga]))[carga]; }
+  catch(e){ return {ok:false, msg:'Não consegui conferir as etapas da carga agora ('+e.message+'). Tente de novo.'}; }
+  const falta = _expReqFalta(r);
+  if(!falta || !falta.length) return {ok:true};
+  const msg = `Carga ${carga} ainda não pode ficar pronta para viagem: falta ${falta.join(' e ')}.`;
+  const adm = USUARIO_LOGADO && ['admin','gestor','exped_admin','adm_distribuicao'].includes(USUARIO_LOGADO.perfil);
+  if(!adm) return {ok:false, msg};
+  const motivo = (prompt(msg+'\n\nPara liberar assim mesmo, escreva o motivo (fica registrado no histórico da carga):')||'').trim();
+  if(!motivo) return {ok:false, msg};
+  return {ok:true, motivo:motivo.slice(0,150)};
+}
 async function carregarDemandas(){
   const container = document.getElementById('exp-cards-container');
   if(!container) return;
@@ -19370,7 +19445,7 @@ async function carregarDemandas(){
     // Carregar comercial_rotas do Supabase para badge na expedição
     supaFetch('comercial_rotas?status=neq.resolvido&select=rota,data,motivo,status').then(cr=>{ window._comRotasCache = cr||[]; }).catch(()=>{});
     // Carregar retornos de veículos agendados, % de mercadoria já entregue e % já conferido por carga
-    await Promise.all([ carregarRetornosVeiculos(), _carregarPctEntregaExpedicao(_demandasCache), _carregarPctConferidoExpedicao(_demandasCache) ]);
+    await Promise.all([ carregarRetornosVeiculos(), _carregarPctEntregaExpedicao(_demandasCache), _carregarPctConferidoExpedicao(_demandasCache), _carregarRequisitosExpedicao(_demandasCache) ]);
     renderDemandasKPIs(_demandasCache);
     renderDemandasCards();
     renderPipelineBar();
@@ -24954,6 +25029,48 @@ function _getDemandasMotivoConfig(){
   };
 }
 
+// Trilhas do cartão da Expedição (24/11/2026): OPERAÇÃO (armazém) x ESCRITÓRIO (fiscal/seguros).
+// Só aparece de separação até pronto para viagem. Contagens vêm de window._expReq (ver _calcRequisitosViagem);
+// sem dado mostra "sem dados" — nunca marca etapa como feita por suposição. Boleto só informa (não bloqueia).
+// "CT-e e manifesto" = o próprio passo que leva a carga a Pronto para viagem (Seguros/Caixa/botão).
+function _expTrilhasHtml(d){
+  const ST = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem'];
+  if(!d.carga || !ST.includes(d.status)) return '';
+  const pos = ST.indexOf(d.status);
+  const r = (window._expReq||{})[d.carga];
+  const temDados = !!(r && r.total);
+  const ic = (n,c) => `<span data-feather="${n}" style="width:11px;height:11px;stroke-width:3;color:${c}"></span>`;
+  const bolha = (est, opt) => {
+    const cfg = {ok:['#dcfce7','#15803d','check'], go:['#fef3c7','#b45309','clock'], wt:['var(--bg-card2)','var(--text-muted)','clock']}[est];
+    return `<span style="width:16px;height:16px;border-radius:50%;background:${cfg[0]};display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;${opt?'border:1px dashed var(--text-muted)':''}">${ic(cfg[2],cfg[1])}</span>`;
+  };
+  const linha = (est, nome, cont, opt, dica) => `<div style="display:flex;align-items:center;gap:7px;padding:2px 0;font-size:.76rem"${dica?` title="${dica}"`:''}>${bolha(est,opt)}<span style="color:var(--text-primary)">${nome}</span><span style="margin-left:auto;font-size:.72rem;color:var(--text-muted);font-variant-numeric:tabular-nums">${cont}</span></div>`;
+  const frac = (n) => temDados ? `${n}/${r.total}` : 'sem dados';
+  const est = (n) => !temDados ? 'wt' : (n>=r.total ? 'ok' : (n>0 ? 'go' : 'wt'));
+
+  const sSep  = pos>=1 ? 'ok' : 'go';
+  const sCar  = pos>=2 ? 'ok' : (pos===1 ? 'go' : 'wt');
+  const sConf = est(r?.conf||0);
+  const nOp = [sSep,sCar,sConf].filter(x=>x==='ok').length;
+  const sNf   = est(r?.nf||0);
+  const sBol  = est(r?.boleto||0);
+  const sMan  = d.status==='pronto_viagem' ? 'ok' : (d.status==='aguardando_manifesto' ? 'go' : 'wt');
+  const nEsc = [sNf,sBol,sMan].filter(x=>x==='ok').length;
+
+  const cab = (t,n) => `<div style="display:flex;justify-content:space-between;font-size:.62rem;font-weight:700;letter-spacing:.04em;color:var(--text-muted);margin-bottom:2px"><span>${t}</span><span>${n} de 3</span></div>`;
+  const falta = _expReqFalta(r);
+  const aviso = (falta && falta.length && d.status!=='pronto_viagem')
+    ? `<div style="margin-top:6px;font-size:.72rem;color:#b45309;display:flex;align-items:center;gap:5px"><span data-feather="lock" style="width:11px;height:11px"></span>Para liberar a viagem falta ${falta.join(' e ')}</div>` : '';
+  return `<div style="margin:0 12px 10px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+    <div style="padding:6px 10px">${cab('OPERAÇÃO',nOp)}
+      ${linha(sSep,'Separação','')}${linha(sCar,'Carregamento','')}${linha(sConf,'Conferida 100%',frac(r?.conf||0))}
+    </div>
+    <div style="padding:6px 10px;border-top:1px solid var(--border)">${cab('ESCRITÓRIO',nEsc)}
+      ${linha(sNf,'Nota fiscal',frac(r?.nf||0))}${linha(sBol,'Boleto',frac(r?.boleto||0),true,'Informativo — não bloqueia a liberação')}${linha(sMan,'CT-e e manifesto','')}
+    </div>${aviso?`<div style="padding:0 10px 6px;border-top:1px solid var(--border)">${aviso}</div>`:''}
+  </div>`;
+}
+
 function _filterDemandasData(){
   const busca        = (document.getElementById('exp-busca')?.value||'').toLowerCase().trim();
   const filtroVeic   = (document.getElementById('exp-filtro-veiculo')?.value||'').toLowerCase();
@@ -25143,6 +25260,10 @@ function renderDemandasCards(){
         const JA_SAIU = d.status==='saiu' || d.status==='fim_viagem' || d.status==='concluido';
         const EM_CONFERENCIA = d.status==='separacao' || d.status==='carregamento';
 
+        // Trilhas Operação x Escritório (separação até pronto para viagem) — substitui a barra de conferência
+        const _trilhas = _expTrilhasHtml(d);
+        if(_trilhas) return _trilhas;
+
         if(temCarga && JA_SAIU){
           const info = (window._expPctEntrega||{})[d.carga];
           if(!info || !info.total) return '';
@@ -25228,6 +25349,13 @@ function renderDemandasCards(){
                   <span data-feather="arrow-right" style="width:12px;height:12px"></span>Man.
                 </button>`;
               }
+            }
+            // Pronto para viagem sem operação/NF completas: botão cinza com cadeado (o clique ainda explica o que falta)
+            const _faltaViagem = (nextStatus==='pronto_viagem' && d.carga) ? _expReqFalta((window._expReq||{})[d.carga]) : null;
+            if(nextLabel && _faltaViagem && _faltaViagem.length){
+              return `<button onclick="atualizarStatusDemanda('${d.id}','${nextStatus}')" title="Falta ${_faltaViagem.join(' e ')}" style="${btnStyle.replace('linear-gradient(135deg,#1d4ed8,#2563eb)','var(--bg-card2)').replace('color:#fff','color:var(--text-muted)')}">
+                <span data-feather="lock" style="width:12px;height:12px"></span>${nextLabel}
+              </button>`;
             }
             return nextLabel ? `<button onclick="atualizarStatusDemanda('${d.id}','${nextStatus}')" style="${btnStyle}">
               <span data-feather="arrow-right" style="width:12px;height:12px"></span>${nextLabel}
@@ -25564,10 +25692,17 @@ async function atualizarStatusDemanda(id, status){
     abrirModalFimViagem(id);
     return;
   }
+  let _origemHist = 'manual_expedicao';
   try{
     // Confirmação extra para cancelamento
     if(status === 'cancelado'){
       if(!confirm(`Cancelar esta carga (${dem?.rota||id})? Esta ação não pode ser desfeita.`)) return;
+    }
+    // "Pronto para viagem" só com operação (conferência 100%) e NF de todos os pedidos; admin pode liberar com motivo.
+    if(status === 'pronto_viagem'){
+      const gate = await _expGateProntoViagem(dem?.carga);
+      if(!gate.ok){ showToast('⛔ '+gate.msg,'warning'); return; }
+      if(gate.motivo) _origemHist = 'liberado_admin: '+gate.motivo;
     }
     const tsField = {
       separacao:'ts_separacao', carregamento:'ts_carregamento',
@@ -25580,7 +25715,7 @@ async function atualizarStatusDemanda(id, status){
     // Avanço manual além da etapa fiscal: garantir que status_fiscal fique concluído
     if(statusAtual==='aguardando_nf' && status==='aguardando_manifesto') patch.status_fiscal='concluido';
     await supaFetch(`demandas_rota?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(patch)});
-    registrarHistoricoStatus(id, statusAtual, status, 'manual_expedicao');
+    registrarHistoricoStatus(id, statusAtual, status, _origemHist);
     if(dem){ dem.status=status; if(tsField) dem[tsField]=patch[tsField]; if(patch.status_fiscal) dem.status_fiscal=patch.status_fiscal; }
     // Motorista/veículo só ficam definitivos a partir de "saiu" (bloqueado
     // mais acima se ainda fosse placeholder) — sincroniza com o Lançamento
@@ -36567,7 +36702,39 @@ async function carregarPainelProdutividadeAno(){
       await syncLancamentos();
     }catch(e){ console.warn('Produtividade (painel): não consegui carregar a base antes de calcular:', e.message); }
     if(!(BASE_DATA && BASE_DATA.length)) throw new Error('base de pedidos não carregada — recarregue a página e tente de novo');
-    const linhas = await gerarPagamentos(null, {silencioso:true, mesSel:''});
+    // syncLancamentos() traz só os 2.000 lançamentos mais recentes (~4 meses): os meses mais antigos do ano saíam vazios
+    // ("–") ou parciais (jun/2026 sem nada, jul/2026 mudando a cada geração). Aqui busca o ANO INTEIRO, em páginas, e usa
+    // essa lista só durante o cálculo (a global volta ao que era — as outras telas não são afetadas). Mesma conversão
+    // de syncLancamentos(); lançamento local ainda não sincronizado (sem linha no servidor) é mantido.
+    const _lancOriginal = lancamentos;
+    try{
+      const ini = `${ano}-01-01T00:00:00-03:00`, fim = `${Number(ano)+1}-01-01T00:00:00-03:00`;
+      const doServidor = [];
+      for(let off=0, pg=0; pg<30; pg++, off+=1000){
+        const rows = await supaFetch(`lancamentos?ts=gte.${ini}&ts=lt.${fim}&select=id,carga,motorista,ajudante,veiculo,rota,und,rire,vinculado,pendente,ts,mes_ano,fonte&order=ts.desc,id.asc&limit=1000&offset=${off}`);
+        if(!rows || !rows.length) break;
+        doServidor.push(...rows);
+        if(rows.length < 1000) break;
+      }
+      if(doServidor.length){
+        const cargasSrv = new Set(doServidor.map(r=>Number(r.carga)));
+        const convertidos = doServidor.map(r=>({
+          carga: r.carga, motorista: r.motorista, ajudante: r.ajudante||'', veiculo: r.veiculo||'',
+          rota: normalizarRota(r.rota), und: r.und||'', rire: r.rire||'', vinculado: r.vinculado, pendente: r.pendente,
+          ts: r.ts, mes_ano: r.mes_ano||'', _id: r.id, fonte: r.fonte||''
+        }));
+        // só entram da lista atual os lançamentos de OUTROS anos (que não se refazem aqui) e os locais sem linha no servidor
+        const resto = (_lancOriginal||[]).filter(l=>{
+          const a = String(l.ts||'').slice(0,4);
+          return a !== String(ano) && !cargasSrv.has(Number(l.carga));
+        });
+        lancamentos = [...convertidos, ...resto];
+        lancamentos.forEach(l=>{ if(l.rota) l.rota = normalizarRota(l.rota); });
+      }
+    }catch(e){ console.warn('Produtividade (painel): não consegui buscar o ano inteiro de lançamentos, uso os mais recentes:', e.message); lancamentos = _lancOriginal; }
+    let linhas;
+    try{ linhas = await gerarPagamentos(null, {silencioso:true, mesSel:''}); }
+    finally{ lancamentos = _lancOriginal; }
     if(seq !== _prodPainelSeq) return; // veio uma chamada mais nova (troca de ano/unidade)
     const MESES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
     const doAno = (linhas||[]).filter(p => (p.mes_ano||'').slice(0,4)===ano && (!undSel || (p.und||'').trim()===undSel));
