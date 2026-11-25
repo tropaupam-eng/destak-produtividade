@@ -3029,7 +3029,7 @@ body.light-theme{
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:14px">
     <div>
       <h2 style="font-size:1.35rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:8px"><span data-feather="file-text" style="width:19px;height:19px"></span> Fiscal</h2>
-      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Emissão de Notas Fiscais por pedido</p>
+      <p style="font-size:.83rem;color:var(--text-secondary);margin-top:3px">Chamados de nota fiscal e boleto — cada fiscal pega o seu</p>
     </div>
     <button onclick="carregarPaginaFiscal()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:14px;height:14px;vertical-align:-2px"></span> Atualizar</button>
   </div>
@@ -3039,11 +3039,11 @@ body.light-theme{
     <button class="exp-unid-btn exp-unid-re" onclick="filtrarFiscalTipo('RE',this)">RE · Externa</button>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px">
-    <div class="kpi-card" style="border-top-color:#059669"><div class="kpi-label">Pedidos para NF</div><div class="kpi-value" id="fiscal-kpi-total2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#3b82f6"><div class="kpi-label">Pedidos com NF</div><div class="kpi-value" id="fiscal-kpi-nf2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#f59e0b"><div class="kpi-label">Sem NF</div><div class="kpi-value" id="fiscal-kpi-pend2">—</div></div>
-    <div class="kpi-card" style="border-top-color:#0ea5e9" title="Conferidos pelo armazém (OK) e ainda sem NF — já podem ser emitidos"><div class="kpi-label">Prontos para emitir</div><div class="kpi-value" id="fiscal-kpi-pronto2">—</div></div>
-    <div class="kpi-card" style="border-top-color:var(--red)"><div class="kpi-label">Cargas</div><div class="kpi-value" id="fiscal-kpi-cargas2">—</div></div>
+    <div class="kpi-card" style="border-top-color:#f59e0b" title="Sem NF e sem boleto ainda"><div class="kpi-label">Pendente</div><div class="kpi-value" id="fiscal-kpi-pend">—</div></div>
+    <div class="kpi-card" style="border-top-color:#3b82f6" title="Já tem boleto — falta a NF"><div class="kpi-label">Pendente NF</div><div class="kpi-value" id="fiscal-kpi-nf">—</div></div>
+    <div class="kpi-card" style="border-top-color:#8b5cf6" title="Já tem NF — falta o boleto"><div class="kpi-label">Pendente boleto</div><div class="kpi-value" id="fiscal-kpi-bol">—</div></div>
+    <div class="kpi-card" style="border-top-color:#059669" title="NF e boleto resolvidos (enviados ou marcados 'não tem')"><div class="kpi-label">Concluído</div><div class="kpi-value" id="fiscal-kpi-ok">—</div></div>
+    <div class="kpi-card" style="border-top-color:var(--red)" title="Pedidos que você pegou e ainda não concluiu"><div class="kpi-label">Meus chamados</div><div class="kpi-value" id="fiscal-kpi-meus">—</div></div>
   </div>
   <!-- Busca de NF/Boleto por Pedido ou Carga -->
   <div style="background:var(--bg-card);border:1.5px solid var(--border);border-radius:14px;padding:18px;margin-bottom:24px">
@@ -3064,6 +3064,12 @@ body.light-theme{
     </div>
     <div id="fiscal-busca-resultado2" style="margin-top:14px"></div>
   </div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+    <input id="fiscal-filtro-busca" type="search" inputmode="numeric" placeholder="Filtrar o quadro por nº de pedido ou de carga…" oninput="fiscalFiltrar()" style="flex:1;min-width:220px;max-width:420px;background:var(--bg-base);border:1.5px solid var(--border);color:var(--text-primary);border-radius:10px;padding:8px 12px;font-size:.85rem;outline:none"/>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="fiscal-so-meus" onchange="fiscalFiltrar()"> Só meus chamados</label>
+    <span style="font-size:.74rem;color:var(--text-muted)">Clique no número da carga para ver só ela</span>
+  </div>
+  <div id="fiscal-carga-sel"></div>
   <div id="fiscal-cargas-inline">
     <p style="text-align:center;padding:40px;color:var(--text-muted)">Carregando...</p>
   </div>
@@ -10419,7 +10425,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.340';
+const APP_VERSION = '4.89.341';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19396,11 +19402,12 @@ async function _calcRequisitosViagem(cargasIn){
   const cargas = [...new Set((cargasIn||[]).filter(c=>c!=null))];
   if(!cargas.length) return {};
   const lista = l => l.join(',');
-  const [peds, conf, docs, canc] = await Promise.all([
+  const [peds, conf, docs, canc, semDocs] = await Promise.all([
     _emLotes(cargas, 300, l => supaFetch(`base_data?carga=in.(${lista(l)})&select=pedido,carga`)),
     _emLotes(cargas, 300, l => supaFetch(`conferencia_pedidos?carga=in.(${lista(l)})&status=eq.ok&select=carga,pedido`)),
     _emLotes(cargas, 300, l => supaFetch(`notas_fiscais?carga=in.(${lista(l)})&select=carga,pedido,tipo`)),
     _emLotes(cargas, 300, l => supaFetch(`pedidos_cancelados?carga=in.(${lista(l)})&select=carga,pedido`)),
+    _emLotes(cargas, 300, l => supaFetch(`fiscal_sem_documento?carga=in.(${lista(l)})&select=carga,pedido,tipo`)),
   ]);
   const k = (c,p) => String(c)+'|'+String(p);
   const cancSet = new Set(canc.map(x=>k(x.carga,x.pedido)));
@@ -19421,6 +19428,8 @@ async function _calcRequisitosViagem(cargasIn){
   };
   conf.forEach(x=>conta('ok', x.carga, x.pedido));
   docs.forEach(x=>{ if(x.tipo==='nf') conta('nf', x.carga, x.pedido); else if(x.tipo==='boleto') conta('boleto', x.carga, x.pedido); });
+  // "Não tem NF" / "Não tem boleto" marcado pelo Fiscal conta como resolvido (a tabela guarda quem marcou e o motivo)
+  semDocs.forEach(x=>{ if(x.tipo==='nf') conta('nf', x.carga, x.pedido); else if(x.tipo==='boleto') conta('boleto', x.carga, x.pedido); });
   return out;
 }
 async function _carregarRequisitosExpedicao(demandas){
@@ -25107,6 +25116,8 @@ function _expTrilhasHtml(d){
   const sBol  = est(r?.boleto||0);
   const sMan  = d.status==='pronto_viagem' ? 'ok' : (d.status==='aguardando_manifesto' ? 'go' : 'wt');
   const nEsc = [sNf,sBol,sMan].filter(x=>x==='ok').length;
+  // Fiscal pronto = NF e boleto resolvidos (enviados ou "não tem") em TODOS os pedidos da carga
+  const fiscalPronto = temDados && (r.nf||0) >= r.total && (r.boleto||0) >= r.total;
 
   const cab = (t,n) => `<div style="display:flex;justify-content:space-between;font-size:.62rem;font-weight:700;letter-spacing:.04em;color:var(--text-muted);margin-bottom:2px"><span>${t}</span><span>${n} de 3</span></div>`;
   const falta = _expReqFalta(r);
@@ -25118,7 +25129,7 @@ function _expTrilhasHtml(d){
     </div>
     <div style="padding:6px 10px;border-top:1px solid var(--border)">${cab('ESCRITÓRIO',nEsc)}
       ${linha(sNf,'Nota fiscal',frac(r?.nf||0))}${linha(sBol,'Boleto',frac(r?.boleto||0),true,'Informativo — não bloqueia a liberação')}${linha(sMan,'CT-e e manifesto','')}
-    </div>${aviso?`<div style="padding:0 10px 6px;border-top:1px solid var(--border)">${aviso}</div>`:''}
+    </div>${fiscalPronto?'<div style="padding:5px 10px;border-top:1px solid var(--border);background:#dcfce7;color:#15803d;font-size:.76rem;font-weight:800;display:flex;align-items:center;gap:6px"><span data-feather="check-circle" style="width:12px;height:12px"></span>Fiscal pronto — NF e boleto de todos os pedidos</div>':''}${aviso?`<div style="padding:0 10px 6px;border-top:1px solid var(--border)">${aviso}</div>`:''}
   </div>`;
 }
 
@@ -48587,14 +48598,15 @@ async function reabrirFiscal(carga, demandaId){
 // ── Valida se todos pedidos estão conferidos E têm NF antes de avançar ──
 async function _validarFiscalCompleto(carga){
   try{
-    const [total, confOK, nfsC] = await Promise.all([
+    const [total, confOK, nfsC, semNFmarc] = await Promise.all([
       supaFetch(`base_data?carga=eq.${carga}&select=pedido`),
       supaFetch(`conferencia_pedidos?carga=eq.${carga}&status=eq.ok&select=pedido`),
-      supaFetch(`notas_fiscais?carga=eq.${carga}&select=pedido,tipo`)
+      supaFetch(`notas_fiscais?carga=eq.${carga}&select=pedido,tipo`),
+      supaFetch(`fiscal_sem_documento?carga=eq.${carga}&tipo=eq.nf&select=pedido`).catch(()=>[])
     ]);
     const pedTotal = [...new Set((total||[]).map(p=>p.pedido))];
     const pedOK    = [...new Set((confOK||[]).map(p=>p.pedido))];
-    const pedNF    = [...new Set((nfsC||[]).filter(n=>n.tipo==='nf').map(n=>n.pedido))];
+    const pedNF    = [...new Set([...(nfsC||[]).filter(n=>n.tipo==='nf').map(n=>n.pedido), ...(semNFmarc||[]).map(n=>n.pedido)])];
     const semConf  = pedTotal.filter(p=>!pedOK.includes(p));
     const semNF    = pedTotal.filter(p=>!pedNF.includes(p));
     return { ok: semConf.length===0 && semNF.length===0, semConf, semNF, total:pedTotal.length };
@@ -52388,22 +52400,24 @@ if(!document.getElementById('_css_fadeInUp')){
   document.head.appendChild(_s);
 }
 
-// Filtro Interna/Externa da aba Fiscal (preparação Expedição Interna, pedido do
-// usuário 2026-11-24): '' | 'RI' | 'RE' — mesmo critério (getTipoRota pela rota
-// cadastrada) usado no filtro "Todas/RI/RE" da Expedição, pra ficar consistente.
-let _fiscalFiltroTipo = '';
-function filtrarFiscalTipo(tipo, btn){
-  _fiscalFiltroTipo = tipo;
-  document.querySelectorAll('#page-fiscal .exp-unid-btn').forEach(b=>b.classList.remove('active'));
-  if(btn) btn.classList.add('active');
-  carregarPaginaFiscal();
-}
+// ══ Aba Fiscal — quadro de chamados (layout A, 25/11/2026) ══
+// 4 colunas por situação do PEDIDO: Pendente (sem NF e sem boleto) | Pendente NF (já tem boleto, falta a NF) |
+// Pendente boleto (já tem NF, falta o boleto) | Concluído (NF e boleto resolvidos). "Resolvido" = arquivo enviado OU o fiscal marcou
+// "Não tem NF" / "Não tem boleto" (tabela fiscal_sem_documento). Cada fiscal PEGA o pedido (ou a carga inteira = todos os pedidos
+// ainda livres dela) em atribuicoes_fiscal; o índice único atribuicoes_fiscal_pedido_aberto_uq impede dois fiscais no mesmo pedido.
+// Quando todos os pedidos da carga estão Concluídos, a Expedição mostra "Fiscal pronto" (ver _expTrilhasHtml).
+window._fiscalUI = window._fiscalUI || { busca:'', soMeus:false, cargaSel:null };
+const _FISCAL_COLS = [
+  { k:'pend', nome:'Pendente',        cor:'#f59e0b', dica:'Sem NF e sem boleto ainda' },
+  { k:'nf',   nome:'Pendente NF',     cor:'#3b82f6', dica:'Já tem boleto — falta a nota fiscal' },
+  { k:'bol',  nome:'Pendente boleto', cor:'#8b5cf6', dica:'Já tem NF — falta o boleto' },
+  { k:'ok',   nome:'Concluído',       cor:'#059669', dica:'NF e boleto resolvidos (enviados ou marcados "não tem")' }
+];
 
-// Situação fiscal de cada pedido de uma carga (24/11): 'pronto' = conferido OK pelo armazém e ainda sem NF (já pode emitir);
-// 'espera' = sem NF e ainda sem conferência OK (aguardando conferência ou NOK); 'feito' = já tem NF.
-// Só documento tipo 'nf' vale como NF — boleto não (o banco só tem 'nf' e 'boleto').
+// Situação fiscal de cada pedido de uma carga: 'pronto' = conferido OK pelo armazém e ainda sem NF; 'espera' = sem NF e sem conferência OK;
+// 'feito' = NF resolvida (arquivo tipo 'nf' ou "Não tem NF"). Boleto não conta como NF.
 function _fiscalSitPedido(dados, ped){
-  const temNF = dados.nfs.some(n=>n.pedido===ped && n.tipo==='nf');
+  const temNF = dados.nfs.some(n=>n.pedido===ped && n.tipo==='nf') || (dados.semDoc||[]).some(s=>s.pedido===ped && s.tipo==='nf');
   if(temNF) return 'feito';
   return dados.confMap[ped]?.status==='ok' ? 'pronto' : 'espera';
 }
@@ -52416,165 +52430,113 @@ function _fiscalResumoCarga(dados){
   });
   return r;
 }
+// Estado de NF e boleto de um pedido + coluna do quadro
+function _fiscalEstadoPedido(dados, ped){
+  const nfArq = dados.nfs.filter(n=>n.pedido===ped && n.tipo==='nf');
+  const boArq = dados.nfs.filter(n=>n.pedido===ped && n.tipo==='boleto');
+  const nfSem = (dados.semDoc||[]).find(s=>s.pedido===ped && s.tipo==='nf') || null;
+  const boSem = (dados.semDoc||[]).find(s=>s.pedido===ped && s.tipo==='boleto') || null;
+  const nf = nfArq.length>0 || !!nfSem, bo = boArq.length>0 || !!boSem;
+  const col = (nf && bo) ? 'ok' : (!nf && !bo ? 'pend' : (bo ? 'nf' : 'bol'));
+  return { nf, bo, nfArq, boArq, nfSem, boSem, col };
+}
+// Dono do pedido: chamado do próprio pedido; se não houver, chamado antigo da carga inteira (pedido nulo)
+function _fiscalDono(atribs, carga, ped){
+  const l = atribs||[];
+  return l.find(a=>a.carga===carga && a.pedido===ped && a.status==='em_andamento')
+      || l.find(a=>a.carga===carga && a.pedido==null && a.status==='em_andamento') || null;
+}
+let _fiscalFiltroTipo = '';
+function filtrarFiscalTipo(tipo, btn){
+  _fiscalFiltroTipo = tipo;
+  window._fiscalUI.cargaSel = null;
+  document.querySelectorAll('#page-fiscal .exp-unid-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  carregarPaginaFiscal();
+}
+function fiscalFiltrar(){
+  const ui = window._fiscalUI;
+  ui.busca = (document.getElementById('fiscal-filtro-busca')?.value||'').trim();
+  ui.soMeus = !!document.getElementById('fiscal-so-meus')?.checked;
+  _fiscalRenderQuadro();
+}
+function fiscalSelecionarCarga(carga){
+  window._fiscalUI.cargaSel = carga;
+  _fiscalRenderQuadro();
+  document.getElementById('fiscal-carga-sel')?.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function fiscalLimparCarga(){ window._fiscalUI.cargaSel = null; _fiscalRenderQuadro(); }
 
 async function carregarPaginaFiscal(){
   const container = document.getElementById('fiscal-cargas-inline');
   if(!container) return;
-
   try{
     const perfil = USUARIO_LOGADO?.perfil||'';
     const isAdminFiscal = ['admin','fiscal_admin','adm_fiscal'].includes(perfil);
-    // Todos os fiscais veem até "saiu" (em viagem) — só sai da lista em "Fim de
-    // Viagem" ou quando o fiscal conclui manualmente (status_fiscal, ver linha ~34612).
-    // OR status_fiscal=em_andamento: cobre o botão "↩ Reabrir" do Histórico — ele só
-    // muda status_fiscal, então sem esse OR a carga reaberta não voltava a aparecer
-    // aqui pro fiscal lançar os pedidos de novo (o status geral continua fim_viagem/concluido).
+    // Todos os fiscais veem até "saiu" (em viagem) — só sai do quadro em "Fim de Viagem" ou quando o fiscal conclui a carga (status_fiscal).
+    // OR status_fiscal=em_andamento cobre o "Reabrir" do Histórico.
     const statusVisiveis = ['separacao','carregamento','aguardando_nf','aguardando_manifesto','pronto_viagem','saiu'];
     const demandasFiscal = await supaFetch(`demandas_rota?or=(status.in.(${statusVisiveis.map(s=>`"${s}"`).join(',')}),status_fiscal.eq.em_andamento)&select=*&order=carga.asc`) || [];
-
     const cargasIds = demandasFiscal.map(d=>d.carga).filter(Boolean);
-
     if(!cargasIds.length){
-      const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
-      set('fiscal-kpi-total2','0'); set('fiscal-kpi-nf2','0');
-      set('fiscal-kpi-pend2','0'); set('fiscal-kpi-cargas2','0');
-      container.innerHTML='<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga aguardando NF no momento.</p>';
+      window._fiscalDados = { cargasMap:{}, atribs:[], podeAdmin:false, podeUpload:false, isAdminFiscal, perfilUsuario:perfil, _valMapFiscal:{}, _fT:()=>'—', _dMin:()=>'' };
+      _fiscalRenderQuadro();
       return;
     }
-
-    // Buscar TODOS os pedidos dessas cargas (conferidos ou não) — sem filtrar
-    // por mês. Decisão do usuário em 2026-09-04: a aba Fiscal tem que contar
-    // igual à Expedição (quantidade_pedidos/valor_total em demandas_rota),
-    // que também não filtra por mes_ano — é só tudo que está em base_data
-    // pra aquela carga. O filtro por mes_ano aqui escondia pedido de verdade:
-    // uma carga formada num mês (ex: 31/08) pode continuar recebendo pedido
-    // do ERP depois que o mês virou (ex: 01/09, mesma carga) — antes esses
-    // pedidos do mês seguinte sumiam da contagem do Fiscal (carga 15388: 8
-    // pedidos reais em base_data, aba mostrava só 3).
-    const [_todosPedidosFRaw, conferidos, nfs, atribs, meusAlertas] = await Promise.all([
-      supaFetch(`base_data?carga=in.(${cargasIds.join(',')})&select=carga,pedido,valor,mes_ano&order=carga.asc,pedido.asc`).catch(()=>[]),
-      supaFetch(`conferencia_pedidos?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
-      supaFetch(`notas_fiscais?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
-      supaFetch(`atribuicoes_fiscal?carga=in.(${cargasIds.join(',')})&select=*`).catch(()=>[]),
-      USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([])
+    // TODOS os pedidos dessas cargas (conferidos ou não), sem filtrar por mês (decisão do usuário, 04/09: a aba conta igual à Expedição),
+    // menos os pedidos cancelados (mesmo critério da Expedição: pedido cancelado não precisa de NF nem de boleto).
+    const lista = cargasIds.join(',');
+    const [_todosPedidosFRaw, conferidos, nfs, atribs, meusAlertas, semDocs, cancelados] = await Promise.all([
+      supaFetch(`base_data?carga=in.(${lista})&select=carga,pedido,valor,mes_ano&order=carga.asc,pedido.asc`).catch(()=>[]),
+      supaFetch(`conferencia_pedidos?carga=in.(${lista})&select=*`).catch(()=>[]),
+      supaFetch(`notas_fiscais?carga=in.(${lista})&select=*`).catch(()=>[]),
+      supaFetch(`atribuicoes_fiscal?carga=in.(${lista})&status=eq.em_andamento&select=*`).catch(()=>[]),
+      USUARIO_LOGADO?.id ? supaFetch(`alertas_fiscal?fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.pendente&select=carga,pedido`).catch(()=>[]) : Promise.resolve([]),
+      supaFetch(`fiscal_sem_documento?carga=in.(${lista})&select=*`),
+      supaFetch(`pedidos_cancelados?carga=in.(${lista})&select=carga,pedido`).catch(()=>[])
     ]);
-    const todosPedidos = _todosPedidosFRaw || [];
-    // Montar Set de alertas ativos: "carga_pedido"
     window._meusAlertas = new Set((meusAlertas||[]).map(a=>`${a.carga}_${a.pedido}`));
+    const cancSet = new Set((cancelados||[]).map(c=>`${c.carga}|${c.pedido}`));
 
-    // Montar mapa de cargas
     const cargasMap = {};
-    demandasFiscal.forEach(d=>{
-      cargasMap[d.carga] = {demanda:d, pedidos:new Set(), confMap:{}, nfs:[]};
-    });
-
-    // Adicionar pedidos do base_data + acumular valor atual por pedido (para detecção de divergência)
-    const _valMapFiscal = {}; // {carga: {pedido: valorAtual}}
-    (todosPedidos||[]).forEach(p=>{
-      if(cargasMap[p.carga]){
+    demandasFiscal.forEach(d=>{ cargasMap[d.carga] = {demanda:d, pedidos:new Set(), confMap:{}, nfs:[], semDoc:[]}; });
+    const _valMapFiscal = {};
+    (_todosPedidosFRaw||[]).forEach(p=>{
+      if(cargasMap[p.carga] && !cancSet.has(`${p.carga}|${p.pedido}`)){
         cargasMap[p.carga].pedidos.add(p.pedido);
         if(!_valMapFiscal[p.carga]) _valMapFiscal[p.carga]={};
         _valMapFiscal[p.carga][p.pedido] = (_valMapFiscal[p.carga][p.pedido]||0) + (parseFloat(p.valor)||0);
       }
     });
-
-    // Adicionar pedidos da conferência (mesmo que não estejam no base_data)
     (conferidos||[]).forEach(c=>{
-      if(cargasMap[c.carga]){
+      if(cargasMap[c.carga] && !cancSet.has(`${c.carga}|${c.pedido}`)){
         cargasMap[c.carga].pedidos.add(c.pedido);
         cargasMap[c.carga].confMap[c.pedido] = c;
       }
     });
+    (nfs||[]).forEach(n=>{ if(cargasMap[n.carga]) cargasMap[n.carga].nfs.push(n); });
+    (semDocs||[]).forEach(s=>{ if(cargasMap[s.carga]) cargasMap[s.carga].semDoc.push(s); });
 
-    // NFs
-    (nfs||[]).forEach(n=>{
-      if(cargasMap[n.carga]) cargasMap[n.carga].nfs.push(n);
-    });
-
-    // Excluir cargas já concluídas pelo fiscal — elas vão para o Histórico, não para Pendências
-    // Filtro Interna/Externa (_fiscalFiltroTipo) opcional por cima disso, mesmo critério da Expedição.
-    const cargas = Object.keys(cargasMap).map(Number).filter(n=>!isNaN(n)&&n>0)
-      .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
-      .filter(c => !_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)
-      .sort((a,b)=>a-b);
-
-    // KPIs — contados por PEDIDO e só com documento tipo NF (boleto não conta como NF; um pedido com NF+XML conta uma vez).
-    // Pedidos = Com NF + Sem NF. "Prontos" = conferido OK pelo armazém e ainda sem NF.
-    let totalPed=0, totalNF=0, totalPend=0, totalPronto=0;
-    cargas.forEach(c=>{
-      const d = cargasMap[c];
-      const r = _fiscalResumoCarga(d);
-      totalPed += r.total; totalNF += r.comNF; totalPend += r.semNF; totalPronto += r.prontos;
-    });
-    // cargas com pedido pronto para emitir primeiro; depois as que ainda faltam NF; por último as completas (a ordem por carga se mantém dentro de cada grupo)
-    cargas.sort((a,b)=>{
-      const ra=_fiscalResumoCarga(cargasMap[a]), rb=_fiscalResumoCarga(cargasMap[b]);
-      const ga = ra.prontos>0?0:(ra.semNF>0?1:2), gb = rb.prontos>0?0:(rb.semNF>0?1:2);
-      return ga-gb || a-b;
-    });
-    const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
-    set('fiscal-kpi-total2',totalPed); set('fiscal-kpi-nf2',totalNF);
-    set('fiscal-kpi-pend2',totalPend); set('fiscal-kpi-pronto2',totalPronto); set('fiscal-kpi-cargas2',cargas.length);
-
-    const perfilUsuario = USUARIO_LOGADO?.perfil||'';
+    const perfilUsuario = perfil;
     const podeUpload = ['fiscal_admin','fiscal_op','admin','adm_fiscal','opedor_fiscal'].includes(perfilUsuario);
-    const podeAdmin  = ['fiscal_admin','admin','adm_fiscal','fiscal_op','opedor_fiscal'].includes(perfilUsuario);
-
-    // ── Formatadores de tempo para rastreamento por pedido ──
-    const _fT = ts => {
-      if(!ts) return '—';
-      const d = new Date(ts);
-      return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-    };
+    const podeAdmin  = podeUpload;
+    const _fT = ts => { if(!ts) return '—'; return new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); };
     const _dMin = (a,b) => {
       if(!a||!b) return '';
       const m = Math.round((new Date(b)-new Date(a))/60000);
       if(m<0) return '';
       return ' (+' + (m<60 ? m+'min' : Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')) + ')';
     };
-
-    // Store context so drawer can read fresh data after re-renders
+    // contexto também usado pela gaveta de detalhes (abrirModalFiscalDrawer: cancelar pedido, alerta de rota, remover arquivo, concluir fiscal)
     window._fiscalDados = { cargasMap, atribs, podeAdmin, podeUpload, isAdminFiscal, perfilUsuario, _valMapFiscal, _fT, _dMin };
+    _fiscalRenderQuadro();
 
-    // Compact grid of summary cards — clicking opens the detail drawer
-    container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;padding:4px 0">${
-      cargas.map(carga=>{
-        const dados = cargasMap[carga];
-        if(!dados) return '';
-        const dem = dados.demanda;
-        const pedidos = [...dados.pedidos].sort((a,b)=>a-b);
-        const euAtribuido = (atribs||[]).find(a=>a.fiscal_id===USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
-        const outroFiscal = (atribs||[]).find(a=>a.fiscal_id!==USUARIO_LOGADO?.id&&a.carga===carga&&a.status==='em_andamento');
-        const borderCol = euAtribuido?'#059669':outroFiscal?'#f59e0b':'var(--border)';
-        const bgCol = euAtribuido?'rgba(5,150,105,.08)':outroFiscal?'rgba(245,158,11,.08)':'var(--bg-card)';
-        const pedOK = pedidos.filter(p=>dados.confMap[p]?.status==='ok').length;
-        const pedNOK = pedidos.filter(p=>dados.confMap[p]?.status==='nok').length;
-        const pedPend = pedidos.filter(p=>!dados.confMap[p]).length;
-        return `<div onclick="abrirModalFiscalDrawer(${carga})" style="background:${bgCol};border:2px solid ${borderCol};border-radius:12px;padding:14px 12px;cursor:pointer;transition:transform .15s,box-shadow .15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 14px rgba(0,0,0,.18)'" onmouseleave="this.style.transform='';this.style.boxShadow=''">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
-            <span style="background:#059669;color:#fff;font-size:.75rem;font-weight:800;padding:2px 10px;border-radius:20px">${_ic('package',12)} ${carga}</span>
-            <span style="font-size:.68rem;color:var(--text-muted)" title="Pedidos desta carga que já têm NF">${_fiscalResumoCarga(dados).comNF}/${pedidos.length} c/ NF</span>
-          </div>
-          <div style="font-size:.8rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${(dem.rota||'').replace(/"/g,'&quot;')}">${dem.rota||'—'}</div>
-          <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_ic('user',11)} ${dem.motorista||'—'}</div>
-          <div style="display:flex;gap:4px;flex-wrap:wrap">
-            ${(()=>{ const rs=_fiscalResumoCarga(dados); return rs.prontos?`<span style="font-size:.65rem;background:#e0f2fe;color:#075985;padding:1px 6px;border-radius:4px;font-weight:800" title="Conferidos e sem NF — já podem ser emitidos">${_ic('file-text',11)} ${rs.prontos} p/ emitir</span>`:(rs.semNF===0?`<span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:800">${_ic('check-circle',11)} NFs completas</span>`:''); })()}
-            <span style="font-size:.65rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('check-circle',11)} ${pedOK}</span>
-            ${pedNOK?`<span style="font-size:.65rem;background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('x-circle',11)} ${pedNOK}</span>`:''}
-            ${pedPend?`<span style="font-size:.65rem;background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700">${_ic('clock',11)} ${pedPend}</span>`:''}
-            <span style="font-size:.65rem;color:var(--text-muted);padding:1px 4px">${pedidos.length} ped.</span>
-          </div>
-          ${euAtribuido?`<div style="margin-top:8px;font-size:.65rem;color:#059669;font-weight:700">${_ic('user-check',11)} Você está aqui</div>`:outroFiscal?`<div style="margin-top:8px;font-size:.65rem;color:#f59e0b;font-weight:700">${_ic('lock',11)} ${outroFiscal.fiscal_nome||'Outro'}</div>`:''}
-        </div>`;
-      }).join('')
-    }</div>`;
-    _featherReplace();
-
-    // ── Histórico de Concluídos — visível para todos os fiscais; Reabrir só para fiscal_admin ──
+    // ── Histórico de concluídos pelo fiscal (igual a antes) ──
     if(podeUpload){
       const concluidasRaw = await supaFetch('demandas_rota?status_fiscal=eq.concluido&select=id,carga,rota,motorista,status&order=carga.desc&limit=100').catch(()=>[]);
       if(concluidasRaw && concluidasRaw.length){
         const histEl = document.createElement('div');
+        histEl.id = 'fiscal-historico-concluidos';
         histEl.style.cssText = 'margin-top:28px';
         const podeReabrir = ['fiscal_admin','adm_fiscal','admin'].includes(perfilUsuario);
         histEl.innerHTML = `
@@ -52598,12 +52560,309 @@ async function carregarPaginaFiscal(){
         _featherReplace();
       }
     }
-
-    // Re-open drawer if it was open before this refresh
     if(window._fiscalModalCargaAberta && cargasMap[window._fiscalModalCargaAberta]){
       abrirModalFiscalDrawer(window._fiscalModalCargaAberta);
     }
-  }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+e.message+'</p>'; }
+  }catch(e){ container.innerHTML='<p style="color:var(--text-muted)">Erro: '+escapeHtml(e.message)+'</p>'; }
+}
+
+// Desenha KPIs + quadro a partir de window._fiscalDados (sem buscar nada; usado também pelos filtros)
+function _fiscalRenderQuadro(){
+  const container = document.getElementById('fiscal-cargas-inline');
+  const fd = window._fiscalDados;
+  if(!container || !fd) return;
+  if(!document.getElementById('_css_fiscalBoard')){
+    const s = document.createElement('style'); s.id = '_css_fiscalBoard';
+    s.textContent = `.fb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:start}
+@media(max-width:1180px){.fb-grid{grid-template-columns:repeat(2,minmax(0,1fr))}} @media(max-width:660px){.fb-grid{grid-template-columns:minmax(0,1fr)}}
+.fb-col{background:var(--bg-card2);border:1px solid var(--border);border-radius:12px;padding:10px;min-width:0}
+.fb-colh{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:.82rem;margin-bottom:8px;padding-bottom:7px}
+.fb-grp{margin-bottom:12px}
+.fb-grph{display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:.72rem;margin-bottom:5px;flex-wrap:wrap}
+.fb-card{background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:8px 10px;margin-bottom:6px}
+.fb-card.mine{border:2px solid #059669;background:rgba(5,150,105,.08)}
+.fb-card.other{border-color:#f59e0b;background:rgba(245,158,11,.08)}
+.fb-chip{display:inline-block;font-size:.66rem;font-weight:700;padding:1px 7px;border-radius:5px;white-space:nowrap}
+.fb-btn{font-size:.7rem;font-weight:700;border-radius:6px;padding:3px 9px;cursor:pointer;border:1px solid var(--border-med);background:var(--bg-card2);color:var(--text-primary)}
+.fb-btn:hover{border-color:var(--red);color:var(--red)}
+.fb-btn.pri{background:var(--red);border-color:var(--red);color:#fff}
+.fb-btn.ok{background:#059669;border-color:#059669;color:#fff}
+.fb-btn.no{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.4);color:#b45309}
+.fb-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}`;
+    document.head.appendChild(s);
+  }
+  const { cargasMap, atribs, podeUpload } = fd;
+  const ui = window._fiscalUI;
+  const euId = USUARIO_LOGADO?.id;
+  const podeAdm = ['admin','fiscal_admin','adm_fiscal'].includes(USUARIO_LOGADO?.perfil||'');
+  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+
+  // cargas do quadro (filtro Interna/Externa; carga concluída pelo fiscal fica no Histórico)
+  const cargas = Object.keys(cargasMap).map(Number).filter(n=>!isNaN(n)&&n>0)
+    .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
+    .filter(c => !_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)
+    .sort((a,b)=>a-b);
+  if(ui.cargaSel && !cargas.includes(ui.cargaSel)) ui.cargaSel = null;
+
+  // todos os pedidos (para KPIs) — antes dos filtros de busca / carga / "só meus"
+  const todos = [];
+  cargas.forEach(c=>{
+    const d = cargasMap[c];
+    [...d.pedidos].sort((a,b)=>a-b).forEach(p=>{
+      const est = _fiscalEstadoPedido(d, p);
+      todos.push({ carga:c, ped:p, est, dono:_fiscalDono(atribs, c, p) });
+    });
+  });
+  const cont = {pend:0, nf:0, bol:0, ok:0}; let meus = 0;
+  todos.forEach(x=>{ cont[x.est.col]++; if(x.est.col!=='ok' && x.dono && x.dono.fiscal_id===euId) meus++; });
+  set('fiscal-kpi-pend', cont.pend); set('fiscal-kpi-nf', cont.nf); set('fiscal-kpi-bol', cont.bol);
+  set('fiscal-kpi-ok', cont.ok); set('fiscal-kpi-meus', meus);
+
+  // cargas totalmente resolvidas = "Fiscal pronto"
+  const prontaCarga = c => { const d = cargasMap[c]; return d.pedidos.size>0 && [...d.pedidos].every(p=>_fiscalEstadoPedido(d,p).col==='ok'); };
+
+  // filtros
+  const q = (ui.busca||'').replace(/\D/g,'');
+  let vis = todos;
+  if(ui.cargaSel) vis = vis.filter(x=>x.carga===ui.cargaSel);
+  if(q) vis = vis.filter(x=>String(x.carga).includes(q) || String(x.ped).includes(q));
+  if(ui.soMeus) vis = vis.filter(x=>x.dono && x.dono.fiscal_id===euId);
+
+  // faixa da carga escolhida
+  const faixa = document.getElementById('fiscal-carga-sel');
+  if(faixa){
+    if(ui.cargaSel){
+      const c = ui.cargaSel, d = cargasMap[c], dem = d.demanda;
+      const dels = todos.filter(x=>x.carga===c);
+      const n = k => dels.filter(x=>x.est.col===k).length;
+      const livres = dels.filter(x=>x.est.col!=='ok' && !x.dono).length;
+      faixa.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;background:var(--bg-card);border:2px solid #059669;border-radius:12px;padding:10px 14px;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="background:#059669;color:#fff;font-size:.82rem;font-weight:800;padding:2px 12px;border-radius:20px">${_ic('package',12)} Carga ${c}</span>
+          <b style="font-size:.88rem">${escapeHtml(dem.rota||'—')}</b>
+          <span style="font-size:.76rem;color:var(--text-secondary)">${_ic('user',11)} ${escapeHtml(dem.motorista||'—')} · ${dels.length} pedidos</span>
+          <span class="fb-chip" style="background:#fef3c7;color:#92400e">Pendente ${n('pend')}</span>
+          <span class="fb-chip" style="background:#dbeafe;color:#1e40af">Pend. NF ${n('nf')}</span>
+          <span class="fb-chip" style="background:#ede9fe;color:#5b21b6">Pend. boleto ${n('bol')}</span>
+          <span class="fb-chip" style="background:#d1fae5;color:#065f46">Concluído ${n('ok')}</span>
+          ${prontaCarga(c)?`<span class="fb-chip" style="background:#059669;color:#fff">${_ic('check-circle',10)} Fiscal pronto</span>`:''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${podeUpload && livres?`<button class="fb-btn pri" onclick="fiscalPegarCarga(${c})">Pegar carga (${livres})</button>`:''}
+          <button class="fb-btn" onclick="abrirModalFiscalDrawer(${c})" title="Cancelar pedido, alerta de rota, remover arquivo e concluir fiscal">Detalhes da carga</button>
+          <button class="fb-btn" onclick="fiscalLimparCarga()">${_ic('x',11)} Ver todas as cargas</button>
+        </div></div>`;
+    } else faixa.innerHTML = '';
+  }
+
+  if(!cargas.length){
+    container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga aguardando o Fiscal no momento.</p>';
+    _featherReplace();
+    return;
+  }
+
+  const chipDoc = (est, tipo) => {
+    const nome = tipo==='nf' ? 'NF' : 'Boleto';
+    const arq = tipo==='nf' ? est.nfArq : est.boArq, sem = tipo==='nf' ? est.nfSem : est.boSem;
+    if(arq.length) return `<span class="fb-chip" style="background:#d1fae5;color:#065f46" title="${escapeHtml(arq.map(a=>a.nome_arquivo).join(', '))}">${nome} enviado${arq.length>1?' ('+arq.length+')':''}</span>`;
+    if(sem) return `<span class="fb-chip" style="background:var(--bg-hover);color:var(--text-secondary)" title="${escapeHtml('Marcado por '+(sem.fiscal_nome||'—')+(sem.motivo?': '+sem.motivo:''))}">Não tem ${nome.toLowerCase()}</span>`;
+    return `<span class="fb-chip" style="background:#fef3c7;color:#92400e">${nome}: falta</span>`;
+  };
+  const confChip = (d, p) => {
+    const st = d.confMap[p]?.status;
+    return st==='ok' ? '<span class="fb-chip" style="background:#d1fae5;color:#065f46">Conferido</span>'
+         : st==='nok' ? '<span class="fb-chip" style="background:#fee2e2;color:#991b1b">NOK</span>'
+         : '<span class="fb-chip" style="background:#fef9c3;color:#92400e">Sem conf.</span>';
+  };
+
+  const cardPedido = (x, compacto) => {
+    const { carga, ped, est, dono } = x, d = cargasMap[carga];
+    const meu = dono && dono.fiscal_id===euId, outro = dono && !meu;
+    if(compacto){   // coluna Concluído: uma linha por pedido
+      const desf = tipo => { const s = tipo==='nf' ? est.nfSem : est.boSem; const arq = tipo==='nf' ? est.nfArq : est.boArq;
+        return (s && !arq.length && (podeAdm || s.fiscal_id===euId)) ? `<button class="fb-btn" style="padding:0 6px" title="Desfazer 'não tem ${tipo==='nf'?'NF':'boleto'}'" onclick="fiscalDesfazerSem('${s.id}')">${_ic('rotate-ccw',10)}</button>` : ''; };
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0;border-top:1px solid var(--border);font-size:.74rem">
+        <b>Pedido ${ped}</b><span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">${chipDoc(est,'nf')}${desf('nf')}${chipDoc(est,'boleto')}${desf('boleto')}</span></div>`;
+    }
+    const acoes = [];
+    if(!dono){
+      if(podeUpload) acoes.push(`<button class="fb-btn pri" onclick="fiscalPegarPedido(${carga},${ped})">Pegar pedido</button>`);
+    } else if(meu){
+      if(!est.nf){
+        acoes.push(`<button class="fb-btn ok" onclick="document.getElementById('fb-f-${carga}-${ped}-nf').click()">${_ic('upload',10)} Enviar NF</button>`);
+        acoes.push(`<button class="fb-btn no" onclick="fiscalSemDoc(${carga},${ped},'nf')">Não tem NF</button>`);
+      }
+      if(!est.bo){
+        acoes.push(`<button class="fb-btn ok" onclick="document.getElementById('fb-f-${carga}-${ped}-boleto').click()">${_ic('upload',10)} Enviar boleto</button>`);
+        acoes.push(`<button class="fb-btn no" onclick="fiscalSemDoc(${carga},${ped},'boleto')">Não tem boleto</button>`);
+      }
+      acoes.push(`<button class="fb-btn" onclick="fiscalSoltar(${carga},${ped})">Soltar</button>`);
+    } else if(podeAdm){
+      acoes.push(`<button class="fb-btn" onclick="fiscalSoltarADM(${carga},${ped},'${_jsAttrStr(dono.fiscal_nome||'')}')">Soltar (ADM)</button>`);
+    }
+    const inputs = meu ? `<input type="file" id="fb-f-${carga}-${ped}-nf" accept=".pdf,.xml,.png,.jpg" multiple hidden onchange="fiscalUpload(${carga},${ped},'nf')"><input type="file" id="fb-f-${carga}-${ped}-boleto" accept=".pdf,.xml,.png,.jpg" multiple hidden onchange="fiscalUpload(${carga},${ped},'boleto')">` : '';
+    const nok = d.confMap[ped]?.status==='nok' && d.confMap[ped]?.observacao ? `<div style="font-size:.68rem;color:#ef4444;margin-top:3px">${_ic('alert-triangle',10)} ${escapeHtml(d.confMap[ped].observacao)}</div>` : '';
+    return `<div class="fb-card ${meu?'mine':outro?'other':''}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:.82rem">Pedido ${ped}</b>${confChip(d,ped)}</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">${chipDoc(est,'nf')}${chipDoc(est,'boleto')}</div>
+      ${meu?`<div style="font-size:.68rem;color:#059669;font-weight:700;margin-top:4px">${_ic('user-check',10)} Você está com este pedido</div>`:''}
+      ${outro?`<div style="font-size:.68rem;color:#b45309;font-weight:700;margin-top:4px">${_ic('lock',10)} ${escapeHtml(dono.fiscal_nome||'Outro fiscal')}</div>`:''}
+      ${nok}
+      ${acoes.length?`<div class="fb-row">${acoes.join('')}</div>`:''}${inputs}
+    </div>`;
+  };
+
+  const colHtml = col => {
+    const itens = vis.filter(x=>x.est.col===col.k);
+    const porCarga = {};
+    itens.forEach(x=>{ (porCarga[x.carga] = porCarga[x.carga]||[]).push(x); });
+    const ordemCargas = Object.keys(porCarga).map(Number).sort((a,b)=>a-b);
+    const grupos = ordemCargas.map(c=>{
+      const d = cargasMap[c], dem = d.demanda, lst = porCarga[c];
+      // dentro da carga: conferidos primeiro, depois por número
+      lst.sort((a,b)=> ((d.confMap[b.ped]?.status==='ok')-(d.confMap[a.ped]?.status==='ok')) || a.ped-b.ped);
+      const livres = col.k!=='ok' ? lst.filter(x=>!x.dono).length : 0;
+      const pronta = col.k==='ok' && prontaCarga(c);
+      const cab = `<div class="fb-grph">
+        <span style="min-width:0"><a href="javascript:void(0)" onclick="fiscalSelecionarCarga(${c})" style="font-weight:800;color:var(--text-primary);text-decoration:none" title="Abrir só esta carga">${_ic('package',11)} Carga ${c}</a> <span style="color:var(--text-muted)">${escapeHtml(dem.rota||'')} · ${lst.length} ped.</span></span>
+        <span style="display:flex;gap:4px;flex-wrap:wrap">
+          ${podeUpload && livres>1 ? `<button class="fb-btn" onclick="fiscalPegarCarga(${c})" title="Pega todos os pedidos livres desta carga">Pegar carga (${livres})</button>` : ''}
+          ${pronta ? `<span class="fb-chip" style="background:#059669;color:#fff">Fiscal pronto</span>${podeUpload?`<button class="fb-btn ok" onclick="concluirFiscal(${c},'${_jsAttrStr(dem.id||'')}')" title="Envia a carga para Seguros e Caixa">Concluir fiscal</button>`:''}` : ''}
+        </span></div>`;
+      return `<div class="fb-grp">${cab}${lst.map(x=>cardPedido(x, col.k==='ok')).join('')}</div>`;
+    }).join('');
+    return `<div class="fb-col" style="border-top:3px solid ${col.cor}">
+      <div class="fb-colh" title="${col.dica}"><span>${col.nome}</span><span class="fb-chip" style="background:${col.cor};color:#fff">${itens.length}</span></div>
+      ${grupos || '<div style="font-size:.76rem;color:var(--text-muted);text-align:center;padding:14px 0">Nada aqui</div>'}
+    </div>`;
+  };
+  // preserva o histórico (div anexado depois do quadro)
+  const hist = document.getElementById('fiscal-historico-concluidos');
+  container.innerHTML = `<div class="fb-grid">${_FISCAL_COLS.map(colHtml).join('')}</div>`;
+  if(hist) container.appendChild(hist);
+  _featherReplace();
+}
+
+// ── Ações do quadro ──
+async function fiscalPegarPedido(carga, pedido){
+  try{
+    const ex = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&or=(pedido.eq.${pedido},pedido.is.null)&status=eq.em_andamento&select=id`) || [];
+    if(ex.length){ showToast('Este pedido já está com outro fiscal','warning'); await carregarPaginaFiscal(); return; }
+    await supaFetch('atribuicoes_fiscal',{method:'POST',body:JSON.stringify({
+      carga, pedido, fiscal_id:USUARIO_LOGADO.id, fiscal_nome:USUARIO_LOGADO.nome, status:'em_andamento', criado_em:new Date().toISOString()
+    })});
+    await supaFetch(`demandas_rota?carga=eq.${carga}&status_fiscal=eq.pendente`,{ method:'PATCH', body:JSON.stringify({status_fiscal:'em_andamento'}) }).catch(()=>{});
+    showToast('Pedido '+pedido+' é seu','success');
+    await carregarPaginaFiscal();
+  }catch(e){
+    showToast(/duplicate|23505|409/i.test(e.message||'') ? 'Outro fiscal acabou de pegar este pedido' : 'Erro: '+e.message,'warning');
+    carregarPaginaFiscal();
+  }
+}
+// Pega a carga inteira = todos os pedidos AINDA LIVRES e não concluídos (os que outro fiscal já pegou ficam com ele)
+async function fiscalPegarCarga(carga){
+  const d = window._fiscalDados?.cargasMap?.[carga];
+  if(!d){ showToast('Carga não encontrada','warning'); return; }
+  try{
+    const abertos = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&status=eq.em_andamento&select=pedido`) || [];
+    if(abertos.some(a=>a.pedido==null)){ showToast('Esta carga está com outro fiscal (chamado antigo da carga inteira).','warning'); return; }
+    const ocupados = new Set(abertos.map(a=>a.pedido));
+    const alvo = [...d.pedidos].filter(p=>_fiscalEstadoPedido(d,p).col!=='ok' && !ocupados.has(p));
+    if(!alvo.length){ showToast('Não há pedido livre nesta carga','warning'); await carregarPaginaFiscal(); return; }
+    let ok = 0;
+    await Promise.all(alvo.map(p=>supaFetch('atribuicoes_fiscal',{method:'POST',body:JSON.stringify({
+      carga, pedido:p, fiscal_id:USUARIO_LOGADO.id, fiscal_nome:USUARIO_LOGADO.nome, status:'em_andamento', criado_em:new Date().toISOString()
+    })}).then(()=>{ ok++; }).catch(()=>{})));
+    await supaFetch(`demandas_rota?carga=eq.${carga}&status_fiscal=eq.pendente`,{ method:'PATCH', body:JSON.stringify({status_fiscal:'em_andamento'}) }).catch(()=>{});
+    showToast(ok===alvo.length ? `Carga ${carga}: ${ok} pedido(s) são seus` : `Carga ${carga}: você pegou ${ok} de ${alvo.length} (os outros foram pegos por outro fiscal agora)`, ok ? 'success' : 'warning');
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+async function fiscalSoltar(carga, pedido){
+  try{
+    await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&or=(pedido.eq.${pedido},pedido.is.null)&fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.em_andamento`,{ method:'PATCH', body:JSON.stringify({status:'liberado'}) });
+    showToast('Pedido '+pedido+' solto','success');
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+async function fiscalSoltarADM(carga, pedido, nome){
+  if(!confirm(`Soltar o pedido ${pedido} (carga ${carga}) que está com ${nome}?`)) return;
+  try{
+    await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&or=(pedido.eq.${pedido},pedido.is.null)&status=eq.em_andamento`,{ method:'PATCH', body:JSON.stringify({status:'liberado'}) });
+    showToast('Pedido '+pedido+' solto pelo ADM','success');
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+async function fiscalUpload(carga, pedido, tipo){
+  const files = document.getElementById(`fb-f-${carga}-${pedido}-${tipo}`)?.files;
+  if(!files || !files.length) return;
+  try{
+    showToast('Enviando arquivo(s)...','warning');
+    const bd = (typeof BASE_DATA!=='undefined' ? BASE_DATA : [])||[];
+    const valor = bd.filter(r=>Number(r.carga)===Number(carga)&&Number(r.pedido)===Number(pedido)).reduce((s,r)=>s+(parseFloat(r.valor)||0), 0) || null;
+    for(const file of files){
+      const url = await uploadParaStorage(file, carga, pedido);
+      await supaFetch('notas_fiscais',{method:'POST',body:JSON.stringify({
+        carga:Number(carga), pedido:Number(pedido), nome_arquivo:file.name, tipo, url, valor,
+        fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'', criado_em:new Date().toISOString()
+      })});
+    }
+    showToast(`${files.length} arquivo(s) enviado(s) como ${tipo==='nf'?'NF':'boleto'}`,'success');
+    await _fiscalPosAcao(carga, pedido);
+  }catch(e){ showToast('Erro no envio: '+e.message,'warning'); carregarPaginaFiscal(); }
+}
+async function fiscalSemDoc(carga, pedido, tipo){
+  const nome = tipo==='nf' ? 'nota fiscal' : 'boleto';
+  const m = prompt(`Confirmar: o pedido ${pedido} NÃO TEM ${nome}.\n\nMotivo (opcional):`, '');
+  if(m===null) return;
+  try{
+    await supaFetch('fiscal_sem_documento',{method:'POST',body:JSON.stringify({
+      carga:Number(carga), pedido:Number(pedido), tipo, motivo:(m||'').trim().slice(0,200)||null,
+      fiscal_id:USUARIO_LOGADO?.id||null, fiscal_nome:USUARIO_LOGADO?.nome||'', criado_em:new Date().toISOString()
+    })});
+    showToast(`Pedido ${pedido}: marcado como "não tem ${nome}"`,'success');
+    await _fiscalPosAcao(carga, pedido);
+  }catch(e){
+    showToast(/duplicate|23505|409/i.test(e.message||'') ? 'Já estava marcado' : 'Erro: '+e.message,'warning');
+    carregarPaginaFiscal();
+  }
+}
+async function fiscalDesfazerSem(id){
+  if(!confirm('Desfazer a marcação "não tem"? O pedido volta a ficar pendente.')) return;
+  try{
+    await supaFetch(`fiscal_sem_documento?id=eq.${id}`,{method:'DELETE'});
+    showToast('Marcação desfeita','success');
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+// Depois de enviar/marcar: se o pedido ficou com NF e boleto resolvidos, encerra o chamado dele; avisa quando a carga inteira ficou pronta
+async function _fiscalPosAcao(carga, pedido){
+  try{
+    const [docs, sem] = await Promise.all([
+      supaFetch(`notas_fiscais?carga=eq.${carga}&pedido=eq.${pedido}&select=tipo`),
+      supaFetch(`fiscal_sem_documento?carga=eq.${carga}&pedido=eq.${pedido}&select=tipo`)
+    ]);
+    const tem = t => (docs||[]).some(x=>x.tipo===t) || (sem||[]).some(x=>x.tipo===t);
+    if(tem('nf') && tem('boleto')){
+      await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&pedido=eq.${pedido}&status=eq.em_andamento`,{ method:'PATCH', body:JSON.stringify({status:'concluido'}) });
+    }
+  }catch(e){ console.warn('[fiscal] pós-ação:', e.message); }
+  await carregarPaginaFiscal();
+  const d = window._fiscalDados?.cargasMap?.[carga];
+  if(d && d.pedidos.size>0 && [...d.pedidos].every(p=>_fiscalEstadoPedido(d,p).col==='ok')){
+    showToast(`Carga ${carga}: Fiscal pronto — a Expedição já vê o aviso.`,'success', 6000);
+  }
+}
+// Atualiza sozinho a cada 60 s enquanto a aba Fiscal está aberta (para ver o que os outros fiscais pegaram)
+if(!window._fiscalAutoTimer){
+  window._fiscalAutoTimer = setInterval(()=>{
+    try{
+      const pg = document.getElementById('page-fiscal');
+      if(!pg || !pg.classList.contains('active') || document.hidden) return;
+      if(document.getElementById('fiscal-drawer-overlay') || document.getElementById('modal-xml-fiscal')?.style.display==='flex') return;
+      carregarPaginaFiscal();
+    }catch(e){}
+  }, 60000);
 }
 
 function abrirModalFiscalDrawer(carga){
@@ -52708,7 +52967,7 @@ function abrirModalFiscalDrawer(carga){
           ${conf?.observacao?`<span style="font-size:.7rem;color:#ef4444">${_ic('alert-triangle',10)} ${escapeHtml(conf.observacao)}</span>`:''}
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          <span style="font-size:.72rem;background:${nfsPed.length?'#d1fae5':'#fef9c3'};color:${nfsPed.length?'#065f46':'#92400e'};padding:2px 8px;border-radius:5px;font-weight:700">${nfsPed.length?nfsPed.length+' NF(s)':'Sem NF'}</span>
+          <span style="font-size:.72rem;background:${nfsPed.length?'#d1fae5':'#fef9c3'};color:${nfsPed.length?'#065f46':'#92400e'};padding:2px 8px;border-radius:5px;font-weight:700">${nfsPed.length?nfsPed.length+' NF(s)':((dados.semDoc||[]).some(s=>s.pedido===ped&&s.tipo==='nf')?'Não tem NF':'Sem NF')}</span>
           ${!atribPed?`<button onclick="pegarPedidoFiscal(${carga},${ped})" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:.72rem;font-weight:700;cursor:pointer">${_ic('lock',11)} Pegar</button>`:''}
           ${euPeguei?`<button onclick="liberarPedidoFiscal(${carga},${ped})" style="background:var(--bg-hover);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer">${_ic('unlock',11)} Liberar</button>`:''}
           ${outroPegou&&['fiscal_admin','admin','adm_fiscal'].includes(perfilUsuario)?`<button onclick="soltarPedidoFiscalADM(${carga},${ped},'${_nomeAtribEsc}')" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:700">${_ic('unlock',11)} Soltar (ADM)</button>`:''}
