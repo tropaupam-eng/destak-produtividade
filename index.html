@@ -1909,6 +1909,7 @@ body.light-theme{
     <button class="btn-topbar" id="btn-load" style="display:none" tabindex="-1" aria-hidden="true">📂 Planilha</button>
     <button class="btn-topbar red tb-com-label" onclick="sincronizarTudo()" id="btn-sync" title="Sincronizar dados com o banco" aria-label="Sincronizar"><span data-feather="refresh-cw" style="width:14px;height:14px"></span><span class="tb-label">Sync</span></button>
     <span id="conn-status" class="tb-status" title="Status da conexão com o banco" style="background:rgba(52,211,153,.15);color:#34d399;border-color:rgba(52,211,153,.3)"><span class="tb-dot"></span>Online</span>
+    <span id="erp-status" class="tb-status" onclick="_erpAvisoClique()" style="display:none;cursor:pointer;background:rgba(239,68,68,.15);color:#ef4444;border-color:rgba(239,68,68,.35)"></span>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="user-pill" id="user-pill">
       <div class="avatar" id="user-avatar-initial">?</div>
@@ -10415,7 +10416,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.331';
+const APP_VERSION = '4.89.332';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -60944,10 +60945,64 @@ async function checarConexaoSupabase(){
   }
 }
 
+// ── AVISO: ERP SEM ATUALIZAR ────────────────────────────────────────────────
+// A integração com o ERP roda no PC do usuário (tarefa a cada 10 min, depende da VPN). Quando a
+// VPN cai nada avisava e os pedidos novos paravam de chegar (25/11/2026: ~39 h parado).
+// Só o admin vê: um selo vermelho na barra superior quando o último pedido gravado pela
+// integração tem mais de _ERP_LIMITE_MIN minutos. Fonte = max(atualizado_em) de pedidos_info_erp
+// (a rotina regrava todos os pedidos da janela de 30 dias a cada ciclo, então anda a cada rodada).
+// Limite 60 min: um ciclo completo dura ~11 min e o PC suspende, então o intervalo normal entre
+// ciclos chega a ~30 min (medido em 23/11: 18:48, 19:18, 19:37); 30 min daria alarme falso.
+const _ERP_LIMITE_MIN = 60;
+let _erpTimer = null, _erpUltTs = 0, _erpAvisouToast = false;
+function _erpFmtDuracao(min){
+  if(min < 60) return min + ' min';
+  const h = Math.floor(min/60), m = min % 60;
+  if(h < 24) return h + ' h' + (m ? ' ' + m + ' min' : '');
+  const d = Math.floor(h/24), hr = h % 24;
+  return d + ' d' + (hr ? ' ' + hr + ' h' : '');
+}
+async function checarFrescorErp(){
+  const el = document.getElementById('erp-status');
+  if(!el) return;
+  if(USUARIO_LOGADO?.perfil !== 'admin'){ el.style.display = 'none'; return; }
+  if(!navigator.onLine) return;   // sem internet no navegador: não é problema do ERP, não mexe no aviso
+  try{
+    const r = await supaFetch('pedidos_info_erp?select=atualizado_em&order=atualizado_em.desc&limit=1',{_quiet:true});
+    const ts = r?.[0]?.atualizado_em ? new Date(r[0].atualizado_em).getTime() : 0;
+    _erpUltTs = ts;
+    const min = ts ? Math.max(0, Math.floor((Date.now() - ts) / 60000)) : null;
+    if(min !== null && min <= _ERP_LIMITE_MIN){
+      if(el.style.display !== 'none' && _erpAvisouToast && typeof showToast === 'function')
+        showToast('ERP voltou a atualizar','success');
+      el.style.display = 'none'; _erpAvisouToast = false;
+      return;
+    }
+    el.style.display = 'inline-flex';
+    el.innerHTML = '<span class="tb-dot"></span>' + (min === null ? 'ERP sem registro' : 'ERP parado há ' + _erpFmtDuracao(min));
+    el.title = min === null ? 'Nenhum pedido do ERP encontrado' : 'O ERP não atualiza há ' + _erpFmtDuracao(min) + '. Clique para ver o que conferir.';
+    if(!_erpAvisouToast && typeof showToast === 'function'){
+      _erpAvisouToast = true;
+      showToast(min === null ? 'ERP sem registro de pedidos' : 'ERP sem atualizar há ' + _erpFmtDuracao(min) + ' — confira a VPN do PC da integração','warning',8000);
+    }
+  }catch(e){ /* banco indisponível: o selo "Online/Offline" já cobre; mantém o aviso como está */ }
+}
+function _erpAvisoClique(){
+  const quando = _erpUltTs ? new Date(_erpUltTs).toLocaleString('pt-BR',{timeZone:'America/Bahia',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : 'nunca';
+  const msg = 'Último pedido do ERP gravado em ' + quando + ' (Salvador).\n\n' +
+    'O que conferir, nesta ordem:\n' +
+    '1) A VPN (OpenVPN Connect) do PC onde roda a integração está CONECTADA? Se a tela diz "ligada" mas nada chega, desconecte e conecte de novo.\n' +
+    '2) O PC está ligado e acordado (não suspenso)?\n' +
+    '3) Depois de reconectar a VPN, a rotina recupera sozinha (varre os últimos 30 dias) — leva uns 10 minutos.';
+  alert(msg);
+}
 function iniciarMonitorConexao(){
   if(window._connMonitorIniciado) return;
   window._connMonitorIniciado = true;
   checarConexaoSupabase();
+  setTimeout(checarFrescorErp, 6000);
+  if(_erpTimer) clearInterval(_erpTimer);
+  _erpTimer = setInterval(checarFrescorErp, 5 * 60 * 1000);
   window.addEventListener('online',  () => checarConexaoSupabase());
   window.addEventListener('offline', () => checarConexaoSupabase());
 }
