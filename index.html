@@ -10461,7 +10461,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.353';
+const APP_VERSION = '4.89.354';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20580,7 +20580,7 @@ async function salvarOcorrenciaLanc(){
 //  • Só fecha quando alguém encerra (Resolvido / Sem solução) com a resolução escrita; dá para reabrir.
 //  • Encerrar o chamado NÃO mexe na ocorrência (ela segue alimentando OTIF/relatórios do jeito que já era).
 // ══════════════════════════════════════════════════════════════════════════
-const _CME = { chamados:[], tent:{}, setores:[], statusF:'abertos', setorF:'', busca:'', aberto:null, ocupado:false, carregando:false, novo:null, erro:null };
+const _CME = { chamados:[], tent:{}, etapas:{}, setores:[], statusF:'abertos', setorF:'', busca:'', aberto:null, ocupado:false, carregando:false, novo:null, erro:null };
 const _CME_CANAIS = { ligacao:'Ligação', whatsapp:'WhatsApp', presencial:'Presencial', email:'E-mail', outro:'Outro' };
 const _CME_RES = {
   sem_resposta:       { t:'Setor não respondeu',  c:'#b45309' },
@@ -20606,10 +20606,16 @@ function _cmeHa(dt){
   if(h < 48) return h + 'h' + (m%60 ? String(m%60).padStart(2,'0') : '');
   return Math.floor(h/24) + ' dias';
 }
-// Prazo para o setor dar a devolutiva ao CME (minutos, contado desde a abertura do chamado). Padrao 10.
+// Prazo para o setor dar a devolutiva ao CME (minutos). Padrao 10. Desde a
+// migração de encaminhamento (2026-11-25), o prazo/cronômetro é por ETAPA
+// (setor atual), não mais fixo desde a abertura do chamado — cada setor que
+// recebe o chamado ganha seu próprio cronômetro, contado da hora que chegou
+// nele (_cmeEtapaAtiva). c.aberto_em/c.prazo_min (nível do chamado) viram só
+// o registro da 1ª etapa, mantidos por compatibilidade com dados antigos.
 const _CME_PRAZO_PADRAO = 10;
-const _cmePrazoMin = c => (Number(c.prazo_min) > 0 ? Number(c.prazo_min) : _CME_PRAZO_PADRAO);
-const _cmeVenceEm = c => new Date(c.aberto_em).getTime() + _cmePrazoMin(c) * 60000;
+const _cmeEtapaAtiva = c => { const l = _CME.etapas[c.id]; return (l && l.length) ? l[l.length-1] : null; };
+const _cmePrazoMin = c => { const et = _cmeEtapaAtiva(c); const v = et ? et.prazo_min : c.prazo_min; return (Number(v) > 0 ? Number(v) : _CME_PRAZO_PADRAO); };
+const _cmeVenceEm = c => { const et = _cmeEtapaAtiva(c); const base = et ? et.iniciado_em : c.aberto_em; return new Date(base).getTime() + _cmePrazoMin(c) * 60000; };
 function _cmeDur(ms, arredondaCima){
   const m = Math.max(0, arredondaCima ? Math.ceil(ms/60000) : Math.floor(ms/60000));
   if(m < 1) return 'menos de 1 min';
@@ -20641,7 +20647,15 @@ function _cmeSetorLabel(s){
   return _CME.setores.find(x=>x.setor===s)?.rotulo || s || '—';
 }
 const _cmeSetor = s => _CME.setores.find(x=>x.setor===s) || null;
-const _cmeUltAtiv = c => { const t = _CME.tent[c.id] || []; return t.length ? t[t.length-1].tentativa_em : c.aberto_em; };
+// "Última atividade" (usada pro selo "Parado há") conta só o que aconteceu na
+// etapa/setor ATUAL — um chamado recém-encaminhado não deveria contar como
+// "parado" por causa de tentativas antigas feitas no setor anterior.
+const _cmeUltAtiv = c => {
+  const et = _cmeEtapaAtiva(c);
+  const base = et ? et.iniciado_em : c.aberto_em;
+  const t = (_CME.tent[c.id] || []).filter(x => !et || x.etapa_id === et.id);
+  return t.length ? t[t.length-1].tentativa_em : base;
+};
 const _cmeUsuario = () => USUARIO_LOGADO?.nome || USUARIO_LOGADO?.email || null;
 
 // ── contador no menu ──
@@ -20671,9 +20685,15 @@ async function cmeCarregar(){
     _CME.setores = setores || [];
     const ids = _CME.chamados.map(c=>c.id);
     _CME.tent = {};
+    _CME.etapas = {};
     for(let i=0; i<ids.length; i+=60){
-      const rows = await supaFetch('cme_tentativas?chamado_id=in.(' + ids.slice(i,i+60).join(',') + ')&order=tentativa_em.asc&limit=5000') || [];
+      const lote = ids.slice(i,i+60).join(',');
+      const [rows, etapas] = await Promise.all([
+        supaFetch('cme_tentativas?chamado_id=in.(' + lote + ')&order=tentativa_em.asc&limit=5000') || [],
+        supaFetch('cme_etapas?chamado_id=in.(' + lote + ')&order=numero_sequencia.asc&limit=2000') || [],
+      ]);
       rows.forEach(t => { (_CME.tent[t.chamado_id] = _CME.tent[t.chamado_id] || []).push(t); });
+      etapas.forEach(e => { (_CME.etapas[e.chamado_id] = _CME.etapas[e.chamado_id] || []).push(e); });
     }
     _CME.erro = null;
   }catch(e){
@@ -20706,6 +20726,9 @@ async function _cmeCriarDeOcorrencia(oc){
   const r = await supaFetch('cme_chamados', { method:'POST', body: JSON.stringify(body) });
   const c = r?.[0];
   if(c){
+    // 1ª etapa (ver cmeSalvarNovo — mesmo motivo: sem isso o prazo/chat por setor não funciona)
+    await supaFetch('cme_etapas', { method:'POST', body: JSON.stringify({
+      chamado_id:c.id, numero_sequencia:1, setor, iniciado_em:c.aberto_em, iniciado_por:body.aberto_por, prazo_min:_CME_PRAZO_PADRAO }) }).catch(()=>{});
     const s = _cmeSetor(setor);
     // mensagem devolvida junto: quem chama junta com o aviso de "Ocorrência registrada" (só existe um toast na tela)
     c._msg = 'Chamado CME #' + c.numero + ' aberto para ' + _cmeSetorLabel(setor) + (s?.responsavel ? ' — acionar ' + s.responsavel : '');
@@ -20795,8 +20818,9 @@ function _cmeCardHtml(c){
   const t = _CME.tent[c.id] || [];
   const st = _CME_STATUS[c.status] || _CME_STATUS.aberto;
   const aberto = _cmeEhAberto(c);
-  const ult = t.length ? t[t.length-1] : null;
-  const parado = aberto && (Date.now() - new Date(ult ? ult.tentativa_em : c.aberto_em).getTime()) >= 86400000;
+  // Última atividade e "parado há" olham só a etapa (setor) ATUAL — ver _cmeUltAtiv.
+  const ultAtivEm = _cmeUltAtiv(c);
+  const parado = aberto && (Date.now() - new Date(ultAtivEm).getTime()) >= 86400000;
   const info = [];
   if(c.motivo_nome) info.push(escapeHtml(c.motivo_nome));
   if(c.carga != null) info.push('Carga #' + c.carga);
@@ -20809,37 +20833,60 @@ function _cmeCardHtml(c){
         (c.cliente ? '<span class="cme-cli">' + escapeHtml(c.cliente) + '</span>' : '') +
         '<span class="cme-pill" style="background:' + st.bg + ';color:' + st.c + '">' + st.t + '</span>' +
         (aberto ? '<span class="cme-pill cme-pend" title="Setor que ainda precisa dar a devolutiva deste chamado">Aguardando devolutiva: ' + escapeHtml(_cmeSetorLabel(c.setor)) + '</span>' : '<span class="cme-pill cme-setor">' + escapeHtml(_cmeSetorLabel(c.setor)) + '</span>') +
-        (aberto ? (() => { const p = _cmePrazoInfo(c); return '<span class="cme-pill cme-prazo ' + p.cls + '" data-id="' + c.id + '" title="Prazo de ' + _cmePrazoMin(c) + ' min para o setor dar a devolutiva ao CME, contado desde a abertura">' + p.txt + '</span>'; })() : '') +
-        (parado ? '<span class="cme-pill" style="background:#dc2626;color:#fff">Parado há ' + _cmeHa(ult ? ult.tentativa_em : c.aberto_em) + '</span>' : '') +
+        (aberto ? (() => { const p = _cmePrazoInfo(c); return '<span class="cme-pill cme-prazo ' + p.cls + '" data-id="' + c.id + '" title="Prazo de ' + _cmePrazoMin(c) + ' min para o setor dar a devolutiva ao CME, contado desde que o chamado chegou nesse setor">' + p.txt + '</span>'; })() : '') +
+        (parado ? '<span class="cme-pill" style="background:#dc2626;color:#fff">Parado há ' + _cmeHa(ultAtivEm) + '</span>' : '') +
       '</div>' +
       '<div class="cme-l2">' + info.join(' · ') + '</div>' +
       '<div class="cme-l3">' + (aberto ? _cmeAcionarHtml(c) : 'Encerrado ' + _cmeFmt(c.encerrado_em) + (c.encerrado_por ? ' por ' + escapeHtml(c.encerrado_por) : '')) + '</div>' +
-      '<div class="cme-l4">Aberto ' + _cmeFmt(c.aberto_em) + (aberto ? ' (há ' + _cmeHa(c.aberto_em) + ') · prazo de retorno ' + _cmePrazoMin(c) + ' min' : '') + ' · ' + t.length + (t.length === 1 ? ' tentativa' : ' tentativas') + (ult ? ' · última ' + _cmeFmt(ult.tentativa_em) : '') + '</div>' +
+      '<div class="cme-l4">Aberto ' + _cmeFmt(c.aberto_em) + (aberto ? ' (há ' + _cmeHa(c.aberto_em) + ') · prazo de retorno ' + _cmePrazoMin(c) + ' min' : '') + ' · ' + t.length + (t.length === 1 ? ' tentativa' : ' tentativas') + ' no total · última atividade ' + _cmeFmt(ultAtivEm) + '</div>' +
     '</div>';
   if(exp) h += _cmeDetalheHtml(c, t);
   return h + '</div>';
 }
 
-function _cmeDetalheHtml(c, t){
-  const aberto = _cmeEhAberto(c);
-  let h = '<div class="cme-det">';
-  if(c.descricao) h += '<div class="cme-sec"><div class="cme-lab">Observação da ocorrência</div><div>' + escapeHtml(c.descricao) + '</div></div>';
-  h += '<div class="cme-sec"><div class="cme-lab">Tentativas com o setor (' + t.length + ')</div>';
-  if(!t.length) h += '<div class="cme-mut">Nenhuma tentativa registrada ainda.</div>';
-  else h += '<div class="cme-tl">' + t.map((x, i) => {
+// Lista de tentativas DE UMA ETAPA SÓ (chat dentro do setor daquela etapa)
+function _cmeTentativasHtml(tentativas){
+  if(!tentativas.length) return '<div class="cme-mut">Nenhuma tentativa registrada nesta etapa.</div>';
+  return '<div class="cme-tl">' + tentativas.map((x, i) => {
     const r = _CME_RES[x.resultado] || { t:x.resultado, c:'#64748b' };
     return '<div class="cme-t"><div class="cme-tn">' + (i+1) + '</div><div class="cme-tc">' +
       '<div><b>' + _cmeFmt(x.tentativa_em) + '</b> · ' + (_CME_CANAIS[x.canal] || escapeHtml(x.canal || '—')) + (x.contato ? ' com ' + escapeHtml(x.contato) : '') + ' <span class="cme-pill" style="background:' + r.c + '22;color:' + r.c + '">' + r.t + '</span></div>' +
       (x.observacao ? '<div class="cme-obs">' + escapeHtml(x.observacao) + '</div>' : '') +
       '<div class="cme-mut">registrado por ' + escapeHtml(x.registrado_por || '—') + '</div></div></div>';
   }).join('') + '</div>';
-  h += '</div>';
+}
+// Timeline do chamado: uma etapa por setor pelo qual ele passou (pedido do
+// usuário, 2026-11-25 — "fica o tempo de cada setor como se fosse um chat").
+// Cada etapa mostra o tempo que durou (ou está durando) e as tentativas feitas
+// SÓ nela; se foi encaminhada, mostra a nota de encaminhamento no fim do bloco.
+function _cmeTimelineHtml(c, t){
+  const etapas = _CME.etapas[c.id] || [];
+  if(!etapas.length) return '';
+  return etapas.map((e, idx) => {
+    const tDaEtapa = t.filter(x => x.etapa_id === e.id);
+    const dur = e.encerrado_em ? _cmeDur(new Date(e.encerrado_em) - new Date(e.iniciado_em), false) : _cmeHa(e.iniciado_em);
+    const statusTxt = e.encerrado_em ? ('durou ' + dur) : ('em andamento há ' + dur);
+    let bloco = '<div class="cme-sec" style="border-left:3px solid ' + (e.encerrado_em ? '#cbd5e1' : '#2563eb') + ';padding-left:10px">' +
+      '<div class="cme-lab">Etapa ' + (idx+1) + ' · ' + escapeHtml(_cmeSetorLabel(e.setor)) + '</div>' +
+      '<div class="cme-mut">Iniciada ' + _cmeFmt(e.iniciado_em) + (e.iniciado_por ? ' por ' + escapeHtml(e.iniciado_por) : '') + ' · ' + statusTxt + '</div>' +
+      _cmeTentativasHtml(tDaEtapa);
+    if(e.encaminhado_para){
+      bloco += '<div class="cme-obs" style="margin-top:8px"><b>→ Encaminhado para ' + escapeHtml(_cmeSetorLabel(e.encaminhado_para)) + ':</b> ' + escapeHtml(e.observacao_saida || '') + '</div>';
+    }
+    return bloco + '</div>';
+  }).join('');
+}
+function _cmeDetalheHtml(c, t){
+  const aberto = _cmeEhAberto(c);
+  let h = '<div class="cme-det">';
+  if(c.descricao) h += '<div class="cme-sec"><div class="cme-lab">Observação da ocorrência</div><div>' + escapeHtml(c.descricao) + '</div></div>';
+  h += _cmeTimelineHtml(c, t);
   if(aberto){
     const s = _cmeSetor(c.setor);
     const canalOpts = Object.keys(_CME_CANAIS).map(k => '<option value="' + k + '">' + _CME_CANAIS[k] + '</option>').join('');
     const resOpts = ['sem_resposta','em_andamento','setor_vai_resolver','recusado'].map(k => '<option value="' + k + '">' + _CME_RES[k].t + '</option>').join('');
-    h += '<div class="cme-sec"><div class="cme-lab">Prazo para o retorno do setor</div><div class="cme-prazo-ed">' +
-      '<input class="cme-in" id="cme-p-min" type="number" min="1" max="10080" value="' + _cmePrazoMin(c) + '"> <span>minutos, contados desde a abertura (vence ' + _cmeFmt(_cmeVenceEm(c)) + ')</span>' +
+    h += '<div class="cme-sec"><div class="cme-lab">Prazo para o retorno do setor atual (' + escapeHtml(_cmeSetorLabel(c.setor)) + ')</div><div class="cme-prazo-ed">' +
+      '<input class="cme-in" id="cme-p-min" type="number" min="1" max="10080" value="' + _cmePrazoMin(c) + '"> <span>minutos, contados desde que chegou nesse setor (vence ' + _cmeFmt(_cmeVenceEm(c)) + ')</span>' +
       '<button class="cme-btn" onclick="cmeSalvarPrazo(\'' + c.id + '\')">Salvar prazo</button></div></div>';
     h += '<div class="cme-sec"><div class="cme-lab">Registrar nova tentativa</div><div class="cme-form">' +
       '<label>Falou com<input class="cme-in" id="cme-t-contato" value="' + escapeHtml(s?.responsavel || '') + '" placeholder="Nome de quem atendeu"></label>' +
@@ -20847,6 +20894,13 @@ function _cmeDetalheHtml(c, t){
       '<label>Resultado<select class="cme-in" id="cme-t-res">' + resOpts + '</select></label>' +
       '<label class="cme-full">O que ficou combinado / observação<textarea class="cme-in" id="cme-t-obs" rows="2" placeholder="Ex.: Comercial vai corrigir o preço e avisar até 15h"></textarea></label>' +
       '<button class="cme-btn pri" onclick="cmeSalvarTentativa(\'' + c.id + '\')">Registrar tentativa</button></div></div>';
+    const setOpts = Object.keys(MOTIVO_DEVOLUCAO_SETOR_LABEL).filter(s2 => s2 !== c.setor)
+      .map(s2 => '<option value="' + s2 + '">' + MOTIVO_DEVOLUCAO_SETOR_LABEL[s2] + '</option>').join('');
+    h += '<div class="cme-sec"><div class="cme-lab">Encaminhar para outro setor</div><div class="cme-form">' +
+      '<label>Novo setor<select class="cme-in" id="cme-enc-setor"><option value="">Selecione...</option>' + setOpts + '</select></label>' +
+      '<label>Prazo do novo setor (min)<input class="cme-in" id="cme-enc-prazo" type="number" min="1" max="10080" value="' + _CME_PRAZO_PADRAO + '"></label>' +
+      '<label class="cme-full">O que foi passado para o outro setor *<textarea class="cme-in" id="cme-enc-obs" rows="2" placeholder="Ex.: Comercial confirmou o desconto, falta o Armazém liberar a troca"></textarea></label>' +
+      '<button class="cme-btn" onclick="cmeEncaminhar(\'' + c.id + '\')">Encaminhar</button></div></div>';
     h += '<div class="cme-sec"><div class="cme-lab">Encerrar chamado</div><div class="cme-form">' +
       '<label>Como terminou<select class="cme-in" id="cme-e-res"><option value="resolvido">Resolvido</option><option value="sem_solucao">Sem solução</option></select></label>' +
       '<label class="cme-full">O que foi resolvido / por que ficou sem solução *<textarea class="cme-in" id="cme-e-txt" rows="2" placeholder="Obrigatório"></textarea></label>' +
@@ -20875,7 +20929,8 @@ async function cmeSalvarTentativa(id){
     const resultado = document.getElementById('cme-t-res')?.value || 'sem_resposta';
     const obs = (document.getElementById('cme-t-obs')?.value || '').trim();
     if(resultado !== 'sem_resposta' && !obs){ showToast('Escreva o que ficou combinado com o setor', 'warning'); document.getElementById('cme-t-obs')?.focus(); return; }
-    await supaFetch('cme_tentativas', { method:'POST', body: JSON.stringify({ chamado_id:id, registrado_por:_cmeUsuario(), contato:contato || null, canal, resultado, observacao:obs || null }) });
+    const etapa = _cmeEtapaAtiva(c);
+    await supaFetch('cme_tentativas', { method:'POST', body: JSON.stringify({ chamado_id:id, etapa_id: etapa?.id || null, registrado_por:_cmeUsuario(), contato:contato || null, canal, resultado, observacao:obs || null }) });
     if(c.status === 'aberto') await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ status:'em_tratativa' }) });
     showToast('Tentativa registrada', 'success');
     await cmeCarregar(); cmeRender();
@@ -20887,17 +20942,25 @@ async function cmeSalvarPrazo(id){
     if(!c || !_cmeEhAberto(c)) return;
     const v = parseInt(document.getElementById('cme-p-min')?.value, 10);
     if(!(v >= 1 && v <= 10080)){ showToast('Informe o prazo em minutos (de 1 a 10080)', 'warning'); return; }
-    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ prazo_min: v }) });
+    // Prazo é por etapa (setor atual) desde o encaminhamento entre setores —
+    // ver comentário em _cmeEtapaAtiva.
+    const etapa = _cmeEtapaAtiva(c);
+    if(etapa) await supaFetch('cme_etapas?id=eq.' + etapa.id, { method:'PATCH', body: JSON.stringify({ prazo_min: v }) });
+    else await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ prazo_min: v }) });
     showToast('Prazo de retorno: ' + v + ' min', 'success');
     await cmeCarregar(); cmeRender();
   });
 }
 async function cmeEncerrar(id){
   await _cmeAcao(async () => {
+    const c = _CME.chamados.find(x => x.id === id);
     const status = document.getElementById('cme-e-res')?.value || 'resolvido';
     const txt = (document.getElementById('cme-e-txt')?.value || '').trim();
     if(!txt){ showToast('Escreva o que foi resolvido (ou por que ficou sem solução)', 'warning'); document.getElementById('cme-e-txt')?.focus(); return; }
-    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ status, encerrado_em:new Date().toISOString(), encerrado_por:_cmeUsuario(), resolucao:txt }) });
+    const agora = new Date().toISOString();
+    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ status, encerrado_em:agora, encerrado_por:_cmeUsuario(), resolucao:txt }) });
+    const etapa = c && _cmeEtapaAtiva(c);
+    if(etapa && !etapa.encerrado_em) await supaFetch('cme_etapas?id=eq.' + etapa.id, { method:'PATCH', body: JSON.stringify({ encerrado_em:agora }) }).catch(()=>{});
     showToast('Chamado encerrado', 'success');
     _CME.aberto = null;
     await cmeCarregar(); cmeRender();
@@ -20905,9 +20968,37 @@ async function cmeEncerrar(id){
 }
 async function cmeReabrir(id){
   await _cmeAcao(async () => {
-    const n = (_CME.tent[id] || []).length;
+    const c = _CME.chamados.find(x => x.id === id);
+    const etapa = c && _cmeEtapaAtiva(c);
+    const n = (_CME.tent[id] || []).filter(x => !etapa || x.etapa_id === etapa.id).length;
     await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ status: n ? 'em_tratativa' : 'aberto', encerrado_em:null, encerrado_por:null, resolucao:null }) });
+    if(etapa) await supaFetch('cme_etapas?id=eq.' + etapa.id, { method:'PATCH', body: JSON.stringify({ encerrado_em:null }) }).catch(()=>{});
     showToast('Chamado reaberto', 'success');
+    await cmeCarregar(); cmeRender();
+  });
+}
+// ── encaminhar pra outro setor: fecha a etapa atual e abre uma nova, com
+// cronômetro próprio (pedido do usuário, 2026-11-25) ──
+async function cmeEncaminhar(id){
+  await _cmeAcao(async () => {
+    const c = _CME.chamados.find(x => x.id === id);
+    if(!c || !_cmeEhAberto(c)) return;
+    const novoSetor = document.getElementById('cme-enc-setor')?.value || '';
+    if(!novoSetor){ showToast('Escolha o setor para encaminhar', 'warning'); return; }
+    if(novoSetor === c.setor){ showToast('Esse já é o setor atual do chamado', 'warning'); return; }
+    const prazo = parseInt(document.getElementById('cme-enc-prazo')?.value, 10);
+    if(!(prazo >= 1 && prazo <= 10080)){ showToast('Informe o prazo do novo setor em minutos (de 1 a 10080)', 'warning'); return; }
+    const obs = (document.getElementById('cme-enc-obs')?.value || '').trim();
+    if(!obs){ showToast('Escreva o que foi passado para o outro setor', 'warning'); document.getElementById('cme-enc-obs')?.focus(); return; }
+    const atual = _cmeEtapaAtiva(c);
+    const agora = new Date().toISOString();
+    if(atual) await supaFetch('cme_etapas?id=eq.' + atual.id, { method:'PATCH', body: JSON.stringify({ encerrado_em:agora, encaminhado_para:novoSetor, observacao_saida:obs }) });
+    await supaFetch('cme_etapas', { method:'POST', body: JSON.stringify({
+      chamado_id:id, numero_sequencia:(atual?.numero_sequencia || 0) + 1, setor:novoSetor,
+      iniciado_em:agora, iniciado_por:_cmeUsuario(), prazo_min:prazo }) });
+    // Volta pra "aberto" (sem tentativa ainda nesse setor novo), mesmo que o setor anterior já tivesse em_tratativa
+    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ setor:novoSetor, status:'aberto' }) });
+    showToast('Chamado encaminhado para ' + _cmeSetorLabel(novoSetor), 'success');
     await cmeCarregar(); cmeRender();
   });
 }
@@ -20980,9 +21071,14 @@ async function cmeSalvarNovo(){
     if(!_CME.novo?.buscou) await cmeBuscarPedido();
     const n = _CME.novo || {};
     const mot = _ocorrMotivosCache.find(m => m.id === motivoId);
+    const agora = new Date().toISOString();
     const r = await supaFetch('cme_chamados', { method:'POST', body: JSON.stringify({
       origem:'manual', pedido, carga:n.carga ?? null, rota:n.rota || null, cliente:n.cliente || null, motorista:n.motorista || null, veiculo:n.veiculo || null,
-      motivo_id: motivoId || null, motivo_nome: mot?.nome || null, setor, descricao: desc || null, prazo_min: prazo, aberto_por: _cmeUsuario() }) });
+      motivo_id: motivoId || null, motivo_nome: mot?.nome || null, setor, descricao: desc || null, prazo_min: prazo, aberto_por: _cmeUsuario(), aberto_em: agora }) });
+    const novoId = r?.[0]?.id;
+    // 1ª etapa do chamado — sem ela _cmeEtapaAtiva() não acha nada e o prazo/chat não funcionam.
+    if(novoId) await supaFetch('cme_etapas', { method:'POST', body: JSON.stringify({
+      chamado_id: novoId, numero_sequencia:1, setor, iniciado_em: agora, iniciado_por: _cmeUsuario(), prazo_min: prazo }) }).catch(()=>{});
     cmeFecharModal();
     showToast('Chamado CME #' + (r?.[0]?.numero ?? '') + ' aberto para ' + _cmeSetorLabel(setor), 'success');
     _CME.statusF = 'abertos'; _CME.aberto = r?.[0]?.id || null;
