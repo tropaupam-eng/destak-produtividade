@@ -5610,6 +5610,11 @@ body.light-theme{
           <option value="interna">Internas</option>
           <option value="ignorada">Ignoradas</option>
         </select>
+        <select id="hist-cerp-und" onchange="carregarCargasErp()" title="Unidade do ERP dos pedidos da carga" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none">
+          <option value="" selected>Todas as unidades</option>
+          <option value="1">1 - CD</option>
+          <option value="3">3 - Petrolina</option>
+        </select>
         <input id="hist-cerp-busca" type="text" placeholder="🔍 Nº da carga..." onkeydown="if(event.key==='Enter') carregarCargasErp()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-med);border-radius:8px;padding:8px 12px;font-size:.83rem;outline:none;width:140px">
         <button onclick="carregarCargasErp()" style="background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border-med);border-radius:8px;padding:7px 16px;font-size:.83rem;cursor:pointer;font-weight:600"><span data-feather="refresh-cw" style="width:13px;height:13px;vertical-align:-2px"></span> Atualizar</button>
       </div>
@@ -10416,7 +10421,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.332';
+const APP_VERSION = '4.89.333';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -26613,6 +26618,38 @@ function cerpNovaPreCarga(n){
   },80);
 }
 
+// ── Dados do ERP por carga (unidade, situação, NF, vendedor, clientes) — view v_cargas_erp_info ──
+const _CERP_SIT_ERP = {MA:'Manifestado',RO:'Romaneio (em separação)',DI:'Digitado',VO:'Conferido (volume)',CL:'Faturado',CA:'Cancelado',BC:'Bloqueio de crédito',BG:'Bloqueio gerencial'};
+async function _cerpInfo(cargas){
+  const ids = [...new Set((cargas||[]).map(c=>parseInt(c,10)).filter(Boolean))];
+  const rows = await _emLotes(ids, 150, lote => supaFetch(`v_cargas_erp_info?carga=in.(${lote.join(',')})&select=carga,unidades,situacoes,pedidos_com_nf,pedidos_no_erp,nf_emissao_min,nf_emissao_max,vendedores,clientes_nomes&limit=1000`,{_quiet:true}));
+  const m = {}; rows.forEach(r=>{ m[r.carga] = r; });
+  return m;
+}
+function _cerpDiaMes(iso){ return iso ? String(iso).slice(8,10)+'/'+String(iso).slice(5,7) : ''; }
+function _cerpCelulasInfo(r, i){
+  const vazio = '<span style="color:var(--text-muted)">—</span>';
+  const td = (h,ex)=>`<td style="padding:8px 6px;${ex||''}">${h}</td>`;
+  if(!i) return td(vazio)+td(vazio)+td(vazio)+td(vazio)+td(vazio);
+  const un = String(i.unidades||'').split(',').filter(Boolean);
+  const unH = un.length ? un.map(u=>`<span title="${u==='1'?'1 - CD':u==='3'?'3 - Petrolina':'Unidade '+u}" style="display:inline-block;border-radius:6px;padding:1px 7px;font-size:.72rem;font-weight:800;background:${u==='3'?'rgba(124,58,237,.14)':'rgba(37,99,235,.14)'};color:${u==='3'?'#6d28d9':'#1d4ed8'}">${escapeHtml(u)}</span>`).join(' ') : vazio;
+  const sit = i.situacoes || {};
+  const sitH = Object.keys(sit).length && i.pedidos_no_erp
+    ? Object.keys(sit).sort().map(k=>`<span title="${escapeHtml(_CERP_SIT_ERP[k]||'Situação '+k)} — ${sit[k]} pedido${sit[k]>1?'s':''}" style="display:inline-block;border-radius:6px;padding:1px 6px;font-size:.7rem;font-weight:700;background:var(--bg-card2);color:var(--text-secondary);border:1px solid var(--border)">${escapeHtml(k)}${sit[k]!==r.pedidos?' '+sit[k]:''}</span>`).join(' ')
+    : vazio;
+  let nfH = vazio;
+  if(i.pedidos_no_erp){
+    const completo = i.pedidos_com_nf === r.pedidos;
+    const dt = i.nf_emissao_min ? (i.nf_emissao_min===i.nf_emissao_max ? _cerpDiaMes(i.nf_emissao_min) : _cerpDiaMes(i.nf_emissao_min)+'–'+_cerpDiaMes(i.nf_emissao_max)) : '';
+    nfH = `<span style="font-weight:700;color:${i.pedidos_com_nf===0?'#dc2626':completo?'#059669':'#b45309'}" title="Pedidos com nota fiscal emitida no ERP">${i.pedidos_com_nf}/${r.pedidos}</span>${dt?` <span style="color:var(--text-muted);font-size:.72rem">${dt}</span>`:''}`;
+  }
+  const vend = String(i.vendedores||'').split(',').filter(Boolean);
+  const vendH = vend.length ? `<span title="Código do vendedor no ERP">${escapeHtml(vend.slice(0,3).join(', '))}${vend.length>3?' +'+(vend.length-3):''}</span>` : vazio;
+  const nomes = String(i.clientes_nomes||'').split(' | ').filter(Boolean);
+  const cliH = nomes.length ? `<span title="${escapeHtml(nomes.join('\n'))}">${escapeHtml(nomes[0])}${nomes.length>1?` <span style="color:var(--text-muted)">+${nomes.length-1}</span>`:''}</span>` : vazio;
+  return td(unH,'white-space:nowrap') + td(sitH,'white-space:nowrap') + td(nfH,'white-space:nowrap') + td(vendH,'white-space:nowrap;color:var(--text-secondary)') + td(cliH,'max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)');
+}
+
 // ── HISTÓRICO > Cargas do ERP ──
 async function carregarCargasErp(){
   const cont = document.getElementById('hist-cerp-container'); if(!cont) return;
@@ -26637,12 +26674,20 @@ async function carregarCargasErp(){
     const badge = document.getElementById('hist-cargaserp-badge');
     if(badge){ badge.textContent = recentes; badge.style.display = recentes ? '' : 'none'; }
 
+    const LIM = 400;
+    const und = busca ? '' : (document.getElementById('hist-cerp-und')?.value || '');
     let dados = busca ? rows : rows.filter(r => sit==='todas' || r.situacao===sit);
+    // dados do ERP (unidade, situação, NF, vendedor, clientes): só das cargas que vão aparecer;
+    // com filtro de unidade precisa de todas. Se falhar com filtro de unidade, não finge que filtrou.
+    let info = {}, infoErro = '';
+    try{ info = await _cerpInfo((und ? dados : dados.slice(0,LIM)).map(r=>r.carga)); }
+    catch(e){ if(und) throw e; infoErro = e.message || 'erro'; }
+    if(und) dados = dados.filter(r => String((info[r.carga]||{}).unidades||'').split(',').includes(und));
     if(!dados.length){
-      cont.innerHTML = `<p style="text-align:center;padding:40px;color:var(--text-muted)">${busca?'Carga '+busca+' não encontrada no ERP.':'Nenhuma carga nesta situação no período.'}</p>`;
+      cont.innerHTML = `<p style="text-align:center;padding:40px;color:var(--text-muted)">${busca?'Carga '+busca+' não encontrada no ERP.':'Nenhuma carga nesta situação'+(und?' e unidade':'')+' no período.'}</p>`;
       return;
     }
-    const LIM = 400, mostra = dados.slice(0,LIM);
+    const mostra = dados.slice(0,LIM);
     const badgeSit = r => {
       const antiga = r.situacao==='pendente' && new Date(r.chegou_em).getTime() < Date.now()-CERP_JANELA_DIAS*864e5;
       const mk = (cor,bg,t)=>`<span style="display:inline-block;border-radius:20px;padding:2px 10px;font-size:.7rem;font-weight:700;background:${bg};color:${cor};white-space:nowrap">${t}</span>`;
@@ -26666,6 +26711,7 @@ async function carregarCargasErp(){
         <td style="padding:8px 6px;text-align:right">${r.pedidos}</td>
         <td style="padding:8px 6px;text-align:right">${r.clientes}</td>
         <td style="padding:8px 6px;text-align:right;white-space:nowrap">${_cerpMoeda(r.valor)}</td>
+        ${_cerpCelulasInfo(r, info[r.carga])}
         <td style="padding:8px 6px;color:var(--text-secondary)">${escapeHtml(rota)}</td>
         <td style="padding:8px 6px">${badgeSit(r)}</td>
         <td style="padding:8px 6px">${conf}</td>
@@ -26674,7 +26720,7 @@ async function carregarCargasErp(){
     }).join('');
     cont.innerHTML = `
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-        <span style="font-size:.78rem;color:var(--text-muted)">${dados.length} carga${dados.length>1?'s':''}${dados.length>LIM?' (mostrando as '+LIM+' mais recentes)':''}</span>
+        <span style="font-size:.78rem;color:var(--text-muted)">${dados.length} carga${dados.length>1?'s':''}${dados.length>LIM?' (mostrando as '+LIM+' mais recentes)':''}</span>${infoErro?`<span style="font-size:.76rem;color:#b45309;font-weight:700">Dados do ERP (unidade, NF, vendedor, clientes) indisponíveis agora: ${escapeHtml(infoErro)}</span>`:''}
         <button type="button" onclick="cerpIgnorarSelecionadas()" style="margin-left:auto;background:none;border:1px solid var(--border-med);color:var(--text-secondary);border-radius:8px;padding:5px 12px;font-size:.78rem;font-weight:600;cursor:pointer">Ignorar selecionadas</button>
       </div>
       <div style="overflow-x:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:12px">
@@ -26683,6 +26729,7 @@ async function carregarCargasErp(){
             <th style="padding:8px 6px"><input type="checkbox" onchange="document.querySelectorAll('.hist-cerp-chk').forEach(c=>c.checked=this.checked)"></th>
             <th style="padding:8px 6px">Carga</th><th style="padding:8px 6px">Chegou do ERP</th>
             <th style="padding:8px 6px;text-align:right">Pedidos</th><th style="padding:8px 6px;text-align:right">Clientes</th><th style="padding:8px 6px;text-align:right">Valor</th>
+            <th style="padding:8px 6px" title="Unidade do ERP">Unid.</th><th style="padding:8px 6px" title="Situação dos pedidos no ERP (MA manifestado, RO romaneio, DI digitado, VO conferido, CL faturado)">ERP</th><th style="padding:8px 6px" title="Pedidos com nota fiscal emitida / total, e data de emissão">NF emitida</th><th style="padding:8px 6px" title="Código do vendedor no ERP">Vend.</th><th style="padding:8px 6px">Clientes (nomes)</th>
             <th style="padding:8px 6px">Rota</th><th style="padding:8px 6px">Situação</th><th style="padding:8px 6px">Conferência</th><th style="padding:8px 6px"></th>
           </tr></thead><tbody>${linhas}</tbody></table></div>`;
   }catch(e){
