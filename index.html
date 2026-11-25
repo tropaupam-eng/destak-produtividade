@@ -52460,6 +52460,16 @@ function fiscalFiltrar(){
   ui.soMeus = !!document.getElementById('fiscal-so-meus')?.checked;
   _fiscalRenderQuadro();
 }
+// Ordem das cargas no quadro: a mais antiga no lançamento fica em cima (data de saída lançada; empate: criação do card; depois nº da carga)
+function _fiscalCmpCargas(a, b){
+  const cm = window._fiscalDados?.cargasMap || {};
+  const da = cm[a]?.demanda || {}, db = cm[b]?.demanda || {};
+  const sa = String(da.data_saida||'9999-99-99').slice(0,10), sb = String(db.data_saida||'9999-99-99').slice(0,10);
+  if(sa !== sb) return sa < sb ? -1 : 1;
+  const ca = String(da.criado_em||'9999'), cb = String(db.criado_em||'9999');
+  if(ca !== cb) return ca < cb ? -1 : 1;
+  return a - b;
+}
 function fiscalSelecionarCarga(carga){
   window._fiscalUI.cargaSel = carga;
   _fiscalRenderQuadro();
@@ -52601,7 +52611,7 @@ function _fiscalRenderQuadro(){
   const cargas = Object.keys(cargasMap).map(Number).filter(n=>!isNaN(n)&&n>0)
     .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
     .filter(c => !_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)
-    .sort((a,b)=>a-b);
+    .sort(_fiscalCmpCargas);
   if(ui.cargaSel && !cargas.includes(ui.cargaSel)) ui.cargaSel = null;
 
   // todos os pedidos (para KPIs) — antes dos filtros de busca / carga / "só meus"
@@ -52716,11 +52726,11 @@ function _fiscalRenderQuadro(){
     const itens = vis.filter(x=>x.est.col===col.k);
     const porCarga = {};
     itens.forEach(x=>{ (porCarga[x.carga] = porCarga[x.carga]||[]).push(x); });
-    const ordemCargas = Object.keys(porCarga).map(Number).sort((a,b)=>a-b);
+    const ordemCargas = Object.keys(porCarga).map(Number).sort(_fiscalCmpCargas);
     const grupos = ordemCargas.map(c=>{
       const d = cargasMap[c], dem = d.demanda, lst = porCarga[c];
-      // dentro da carga: conferidos primeiro, depois por número
-      lst.sort((a,b)=> ((d.confMap[b.ped]?.status==='ok')-(d.confMap[a.ped]?.status==='ok')) || a.ped-b.ped);
+      // dentro da carga: o pedido mais antigo (menor número) fica em cima
+      lst.sort((a,b)=> a.ped-b.ped);
       const livres = col.k!=='ok' ? lst.filter(x=>!x.dono).length : 0;
       const pronta = col.k==='ok' && prontaCarga(c);
       const cab = `<div class="fb-grph">
@@ -52774,6 +52784,7 @@ async function fiscalPegarCarga(carga){
       carga, pedido:p, fiscal_id:USUARIO_LOGADO.id, fiscal_nome:USUARIO_LOGADO.nome, status:'em_andamento', criado_em:new Date().toISOString()
     })}).then(()=>{ ok++; }).catch(()=>{})));
     await supaFetch(`demandas_rota?carga=eq.${carga}&status_fiscal=eq.pendente`,{ method:'PATCH', body:JSON.stringify({status_fiscal:'em_andamento'}) }).catch(()=>{});
+    if(ok) window._fiscalUI.cargaSel = carga;   // fica só a carga que acabou de pegar
     showToast(ok===alvo.length ? `Carga ${carga}: ${ok} pedido(s) são seus` : `Carga ${carga}: você pegou ${ok} de ${alvo.length} (os outros foram pegos por outro fiscal agora)`, ok ? 'success' : 'warning');
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
