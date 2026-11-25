@@ -10421,7 +10421,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.333';
+const APP_VERSION = '4.89.334';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -38548,18 +38548,22 @@ async function _pnHtmlExpedicaoAno(mes, und, ctx){
   const hoje = hojeDataBRT();
   const lim = _pnDataLimiteSemana(mes);   // deck semanal: nada depois do sábado da semana escolhida
   const EXP = ['saiu','fim_viagem','concluido'];
-  const [todas, ferRows] = await Promise.all([
+  const [todas, ferRows, retroRows] = await Promise.all([
     _carregarExpedicaoRE(und || ''),
-    supaFetch('feriados?data=gte.'+ano+'-01-01&data=lte.'+ano+'-12-31&select=data').catch(()=>[])
+    supaFetch('feriados?data=gte.'+ano+'-01-01&data=lte.'+ano+'-12-31&select=data').catch(()=>[]),
+    // cargas lançadas na Expedição depois, a partir da planilha do usuário (sem horário real de saída) — só para a nota do slide
+    supaFetch('historico_status_carga?origem=eq.lancamento_retroativo_planilha&select=carga&limit=5000',{_quiet:true}).catch(()=>null)
   ]);
   const feriados = new Set((ferRows||[]).map(r=>r.data).filter(Boolean));
-  const meses = Array.from({length:12}, ()=>({ n:0, ped:0, val:0 }));
+  const retroSet = new Set((retroRows||[]).map(r=>Math.round(Number(r.carga))));
+  const meses = Array.from({length:12}, ()=>({ n:0, ped:0, val:0, rn:0, rped:0, rval:0 }));
   todas.forEach(c=>{
     if(!EXP.includes(c.status) || c.mes.slice(0,4) !== String(ano)) return;
     const m = Number(c.mes.slice(5,7));
     if(m > mesN) return;
     if(m === mesN && lim && c.dataRef > lim) return;
     meses[m-1].n++; meses[m-1].ped += c.ped; meses[m-1].val += c.val;
+    if(retroSet.has(c.carga)){ meses[m-1].rn++; meses[m-1].rped += c.ped; meses[m-1].rval += c.val; }
   });
   const atual = meses[mesN-1];
   if(!meses.some(x=>x.n)) throw _pnSemDado('nenhuma carga expedida em '+ano);
@@ -38620,9 +38624,15 @@ async function _pnHtmlExpedicaoAno(mes, und, ctx){
   const graf1 = caixaGraf('FATURAMENTO (R$ MILHÕES)'+(emAndamento ? ' · '+NOMES[mesN-1].toUpperCase()+' COM TENDÊNCIA' : ''), barras(meses.map(x=>x.val), 150, '#22b07d', mi, extraFat) + eixo + legenda);
   const graf2 = caixaGraf('QTDE ROTAS', barras(meses.map(x=>x.n), 70, '#4f8ef7', v=>_pnh.n(v)) + eixo);
   const graf3 = caixaGraf('QTDE PEDIDOS', barras(meses.map(x=>x.ped), 70, '#b08af0', v=>_pnh.n(v)) + eixo);
+  // Nota de transparência (pedido do usuário, 25/11): cargas lançadas retroativamente (planilha do usuário) entram nos números acima,
+  // mas não têm horário real de saída — a data de saída delas é a da planilha. Só aparece nos meses em que existem.
+  const retroMeses = meses.map((x,i)=>x.rn ? NOMES[i]+': '+x.rn+(x.rn === 1 ? ' carga' : ' cargas')+' · '+_pnh.n(x.rped)+(x.rped === 1 ? ' pedido' : ' pedidos')+' · '+_pnh.v(x.rval) : null).filter(Boolean);
+  const notaRetro = retroRows === null
+    ? ' <b>Não foi possível verificar quais cargas foram lançadas retroativamente.</b>'
+    : (retroMeses.length ? ' <b>Lançamento retroativo:</b> '+retroMeses.join(' · ')+' — cargas lançadas na Expedição depois, a partir da planilha do usuário, já concluídas e sem horário real de saída (a data de saída é a da planilha). Estão incluídas nos números acima'+(meses[mesN-1].rn ? '; sem elas, '+NOMES[mesN-1]+' teria '+_pnh.n(atual.n-meses[mesN-1].rn)+' rotas, '+_pnh.n(atual.ped-meses[mesN-1].rped)+' pedidos e '+_pnh.v(atual.val-meses[mesN-1].rval)+'.' : '.') : '');
   const corpo = `<div style="display:flex;gap:16px;margin-bottom:18px">${cards}</div>
     <div style="display:grid;grid-template-columns:420px minmax(0,1fr);gap:16px;align-items:start">${tabela}<div style="display:flex;flex-direction:column;gap:16px">${graf1}<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">${graf2}${graf3}</div></div></div>
-    ${_pnh.nota('Cargas EXPEDIDAS da Expedição (saiu, fim de viagem ou concluída) das rotas externas; mês pela data de saída. Rotas = cargas · Pedidos = pedidos da carga · Faturamento = valor da carga. Rotas internas não entram. Sem carga registrada na Expedição antes de maio/2026 (meses com "—"). '+(emAndamento ? 'Tendência = realizado + (média por dia × dias úteis restantes); dia útil = segunda a sábado, sem feriado, e o dia de hoje conta inteiro. ' : '')+(lim ? 'Dados até '+lim.slice(8,10)+'/'+lim.slice(5,7)+' (fim da semana escolhida). ' : '')+(und ? 'Unidade: '+_pnh.esc(und)+'.' : ''))}`;
+    ${_pnh.nota('Cargas EXPEDIDAS da Expedição (saiu, fim de viagem ou concluída) das rotas externas; mês pela data de saída. Rotas = cargas · Pedidos = pedidos da carga · Faturamento = valor da carga. Rotas internas não entram. Sem carga registrada na Expedição antes de maio/2026 (meses com "—"). '+(emAndamento ? 'Tendência = realizado + (média por dia × dias úteis restantes); dia útil = segunda a sábado, sem feriado, e o dia de hoje conta inteiro. ' : '')+(lim ? 'Dados até '+lim.slice(8,10)+'/'+lim.slice(5,7)+' (fim da semana escolhida). ' : '')+(und ? 'Unidade: '+_pnh.esc(und)+'.' : '')+notaRetro)}`;
   return _pnh.casca('DISTRIBUIÇÃO · EXPEDIÇÃO · CARGAS EXPEDIDAS · '+ano+' · JANEIRO A '+_PNH_MESES[mesN-1]+(emAndamento ? ' (PARCIAL, '+trab+(trab === 1 ? ' DIA' : ' DIAS')+')' : ''), 'Rotas, pedidos e faturamento', corpo, 'OPERAÇÕES / DISTRIBUIÇÃO');
 }
 
