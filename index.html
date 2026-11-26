@@ -10526,7 +10526,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.360';
+const APP_VERSION = '4.89.361';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -53316,6 +53316,8 @@ function _fiscalRenderQuadro(){
   background:color-mix(in srgb,var(--c) 11%,transparent);border:1px solid color-mix(in srgb,var(--c) 18%,transparent)}
 .fb-gnum{display:inline-flex;align-items:center;gap:5px;font-weight:800;font-size:.76rem;color:var(--text-primary);text-decoration:none;padding:2px 9px;border-radius:999px;background:color-mix(in srgb,var(--c) 22%,transparent)}
 .fb-gnum:hover{background:var(--c);color:#fff}
+.fb-grph.mine{--c:#059669;border-color:#059669;background:rgba(5,150,105,.13)}
+.fb-grph.other{--c:#f59e0b;border-color:rgba(245,158,11,.55);background:rgba(245,158,11,.11)}
 .fb-card{position:relative;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:10px 12px 10px 15px;margin-bottom:8px;transition:border-color .15s,box-shadow .15s}
 .fb-card::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--c)}
 .fb-card:hover{border-color:color-mix(in srgb,var(--c) 50%,var(--border));box-shadow:0 6px 16px -10px var(--c)}
@@ -53467,9 +53469,20 @@ function _fiscalRenderQuadro(){
       const livres = col.k!=='ok' ? lst.filter(x=>!x.dono).length : 0;
       const pronta = col.k==='ok' && prontaCarga(c);
       const saida = fmtSaida(dem.data_saida);
-      const cab = `<div class="fb-grph">
-        <span style="min-width:0;display:flex;align-items:center;gap:7px;flex-wrap:wrap"><a class="fb-gnum" href="javascript:void(0)" onclick="fiscalSelecionarCarga(${c})" title="Abrir só esta carga">${_ic('package',11)} ${c}</a><b>${escapeHtml(dem.rota||'')}</b><span style="color:var(--text-muted)">${lst.length} ped.${saida?' · saída '+saida:''}</span></span>
+      // dono dos pedidos desta carga nesta coluna: verde = com você, laranja = com outro fiscal (o verde ganha se houver os dois)
+      const meusL = col.k!=='ok' ? lst.filter(x=>x.dono && x.dono.fiscal_id===euId) : [];
+      const outrosL = col.k!=='ok' ? lst.filter(x=>x.dono && x.dono.fiscal_id!==euId) : [];
+      const estadoGrp = meusL.length ? 'mine' : (outrosL.length ? 'other' : '');
+      const nomesOutros = [...new Set(outrosL.map(x=>x.dono.fiscal_nome||'Outro fiscal'))];
+      const meusCarga = todos.filter(x=>x.carga===c && x.est.col!=='ok' && x.dono && x.dono.fiscal_id===euId).length;
+      const outrosCarga = todos.filter(x=>x.carga===c && x.est.col!=='ok' && x.dono && x.dono.fiscal_id!==euId).length;
+      const chipDono = (meusL.length ? `<span class="fb-chip" style="background:#059669;color:#fff">${_ic('user-check',10)} Você (${meusL.length})</span>` : '')
+        + (outrosL.length ? `<span class="fb-chip" style="background:#f59e0b;color:#fff" title="Pedidos desta carga que estão com outro fiscal">${_ic('lock',10)} ${escapeHtml(nomesOutros.join(', '))} (${outrosL.length})</span>` : '');
+      const cab = `<div class="fb-grph ${estadoGrp}">
+        <span style="min-width:0;display:flex;align-items:center;gap:7px;flex-wrap:wrap"><a class="fb-gnum" href="javascript:void(0)" onclick="fiscalSelecionarCarga(${c})" title="Abrir só esta carga">${_ic('package',11)} ${c}</a><b>${escapeHtml(dem.rota||'')}</b><span style="color:var(--text-muted)">${lst.length} ped.${saida?' · saída '+saida:''}</span>${chipDono}</span>
         <span style="display:flex;gap:5px;flex-wrap:wrap">
+          ${meusL.length ? `<button class="fb-btn" onclick="fiscalSoltarCarga(${c})" title="Solta todos os pedidos desta carga que estão com você">${_ic('unlock',11)} Soltar carga (${meusCarga})</button>` : ''}
+          ${podeAdm && outrosL.length ? `<button class="fb-btn" onclick="fiscalSoltarCargaADM(${c})" title="Solta todos os pedidos desta carga que estão com outros fiscais">${_ic('unlock',11)} Soltar carga (ADM · ${outrosCarga})</button>` : ''}
           ${podeUpload && livres>1 ? `<button class="fb-btn" onclick="fiscalPegarCarga(${c})" title="Pega todos os pedidos livres desta carga">${_ic('users',11)} Pegar carga (${livres})</button>` : ''}
           ${pronta ? `<span class="fb-chip" style="background:#059669;color:#fff">${_ic('check-circle',10)} Fiscal pronto</span>${podeUpload?`<button class="fb-btn ok" onclick="concluirFiscal(${c},'${_jsAttrStr(dem.id||'')}')" title="Envia a carga para Seguros e Caixa">Concluir fiscal</button>`:''}` : ''}
         </span></div>`;
@@ -53535,6 +53548,30 @@ async function fiscalSoltarADM(carga, pedido, nome){
   try{
     await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&or=(pedido.eq.${pedido},pedido.is.null)&status=eq.em_andamento`,{ method:'PATCH', body:JSON.stringify({status:'liberado'}) });
     showToast('Pedido '+pedido+' solto pelo ADM','success');
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+// Solta a carga toda: todos os pedidos dela que estão com o fiscal logado (inclui chamado antigo da carga inteira)
+async function fiscalSoltarCarga(carga){
+  try{
+    const meus = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.em_andamento&select=id,pedido`) || [];
+    if(!meus.length){ showToast('Você não está com nenhum pedido desta carga','warning'); await carregarPaginaFiscal(); return; }
+    const txt = meus.some(a=>a.pedido==null) ? 'a carga inteira (chamado antigo)' : meus.length+' pedido'+(meus.length>1?'s':'');
+    if(!await confirm(`Soltar ${txt} que estão com você na carga ${carga}?\n\nOs pedidos voltam a ficar livres para outro fiscal pegar. Arquivos já enviados e marcações "não tem" continuam valendo.`)) return;
+    await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&fiscal_id=eq.${USUARIO_LOGADO.id}&status=eq.em_andamento`,{ method:'PATCH', body:JSON.stringify({status:'liberado'}) });
+    showToast('Carga '+carga+' solta','success');
+    await carregarPaginaFiscal();
+  }catch(e){ showToast('Erro: '+e.message,'warning'); }
+}
+// ADM solta a carga toda de qualquer fiscal
+async function fiscalSoltarCargaADM(carga){
+  try{
+    const abertos = await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&status=eq.em_andamento&select=id,pedido,fiscal_nome`) || [];
+    if(!abertos.length){ showToast('Esta carga não tem pedido com fiscal','warning'); await carregarPaginaFiscal(); return; }
+    const nomes = [...new Set(abertos.map(a=>a.fiscal_nome||'—'))].join(', ');
+    if(!await confirm(`Soltar os ${abertos.length} chamado(s) da carga ${carga} (com: ${nomes})?\n\nTodos voltam a ficar livres.`)) return;
+    await supaFetch(`atribuicoes_fiscal?carga=eq.${carga}&status=eq.em_andamento`,{ method:'PATCH', body:JSON.stringify({status:'liberado'}) });
+    showToast('Carga '+carga+' solta pelo ADM','success');
     await carregarPaginaFiscal();
   }catch(e){ showToast('Erro: '+e.message,'warning'); }
 }
