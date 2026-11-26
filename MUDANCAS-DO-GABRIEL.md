@@ -21,6 +21,13 @@ Se algo quebrar: registrar aqui o erro, a data, o commit culpado e o `git revert
 
 ---
 
+## 2026-11-26, Gabriel: Dashboard Devolução volta ao visual de cartão anterior (sem o vermelho do padrão novo) — v4.89.358
+Onde: `index.html`, página Dashboard Devolução (de `id="devol-grid"` até o fim da página): os 6 cartões que tinham `class="fk-box" ... --c:var(--red)` (barra lateral, borda e fundo degradê avermelhados, vindos do "padrão único" de 25/11, v4.89.349 a 4.89.356) voltaram ao estilo anterior: `background:var(--bg-card2);border-radius:12px;padding:22px 24px;border-top:3px solid var(--red)` (o do último com `margin-top:20px`). Pedido do Gabriel: "tire isso, deixe normal" (ele não pediu a padronização; ela veio em commits da conta tropaupam-eng).
+Só visual, só nesta tela; as outras telas seguem no padrão novo; nenhum dado, gráfico ou regra mudou.
+Como desfazer: reverter o commit desta mudança.
+Pendente/risco: se a padronização for reaplicada por cima (nova rodada de "cartões no padrão único"), esta tela pode voltar ao vermelho; avisar quem padroniza.
+
+
 ## 2026-11-23, Gabriel: Dashboard Devolução: tabela "Detalhe das ocorrências" ganha Quantidade e SKU · produtos devolvidos — v4.89.304
 Onde: `index.html`, `_devolRenderDetalhe` (colunas novas na visão Geral; SKU também em "Era para ter ido" da visão Inversão) e helpers `_devolItensDe`, `_devolSkuDe`, `_devolProdLinhas`, `_devolQtdTotal`. `carregarDashDevolucao` busca `pedidos_itens_erp` (pedido, mercadoria, descricao) só dos pedidos das ocorrências com itens, em lotes de 60, com cache na sessão (voltou uma busca parecida com a que foi tirada na v4.89.298). SKU = `mercadoria` (código do ERP, sem o ".0"), ligado ao item pela descrição. Só leitura.
 Como desfazer: `git revert` do commit desta entrada.
