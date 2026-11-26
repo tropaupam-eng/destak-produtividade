@@ -2590,6 +2590,19 @@ body.light-theme{
 .cme-mbox{background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:14px;padding:20px;width:100%;max-width:640px;max-height:90vh;overflow:auto}
 .cme-mbox h3{margin:0 0 14px;font-size:1.05rem;font-weight:800}
 .cme-srow{display:grid;grid-template-columns:110px 1fr 1fr;gap:8px;align-items:center;margin-bottom:8px;font-size:.85rem}
+/* checklist do fluxo fixo (Padrão de Gestão CME) */
+.cme-steps{display:grid;gap:0}
+.cme-step{display:flex;gap:10px;position:relative;padding-bottom:16px}
+.cme-step:not(:last-child)::before{content:'';position:absolute;left:11px;top:26px;bottom:-2px;width:2px;background:var(--border)}
+.cme-step-dot{flex:0 0 24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:800;z-index:1}
+.cme-step.done .cme-step-dot{background:#059669;color:#fff}
+.cme-step.active .cme-step-dot{background:#2563eb;color:#fff}
+.cme-step-body{flex:1;min-width:0;padding-top:1px}
+.cme-step-sub{font-size:.72rem;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px}
+.cme-step-oque{font-weight:700;color:var(--text-primary);font-size:.9rem;margin-bottom:2px}
+.cme-step.active .cme-step-oque{color:#2563eb}
+.cme-acionar-box{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;border-radius:8px;padding:6px 10px;font-size:.82rem;margin:6px 0}
+.cme-opcoes{display:flex;gap:8px;flex-wrap:wrap}
 @media(max-width:640px){.cme-srow{grid-template-columns:1fr}}
 </style>
 <div class="page" id="page-cme"><div class="container">
@@ -10513,7 +10526,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.359';
+const APP_VERSION = '4.89.360';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -20634,6 +20647,176 @@ async function salvarOcorrenciaLanc(){
 // ══════════════════════════════════════════════════════════════════════════
 const _CME = { chamados:[], tent:{}, etapas:{}, setores:[], statusF:'abertos', setorF:'', busca:'', aberto:null, ocupado:false, carregando:false, novo:null, erro:null };
 const _CME_CANAIS = { ligacao:'Ligação', whatsapp:'WhatsApp', presencial:'Presencial', email:'E-mail', outro:'Outro' };
+
+// ── Padrão de Gestão da CME (PDF "Padrão de Gestão CME", rev. 00) ──
+// 17 motivos oficiais (M01-M17) + o Fluxo de Devolução, cada um com etapas FIXAS
+// (quem faz o quê, nessa ordem) — não é mais o CME que escolhe livremente pra
+// quem encaminhar: o motivo já define o roteiro. "Outro" (motivo_cod null) cai
+// no modo livre antigo (setor + etapas + encaminhar manual), mantido como está.
+const _CME_QUEM_LABEL = {
+  motorista:'Motorista', cme:'CME', cliente:'Cliente', comercial:'Comercial', financeiro:'Financeiro',
+  armazem:'Supervisor de Armazém', distribuicao:'Supervisor de Distribuição', cftv:'CFTV',
+  fiscal:'Setor Fiscal', sup_seguros:'Supervisor de Seguros', aux_devolucao:'Auxiliar de Devolução',
+  vendedor:'Vendedor', andersson:'Andersson',
+};
+const _CME_FLUXOS = {
+  M01: { label:'M01 – Alteração da forma de pagamento', quando:'O cliente pede, no ato da entrega, para pagar com uma forma diferente da combinada no pedido.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Confirmar com o motorista qual a forma de pagamento desejada', tipo:'decisao', opcoes:[{label:'Boleto',next:3},{label:'Cartão',next:5},{label:'PIX',next:8},{label:'Dinheiro',next:10}] },
+    3:{ quem:'cme', contato:'comercial', oque:'Acionar o Comercial para alterar a forma de pagamento para boleto', next:4 },
+    4:{ quem:'comercial', oque:'Realizar a tratativa e enviar o novo boleto à CME', next:7 },
+    5:{ quem:'cme', contato:'financeiro', oque:'Acionar o Financeiro para gerar o link de pagamento', next:6 },
+    6:{ quem:'financeiro', oque:'Enviar o link de pagamento à CME', next:7 },
+    7:{ quem:'cme', oque:'Encaminhar o boleto ou o link ao motorista', next:'FIM' },
+    8:{ quem:'cme', oque:'Enviar a chave PIX ao motorista', next:9 },
+    9:{ quem:'motorista', oque:'Receber do cliente o comprovante de pagamento', next:'FIM' },
+    10:{ quem:'motorista', oque:'Recolher o pagamento em dinheiro', next:'FIM' },
+  }},
+  M02: { label:'M02 – Alteração de preço', quando:'O motorista identifica no ato da entrega que o preço do pedido está diferente do combinado com o cliente.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Entrar em contato com a CME e informar a situação', next:2 },
+    2:{ quem:'cme', contato:'comercial', oque:'Acionar o Comercial para alterar o preço', next:3 },
+    3:{ quem:'comercial', oque:'Realizar a tratativa', next:4 },
+    4:{ quem:'cme', oque:'Encaminhar as informações ao motorista', next:'FIM' },
+  }},
+  M03: { label:'M03 – Falta de mercadoria', quando:'O motorista não encontra no veículo um item que consta na nota fiscal.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Acionar o motorista para revisar a carga', next:3 },
+    3:{ quem:'motorista', oque:'Revisar a carga no veículo', next:4 },
+    4:{ quem:'motorista', oque:'A mercadoria foi encontrada?', tipo:'decisao', opcoes:[{label:'Sim, encontrada',next:5},{label:'Não encontrada',next:6}] },
+    5:{ quem:'motorista', oque:'Entregar a mercadoria ao cliente', next:'FIM' },
+    6:{ quem:'cme', oque:'Qual a forma de pagamento do pedido?', tipo:'decisao', opcoes:[{label:'PIX, dinheiro ou cartão de crédito',next:7},{label:'Boleto',next:8}] },
+    7:{ quem:'cme', oque:'Orientar o abatimento no ato', next:9 },
+    8:{ quem:'cme', contato:'financeiro', oque:'Acionar o Financeiro para emitir novo boleto', next:9 },
+    9:{ quem:'cme', contato:['armazem','cftv'], oque:'Acionar o Supervisor de Armazém (contagem de estoque) e o CFTV (revisão de câmeras)', next:10 },
+    10:{ quem:'armazem', oque:'Solicitar/realizar a contagem de estoque', next:11 },
+    11:{ quem:'cftv', oque:'Revisar as câmeras do carregamento', next:12 },
+    12:{ quem:'cme', oque:'Houve divergência no carregamento?', tipo:'decisao', opcoes:[{label:'Sim, houve divergência',next:15},{label:'Não, sem divergência',next:13}] },
+    13:{ quem:'cme', contato:'distribuicao', oque:'Encaminhar o pedido de vale do motorista ao Supervisor de Distribuição', next:14 },
+    14:{ quem:'financeiro', oque:'Gerar vale financeiro para o motorista', next:15 },
+    15:{ quem:'cme', oque:'Gerar devolução', next:'DEV:1' },
+  }},
+  M04: { label:'M04 – Inversão de mercadoria', quando:'O cliente recebe um produto diferente do que consta no pedido.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', contato:'armazem', oque:'Acionar o Supervisor de Armazém para revisar o estoque', next:3 },
+    3:{ quem:'armazem', oque:'Analisar o estoque para validar a inversão no carregamento', next:4 },
+    4:{ quem:'armazem', oque:'A inversão foi confirmada?', tipo:'decisao', opcoes:[{label:'Sim, confirmada',next:5},{label:'Não confirmada',next:10}] },
+    5:{ quem:'armazem', oque:'Informar a CME sobre a inversão confirmada', next:6 },
+    6:{ quem:'cme', oque:'Negociar com o cliente para ficar com a mercadoria', next:7 },
+    7:{ quem:'cme', oque:'O cliente aceita ficar com a mercadoria?', tipo:'decisao', opcoes:[{label:'Sim, aceita',next:8},{label:'Não aceita',next:9}] },
+    8:{ quem:'comercial', oque:'Gerar NF e boleto da mercadoria', next:'FIM' },
+    9:{ quem:'cme', oque:'Gerar devolução', next:'DEV:1' },
+    10:{ quem:'cme', contato:'distribuicao', oque:'Encaminhar o pedido de vale do motorista ao Supervisor de Distribuição', next:11 },
+    11:{ quem:'financeiro', oque:'Gerar vale financeiro para o motorista', next:9 },
+  }},
+  M05: { label:'M05 – Cliente sem dinheiro', quando:'O cliente não tem como pagar a entrega na forma combinada.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', contato:'financeiro', oque:'Passar as informações do cliente e da entrega ao Financeiro', next:3 },
+    3:{ quem:'financeiro', oque:'Realizar a análise para liberar outra forma de pagamento', next:4 },
+    4:{ quem:'financeiro', oque:'Encaminhar o resultado da análise à CME', next:5 },
+    5:{ quem:'cme', oque:'O pagamento foi liberado?', tipo:'decisao', opcoes:[{label:'Sim, liberado',next:6},{label:'Não liberado',next:8}] },
+    6:{ quem:'cme', oque:'Realizar a tratativa com o motorista (nova forma de pagamento)', next:7 },
+    7:{ quem:'cme', oque:'Registrar a ocorrência e concluir a entrega', next:'FIM' },
+    8:{ quem:'cme', contato:'vendedor', oque:'Informar o vendedor', next:9 },
+    9:{ quem:'cme', oque:'A entrega será reprogramada?', tipo:'decisao', opcoes:[{label:'Sim, reprogramar',next:10},{label:'Não, gerar devolução',next:11}] },
+    10:{ quem:'cme', oque:'Reprogramar a entrega', next:'FIM' },
+    11:{ quem:'cme', oque:'Gerar devolução', next:'DEV:1' },
+  }},
+  M06: { label:'M06 – Problema com link de pagamento via cartão', quando:'O link de pagamento por cartão não funciona no ato da entrega.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Solicitar evidência ao motorista (ex.: print do erro)', next:3 },
+    3:{ quem:'cme', contato:'financeiro', oque:'Acionar o Financeiro para gerar novo link de pagamento', next:4 },
+    4:{ quem:'financeiro', oque:'Enviar novo link de pagamento à CME', next:5 },
+    5:{ quem:'cme', oque:'Encaminhar o link ao motorista', next:6 },
+    6:{ quem:'motorista', oque:'O link funcionou?', tipo:'decisao', opcoes:[{label:'Sim, funcionou',next:'FIM'},{label:'Não funcionou',next:7}] },
+    7:{ quem:'cme', contato:'financeiro', oque:'Acionar o Financeiro para tratativa', next:'FIM' },
+  }},
+  M07: { label:'M07 – Erro no faturamento da mercadoria', quando:'A nota fiscal apresenta erro de faturamento (item, quantidade, valor ou dados do cliente).', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', contato:'comercial', oque:'Acionar o Comercial para corrigir o faturamento', next:3 },
+    3:{ quem:'comercial', oque:'Realizar a correção do faturamento', next:4 },
+    4:{ quem:'cme', oque:'Encaminhar a nota fiscal corrigida ao motorista', next:'FIM' },
+  }},
+  M08: { label:'M08 – Endereço errado', quando:'O endereço de entrega do pedido está incorreto.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Entrar em contato com o cliente para identificar o endereço correto', next:3 },
+    3:{ quem:'cme', oque:'Passar o endereço correto ao motorista', next:4 },
+    4:{ quem:'cme', contato:'comercial', oque:'Acionar o Comercial para ajustar o endereço no cadastro', next:'FIM' },
+  }},
+  M09: { label:'M09 – Número de telefone errado', quando:'O telefone do cliente cadastrado está errado e impede o contato.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Informar à CME que o telefone do cliente está errado', next:2 },
+    2:{ quem:'cme', contato:'vendedor', oque:'Acionar o vendedor para obter o número correto do cliente', next:3 },
+    3:{ quem:'cme', oque:'Passar o número correto ao motorista', next:4 },
+    4:{ quem:'cme', contato:'comercial', oque:'Acionar o Comercial para ajustar o contato no cadastro', next:'FIM' },
+  }},
+  M10: { label:'M10 – Alinhamento de pagamento fora do processo padrão (pedidos do Andersson)', quando:'Pedido do vendedor Andersson com condição de pagamento fora do processo padrão.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Informar à CME o pagamento fora do processo padrão', next:2 },
+    2:{ quem:'motorista', contato:'distribuicao', oque:'Informar ao Supervisor de Distribuição', next:3 },
+    3:{ quem:'cme', contato:'andersson', oque:'Passar a situação para o Andersson', next:4 },
+    4:{ quem:'cme', contato:'comercial', oque:'Acionar o Comercial para alterar a forma de pagamento', next:5 },
+    5:{ quem:'comercial', oque:'Realizar a alteração na forma de pagamento', next:6 },
+    6:{ quem:'cme', oque:'Repassar ao motorista a forma de pagamento correta', next:'FIM' },
+  }},
+  M11: { label:'M11 – Demora do cliente no recebimento', quando:'O cliente demora para receber a mercadoria no PDV.', inicio:1, passos:{
+    1:{ quem:'motorista', oque:'Aguardar 10 minutos no PDV', prazo:10, next:2 },
+    2:{ quem:'cme', contato:'vendedor', oque:'Entrar em contato com o vendedor para falar com o cliente', next:3 },
+    3:{ quem:'motorista', oque:'Aguardar a tratativa do vendedor', prazo:20, next:4 },
+    4:{ quem:'cme', oque:'Houve retorno do vendedor?', tipo:'decisao', opcoes:[{label:'Sim, houve retorno',next:5},{label:'Não houve retorno',next:6}] },
+    5:{ quem:'motorista', oque:'Realizar a entrega', next:'FIM' },
+    6:{ quem:'cme', contato:'distribuicao', oque:'Solicitar permissão do Supervisor de Distribuição para seguir com a entrega', next:7 },
+    7:{ quem:'cme', oque:'Gerar devolução', next:'DEV:1' },
+  }},
+  M12: { label:'M12 – Falta de peso na mercadoria', quando:'O motorista identifica falta de peso na mercadoria.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Solicitar evidência ao motorista (fotos obrigatórias)', next:3 },
+    3:{ quem:'cme', contato:'distribuicao', oque:'Passar a ocorrência ao Supervisor de Distribuição', next:4 },
+    4:{ quem:'distribuicao', oque:'Realizar a tratativa', next:'FIM' },
+  }},
+  M13: { label:'M13 – PDV fechado', quando:'O motorista chega e o PDV está fechado.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Comunicar à CME que o PDV está fechado', next:2 },
+    2:{ quem:'cme', contato:'vendedor', oque:'Entrar em contato com o vendedor para informar que o cliente está fechado', next:3 },
+    3:{ quem:'motorista', oque:'Aguardar a tratativa do vendedor', prazo:15, next:4 },
+    4:{ quem:'cme', oque:'O cliente atendeu?', tipo:'decisao', opcoes:[{label:'Sim, atendeu',next:5},{label:'Não atendeu',next:6}] },
+    5:{ quem:'motorista', oque:'Realizar a entrega', next:'FIM' },
+    6:{ quem:'motorista', oque:'Seguir com a entrega (próxima parada)', next:7 },
+    7:{ quem:'cme', oque:'Gerar devolução', next:'DEV:1' },
+  }},
+  M14: { label:'M14 – Mudança de endereço no ato da entrega', quando:'O cliente pede, no ato, a entrega em outro endereço.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', contato:'distribuicao', oque:'Informar a ocorrência ao Supervisor de Distribuição', next:3 },
+    3:{ quem:'distribuicao', oque:'Realizar a tratativa', next:'FIM' },
+  }},
+  M15: { label:'M15 – Devolução por motivo de qualidade', quando:'O cliente recusa a mercadoria por problema de qualidade.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Solicitar evidência ao motorista', next:3 },
+    3:{ quem:'cme', contato:'distribuicao', oque:'Solicitar ao Supervisor de Distribuição a aprovação da devolução', next:4 },
+    4:{ quem:'distribuicao', oque:'A devolução foi aprovada?', tipo:'decisao', opcoes:[{label:'Sim, aprovada',next:5},{label:'Não aprovada',next:6}] },
+    5:{ quem:'cme', oque:'Gerar devolução', next:'DEV:1' },
+    6:{ quem:'distribuicao', oque:'Realizar a tratativa', next:'FIM' },
+  }},
+  M16: { label:'M16 – Devolução por motivo de qualidade — pedidos grandes', quando:'Devolução por qualidade em pedidos grandes.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', oque:'Solicitar evidência ao motorista', next:3 },
+    3:{ quem:'cme', contato:'distribuicao', oque:'Passar a ocorrência ao Supervisor de Distribuição para realizar a tratativa', next:'FIM' },
+  }},
+  M17: { label:'M17 – Crédito de cliente pendente', quando:'O cliente informa que possui crédito pendente.', inicio:2, passos:{
+    1:{ quem:'motorista', oque:'Acionar a CME', next:2 },
+    2:{ quem:'cme', contato:['financeiro','aux_devolucao'], oque:'Analisar junto ao Financeiro e ao Auxiliar de Devolução se há crédito pendente', next:3 },
+    3:{ quem:'cme', oque:'Repassar a informação ao motorista', next:'FIM' },
+  }},
+  DEV: { label:'Fluxo de Devolução', quando:'Acionado pela etapa "Gerar devolução" dos motivos M03, M04, M05, M11, M13 e M15.', inicio:1, passos:{
+    1:{ quem:'cme', oque:'Orientar o motorista a fazer a devolução', next:2 },
+    2:{ quem:'cme', contato:'fiscal', oque:'Acionar o Setor Fiscal para emitir a nota de devolução', next:3 },
+    3:{ quem:'fiscal', oque:'Emitir a nota de devolução', next:4 },
+    4:{ quem:'cme', contato:'sup_seguros', oque:'Acionar o Supervisor de Seguros para emitir o manifesto de transporte', next:5 },
+    5:{ quem:'sup_seguros', oque:'Emitir o manifesto de transporte', next:6 },
+    6:{ quem:'cme', contato:'aux_devolucao', oque:'Informar ao Auxiliar de Devolução sobre a devolução', next:7 },
+    7:{ quem:'motorista', oque:'Retornar com a mercadoria ao CD', next:8 },
+    8:{ quem:'aux_devolucao', oque:'Lançar a devolução no sistema quando a mercadoria chegar ao CD', next:'FIM' },
+  }},
+};
+const _cmeQuemLabel = k => _CME_QUEM_LABEL[k] || _cmeSetorLabel(k);
+const _cmePassoDef = (fluxoCod, numero) => _CME_FLUXOS[fluxoCod]?.passos[numero] || null;
+const _cmeEtapaFluxoCod = (e, c) => e.fluxo || c.motivo_cod;
 const _CME_RES = {
   sem_resposta:       { t:'Setor não respondeu',  c:'#b45309' },
   em_andamento:       { t:'Em andamento',         c:'#2563eb' },
@@ -20696,7 +20879,10 @@ function cmeAtualizarPrazos(){
 setInterval(() => { try{ if(document.getElementById('page-cme')?.offsetParent) cmeAtualizarPrazos(); }catch(e){} }, 15000);
 function _cmeSetorLabel(s){
   if(typeof MOTIVO_DEVOLUCAO_SETOR_LABEL !== 'undefined' && MOTIVO_DEVOLUCAO_SETOR_LABEL[s]) return MOTIVO_DEVOLUCAO_SETOR_LABEL[s];
-  return _CME.setores.find(x=>x.setor===s)?.rotulo || s || '—';
+  const r = _CME.setores.find(x=>x.setor===s)?.rotulo;
+  if(r) return r;
+  if(typeof _CME_QUEM_LABEL !== 'undefined' && _CME_QUEM_LABEL[s]) return _CME_QUEM_LABEL[s];
+  return s || '—';
 }
 const _cmeSetor = s => _CME.setores.find(x=>x.setor===s) || null;
 // "Última atividade" (usada pro selo "Parado há") conta só o que aconteceu na
@@ -20742,7 +20928,10 @@ async function cmeCarregar(){
       const lote = ids.slice(i,i+60).join(',');
       const [rows, etapas] = await Promise.all([
         supaFetch('cme_tentativas?chamado_id=in.(' + lote + ')&order=tentativa_em.asc&limit=5000') || [],
-        supaFetch('cme_etapas?chamado_id=in.(' + lote + ')&order=numero_sequencia.asc&limit=2000') || [],
+        // order por criado_em (não numero_sequencia): o Fluxo de Devolução reinicia a
+        // numeração em 1, então ordenar por numero_sequencia bagunçaria a ordem
+        // cronológica real das etapas sempre que um motivo entra nele.
+        supaFetch('cme_etapas?chamado_id=in.(' + lote + ')&order=criado_em.asc&limit=2000') || [],
       ]);
       rows.forEach(t => { (_CME.tent[t.chamado_id] = _CME.tent[t.chamado_id] || []).push(t); });
       etapas.forEach(e => { (_CME.etapas[e.chamado_id] = _CME.etapas[e.chamado_id] || []).push(e); });
@@ -20821,7 +21010,8 @@ function cmeRender(){
     hoje: _CME.chamados.filter(c => !_cmeEhAberto(c) && c.encerrado_em && _cmeDiaBA(c.encerrado_em) === hoje).length,
   };
   const lista = _cmeFiltrados();
-  const setoresOpts = '<option value="">Todos os setores</option>' + Object.keys(MOTIVO_DEVOLUCAO_SETOR_LABEL).map(s => '<option value="' + s + '"' + (_CME.setorF === s ? ' selected' : '') + '>' + MOTIVO_DEVOLUCAO_SETOR_LABEL[s] + '</option>').join('');
+  const _cmeSetorKeys = [...new Set([...Object.keys(MOTIVO_DEVOLUCAO_SETOR_LABEL), ...Object.keys(_CME_QUEM_LABEL)])];
+  const setoresOpts = '<option value="">Todos os setores</option>' + _cmeSetorKeys.map(s => '<option value="' + s + '"' + (_CME.setorF === s ? ' selected' : '') + '>' + escapeHtml(_cmeSetorLabel(s)) + '</option>').join('');
   const seg = (k, t) => '<button class="cme-seg' + (_CME.statusF === k ? ' on' : '') + '" onclick="cmeFiltro(\'statusF\',\'' + k + '\')">' + t + '</button>';
   let h = '<div class="cme-kpis">' +
     '<div class="cme-kpi"><span>Em aberto</span><b>' + kpi.abertos + '</b></div>' +
@@ -20885,12 +21075,12 @@ function _cmeCardHtml(c){
         (c.cliente ? '<span class="cme-cli">' + escapeHtml(c.cliente) + '</span>' : '') +
         '<span class="cme-pill" style="background:' + st.bg + ';color:' + st.c + '">' + st.t + '</span>' +
         (aberto ? '<span class="cme-pill cme-pend" title="Setor que ainda precisa dar a devolutiva deste chamado">Aguardando devolutiva: ' + escapeHtml(_cmeSetorLabel(c.setor)) + '</span>' : '<span class="cme-pill cme-setor">' + escapeHtml(_cmeSetorLabel(c.setor)) + '</span>') +
-        (aberto ? (() => { const p = _cmePrazoInfo(c); return '<span class="cme-pill cme-prazo ' + p.cls + '" data-id="' + c.id + '" title="Prazo de ' + _cmePrazoMin(c) + ' min para o setor dar a devolutiva ao CME, contado desde que o chamado chegou nesse setor">' + p.txt + '</span>'; })() : '') +
+        (aberto && _cmePrazoMin(c) < 10080 ? (() => { const p = _cmePrazoInfo(c); return '<span class="cme-pill cme-prazo ' + p.cls + '" data-id="' + c.id + '" title="Prazo de ' + _cmePrazoMin(c) + ' min para o setor dar a devolutiva ao CME, contado desde que o chamado chegou nesse setor">' + p.txt + '</span>'; })() : '') +
         (parado ? '<span class="cme-pill" style="background:#dc2626;color:#fff">Parado há ' + _cmeHa(ultAtivEm) + '</span>' : '') +
       '</div>' +
       '<div class="cme-l2">' + info.join(' · ') + '</div>' +
       '<div class="cme-l3">' + (aberto ? _cmeAcionarHtml(c) : 'Encerrado ' + _cmeFmt(c.encerrado_em) + (c.encerrado_por ? ' por ' + escapeHtml(c.encerrado_por) : '')) + '</div>' +
-      '<div class="cme-l4">Aberto ' + _cmeFmt(c.aberto_em) + (aberto ? ' (há ' + _cmeHa(c.aberto_em) + ') · prazo de retorno ' + _cmePrazoMin(c) + ' min' : '') + ' · ' + t.length + (t.length === 1 ? ' tentativa' : ' tentativas') + ' no total · última atividade ' + _cmeFmt(ultAtivEm) + '</div>' +
+      '<div class="cme-l4">Aberto ' + _cmeFmt(c.aberto_em) + (aberto ? ' (há ' + _cmeHa(c.aberto_em) + ')' + (_cmePrazoMin(c) < 10080 ? ' · prazo de retorno ' + _cmePrazoMin(c) + ' min' : '') : '') + (c.motivo_cod ? '' : ' · ' + t.length + (t.length === 1 ? ' tentativa' : ' tentativas') + ' no total') + ' · última atividade ' + _cmeFmt(ultAtivEm) + '</div>' +
     '</div>';
   if(exp) h += _cmeDetalheHtml(c, t);
   return h + '</div>';
@@ -20928,7 +21118,133 @@ function _cmeTimelineHtml(c, t){
     return bloco + '</div>';
   }).join('');
 }
+// Chamados com motivo do Padrão de Gestão CME (M01-M17) seguem o fluxo fixo e
+// renderizam como checklist (_cmeChecklistHtml); motivo "Outro"/legado continua
+// no modo livre (setor + etapas + encaminhar manual) abaixo.
 function _cmeDetalheHtml(c, t){
+  if(!c.motivo_cod) return _cmeDetalheHtmlLivre(c, t);
+  const aberto = _cmeEhAberto(c);
+  let h = '<div class="cme-det">';
+  if(c.descricao) h += '<div class="cme-sec"><div class="cme-lab">Observação da ocorrência</div><div>' + escapeHtml(c.descricao) + '</div></div>';
+  h += '<div class="cme-sec"><div class="cme-lab">' + escapeHtml(_CME_FLUXOS[c.motivo_cod]?.label || c.motivo_nome || '') + '</div>' +
+    (_CME_FLUXOS[c.motivo_cod]?.quando ? '<div class="cme-mut" style="margin-bottom:8px"><b>Quando aplicar:</b> ' + escapeHtml(_CME_FLUXOS[c.motivo_cod].quando) + '</div>' : '') +
+    _cmeChecklistHtml(c) + '</div>';
+  if(!aberto){
+    h += '<div class="cme-sec"><div class="cme-lab">Resolução</div><div>' + escapeHtml(c.resolucao || '—') + '</div>' +
+      '<div style="margin-top:10px"><button class="cme-btn" onclick="cmeReabrir(\'' + c.id + '\')">Reabrir chamado</button></div></div>';
+  }
+  return h + '</div>';
+}
+// Checklist do fluxo fixo: um bloco por etapa já percorrida (concluída, com a
+// devolutiva registrada) + a etapa ATIVA no fim com os controles (check ou
+// decisão), contato de quem acionar e cronômetro/contagem (só quando o passo
+// tiver prazo definido no Padrão — M11 e M13; os demais só mostram "há quanto
+// tempo", sem alerta de atraso, porque o documento não define prazo pra eles).
+function _cmeChecklistHtml(c){
+  const etapas = _CME.etapas[c.id] || [];
+  if(!etapas.length) return '<div class="cme-mut">Sem etapas registradas.</div>';
+  let h = '<div class="cme-steps">';
+  etapas.forEach((e, idx) => {
+    const fluxoCod = _cmeEtapaFluxoCod(e, c);
+    const passo = _cmePassoDef(fluxoCod, e.numero_sequencia);
+    const done = !!e.encerrado_em;
+    const dev = fluxoCod === 'DEV' && e.numero_sequencia === 1;
+    h += '<div class="cme-step' + (done ? ' done' : ' active') + '">' +
+      '<div class="cme-step-dot">' + (done ? '✓' : (idx+1)) + '</div>' +
+      '<div class="cme-step-body">' +
+      (dev ? '<div class="cme-step-sub">↳ Entrou no Fluxo de Devolução</div>' : '') +
+      '<div class="cme-step-oque">' + escapeHtml(passo?.oque || '(passo não encontrado no fluxo)') + '</div>' +
+      '<div class="cme-mut">' + escapeHtml(_cmeQuemLabel(passo?.quem)) + ' · iniciado ' + _cmeFmt(e.iniciado_em) + (e.iniciado_por ? ' por ' + escapeHtml(e.iniciado_por) : '') + '</div>';
+    if(done){
+      const dur = _cmeDur(new Date(e.encerrado_em) - new Date(e.iniciado_em), false);
+      h += '<div class="cme-mut">concluído ' + _cmeFmt(e.encerrado_em) + ' · durou ' + dur + '</div>';
+      if(e.encaminhado_para || e.observacao_saida){
+        h += '<div class="cme-obs">' + (e.encaminhado_para ? '<b>' + escapeHtml(e.encaminhado_para) + '</b>' + (e.observacao_saida ? ' — ' : '') : '') + escapeHtml(e.observacao_saida || '') + '</div>';
+      }
+    } else if(passo){
+      h += _cmePassoAtivoHtml(c, e, passo);
+    } else {
+      h += '<div class="cme-mut">Esse passo é de um fluxo antigo/alterado — encerre e reabra o chamado se precisar continuar.</div>';
+    }
+    h += '</div></div>';
+  });
+  return h + '</div>';
+}
+function _cmePassoAtivoHtml(c, e, passo){
+  let h = '';
+  const contatos = [].concat(passo.contato || []).filter(Boolean);
+  if(contatos.length){
+    h += contatos.map(k => {
+      const s = _cmeSetor(k);
+      return '<div class="cme-acionar-box">Acionar <b>' + escapeHtml(_cmeQuemLabel(k)) + '</b>' +
+        (s?.responsavel || s?.contato ? ': ' + escapeHtml([s.responsavel, s.contato].filter(Boolean).join(' · ')) : ' — contato não cadastrado (botão Setores)') + '</div>';
+    }).join('');
+  }
+  if(passo.prazo){
+    const venceEm = new Date(e.iniciado_em).getTime() + passo.prazo * 60000;
+    const r = venceEm - Date.now();
+    const cls = r >= 0 ? (r <= 120000 ? 'warn' : 'ok') : 'late';
+    const txt = r >= 0 ? ('Tempo restante: ' + _cmeDur(r, true)) : ('Atrasado há ' + _cmeDur(-r, false));
+    h += '<div class="cme-pill cme-prazo ' + cls + '">' + txt + ' (prazo do Padrão: ' + passo.prazo + ' min)</div>';
+  } else {
+    h += '<div class="cme-mut">Em andamento há ' + _cmeHa(e.iniciado_em) + '</div>';
+  }
+  h += '<div class="cme-form" style="margin-top:8px">' +
+    '<label class="cme-full">Devolutiva / observação' + (passo.tipo === 'decisao' ? ' (opcional)' : '') + '<textarea class="cme-in" id="cme-fx-resp" rows="2" placeholder="Quando vier a resposta, escreva aqui o que foi tratado"></textarea></label>';
+  if(passo.tipo === 'decisao'){
+    h += '<div class="cme-full cme-opcoes">' + passo.opcoes.map((o,i) => '<button class="cme-btn pri" onclick="cmeFluxoDecisao(\'' + c.id + '\',' + i + ')">' + escapeHtml(o.label) + '</button>').join('') + '</div>';
+  } else {
+    h += '<div class="cme-full cme-acoes"><button class="cme-btn pri" onclick="cmeFluxoConcluir(\'' + c.id + '\')">✓ Concluir esta etapa</button></div>';
+  }
+  return h + '</div>';
+}
+async function _cmeAvancarFluxoScript(id, opcaoIdx, nota){
+  const c = _CME.chamados.find(x => x.id === id);
+  if(!c || !_cmeEhAberto(c)) return;
+  const etapa = _cmeEtapaAtiva(c);
+  if(!etapa || etapa.encerrado_em) return;
+  const fluxoCod = _cmeEtapaFluxoCod(etapa, c);
+  const passo = _cmePassoDef(fluxoCod, etapa.numero_sequencia);
+  if(!passo) return;
+  let destino, escolha = null;
+  if(passo.tipo === 'decisao'){
+    const op = passo.opcoes[opcaoIdx];
+    if(!op){ showToast('Escolha uma das opções', 'warning'); return; }
+    destino = op.next; escolha = op.label;
+  } else {
+    destino = passo.next;
+  }
+  const agora = new Date().toISOString();
+  await supaFetch('cme_etapas?id=eq.' + etapa.id, { method:'PATCH', body: JSON.stringify({ encerrado_em:agora, encaminhado_para:escolha, observacao_saida: nota || null }) });
+  if(destino === 'FIM'){
+    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ status:'resolvido', encerrado_em:agora, encerrado_por:_cmeUsuario(), resolucao: nota || (escolha ? ('Concluído: ' + escolha) : 'Concluído conforme o Padrão de Gestão CME.') }) });
+    showToast('Chamado #' + c.numero + ' encerrado', 'success');
+  } else {
+    const novoFluxo = destino === 'DEV:1' ? 'DEV' : (fluxoCod === 'DEV' ? 'DEV' : null);
+    const novoNumero = destino === 'DEV:1' ? 1 : destino;
+    const proxPasso = _cmePassoDef(novoFluxo || fluxoCod, novoNumero);
+    const novoSetor = ([].concat(proxPasso?.contato || [])[0]) || proxPasso?.quem || c.setor;
+    await supaFetch('cme_etapas', { method:'POST', body: JSON.stringify({
+      chamado_id:id, numero_sequencia:novoNumero, setor:novoSetor, fluxo:novoFluxo,
+      iniciado_em:agora, iniciado_por:_cmeUsuario(), prazo_min: proxPasso?.prazo || 10080 }) });
+    await supaFetch('cme_chamados?id=eq.' + id, { method:'PATCH', body: JSON.stringify({ setor:novoSetor, status:'aberto' }) });
+    showToast(novoFluxo === 'DEV' && novoNumero === 1 ? 'Chamado seguiu para o Fluxo de Devolução' : 'Etapa concluída', 'success');
+  }
+  await cmeCarregar(); cmeRender();
+}
+async function cmeFluxoConcluir(id){
+  await _cmeAcao(async () => {
+    const nota = (document.getElementById('cme-fx-resp')?.value || '').trim();
+    await _cmeAvancarFluxoScript(id, null, nota);
+  });
+}
+async function cmeFluxoDecisao(id, idx){
+  await _cmeAcao(async () => {
+    const nota = (document.getElementById('cme-fx-resp')?.value || '').trim();
+    await _cmeAvancarFluxoScript(id, idx, nota);
+  });
+}
+function _cmeDetalheHtmlLivre(c, t){
   const aberto = _cmeEhAberto(c);
   let h = '<div class="cme-det">';
   if(c.descricao) h += '<div class="cme-sec"><div class="cme-lab">Observação da ocorrência</div><div>' + escapeHtml(c.descricao) + '</div></div>';
@@ -21066,25 +21382,46 @@ function cmeFecharModal(){ const m = document.getElementById('cme-modal'); if(m)
 
 async function cmeNovoChamado(){
   _CME.novo = { carga:null, rota:null, cliente:null, motorista:null, veiculo:null, buscou:false };
-  if(!_ocorrMotivosCache.length) await _ocorrCarregarMotivosSelect();
-  const porSetor = {};
-  _ocorrMotivosCache.forEach(m => { (porSetor[m.setor] = porSetor[m.setor] || []).push(m); });
-  const motOpts = '<option value="">Sem motivo específico</option>' + Object.keys(MOTIVO_DEVOLUCAO_SETOR_LABEL).filter(s => porSetor[s]?.length).map(s =>
-    '<optgroup label="' + MOTIVO_DEVOLUCAO_SETOR_LABEL[s] + '">' + porSetor[s].map(m => '<option value="' + m.id + '">' + escapeHtml(m.nome) + '</option>').join('') + '</optgroup>').join('');
+  const motOpts = '<option value="">Selecione o motivo...</option>' +
+    Object.keys(_CME_FLUXOS).filter(k => k !== 'DEV').map(k => '<option value="' + k + '">' + escapeHtml(_CME_FLUXOS[k].label) + '</option>').join('') +
+    '<option value="OUTRO">Outro (fora do padrão — fluxo livre)</option>';
   const setOpts = '<option value="">Selecione o setor...</option>' + Object.keys(MOTIVO_DEVOLUCAO_SETOR_LABEL).map(s => '<option value="' + s + '">' + MOTIVO_DEVOLUCAO_SETOR_LABEL[s] + '</option>').join('');
   _cmeModal('<h3>Novo chamado</h3><div class="cme-form">' +
     '<label>Nº do pedido *<input class="cme-in" id="cme-n-ped" inputmode="numeric" onblur="cmeBuscarPedido()" placeholder="Ex.: 12345"></label>' +
-    '<label>Setor a acionar *<select class="cme-in" id="cme-n-setor" onchange="cmeMostrarResp()">' + setOpts + '</select></label>' +
-    '<label class="cme-full">Motivo<select class="cme-in" id="cme-n-mot" onchange="cmeMotivoMudou()">' + motOpts + '</select></label>' +
-    '<label>Prazo para o retorno (min)<input class="cme-in" id="cme-n-prazo" type="number" min="1" max="10080" value="' + _CME_PRAZO_PADRAO + '"></label>' +
+    '<label class="cme-full">Motivo * <span class="cme-mut">(Padrão de Gestão CME)</span><select class="cme-in" id="cme-n-mot" onchange="cmeMotivoMudou()">' + motOpts + '</select></label>' +
+    '<div class="cme-full cme-mut" id="cme-n-quando"></div>' +
+    '<div class="cme-full" id="cme-n-livre" style="display:none"><div class="cme-form">' +
+      '<label>Setor a acionar *<select class="cme-in" id="cme-n-setor" onchange="cmeMostrarResp()">' + setOpts + '</select></label>' +
+      '<label>Prazo para o retorno (min)<input class="cme-in" id="cme-n-prazo" type="number" min="1" max="10080" value="' + _CME_PRAZO_PADRAO + '"></label>' +
+    '</div></div>' +
     '<div class="cme-full cme-mut" id="cme-n-info"></div>' +
     '<label class="cme-full">Descrição do problema<textarea class="cme-in" id="cme-n-desc" rows="3" placeholder="O que aconteceu"></textarea></label>' +
     '<div class="cme-full cme-acoes"><button class="cme-btn" onclick="cmeFecharModal()">Cancelar</button><button class="cme-btn pri" onclick="cmeSalvarNovo()">Abrir chamado</button></div></div>');
   document.getElementById('cme-n-ped')?.focus();
 }
 function cmeMotivoMudou(){
-  const m = _ocorrMotivosCache.find(x => x.id === document.getElementById('cme-n-mot')?.value);
-  if(m?.setor){ const s = document.getElementById('cme-n-setor'); if(s){ s.value = m.setor; cmeMostrarResp(); } }
+  const cod = document.getElementById('cme-n-mot')?.value || '';
+  const livre = document.getElementById('cme-n-livre');
+  const quandoEl = document.getElementById('cme-n-quando');
+  const infoEl = document.getElementById('cme-n-info');
+  if(cod === 'OUTRO'){
+    if(livre) livre.style.display = '';
+    if(quandoEl) quandoEl.innerHTML = '';
+    cmeMostrarResp();
+    return;
+  }
+  if(livre) livre.style.display = 'none';
+  const f = _CME_FLUXOS[cod];
+  if(!f){ if(quandoEl) quandoEl.innerHTML = ''; if(infoEl) infoEl.innerHTML = ''; return; }
+  if(quandoEl) quandoEl.innerHTML = '<b>Quando aplicar:</b> ' + escapeHtml(f.quando);
+  const passo = f.passos[f.inicio];
+  const contatos = [].concat(passo?.contato || []).filter(Boolean);
+  if(infoEl){
+    infoEl.innerHTML = contatos.length ? contatos.map(k => {
+      const s = _cmeSetor(k);
+      return 'Primeiro passo aciona <b>' + escapeHtml(_cmeQuemLabel(k)) + '</b>' + (s?.responsavel || s?.contato ? ': ' + escapeHtml([s.responsavel, s.contato].filter(Boolean).join(' · ')) : ' — contato não cadastrado (botão Setores)');
+    }).join('<br>') : '';
+  }
 }
 function cmeMostrarResp(){
   const s = document.getElementById('cme-n-setor')?.value;
@@ -21113,26 +21450,38 @@ async function cmeBuscarPedido(){
 async function cmeSalvarNovo(){
   await _cmeAcao(async () => {
     const pedido = (document.getElementById('cme-n-ped')?.value || '').trim();
-    const setor = document.getElementById('cme-n-setor')?.value || '';
-    const motivoId = document.getElementById('cme-n-mot')?.value || '';
+    const cod = document.getElementById('cme-n-mot')?.value || '';
     const desc = (document.getElementById('cme-n-desc')?.value || '').trim();
     if(!pedido){ showToast('Informe o número do pedido', 'warning'); return; }
-    if(!setor){ showToast('Escolha o setor a acionar', 'warning'); return; }
-    const prazo = parseInt(document.getElementById('cme-n-prazo')?.value, 10);
-    if(!(prazo >= 1 && prazo <= 10080)){ showToast('Informe o prazo do retorno em minutos (de 1 a 10080)', 'warning'); return; }
+    if(!cod){ showToast('Escolha o motivo do chamado', 'warning'); return; }
     if(!_CME.novo?.buscou) await cmeBuscarPedido();
     const n = _CME.novo || {};
-    const mot = _ocorrMotivosCache.find(m => m.id === motivoId);
     const agora = new Date().toISOString();
+    let body, etapaExtra;
+    if(cod === 'OUTRO'){
+      const setor = document.getElementById('cme-n-setor')?.value || '';
+      if(!setor){ showToast('Escolha o setor a acionar', 'warning'); return; }
+      const prazo = parseInt(document.getElementById('cme-n-prazo')?.value, 10);
+      if(!(prazo >= 1 && prazo <= 10080)){ showToast('Informe o prazo do retorno em minutos (de 1 a 10080)', 'warning'); return; }
+      body = { motivo_id:null, motivo_nome:'Outro (fora do padrão)', motivo_cod:null, setor, prazo_min: prazo };
+      etapaExtra = { numero_sequencia:1, setor, fluxo:null, prazo_min: prazo };
+    } else {
+      const f = _CME_FLUXOS[cod];
+      if(!f){ showToast('Motivo inválido', 'warning'); return; }
+      const passo = f.passos[f.inicio];
+      const setor = ([].concat(passo?.contato || [])[0]) || passo?.quem || 'cme';
+      body = { motivo_id:null, motivo_nome:f.label, motivo_cod:cod, setor, prazo_min: passo?.prazo || 10080 };
+      etapaExtra = { numero_sequencia: f.inicio, setor, fluxo:null, prazo_min: passo?.prazo || 10080 };
+    }
     const r = await supaFetch('cme_chamados', { method:'POST', body: JSON.stringify({
       origem:'manual', pedido, carga:n.carga ?? null, rota:n.rota || null, cliente:n.cliente || null, motorista:n.motorista || null, veiculo:n.veiculo || null,
-      motivo_id: motivoId || null, motivo_nome: mot?.nome || null, setor, descricao: desc || null, prazo_min: prazo, aberto_por: _cmeUsuario(), aberto_em: agora }) });
+      descricao: desc || null, aberto_por: _cmeUsuario(), aberto_em: agora, ...body }) });
     const novoId = r?.[0]?.id;
-    // 1ª etapa do chamado — sem ela _cmeEtapaAtiva() não acha nada e o prazo/chat não funcionam.
+    // 1ª etapa do chamado — sem ela _cmeEtapaAtiva() não acha nada e o prazo/checklist não funcionam.
     if(novoId) await supaFetch('cme_etapas', { method:'POST', body: JSON.stringify({
-      chamado_id: novoId, numero_sequencia:1, setor, iniciado_em: agora, iniciado_por: _cmeUsuario(), prazo_min: prazo }) }).catch(()=>{});
+      chamado_id: novoId, iniciado_em: agora, iniciado_por: _cmeUsuario(), ...etapaExtra }) }).catch(()=>{});
     cmeFecharModal();
-    showToast('Chamado CME #' + (r?.[0]?.numero ?? '') + ' aberto para ' + _cmeSetorLabel(setor), 'success');
+    showToast('Chamado CME #' + (r?.[0]?.numero ?? '') + ' aberto', 'success');
     _CME.statusF = 'abertos'; _CME.aberto = r?.[0]?.id || null;
     await cmeCarregar(); cmeRender();
   });
