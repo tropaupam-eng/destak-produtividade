@@ -3113,6 +3113,7 @@ body.light-theme{
     <button class="exp-unid-btn exp-unid-all active" onclick="filtrarFiscalTipo('',this)">Todas</button>
     <button class="exp-unid-btn exp-unid-ri" onclick="filtrarFiscalTipo('RI',this)">RI · Interna</button>
     <button class="exp-unid-btn exp-unid-re" onclick="filtrarFiscalTipo('RE',this)">RE · Externa</button>
+    <button class="exp-unid-btn" style="border-color:#ef4444;color:#dc2626" onclick="filtrarFiscalTipo('CEASA',this)" title="Só as cargas da rota CEASA (urgência)">CEASA · Urgente</button>
   </div>
   <div class="fk-row">
     <div class="fk-card" style="--c:#f59e0b" title="Sem NF e sem boleto ainda"><div class="fk-ic"><span data-feather="inbox"></span></div><div><div class="fk-v" id="fiscal-kpi-pend">—</div><div class="fk-l">Pendente</div></div></div>
@@ -10538,7 +10539,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.363';
+const APP_VERSION = '4.89.364';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -53253,6 +53254,8 @@ function _fiscalDono(atribs, carga, ped){
       || l.find(a=>a.carga===carga && a.pedido==null && a.status==='em_andamento') || null;
 }
 let _fiscalFiltroTipo = '';
+// Rota CEASA = urgência: aparece separada das demais no quadro do Fiscal (pedido do usuário, 27/11/2026)
+function _fiscalEhCeasa(rota){ return String(rota||'').toUpperCase().includes('CEASA'); }
 function filtrarFiscalTipo(tipo, btn){
   _fiscalFiltroTipo = tipo;
   window._fiscalUI.cargaSel = null;
@@ -53390,6 +53393,10 @@ function _fiscalRenderQuadro(){
   if(!document.getElementById('_css_fiscalBoard2')){
     const s = document.createElement('style'); s.id = '_css_fiscalBoard2';
     s.textContent = `.fb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start}
+.fb-urg{border:2px solid #ef4444;border-radius:18px;padding:12px;margin-bottom:18px;background:rgba(239,68,68,.06)}
+.fb-urgh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:800;font-size:.85rem;letter-spacing:.5px;color:#dc2626;margin:2px 4px 12px}
+.fb-urgh span{font-weight:600;font-size:.74rem;letter-spacing:0;color:var(--text-secondary)}
+.fb-sep{font-size:.74rem;font-weight:800;letter-spacing:1px;color:var(--text-muted);text-transform:uppercase;margin:4px 2px 10px}
 @media(max-width:1180px){.fb-grid{grid-template-columns:repeat(2,minmax(0,1fr))}} @media(max-width:660px){.fb-grid{grid-template-columns:minmax(0,1fr)}}
 .fb-col{--c:#f59e0b;min-width:0;overflow:hidden;border-radius:16px;
   background:linear-gradient(180deg,color-mix(in srgb,var(--c) 8%,var(--bg-card2)) 0,var(--bg-card2) 140px);
@@ -53432,7 +53439,7 @@ function _fiscalRenderQuadro(){
   // cargas do quadro (filtro Interna/Externa; carga concluída pelo fiscal fica no Histórico)
   const cargas = Object.keys(cargasMap).map(Number).filter(n=>!isNaN(n)&&n>0)
     .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
-    .filter(c => !_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)
+    .filter(c => !_fiscalFiltroTipo || (_fiscalFiltroTipo==='CEASA' ? _fiscalEhCeasa(cargasMap[c]?.demanda?.rota) : getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo))
     .sort(_fiscalCmpCargas);
   if(ui.cargaSel && !cargas.includes(ui.cargaSel)) ui.cargaSel = null;
 
@@ -53488,7 +53495,7 @@ function _fiscalRenderQuadro(){
   }
 
   if(!cargas.length){
-    container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga aguardando o Fiscal no momento.</p>';
+    container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">'+(_fiscalFiltroTipo==='CEASA'?'Nenhuma carga da rota CEASA no quadro agora.':'Nenhuma carga aguardando o Fiscal no momento.')+'</p>';
     _featherReplace();
     return;
   }
@@ -53545,8 +53552,8 @@ function _fiscalRenderQuadro(){
   };
 
   const fmtSaida = v => { const m = String(v||'').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[3]+'/'+m[2] : ''; };
-  const colHtml = col => {
-    const itens = vis.filter(x=>x.est.col===col.k);
+  const colHtml = (col, lista) => {
+    const itens = lista.filter(x=>x.est.col===col.k);
     const porCarga = {};
     itens.forEach(x=>{ (porCarga[x.carga] = porCarga[x.carga]||[]).push(x); });
     const ordemCargas = Object.keys(porCarga).map(Number).sort(_fiscalCmpCargas);
@@ -53583,7 +53590,14 @@ function _fiscalRenderQuadro(){
   };
   // preserva o histórico (div anexado depois do quadro)
   const hist = document.getElementById('fiscal-historico-concluidos');
-  container.innerHTML = `<div class="fb-grid">${_FISCAL_COLS.map(colHtml).join('')}</div>`;
+  const grade = lista => `<div class="fb-grid">${_FISCAL_COLS.map(c=>colHtml(c,lista)).join('')}</div>`;
+  const visCeasa = vis.filter(x=>_fiscalEhCeasa(cargasMap[x.carga]?.demanda?.rota));
+  const visResto = vis.filter(x=>!_fiscalEhCeasa(cargasMap[x.carga]?.demanda?.rota));
+  const nCargasCeasa = new Set(visCeasa.map(x=>x.carga)).size;
+  const blocoCeasa = visCeasa.length ? `<div class="fb-urg"><div class="fb-urgh">${_ic('alert-triangle',15)} URGENTE · ROTA CEASA <span>${nCargasCeasa} carga${nCargasCeasa>1?'s':''} · ${visCeasa.length} pedido${visCeasa.length>1?'s':''}</span></div>${grade(visCeasa)}</div>` : '';
+  container.innerHTML = _fiscalFiltroTipo==='CEASA'
+    ? (blocoCeasa || '<p style="text-align:center;padding:40px;color:var(--text-muted)">Nenhuma carga da rota CEASA no quadro agora.</p>')
+    : blocoCeasa + (visCeasa.length && visResto.length ? '<div class="fb-sep">Demais rotas</div>' : '') + grade(visResto);
   if(hist) container.appendChild(hist);
   _featherReplace();
 }
