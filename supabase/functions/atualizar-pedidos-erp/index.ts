@@ -72,6 +72,16 @@ Deno.serve(async (req: Request) => {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
+  // Forma de pagamento e observação do pedido (opcionais): só entram na gravação quando o ERP os envia em algum registro,
+  // assim um envio antigo (sem esses campos) nunca apaga o que já foi gravado.
+  const trazForma = registros.some(r => r.forma_pagamento !== undefined);
+  const trazObs = registros.some(r => r.observacao !== undefined);
+  const textoOuNull = (v: unknown, max: number) => {
+    if (v == null) return null;
+    const t = String(v).trim();
+    return t === '' ? null : t.slice(0, max);
+  };
+
   const paraGravar = registros.map(r => ({
     pedido: Math.round(Number(r.numero_pedido_erp)),
     unidade_erp: typeof r.unidade_erp === 'number' ? r.unidade_erp : null,
@@ -91,6 +101,8 @@ Deno.serve(async (req: Request) => {
     cobrad: r.cobrad != null ? String(r.cobrad) : null,
     prazo_medio: r.prazo_medio != null ? String(r.prazo_medio) : null,
     crediario: r.crediario != null ? String(r.crediario) : null,
+    ...(trazForma ? { forma_pagamento: textoOuNull(r.forma_pagamento, 100) } : {}),
+    ...(trazObs ? { observacao: textoOuNull(r.observacao, 2000) } : {}),
     atualizado_em: new Date().toISOString(),
   }));
 

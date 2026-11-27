@@ -10541,7 +10541,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.371';
+const APP_VERSION = '4.89.372';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -53443,14 +53443,27 @@ function _fiscalResumoCarga(dados){
   return r;
 }
 // Estado de NF e boleto de um pedido + coluna do quadro
+// Forma de pagamento como o ERP informa (pedidos_info_erp.forma_pagamento): 'boleto' | 'avista' | '' (não informada ou não reconhecida).
+// Só 'avista' dispensa o boleto; sem informação o Fiscal continua pedindo boleto como sempre (nunca se supõe à vista).
+function _fiscalFormaPgto(txt){
+  const t = String(txt||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  if(!t) return '';
+  if(/boleto|bloqueto|duplicata/.test(t)) return 'boleto';
+  if(/a ?vista|dinheiro|\bpix\b|debito|credito|cartao|deposito|transferencia/.test(t)) return 'avista';
+  return '';
+}
 function _fiscalEstadoPedido(dados, ped){
+  const info = (dados.info||{})[ped] || null;
+  const forma = _fiscalFormaPgto(info?.forma_pagamento);
   const nfArq = dados.nfs.filter(n=>n.pedido===ped && n.tipo==='nf');
   const boArq = dados.nfs.filter(n=>n.pedido===ped && n.tipo==='boleto');
   const nfSem = (dados.semDoc||[]).find(s=>s.pedido===ped && s.tipo==='nf') || null;
   const boSem = (dados.semDoc||[]).find(s=>s.pedido===ped && s.tipo==='boleto') || null;
-  const nf = nfArq.length>0 || !!nfSem, bo = boArq.length>0 || !!boSem;
-  const col = (nf && bo) ? 'ok' : (!nf && !bo ? 'pend' : (bo ? 'nf' : 'bol'));
-  return { nf, bo, nfArq, boArq, nfSem, boSem, col };
+  const nf = nfArq.length>0 || !!nfSem;
+  const dispensaBo = forma==='avista' && !boArq.length && !boSem;   // à vista: não precisa de boleto
+  const bo = boArq.length>0 || !!boSem || dispensaBo;
+  const col = dispensaBo ? (nf ? 'ok' : 'pend') : ((nf && bo) ? 'ok' : (!nf && !bo ? 'pend' : (bo ? 'nf' : 'bol')));
+  return { nf, bo, nfArq, boArq, nfSem, boSem, col, forma, dispensaBo, formaTxt: String(info?.forma_pagamento||'').trim(), obs: String(info?.observacao||'').trim() };
 }
 // Dono do pedido: chamado do próprio pedido; se não houver, chamado antigo da carga inteira (pedido nulo)
 function _fiscalDono(atribs, carga, ped){
@@ -53541,6 +53554,14 @@ async function carregarPaginaFiscal(){
     });
     (nfs||[]).forEach(n=>{ if(cargasMap[n.carga]) cargasMap[n.carga].nfs.push(n); });
     (semDocs||[]).forEach(s=>{ if(cargasMap[s.carga]) cargasMap[s.carga].semDoc.push(s); });
+    // Forma de pagamento e observação de cada pedido (vêm do ERP). Falha ou campo vazio = tudo funciona como antes.
+    try{
+      const todosPeds = [...new Set(Object.values(cargasMap).flatMap(c=>[...c.pedidos]))];
+      const lotesInfo = []; for(let i=0;i<todosPeds.length;i+=150) lotesInfo.push(todosPeds.slice(i,i+150));
+      const infos = (await Promise.all(lotesInfo.map(l=>supaFetch(`pedidos_info_erp?pedido=in.(${l.join(',')})&select=pedido,forma_pagamento,observacao`,{_quiet:true}).catch(()=>[])))).flat();
+      const infoMap = {}; (infos||[]).forEach(r=>{ if(r) infoMap[r.pedido] = r; });
+      Object.values(cargasMap).forEach(c=>{ c.info = infoMap; });
+    }catch(_){}
 
     const perfilUsuario = perfil;
     const podeUpload = ['fiscal_admin','fiscal_op','admin','adm_fiscal','opedor_fiscal'].includes(perfilUsuario);
@@ -53717,12 +53738,19 @@ function _fiscalRenderQuadro(){
   }
 
   const chipDoc = (est, tipo) => {
+    if(tipo==='boleto' && est.dispensaBo) return '';   // à vista: boleto não é pedido (o chip "À vista" já informa)
     const nome = tipo==='nf' ? 'NF' : 'Boleto';
     const arq = tipo==='nf' ? est.nfArq : est.boArq, sem = tipo==='nf' ? est.nfSem : est.boSem;
     if(arq.length) return `<span class="fb-chip" style="background:#d1fae5;color:#065f46" title="${escapeHtml(arq.map(a=>a.nome_arquivo).join(', '))}">${_ic('check',10)} ${nome}${arq.length>1?' ('+arq.length+')':''}</span>`;
     if(sem) return `<span class="fb-chip" style="background:var(--bg-hover);color:var(--text-secondary)" title="${escapeHtml('Marcado por '+(sem.fiscal_nome||'—')+(sem.motivo?': '+sem.motivo:''))}">${_ic('slash',10)} Não tem ${nome.toLowerCase()}</span>`;
     return `<span class="fb-chip" style="background:#fef3c7;color:#92400e">${_ic('alert-circle',10)} ${nome} falta</span>`;
   };
+  const formaChip = est => est.forma==='boleto' ? `<span class="fb-chip" style="background:#ede9fe;color:#5b21b6" title="Forma de pagamento: ${escapeHtml(est.formaTxt)}">Boleto</span>`
+    : est.forma==='avista' ? `<span class="fb-chip" style="background:#dcfce7;color:#166534" title="Forma de pagamento: ${escapeHtml(est.formaTxt)} — não precisa de boleto">À vista</span>`
+    : est.formaTxt ? `<span class="fb-chip" style="background:var(--bg-hover);color:var(--text-secondary)" title="Forma de pagamento informada pelo ERP (não reconhecida como boleto nem à vista)">${escapeHtml(est.formaTxt.slice(0,22))}</span>`
+    : '';
+  const obsChip = est => est.obs ? `<span class="fb-chip" style="background:#e0f2fe;color:#075985;cursor:help">${_ic('message-square',10)} Obs.</span>` : '';
+  const dicaPed = est => { const l = []; if(est.obs) l.push('Observação do pedido: '+est.obs); if(est.formaTxt) l.push('Pagamento: '+est.formaTxt); return l.length ? ' title="'+escapeHtml(l.join('\n'))+'"' : ''; };
   const confChip = (d, p) => {
     const st = d.confMap[p]?.status;
     return st==='ok' ? `<span class="fb-chip" style="background:#d1fae5;color:#065f46">${_ic('check-circle',10)} Conferido</span>`
@@ -53736,8 +53764,8 @@ function _fiscalRenderQuadro(){
     if(compacto){   // coluna Concluído: uma linha por pedido
       const desf = tipo => { const s = tipo==='nf' ? est.nfSem : est.boSem; const arq = tipo==='nf' ? est.nfArq : est.boArq;
         return (s && !arq.length && (podeAdm || s.fiscal_id===euId)) ? `<button class="fb-btn" style="padding:2px 6px" title="Desfazer 'não tem ${tipo==='nf'?'NF':'boleto'}'" onclick="fiscalDesfazerSem('${s.id}')">${_ic('rotate-ccw',10)}</button>` : ''; };
-      return `<div class="fb-mini">
-        <b class="fb-ped" style="font-size:.8rem">Pedido ${ped}</b><span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">${chipDoc(est,'nf')}${desf('nf')}${chipDoc(est,'boleto')}${desf('boleto')}</span></div>`;
+      return `<div class="fb-mini"${dicaPed(est)}>
+        <b class="fb-ped" style="font-size:.8rem">Pedido ${ped}</b>${formaChip(est)}${obsChip(est)}<span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">${chipDoc(est,'nf')}${desf('nf')}${chipDoc(est,'boleto')}${desf('boleto')}</span></div>`;
     }
     const acoes = [];
     if(!dono){
@@ -53757,9 +53785,9 @@ function _fiscalRenderQuadro(){
     }
     const inputs = meu ? `<input type="file" id="fb-f-${carga}-${ped}-nf" accept=".pdf,.xml,.png,.jpg" multiple hidden onchange="fiscalUpload(${carga},${ped},'nf')"><input type="file" id="fb-f-${carga}-${ped}-boleto" accept=".pdf,.xml,.png,.jpg" multiple hidden onchange="fiscalUpload(${carga},${ped},'boleto')">` : '';
     const nok = d.confMap[ped]?.status==='nok' && d.confMap[ped]?.observacao ? `<div style="font-size:.68rem;color:#ef4444;margin-top:5px">${_ic('alert-triangle',10)} ${escapeHtml(d.confMap[ped].observacao)}</div>` : '';
-    return `<div class="fb-card ${meu?'mine':outro?'other':''}">
+    return `<div class="fb-card ${meu?'mine':outro?'other':''}"${dicaPed(est)}>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap"><b class="fb-ped">Pedido ${ped}</b>${d.demanda?.pedido_prioridade===ped?`<span class="fb-chip" style="background:#dc2626;color:#fff">${_ic('flag',10)} Prioridade</span>`:''}${confChip(d,ped)}</div>
-      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:7px">${chipDoc(est,'nf')}${chipDoc(est,'boleto')}</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:7px">${formaChip(est)}${obsChip(est)}${chipDoc(est,'nf')}${chipDoc(est,'boleto')}</div>
       ${meu?`<div style="font-size:.7rem;color:#059669;font-weight:700;margin-top:7px;display:flex;align-items:center;gap:4px">${_ic('user-check',11)} Você está com este pedido</div>`:''}
       ${outro?`<div style="font-size:.7rem;color:#b45309;font-weight:700;margin-top:7px;display:flex;align-items:center;gap:4px">${_ic('lock',11)} ${escapeHtml(dono.fiscal_nome||'Outro fiscal')}</div>`:''}
       ${nok}
