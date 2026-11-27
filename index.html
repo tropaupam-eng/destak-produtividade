@@ -10541,7 +10541,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.370';
+const APP_VERSION = '4.89.371';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -19030,6 +19030,7 @@ function abrirModalNovaDemanda(presetRota, presetData){
 // O usuário lança o PEDIDO no lugar da carga: nasce uma pré-carga só dele (sem nº de carga) marcada como prioridade.
 // Quando o ERP gerar a carga, o nº é vinculado ao cartão como em qualquer pré-carga e a marca de prioridade fica.
 let _expModoPedidoPrior = false;
+let _expPriorModo = 'pedido';   // dentro do modo prioritário: 'pedido' (só um pedido) ou 'carga' (carga inteira)
 function _expAplicarModoModal(){
   const m = document.getElementById('modal-nova-demanda'); if(!m) return;
   const p = _expModoPedidoPrior;
@@ -19042,12 +19043,14 @@ function _expAplicarModoModal(){
   const sub = m.querySelector('h3 + p');
   if(sub) sub.textContent = p ? 'Lança só o pedido, sem nº de carga — a carga entra depois' : 'Preencha os dados da demanda de expedição';
   const b = document.getElementById('btn-criar-demanda');
-  if(b && !b.disabled) b.textContent = p ? '🚩 Lançar pedido prioritário' : '🚛 Criar Pré-Carga';
+  if(b && !b.disabled) b.textContent = p ? (_expPriorModo==='carga' ? '🚩 Lançar carga prioritária' : '🚩 Lançar pedido prioritário') : '🚛 Criar Pré-Carga';
 }
 function abrirModalPedidoPrioritario(){
   abrirModalNovaDemanda();
   _expModoPedidoPrior = true;
+  _expPriorModo = 'pedido';
   _expAplicarModoModal();
+  expPriorModo('pedido');
   const i = document.getElementById('exp-pedido-prior'); if(i){ i.value = ''; setTimeout(()=>i.focus(), 60); }
   const info = document.getElementById('exp-pedido-prior-info'); if(info) info.innerHTML = '';
 }
@@ -19060,24 +19063,122 @@ async function _expPedidoPriorBuscar(n){
   ]);
   if((ativos||[]).length) return { ok:false, motivo:`O pedido ${n} já foi lançado como prioridade (${ativos[0].rota||'—'}${ativos[0].carga?', carga '+ativos[0].carga:''}).` };
   const comCarga = (base||[]).find(r=>r.carga);
-  if(comCarga) return { ok:false, motivo:`O pedido ${n} já está na carga ${comCarga.carga}. Lance a carga normalmente.` };
+  if(comCarga) return { ok:false, carga:Number(comCarga.carga), motivo:`O pedido ${n} já está na carga ${comCarga.carga}.` };
   const p = (psc||[])[0];
   if(!p) return { ok:false, motivo:`Pedido ${n} não encontrado em Pedidos sem carga. Confira o número.` };
   return { ok:true, valor:Number(p.valor)||0, cliente:p.cliente||'' };
 }
+function expPriorModo(m, valor){
+  _expPriorModo = m;
+  const car = m === 'carga';
+  const st = (id, on) => { const e = document.getElementById(id); if(e){ e.style.background = on ? '#dc2626' : '#fff'; e.style.color = on ? '#fff' : '#dc2626'; } };
+  st('exp-pp-m-pedido', !car); st('exp-pp-m-carga', car);
+  const r = document.getElementById('exp-pp-rotulo'); if(r) r.textContent = car ? 'Nº da carga *' : 'Nº do pedido *';
+  const i = document.getElementById('exp-pedido-prior');
+  if(i){ i.placeholder = car ? 'Ex.: 16897' : 'Ex.: 71654'; i.value = valor != null ? valor : ''; }
+  const info = document.getElementById('exp-pedido-prior-info'); if(info) info.innerHTML = '';
+  const sub = document.querySelector('#modal-nova-demanda h3 + p');
+  if(sub) sub.textContent = car ? 'A carga inteira passa a ser prioridade (Fiscal e Expedição)' : 'Lança só o pedido, sem nº de carga — a carga entra depois';
+  _expAplicarModoModal();
+  if(valor != null) expPedidoPriorConferir();
+}
+// Confere a carga: precisa existir no ERP (v_cargas_erp) e, se já tem card na Expedição, o card ainda não pode estar concluído
+async function _expCargaPriorBuscar(n){
+  const [v, cards] = await Promise.all([
+    supaFetch(`v_cargas_erp?carga=eq.${n}&select=carga,pedidos,valor,situacao&limit=1`),
+    supaFetch(`demandas_rota?carga=eq.${n}&status=neq.cancelado&select=id,rota,status,prioridade&limit=1`)
+  ]);
+  const card = (cards||[])[0] || null, c = (v||[])[0] || null;
+  if(card){
+    if(card.status === 'concluido') return { ok:false, motivo:`A carga ${n} já foi concluída.` };
+    if(card.prioridade === true) return { ok:false, motivo:`A carga ${n} já está como prioridade (${card.rota||'—'}).` };
+    return { ok:true, card, pedidos:c?Number(c.pedidos)||0:null, valor:c?Number(c.valor)||0:null };
+  }
+  if(!c) return { ok:false, motivo:`Carga ${n} não encontrada no ERP. Confira o número.` };
+  if(c.situacao === 'interna' || c.situacao === 'lancada' || c.situacao === 'pendente' || c.situacao === 'ignorada')
+    return { ok:true, card:null, pedidos:Number(c.pedidos)||0, valor:Number(c.valor)||0 };
+  return { ok:true, card:null, pedidos:Number(c.pedidos)||0, valor:Number(c.valor)||0 };
+}
 async function expPedidoPriorConferir(){
   const info = document.getElementById('exp-pedido-prior-info'); if(!info) return;
+  const modo = _expPriorModo;
   const n = parseInt(document.getElementById('exp-pedido-prior')?.value, 10) || 0;
   if(!n){ info.innerHTML = ''; return; }
+  const mudou = () => parseInt(document.getElementById('exp-pedido-prior')?.value, 10) !== n || _expPriorModo !== modo;
+  const verm = t => `<span style="color:#dc2626;font-size:.8rem;font-weight:600">${escapeHtml(t)}</span>`;
   try{
+    if(modo === 'carga'){
+      const r = await _expCargaPriorBuscar(n);
+      if(mudou()) return;
+      info.innerHTML = !r.ok ? verm(r.motivo)
+        : `<span style="color:#166534;font-size:.8rem;font-weight:600">Carga ${n}${r.pedidos!=null?' · '+r.pedidos+' pedido(s) · '+_cerpMoeda(r.valor):''}${r.card?' · já está na Expedição ('+escapeHtml(r.card.rota||'—')+') — só será marcada como prioridade':' · será lançada na Expedição como prioridade'}</span>`;
+      return;
+    }
     const r = await _expPedidoPriorBuscar(n);
-    if(parseInt(document.getElementById('exp-pedido-prior')?.value, 10) !== n) return;   // digitou outra coisa no meio
-    info.innerHTML = r.ok
-      ? `<span style="color:#166534;font-size:.8rem;font-weight:600">${escapeHtml(r.cliente||'—')} · ${_cerpMoeda(r.valor)}</span>`
-      : `<span style="color:#dc2626;font-size:.8rem;font-weight:600">${escapeHtml(r.motivo)}</span>`;
-  }catch(e){ info.innerHTML = `<span style="color:#b45309;font-size:.8rem">Não deu para conferir o pedido agora.</span>`; }
+    if(mudou()) return;
+    if(r.ok){ info.innerHTML = `<span style="color:#166534;font-size:.8rem;font-weight:600">${escapeHtml(r.cliente||'—')} · ${_cerpMoeda(r.valor)}</span>`; return; }
+    info.innerHTML = verm(r.motivo) + (r.carga ? `<div style="margin-top:8px"><button type="button" onclick="expPriorModo('carga',${r.carga})" style="border:none;border-radius:9px;padding:8px 14px;font-size:.82rem;font-weight:800;cursor:pointer;background:#dc2626;color:#fff">Lançar a carga ${r.carga} como prioridade</button></div>` : '');
+  }catch(e){ info.innerHTML = `<span style="color:#b45309;font-size:.8rem">Não deu para conferir agora.</span>`; }
+}
+function _expMsgPrior(txt, tipo){
+  const msg = document.getElementById('msg-expedicao');
+  tipo = tipo || 'erro';
+  msg.textContent = txt;
+  msg.style.cssText = `display:block;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;
+    background:${tipo==='ok'?'#f0fdf4':tipo==='warning'?'#fffbeb':'#fef2f2'};
+    border:1px solid ${tipo==='ok'?'#86efac':tipo==='warning'?'#fcd34d':'#fecaca'};
+    color:${tipo==='ok'?'#166534':tipo==='warning'?'#92400e':'#dc2626'}`;
+}
+// Carga inteira como prioridade: se a carga já tem card na Expedição, só marca; se não tem, cria o card (ação humana explícita) com a carga
+async function criarCargaPrioritaria(){
+  const carga = parseInt(document.getElementById('exp-pedido-prior')?.value, 10) || 0;
+  const btn = document.getElementById('btn-criar-demanda');
+  if(!carga){ _expMsgPrior('Informe o nº da carga'); return; }
+  if(!_connOk){ _expMsgPrior('🔴 Sem conexão com o banco de dados. Verifique sua internet e tente novamente.'); return; }
+  if(btn) btn.disabled = true;
+  const fim = ok => { if(btn){ if(ok) btn.textContent = '✅ Lançado!'; else btn.disabled = false; } };
+  try{
+    const r = await _expCargaPriorBuscar(carga);
+    if(!r.ok){ _expMsgPrior(r.motivo, 'warning'); fim(false); return; }
+    if(r.card){
+      await supaFetch(`demandas_rota?id=eq.${r.card.id}`, { method:'PATCH', body: JSON.stringify({ prioridade:true }), prefer:'return=minimal' });
+      _expMsgPrior('✅ Carga ' + carga + ' marcada como prioridade!', 'ok');
+    } else {
+      const motorista = (document.getElementById('exp-motorista').value||'').trim();
+      const veiculo   = (document.getElementById('exp-veiculo').value||'').trim();
+      const rota      = normalizarRota((document.getElementById('exp-rota').value||'').trim());
+      const data      = document.getElementById('exp-data').value;
+      if(!rota || !data){ _expMsgPrior('Preencha rota e data'); fim(false); return; }
+      if(getTipoRota(rota) !== 'RI'){ _expMsgPrior('Esta é a Expedição Interna — selecione uma rota R.I. (interna).'); fim(false); return; }
+      const unidadeCheck = (USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||'').trim();
+      const conflito = await _cargaConflito(carga, unidadeCheck, null);
+      if(conflito){ _expMsgPrior('⚠️ Carga '+carga+' já existe na Expedição (motorista: '+(conflito.motorista||'—')+')', 'warning'); fim(false); return; }
+      // libera o número de qualquer demanda cancelada que ainda o segure (nunca duas linhas com a mesma carga)
+      await supaFetch(`demandas_rota?carga=eq.${carga}&status=eq.cancelado`, { method:'PATCH', body: JSON.stringify({carga:null}), prefer:'return=minimal' }).catch(()=>{});
+      const criada = await supaFetch('demandas_rota', {
+        method:'POST',
+        body: JSON.stringify({
+          motorista: motorista || (ehVeiculoFrete(veiculo) ? '' : 'A DEFINIR MOTORISTA'),
+          veiculo: veiculo || 'A DEFINIR VEÍCULO',
+          rota, data_saida: data, valor_meta: 0, carga,
+          status: 'pendente', origem: 'interna', prioridade: true,
+          quantidade_pedidos: r.pedidos||0, valor_total: r.valor||0,
+          usuario_id: USUARIO_LOGADO?.id||null,
+          unidade: USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||null
+        })
+      });
+      if(criada && criada[0] && criada[0].id){ try{ await _cerpCasarCarga(criada[0].id, carga); }catch(_){} }
+      _expMsgPrior('✅ Carga ' + carga + ' lançada como prioridade!', 'ok');
+    }
+    fim(true);
+    setTimeout(()=>{ fecharModalNovaDemanda(); carregarDemandas(); }, 1200);
+  }catch(e){
+    _expMsgPrior('Erro ao lançar a carga: ' + e.message);
+    fim(false);
+  }
 }
 async function criarPedidoPrioritario(){
+  if(_expPriorModo === 'carga') return criarCargaPrioritaria();
   const msg = document.getElementById('msg-expedicao');
   const showMsg = (txt, tipo='erro') => {
     msg.textContent = txt;
@@ -67338,7 +67439,11 @@ function _cftvRenderTable(data){
 
         <!-- Nº do pedido prioritário (só no modo "Pedido prioritário" da Expedição Interna) -->
         <div id="exp-bloco-pedido-prior" style="display:none;grid-column:1/-1">
-          <label style="font-size:.73rem;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="flag" style="width:12px;height:12px;vertical-align:-2px"></span> Nº do pedido *</label>
+          <div style="display:flex;gap:6px;margin-bottom:12px">
+            <button type="button" id="exp-pp-m-pedido" onclick="expPriorModo('pedido')" style="flex:1;border:1.5px solid #dc2626;border-radius:9px;padding:8px 10px;font-size:.82rem;font-weight:800;cursor:pointer;background:#dc2626;color:#fff">Só um pedido</button>
+            <button type="button" id="exp-pp-m-carga" onclick="expPriorModo('carga')" style="flex:1;border:1.5px solid #dc2626;border-radius:9px;padding:8px 10px;font-size:.82rem;font-weight:800;cursor:pointer;background:#fff;color:#dc2626">Carga inteira</button>
+          </div>
+          <label style="font-size:.73rem;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="flag" style="width:12px;height:12px;vertical-align:-2px"></span> <span id="exp-pp-rotulo">Nº do pedido *</span></label>
           <input type="number" id="exp-pedido-prior" min="1" step="1" placeholder="Ex.: 71654" oninput="clearTimeout(window._expPpT);window._expPpT=setTimeout(expPedidoPriorConferir,350)"
             style="width:100%;border:1.5px solid #fecaca;border-radius:10px;padding:11px 14px;font-size:.92rem;outline:none;box-sizing:border-box;color:#111"/>
           <div id="exp-pedido-prior-info" style="margin-top:6px"></div>
