@@ -3139,7 +3139,7 @@ body.light-theme{
     <button class="exp-unid-btn exp-unid-all active" onclick="filtrarFiscalTipo('',this)">Todas</button>
     <button class="exp-unid-btn exp-unid-ri" onclick="filtrarFiscalTipo('RI',this)">RI · Interna</button>
     <button class="exp-unid-btn exp-unid-re" onclick="filtrarFiscalTipo('RE',this)">RE · Externa</button>
-    <button class="exp-unid-btn" id="fiscal-aba-prior" style="border-color:#ef4444;color:#dc2626" onclick="filtrarFiscalTipo('PRIORIDADE',this)" title="Cargas urgentes (rota CEASA) — separadas das demais abas">Prioridade <span id="fiscal-prior-n" style="display:none;background:#dc2626;color:#fff;border-radius:999px;padding:0 7px;margin-left:4px;font-size:.72rem;font-weight:800"></span></button>
+    <button class="exp-unid-btn" id="fiscal-aba-prior" style="border-color:#ef4444;color:#dc2626" onclick="filtrarFiscalTipo('PRIORIDADE',this)" title="Cargas urgentes (rota CEASA ou pedido prioritário) — separadas das demais abas">Prioridade <span id="fiscal-prior-n" style="display:none;background:#dc2626;color:#fff;border-radius:999px;padding:0 7px;margin-left:4px;font-size:.72rem;font-weight:800"></span></button>
   </div>
   <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
     <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="fiscal-so-meus" onchange="fiscalFiltrar()"> Só meus chamados</label>
@@ -7664,6 +7664,7 @@ body.light-theme{
       <button onclick="abrirPopupRotasExpedicao()" id="btn-rotas-semana" style="display:none;align-items:center;gap:6px;background:linear-gradient(135deg,#1e3a5f,#2563eb);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:.83rem;font-weight:700;cursor:pointer;white-space:nowrap"><span data-feather="calendar" style="width:15px;height:15px"></span>Rotas da Semana</button>
       <button onclick="carregarDemandas()" class="exp-btn-refresh"><span data-feather="refresh-cw" style="width:15px;height:15px"></span>Atualizar</button>
       <button onclick="abrirSelecaoRotaAgenda()" class="exp-btn-new" id="btn-nova-demanda"><span data-feather="plus" style="width:15px;height:15px"></span>Nova Pré-Carga</button>
+      <button onclick="abrirModalPedidoPrioritario()" class="exp-btn-new" id="btn-pedido-prioritario" style="display:none;background:#dc2626"><span data-feather="flag" style="width:15px;height:15px"></span>Pedido prioritário</button>
     </div>
   </div>
 
@@ -10539,7 +10540,7 @@ body.light-theme #page-frota-disponibilidade{
 const SUPA_URL = 'https://hiydkyslgiomdyginfdx.supabase.co';
 
 // ── VERSÃO DO SISTEMA — incrementar aqui força limpeza total do cache ──
-const APP_VERSION = '4.89.368';
+const APP_VERSION = '4.89.369';
 console.log('%c[CRONOS] index.html v'+APP_VERSION+' carregado em ' + new Date().toISOString(), 'color:#059669;font-weight:bold;font-size:13px');
 
 // Envelope seguro pro feather.replace(): um <span data-feather> com nome de
@@ -18994,6 +18995,7 @@ function selecionarAgendaParaNovaDemanda(rota, data){
 function abrirModalNovaDemanda(presetRota, presetData){
   const modal = document.getElementById('modal-nova-demanda');
   if(!modal) return;
+  _expModoPedidoPrior = false; _expAplicarModoModal();   // abre sempre como Nova Pré-Carga; o botão Pedido prioritário liga o outro modo depois
   // Setar data de hoje (ou a data pré-selecionada na agenda)
   document.getElementById('exp-data').value = presetData || hojeDataBRT();
   // Limpar campos
@@ -19023,11 +19025,108 @@ function abrirModalNovaDemanda(presetRota, presetData){
   modal.style.display='flex';
 }
 
+// ── Pedido prioritário (Expedição Interna) ──
+// O usuário lança o PEDIDO no lugar da carga: nasce uma pré-carga só dele (sem nº de carga) marcada como prioridade.
+// Quando o ERP gerar a carga, o nº é vinculado ao cartão como em qualquer pré-carga e a marca de prioridade fica.
+let _expModoPedidoPrior = false;
+function _expAplicarModoModal(){
+  const m = document.getElementById('modal-nova-demanda'); if(!m) return;
+  const p = _expModoPedidoPrior;
+  const sh = (id, v) => { const e = document.getElementById(id); if(e) e.style.display = v; };
+  sh('exp-bloco-pedido-prior', p ? 'block' : 'none');
+  sh('exp-bloco-meta', p ? 'none' : '');
+  sh('exp-bloco-carga', p ? 'none' : '');
+  const h3 = m.querySelector('h3');
+  if(h3 && h3.lastChild && h3.lastChild.nodeType === 3) h3.lastChild.textContent = p ? 'Pedido prioritário' : 'Nova Pré-Carga';
+  const sub = m.querySelector('h3 + p');
+  if(sub) sub.textContent = p ? 'Lança só o pedido, sem nº de carga — a carga entra depois' : 'Preencha os dados da demanda de expedição';
+  const b = document.getElementById('btn-criar-demanda');
+  if(b && !b.disabled) b.textContent = p ? '🚩 Lançar pedido prioritário' : '🚛 Criar Pré-Carga';
+}
+function abrirModalPedidoPrioritario(){
+  abrirModalNovaDemanda();
+  _expModoPedidoPrior = true;
+  _expAplicarModoModal();
+  const i = document.getElementById('exp-pedido-prior'); if(i){ i.value = ''; setTimeout(()=>i.focus(), 60); }
+  const info = document.getElementById('exp-pedido-prior-info'); if(info) info.innerHTML = '';
+}
+// Confere o pedido: precisa estar em "Pedidos sem carga", não estar em nenhuma carga e não ter sido lançado como prioridade antes
+async function _expPedidoPriorBuscar(n){
+  const [base, psc, ativos] = await Promise.all([
+    supaFetch(`base_data?pedido=eq.${n}&select=carga&limit=5`),
+    supaFetch(`pedidos_sem_carga?pedido=eq.${n}&select=pedido,cliente,valor&limit=1`),
+    supaFetch(`demandas_rota?pedido_prioridade=eq.${n}&status=not.in.(cancelado,concluido)&select=id,rota,carga&limit=1`)
+  ]);
+  if((ativos||[]).length) return { ok:false, motivo:`O pedido ${n} já foi lançado como prioridade (${ativos[0].rota||'—'}${ativos[0].carga?', carga '+ativos[0].carga:''}).` };
+  const comCarga = (base||[]).find(r=>r.carga);
+  if(comCarga) return { ok:false, motivo:`O pedido ${n} já está na carga ${comCarga.carga}. Lance a carga normalmente.` };
+  const p = (psc||[])[0];
+  if(!p) return { ok:false, motivo:`Pedido ${n} não encontrado em Pedidos sem carga. Confira o número.` };
+  return { ok:true, valor:Number(p.valor)||0, cliente:p.cliente||'' };
+}
+async function expPedidoPriorConferir(){
+  const info = document.getElementById('exp-pedido-prior-info'); if(!info) return;
+  const n = parseInt(document.getElementById('exp-pedido-prior')?.value, 10) || 0;
+  if(!n){ info.innerHTML = ''; return; }
+  try{
+    const r = await _expPedidoPriorBuscar(n);
+    if(parseInt(document.getElementById('exp-pedido-prior')?.value, 10) !== n) return;   // digitou outra coisa no meio
+    info.innerHTML = r.ok
+      ? `<span style="color:#166534;font-size:.8rem;font-weight:600">${escapeHtml(r.cliente||'—')} · ${_cerpMoeda(r.valor)}</span>`
+      : `<span style="color:#dc2626;font-size:.8rem;font-weight:600">${escapeHtml(r.motivo)}</span>`;
+  }catch(e){ info.innerHTML = `<span style="color:#b45309;font-size:.8rem">Não deu para conferir o pedido agora.</span>`; }
+}
+async function criarPedidoPrioritario(){
+  const msg = document.getElementById('msg-expedicao');
+  const showMsg = (txt, tipo='erro') => {
+    msg.textContent = txt;
+    msg.style.cssText = `display:block;padding:10px 14px;border-radius:8px;font-size:.85rem;font-weight:600;
+      background:${tipo==='ok'?'#f0fdf4':tipo==='warning'?'#fffbeb':'#fef2f2'};
+      border:1px solid ${tipo==='ok'?'#86efac':tipo==='warning'?'#fcd34d':'#fecaca'};
+      color:${tipo==='ok'?'#166534':tipo==='warning'?'#92400e':'#dc2626'}`;
+  };
+  const ped = parseInt(document.getElementById('exp-pedido-prior')?.value, 10) || 0;
+  const motorista = (document.getElementById('exp-motorista').value||'').trim();
+  const veiculo   = (document.getElementById('exp-veiculo').value||'').trim();
+  const rota      = normalizarRota((document.getElementById('exp-rota').value||'').trim());
+  const data      = document.getElementById('exp-data').value;
+  if(!ped){ showMsg('Informe o nº do pedido'); return; }
+  if(!rota || !data){ showMsg('Preencha rota e data'); return; }
+  if(getTipoRota(rota) !== 'RI'){ showMsg('Esta é a Expedição Interna — selecione uma rota R.I. (interna).'); return; }
+  if(!_connOk){ showMsg('🔴 Sem conexão com o banco de dados. Verifique sua internet e tente novamente.'); return; }
+  const btn = document.getElementById('btn-criar-demanda');
+  if(btn) btn.disabled = true;
+  try{
+    const r = await _expPedidoPriorBuscar(ped);
+    if(!r.ok){ showMsg(r.motivo, 'warning'); if(btn) btn.disabled = false; return; }
+    await supaFetch('demandas_rota', {
+      method:'POST',
+      body: JSON.stringify({
+        motorista: motorista || (ehVeiculoFrete(veiculo) ? '' : 'A DEFINIR MOTORISTA'),
+        veiculo: veiculo || 'A DEFINIR VEÍCULO',
+        rota, data_saida: data, valor_meta: 0,
+        status: 'pendente', origem: 'interna',
+        prioridade: true, pedido_prioridade: ped,
+        quantidade_pedidos: 1, quantidade_clientes: 1, valor_total: r.valor,
+        usuario_id: USUARIO_LOGADO?.id||null,
+        unidade: USUARIO_LOGADO?.unidade||USUARIO_LOGADO?.und||null
+      })
+    });
+    showMsg('✅ Pedido ' + ped + ' lançado como prioridade!', 'ok');
+    if(btn){ btn.textContent = '✅ Lançado!'; }
+    setTimeout(()=>{ fecharModalNovaDemanda(); carregarDemandas(); }, 1200);
+  }catch(e){
+    showMsg('Erro ao lançar o pedido: ' + e.message);
+    if(btn) btn.disabled = false;
+  }
+}
+
 function fecharModalNovaDemanda(){
   const modal = document.getElementById('modal-nova-demanda');
   if(modal) modal.style.display='none';
 }
 async function criarDemanda(){
+  if(_expModoPedidoPrior) return criarPedidoPrioritario();   // modo Pedido prioritário (Expedição Interna): fluxo próprio, sem carga
   const motorista = (document.getElementById('exp-motorista').value||'').trim();
   const veiculo   = (document.getElementById('exp-veiculo').value||'').trim();
   const rota      = normalizarRota((document.getElementById('exp-rota').value||'').trim());
@@ -25911,7 +26010,7 @@ function renderDemandasCards(){
 
       <div class="exp-card-top">
         <div class="exp-card-info">
-          <div class="exp-card-rota" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span data-feather="map-pin" style="width:12px;height:12px;flex-shrink:0"></span>${d.rota||'—'} ${badgeAgend} ${badgeDup} ${badgeOcorr}</div>
+          <div class="exp-card-rota" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span data-feather="map-pin" style="width:12px;height:12px;flex-shrink:0"></span>${d.rota||'—'} ${d.prioridade?`<span class="exp-badge-mini" title="Lançado como prioridade" style="background:#dc2626;color:#fff"><span data-feather="flag"></span>Prioridade${d.pedido_prioridade?' · Pedido '+d.pedido_prioridade:''}</span>`:''} ${badgeAgend} ${badgeDup} ${badgeOcorr}</div>
         </div>
         <span class="exp-status-badge" style="background:${s.bg};color:${s.color}"><span data-feather="${s.icon||'circle'}"></span>${s.label}</span>
       </div>
@@ -29136,6 +29235,7 @@ function showExpedicaoInterna(tab){
   // externo) antes de chamar carregarDemandas()/carregarRotasExp() — por isso o
   // flag é religado DEPOIS dessa chamada, não antes.
   _expModoInterno = true;
+  { const bp = document.getElementById('btn-pedido-prioritario'); if(bp) bp.style.display = ''; }
   localStorage.setItem('destak_pagina_atual', 'expedicao-interna');
   // Título/subtítulo somem na Expedição Interna (pedido do usuário, 2026-11-24:
   // já tem o nome no menu lateral, redundante aqui). O botão "Rotas da Semana" e
@@ -29259,6 +29359,7 @@ function showPage(name,tab){
     // visita anterior à Expedição Interna (travada em RI) e a Externa aparecia
     // vazia ("Nenhuma demanda encontrada") mesmo com dezenas de cargas reais.
     _expModoInterno = false;
+    { const bp = document.getElementById('btn-pedido-prioritario'); if(bp) bp.style.display = 'none'; }
     const titulo = document.querySelector('#page-expedicao .exp-title');
     if(titulo){ titulo.style.display = ''; titulo.innerHTML = '<span data-feather="truck"></span>Expedição Externa'; }
     const sub = document.querySelector('#page-expedicao .exp-sub');
@@ -53258,6 +53359,8 @@ function _fiscalDono(atribs, carga, ped){
 let _fiscalFiltroTipo = '';
 // Rota CEASA = urgência: aparece separada das demais no quadro do Fiscal (pedido do usuário, 27/11/2026)
 function _fiscalEhCeasa(rota){ return String(rota||'').toUpperCase().includes('CEASA'); }
+// Prioridade = rota CEASA OU pré-carga lançada como pedido prioritário na Expedição Interna (demandas_rota.prioridade)
+function _fiscalEhPrioridade(dem){ return !!dem && (dem.prioridade===true || _fiscalEhCeasa(dem.rota)); }
 function filtrarFiscalTipo(tipo, btn){
   _fiscalFiltroTipo = tipo;
   window._fiscalUI.cargaSel = null;
@@ -53353,7 +53456,7 @@ async function carregarPaginaFiscal(){
 
     // ── Histórico de concluídos pelo fiscal (igual a antes) ──
     if(podeUpload){
-      const concluidasRaw = await supaFetch('demandas_rota?status_fiscal=eq.concluido&select=id,carga,rota,motorista,status&order=carga.desc&limit=100').catch(()=>[]);
+      const concluidasRaw = await supaFetch('demandas_rota?status_fiscal=eq.concluido&select=id,carga,rota,motorista,status,prioridade,pedido_prioridade&order=carga.desc&limit=100').catch(()=>[]);
       if(concluidasRaw && concluidasRaw.length){
         const histEl = document.createElement('div');
         histEl.id = 'fiscal-historico-concluidos';
@@ -53443,14 +53546,14 @@ function _fiscalRenderQuadro(){
   const cargas = Object.keys(cargasMap).map(Number).filter(n=>!isNaN(n)&&n>0)
     .filter(c => cargasMap[c]?.demanda?.status_fiscal !== 'concluido')
     // CEASA = Prioridade: só aparece na aba Prioridade; as demais abas mostram o resto
-    .filter(c => _fiscalFiltroTipo==='PRIORIDADE' ? _fiscalEhCeasa(cargasMap[c]?.demanda?.rota) : (!_fiscalEhCeasa(cargasMap[c]?.demanda?.rota) && (!_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)))
+    .filter(c => _fiscalFiltroTipo==='PRIORIDADE' ? _fiscalEhPrioridade(cargasMap[c]?.demanda) : (!_fiscalEhPrioridade(cargasMap[c]?.demanda) && (!_fiscalFiltroTipo || getTipoRota(cargasMap[c]?.demanda?.rota)===_fiscalFiltroTipo)))
     .sort(_fiscalCmpCargas);
   if(ui.cargaSel && !cargas.includes(ui.cargaSel)) ui.cargaSel = null;
 
-  // contador da aba Prioridade: pedidos ainda sem resolver nas cargas da rota CEASA
+  // contador da aba Prioridade: pedidos ainda sem resolver nas cargas prioritárias (rota CEASA ou pedido prioritário)
   { let np = 0;
     Object.keys(cargasMap).forEach(k=>{ const dd = cargasMap[k];
-      if(dd?.demanda?.status_fiscal==='concluido' || !_fiscalEhCeasa(dd?.demanda?.rota)) return;
+      if(dd?.demanda?.status_fiscal==='concluido' || !_fiscalEhPrioridade(dd?.demanda)) return;
       dd.pedidos.forEach(p=>{ if(_fiscalEstadoPedido(dd,p).col!=='ok') np++; }); });
     const bd = document.getElementById('fiscal-prior-n');
     if(bd){ bd.textContent = np; bd.style.display = np ? 'inline-block' : 'none'; } }
@@ -53506,7 +53609,7 @@ function _fiscalRenderQuadro(){
   }
 
   if(!cargas.length){
-    container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">'+(_fiscalFiltroTipo==='PRIORIDADE'?'Nenhuma carga em prioridade (rota CEASA) no quadro agora.':'Nenhuma carga aguardando o Fiscal no momento.')+'</p>';
+    container.innerHTML = '<p style="text-align:center;padding:40px;color:var(--text-muted)">'+(_fiscalFiltroTipo==='PRIORIDADE'?'Nenhuma carga em prioridade (CEASA ou pedido prioritário) no quadro agora.':'Nenhuma carga aguardando o Fiscal no momento.')+'</p>';
     _featherReplace();
     return;
   }
@@ -53553,7 +53656,7 @@ function _fiscalRenderQuadro(){
     const inputs = meu ? `<input type="file" id="fb-f-${carga}-${ped}-nf" accept=".pdf,.xml,.png,.jpg" multiple hidden onchange="fiscalUpload(${carga},${ped},'nf')"><input type="file" id="fb-f-${carga}-${ped}-boleto" accept=".pdf,.xml,.png,.jpg" multiple hidden onchange="fiscalUpload(${carga},${ped},'boleto')">` : '';
     const nok = d.confMap[ped]?.status==='nok' && d.confMap[ped]?.observacao ? `<div style="font-size:.68rem;color:#ef4444;margin-top:5px">${_ic('alert-triangle',10)} ${escapeHtml(d.confMap[ped].observacao)}</div>` : '';
     return `<div class="fb-card ${meu?'mine':outro?'other':''}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap"><b class="fb-ped">Pedido ${ped}</b>${confChip(d,ped)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap"><b class="fb-ped">Pedido ${ped}</b>${d.demanda?.pedido_prioridade===ped?`<span class="fb-chip" style="background:#dc2626;color:#fff">${_ic('flag',10)} Prioridade</span>`:''}${confChip(d,ped)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:7px">${chipDoc(est,'nf')}${chipDoc(est,'boleto')}</div>
       ${meu?`<div style="font-size:.7rem;color:#059669;font-weight:700;margin-top:7px;display:flex;align-items:center;gap:4px">${_ic('user-check',11)} Você está com este pedido</div>`:''}
       ${outro?`<div style="font-size:.7rem;color:#b45309;font-weight:700;margin-top:7px;display:flex;align-items:center;gap:4px">${_ic('lock',11)} ${escapeHtml(dono.fiscal_nome||'Outro fiscal')}</div>`:''}
@@ -67232,6 +67335,14 @@ function _cftvRenderTable(data){
     <div style="padding:26px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
 
+        <!-- Nº do pedido prioritário (só no modo "Pedido prioritário" da Expedição Interna) -->
+        <div id="exp-bloco-pedido-prior" style="display:none;grid-column:1/-1">
+          <label style="font-size:.73rem;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="flag" style="width:12px;height:12px;vertical-align:-2px"></span> Nº do pedido *</label>
+          <input type="number" id="exp-pedido-prior" min="1" step="1" placeholder="Ex.: 71654" oninput="clearTimeout(window._expPpT);window._expPpT=setTimeout(expPedidoPriorConferir,350)"
+            style="width:100%;border:1.5px solid #fecaca;border-radius:10px;padding:11px 14px;font-size:.92rem;outline:none;box-sizing:border-box;color:#111"/>
+          <div id="exp-pedido-prior-info" style="margin-top:6px"></div>
+        </div>
+
         <!-- Motorista -->
         <div style="grid-column:1/-1">
           <label style="font-size:.73rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="user" style="width:12px;height:12px;vertical-align:-2px"></span> Motorista <span style="font-weight:400;color:#9ca3af;text-transform:none;font-size:.7rem">(opcional — pode definir depois)</span></label>
@@ -67267,7 +67378,7 @@ function _cftvRenderTable(data){
         </div>
 
         <!-- Meta -->
-        <div>
+        <div id="exp-bloco-meta">
           <label style="font-size:.73rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="target" style="width:12px;height:12px;vertical-align:-2px"></span> Valor Meta (R$)</label>
           <input type="number" id="exp-valor-meta" placeholder="0,00" step="0.01"
             style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:11px 14px;font-size:.92rem;outline:none;box-sizing:border-box;color:#111"/>
@@ -67275,7 +67386,7 @@ function _cftvRenderTable(data){
         </div>
 
         <!-- Nº da carga (opcional): já vincula a carga do ERP na criação -->
-        <div style="grid-column:1/-1">
+        <div id="exp-bloco-carga" style="grid-column:1/-1">
           <label style="font-size:.73rem;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px"><span data-feather="hash" style="width:12px;height:12px;vertical-align:-2px"></span> Nº da Carga <span style="font-weight:400;color:#9ca3af;text-transform:none;font-size:.7rem">(opcional — pode vincular depois)</span></label>
           <input type="number" id="exp-carga" min="1" step="1" placeholder="Ex.: 16553"
             oninput="cerpPreviewEm('exp-carga','exp-carga-erp')"
